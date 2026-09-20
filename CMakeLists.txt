@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network WebSockets Multimedia)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network WebSockets Multimedia OpenGL OpenGLWidgets)
 qt_standard_project_setup()
 
 qt_add_executable(Wisp WIN32
@@ -54,6 +54,8 @@ qt_add_executable(Wisp WIN32
 
     src/ui/Theme.h
     src/ui/Theme.cpp
+    src/ui/AuroraWidget.h
+    src/ui/AuroraWidget.cpp
     src/ui/LoginDialog.h
     src/ui/LoginDialog.cpp
     src/ui/PluginsDialog.h
@@ -89,6 +91,22 @@ qt_add_executable(Wisp WIN32
     src/ui/MainWindow.h
     src/ui/MainWindow.cpp
 )
+
+qt_add_resources(Wisp brand
+    PREFIX "/brand"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/resources"
+    FILES resources/wisp.png
+)
+
+if(WIN32)
+    set(WISP_ICON_PATH "${CMAKE_CURRENT_SOURCE_DIR}/resources/wisp.ico")
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/wisp.rc.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/wisp.rc"
+        @ONLY
+    )
+    target_sources(Wisp PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/wisp.rc")
+endif()
 
 # Opus compresses the sound, libsodium encrypts it. Both are built or shipped
 # under third_party and linked statically, so the exe stays self contained.
@@ -134,6 +152,8 @@ target_link_libraries(Wisp PRIVATE
     Qt6::Network
     Qt6::WebSockets
     Qt6::Multimedia
+    Qt6::OpenGL
+    Qt6::OpenGLWidgets
     "${OPUS_INSTALL}/lib/opus.lib"
     "${SODIUM_ROOT}/x64/Release/v143/static/libsodium.lib"
     # Crypt32 seals the saved session with the Windows account's own key.

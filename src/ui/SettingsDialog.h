@@ -66,6 +66,7 @@ private:
     QComboBox *m_outputDevice = nullptr;
     QSlider *m_inputVolume = nullptr;
     QSlider *m_outputVolume = nullptr;
+    QSlider *m_streamVolume = nullptr;
     QSlider *m_sensitivity = nullptr;
     QPushButton *m_micTestButton = nullptr;
     LevelBar *m_levelBar = nullptr;

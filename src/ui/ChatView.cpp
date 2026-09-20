@@ -3,6 +3,7 @@
 #include "ui/AnimatedImage.h"
 #include "ui/MediaCache.h"
 
+#include <QPalette>
 #include <QScrollBar>
 #include <QTextDocument>
 #include <QTimer>
@@ -38,6 +39,11 @@ ChatView::ChatView(QWidget *parent)
 {
     setOpenExternalLinks(true);
     setFrameShape(QFrame::NoFrame);
+    viewport()->setAutoFillBackground(false);
+    QPalette pal = palette();
+    pal.setColor(QPalette::Base, Qt::transparent);
+    pal.setColor(QPalette::Window, Qt::transparent);
+    setPalette(pal);
 
     // One timer drives every animation on screen.
     m_animationTimer.setInterval(AnimationFrameMs);

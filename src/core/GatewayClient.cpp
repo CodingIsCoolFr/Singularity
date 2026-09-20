@@ -27,8 +27,8 @@ constexpr int OpGuildSubscribe = 14;
 
 // Go Live. Watching somebody's shared screen is a request on this socket, and
 // the answer is a whole second voice server to connect to.
+constexpr int OpStreamDelete = 19;
 constexpr int OpStreamWatch = 20;
-constexpr int OpStreamDelete = 21;
 
 // Capability bitfield the desktop client sends. It tells Discord which
 // optimised payload shapes this client understands.
@@ -251,10 +251,28 @@ void GatewayClient::onDisconnected()
         return;
     }
 
-    if (m_wantConnection)
-        scheduleReconnect();
-    else
+    if (!m_wantConnection) {
         setState(State::Disconnected);
+        return;
+    }
+
+    // The next join must actually go out. Deduping against the pre-drop
+    // channel would swallow it, and Discord no longer has us in the call.
+    m_voiceChannelId.clear();
+    m_voiceGuildId.clear();
+
+    if (m_reconnectImmediately) {
+        m_reconnectImmediately = false;
+        m_reconnectAttempts = 0;
+        setState(State::Reconnecting);
+        wlog(QStringLiteral("gateway"), QStringLiteral("opening immediately (Discord asked)"));
+        QTimer::singleShot(0, this, [this]() {
+            if (m_wantConnection)
+                openSocket();
+        });
+        return;
+    }
+    scheduleReconnect();
 }
 
 void GatewayClient::onTextMessage(const QString &message)
@@ -306,7 +324,10 @@ void GatewayClient::onTextMessage(const QString &message)
 
     case OpReconnect:
         emit logLine(QStringLiteral("gateway asked for a reconnect"));
+        wlog(QStringLiteral("gateway"),
+             QStringLiteral("opcode 7: reconnecting immediately and keeping the voice channel"));
         m_canResume = true;
+        m_reconnectImmediately = true;
         m_socket.close();
         break;
 
@@ -528,15 +549,16 @@ void GatewayClient::setPresenceStatus(const QString &status)
     });
 }
 
-void GatewayClient::joinVoice(const QString &guildId, const QString &channelId, bool selfMute, bool selfDeaf)
+void GatewayClient::joinVoice(const QString &guildId, const QString &channelId, bool selfMute, bool selfDeaf,
+                              bool force)
 {
     if (channelId.isEmpty())
         return;
 
     // Repeating an identical request achieves nothing and spends one of the
     // limited commands, so the mute and deafen buttons cannot rattle the
-    // connection by toggling quickly.
-    if (m_voiceChannelId == channelId && m_voiceGuildId == guildId && m_voiceMuted == selfMute
+    // connection by toggling quickly. A rejoin after a drop must still send.
+    if (!force && m_voiceChannelId == channelId && m_voiceGuildId == guildId && m_voiceMuted == selfMute
         && m_voiceDeafened == selfDeaf) {
         return;
     }

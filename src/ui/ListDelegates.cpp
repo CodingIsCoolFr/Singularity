@@ -8,6 +8,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QRadialGradient>
 #include <QTimer>
 #include <QToolTip>
 
@@ -19,19 +20,17 @@
 
 namespace {
 
-// How much of the remaining distance is covered each frame. Higher is snappier.
-constexpr qreal EasingStep = 0.28;
 constexpr qreal Settled = 0.004;
 constexpr int FrameMs = 16;
 
 constexpr int GuildIcon = 48;
-constexpr int GuildRowHeight = 62;
+constexpr int GuildRowHeight = 66;
 constexpr int PillWidth = 4;
 
-constexpr int ChannelRowHeight = 32;
-constexpr int HeaderRowHeight = 30;
-constexpr int VoiceMemberRowHeight = 26;
-constexpr int DirectRowHeight = 44;
+constexpr int ChannelRowHeight = 34;
+constexpr int HeaderRowHeight = 32;
+constexpr int VoiceMemberRowHeight = 28;
+constexpr int DirectRowHeight = 46;
 constexpr int DirectAvatar = 32;
 
 QColor statusColourFor(const QString &status)
@@ -238,13 +237,24 @@ qreal AnimatedDelegate::progress(QHash<int, qreal> &store, int row, bool on) con
 {
     const qreal target = on ? 1.0 : 0.0;
     qreal current = store.value(row, target);
+    qreal &vel = m_velocity[static_cast<const void *>(&store)][row];
 
-    if (qAbs(target - current) < Settled) {
+    // Spring instead of a linear ease: it overshoots a little then settles,
+    // which reads as a press rather than a fade.
+    const qreal stiffness = 220.0;
+    const qreal damping = 18.0;
+    const qreal dt = FrameMs / 1000.0;
+    const qreal force = (target - current) * stiffness - vel * damping;
+    vel += force * dt;
+    current += vel * dt;
+
+    if (qAbs(target - current) < Settled && qAbs(vel) < 0.02) {
         store.insert(row, target);
+        vel = 0.0;
         return target;
     }
 
-    current += (target - current) * EasingStep;
+    current = qBound(0.0, current, 1.15);
     store.insert(row, current);
     scheduleRepaint();
     return current;
@@ -310,14 +320,34 @@ void GuildRailDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
         return;
     }
 
-    // A circle when idle, a rounded square when lit up.
-    const qreal radius = iconSize / 2.0 - (iconSize / 2.0 - 15.0) * lift;
+    // A circle when idle, a rounded square when lit up. The spring can
+    // overshoot 1.0, which punches the morph a little past the rest pose.
+    const qreal morph = qBound(0.0, lift, 1.0);
+    const qreal radius = iconSize / 2.0 - (iconSize / 2.0 - 15.0) * morph;
+
+    if (lift > 0.01) {
+        QRadialGradient glow(iconRect.center(), iconSize * 0.95);
+        QColor ac(Theme::Accent);
+        ac.setAlphaF(0.38 * qBound(0.0, lift, 1.0));
+        glow.setColorAt(0.0, ac);
+        ac.setAlphaF(0.0);
+        glow.setColorAt(1.0, ac);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(glow);
+        painter->drawEllipse(QRectF(iconRect).adjusted(-8, -8, 8, 8));
+    }
+
+    painter->save();
+    const QPointF c = iconRect.center();
+    painter->translate(c);
+    painter->scale(1.0 + 0.07 * lift, 1.0 + 0.07 * lift);
+    painter->translate(-c);
 
     QPainterPath clip;
     clip.addRoundedRect(iconRect, radius, radius);
 
     // A soft plate behind the icon so transparent pictures still read.
-    painter->fillPath(clip, withAlpha(Theme::SurfaceHover, 0.55 + 0.45 * lift));
+    painter->fillPath(clip, withAlpha(Theme::SurfaceHover, 0.55 + 0.45 * morph));
 
     const QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
     if (!icon.isNull()) {
@@ -326,6 +356,7 @@ void GuildRailDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
         icon.paint(painter, iconRect, Qt::AlignCenter);
         painter->restore();
     }
+    painter->restore();
 
     // --- the pill on the left --------------------------------------------
     if (lift > 0.01) {
@@ -337,7 +368,9 @@ void GuildRailDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
         if (height > 1.0) {
             const QRectF pill(cell.left() + 2.0, cell.center().y() - height / 2.0, PillWidth, height);
             painter->setPen(Qt::NoPen);
-            painter->setBrush(QColor(Theme::Accent));
+            QColor pillColor(Theme::Accent);
+            pillColor.setAlphaF(0.55 + 0.45 * qBound(0.0, selectAmount, 1.0));
+            painter->setBrush(pillColor);
             painter->drawRoundedRect(pill, PillWidth / 2.0, PillWidth / 2.0);
         }
     }
@@ -393,6 +426,8 @@ void FriendDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     if (hoverAmount > 0.01) {
         painter->setPen(Qt::NoPen);
         painter->setBrush(withAlpha(Theme::SurfaceHover, hoverAmount * 0.9));
+        painter->drawRoundedRect(panel, 8, 8);
+        painter->setBrush(withAlpha(Theme::Accent, 0.10 * qBound(0.0, hoverAmount, 1.0)));
         painter->drawRoundedRect(panel, 8, 8);
     }
 
@@ -813,6 +848,10 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
         painter->setPen(Qt::NoPen);
         painter->setBrush(withAlpha(Theme::SurfaceHover, backdrop));
         painter->drawRoundedRect(panel, 7, 7);
+        if (hoverAmount > 0.01) {
+            painter->setBrush(withAlpha(Theme::Accent, 0.10 * qBound(0.0, hoverAmount, 1.0)));
+            painter->drawRoundedRect(panel, 7, 7);
+        }
     }
 
     // --- accent bar on the selected row -----------------------------------

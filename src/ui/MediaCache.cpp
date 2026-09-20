@@ -247,6 +247,20 @@ QPixmap MediaCache::initialsAvatar(const QString &name, int size)
     return result;
 }
 
+QPixmap MediaCache::brandMark(int size)
+{
+    if (size <= 0)
+        return {};
+
+    static QPixmap source;
+    if (source.isNull())
+        source = QPixmap(QStringLiteral(":/brand/wisp.png"));
+    if (source.isNull())
+        return initialsAvatar(QStringLiteral("W"), size);
+
+    return source.scaled(size, size, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+}
+
 QUrl MediaCache::avatarUrl(const QString &userId, const QString &avatarHash, int size)
 {
     if (!avatarHash.isEmpty()) {

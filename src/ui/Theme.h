@@ -1,62 +1,61 @@
 #pragma once
 
+#include <QColor>
 #include <QString>
+#include <QVector3D>
 
 class QWidget;
 
-// Black and grey, with colour kept for the few things that mean something.
+// Night ink with one seed colour as the decorative note.
 //
-// Every grey below is neutral: equal red, green and blue, so no surface leans
-// warm or cool. Three rules shape the numbers, and they are the reason none of
-// them is round:
+// The animated black hole is the true ground. These values are the glass that
+// sits on it: cool, slightly tinted toward the seed, never pure black or pure
+// white. Status dots stay green / yellow / red because those still mean
+// something.
 //
-//   - Nothing is pure black, and nothing is pure white. White text on #000
-//     bleeds at its edges, an effect called halation, and it is tiring to
-//     read. The darkest surface here is #0a0a0a and the brightest text is
-//     #ededed.
-//   - Depth is built from layers, not from shadows. Each surface is a real
-//     step lighter than the one behind it, so the rail, the sidebar and the
-//     conversation read as separate planes without needing a single border.
-//   - Colour is information, never decoration. The only coloured things left
-//     are the status dots and errors, because green, yellow and red are what
-//     tell you somebody is online, away or busy. Making those grey would look
-//     tidier and say less.
-//
-// Every colour in the app comes from this file, so a future light theme only
-// has to change one place.
+// applySeed() rewrites the live #RRGGBB buffers so every QColor(Theme::Accent)
+// and every stylesheet token picks up the new colour without a rebuild.
 namespace Theme {
 
-// Greys.
-constexpr auto Dark = "#0a0a0a";       // the ground everything sits on
-constexpr auto Light = "#ededed";      // text, not white
-constexpr auto MidGray = "#a3a3a3";    // secondary text
-constexpr auto LightGray = "#d4d4d4";  // text that sits on a bright fill
+extern char Dark[8];
+extern char Light[8];
+extern char MidGray[8];
+extern char LightGray[8];
 
-// The bright one: the selected pill, mentions, links, anything active.
-constexpr auto Accent = "#ededed";
+// The wisp: selected pills, mentions, links, primary buttons.
+extern char Accent[8];
+extern char AccentHover[8];
 
-// The quiet one: embed edges, badges, and states that are passing through,
-// like "connecting". Dim on purpose, so it never competes with Accent.
-constexpr auto Highlight = "#8f8f8f";
+// Secondary colour: connecting, badges, moonlight on idle chrome.
+extern char Highlight[8];
 
-// The only colour left, and only where it carries meaning.
-constexpr auto Green = "#3ba55c";      // online, and the speaking ring
-constexpr auto Yellow = "#d9a441";     // idle
-constexpr auto Red = "#e05561";        // busy, errors, deletions
+extern char Green[8];
+extern char Yellow[8];
+extern char Red[8];
 
-// Surfaces, darkest first. Furthest back to closest, the way Discord stacks
-// them: the rail sits deepest, the conversation nearest.
-constexpr auto SurfaceRail = "#0a0a0a";
-constexpr auto SurfaceSidebar = "#101010";
-constexpr auto SurfaceChat = "#161616";
-constexpr auto SurfaceInput = "#1e1e1e";   // the composer, lifted off the chat
-constexpr auto SurfaceHover = "#2a2a2a";   // the only surface that moves
-constexpr auto Border = "#242424";
+extern char SurfaceRail[8];
+extern char SurfaceSidebar[8];
+extern char SurfaceChat[8];
+extern char SurfaceInput[8];
+extern char SurfaceHover[8];
+extern char Border[8];
 
-constexpr auto TextPrimary = "#ededed";
-constexpr auto TextMuted = "#a3a3a3";
-constexpr auto TextFaint = "#6b6b6b";
-constexpr auto Deleted = "#e05561";
+extern char TextPrimary[8];
+extern char TextMuted[8];
+extern char TextFaint[8];
+extern char Deleted[8];
+
+struct Preset {
+    const char *name;
+    const char *hex;
+};
+
+void applySeed(const QColor &seed);
+QColor seedColor();
+QVector3D holeAccent();
+QVector3D holeDisk();
+QVector3D holeGrade();
+const Preset *presets(int *count);
 
 // Qt stylesheet for the whole application.
 QString applicationStyleSheet();

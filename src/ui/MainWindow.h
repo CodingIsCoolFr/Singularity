@@ -8,12 +8,16 @@
 #include <QElapsedTimer>
 #include <QHash>
 #include <QMainWindow>
+#include <QSet>
 #include <QTimer>
 
 class RestClient;
 class PluginHost;
 
+class AuroraWidget;
 class QPushButton;
+class QSlider;
+class QSplitter;
 class CallView;
 class ChannelDelegate;
 class ChatView;
@@ -21,10 +25,13 @@ class FriendsPage;
 class ImageViewer;
 class QStackedWidget;
 class ProfileDialog;
+class SettingsDialog;
 class QListWidget;
 class QListWidgetItem;
 class QTextEdit;
 class QLabel;
+class QMenuBar;
+class QShowEvent;
 
 // The one window: server rail, channel sidebar, message view, composer.
 class MainWindow : public QMainWindow
@@ -103,6 +110,12 @@ private:
 
     bool eventFilter(QObject *watched, QEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
+    void showEvent(QShowEvent *event) override;
+    void changeEvent(QEvent *event) override;
+#ifdef Q_OS_WIN
+    bool nativeEvent(const QByteArray &eventType, void *message, qintptr *result) override;
+#endif
+    void flashStatus(const QString &text, int ms = 0);
 
     RestClient *m_rest = nullptr;
     GatewayClient *m_gateway = nullptr;
@@ -118,6 +131,12 @@ private:
     QLabel *m_channelTopic = nullptr;
     QLabel *m_typingLabel = nullptr;
     QLabel *m_statusDot = nullptr;
+    QLabel *m_statusMessage = nullptr;
+    QMenuBar *m_menuBar = nullptr;
+    QWidget *m_titleBar = nullptr;
+    QWidget *m_captionDrag = nullptr;
+    QPushButton *m_captionMax = nullptr;
+    QTimer m_statusClearTimer;
     QLabel *m_selfAvatar = nullptr;
     QLabel *m_selfName = nullptr;
     QLabel *m_selfStatus = nullptr;
@@ -128,11 +147,16 @@ private:
     QWidget *m_voicePanel = nullptr;
     QLabel *m_voiceChannelLabel = nullptr;
     ProfileDialog *m_profileDialog = nullptr;
+    SettingsDialog *m_settingsDialog = nullptr;
     ImageViewer *m_imageViewer = nullptr;
     ChannelDelegate *m_channelDelegate = nullptr;
 
     QString m_voiceChannelId;
     QString m_voiceGuildId;
+    // Set when Discord drops the voice socket (often because the gateway is
+    // reconnecting). We stay in the channel locally and join again once the
+    // gateway is Ready. Cleared on a real leave or a confirmed kick.
+    bool m_rejoinVoiceAfterGateway = false;
 
     // The second connection, the one that actually carries sound.
     VoiceConnection *m_voice = nullptr;
@@ -172,6 +196,7 @@ private:
     QString m_watchingUserId;
     QString m_streamKey;
     QString m_streamServerId;
+    QString m_streamChannelId;
     QString m_streamToken;
     QString m_streamEndpoint;
 
@@ -184,10 +209,17 @@ private:
     QSet<QString> m_speakingUsers;
     QPushButton *m_muteButton = nullptr;
     QPushButton *m_deafenButton = nullptr;
+    QSlider *m_outputVolumeSlider = nullptr;
+    QSlider *m_streamVolumeSlider = nullptr;
+    QWidget *m_streamControls = nullptr;
+    QPushButton *m_stopWatchButton = nullptr;
     QLabel *m_voiceState = nullptr;
     CallView *m_callView = nullptr;
+    AuroraWidget *m_aurora = nullptr;
+    QSplitter *m_chatSplitter = nullptr;
 
     void tryStartVoice();
+    void rejoinVoiceIfNeeded();
     void applyVoiceSettings();
 
     QString m_currentGuildId;   // empty means direct messages

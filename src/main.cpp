@@ -10,13 +10,26 @@
 
 #include <QApplication>
 #include <QFontDatabase>
+#include <QIcon>
+#include <QSurfaceFormat>
 
 int main(int argc, char *argv[])
 {
+    QSurfaceFormat format;
+    format.setVersion(3, 3);
+    format.setProfile(QSurfaceFormat::CoreProfile);
+    format.setSwapInterval(1);
+    format.setDepthBufferSize(0);
+    QSurfaceFormat::setDefaultFormat(format);
+
     QApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("Wisp"));
     app.setOrganizationName(QStringLiteral("Wisp"));
     app.setApplicationVersion(QStringLiteral("0.1.0"));
+    app.setWindowIcon(QIcon(QStringLiteral(":/brand/wisp.png")));
+
+    Theme::applySeed(QColor(AppConfig::instance().value(QStringLiteral("appearance/themeSeed"),
+                                                       QStringLiteral("#6ee7d8")).toString()));
     app.setStyleSheet(Theme::applicationStyleSheet());
 
     // The title bar belongs to Windows, not to Qt, so it has to be coloured
@@ -53,7 +66,9 @@ int main(int argc, char *argv[])
     rest.setToken(token);
 
     MainWindow window(&rest, &gateway, &store, &plugins);
+    wlog(QStringLiteral("app"), QStringLiteral("main window constructed"));
     window.show();
+    wlog(QStringLiteral("app"), QStringLiteral("main window show() returned"));
     window.startSession(token);
 
     return app.exec();

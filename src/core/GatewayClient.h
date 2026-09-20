@@ -65,7 +65,10 @@ public:
     // This is the first half of a voice connection: it puts you in the channel
     // so everyone sees you there, and makes Discord send back the voice server
     // details. VoiceConnection does the rest, and carries the sound.
-    void joinVoice(const QString &guildId, const QString &channelId, bool selfMute, bool selfDeaf);
+    // `force` sends even when we already think we are in that channel. Needed
+    // after a gateway drop: Discord has forgotten the call, but the ids match.
+    void joinVoice(const QString &guildId, const QString &channelId, bool selfMute, bool selfDeaf,
+                   bool force = false);
     void leaveVoice(const QString &guildId);
 
     // Asks to watch somebody's shared screen.
@@ -142,6 +145,8 @@ private:
     bool m_awaitingHeartbeatAck = false;
     bool m_wantConnection = false;
     bool m_canResume = false;
+    // Opcode 7: Discord asked us to resume now, not after the usual backoff.
+    bool m_reconnectImmediately = false;
     QSet<QString> m_subscribedGuilds;
 
     // Which channel each guild was subscribed with, so clicking the same

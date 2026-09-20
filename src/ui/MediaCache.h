@@ -38,6 +38,7 @@ public:
     // Picture helpers.
     static QPixmap circular(const QImage &source, int size);
     static QPixmap initialsAvatar(const QString &name, int size);
+    static QPixmap brandMark(int size);
 
     // Discord picture addresses.
     static QUrl avatarUrl(const QString &userId, const QString &avatarHash, int size = 80);

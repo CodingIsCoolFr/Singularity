@@ -60,7 +60,10 @@ public:
     QByteArray encrypt(const QByteArray &opusFrame, quint32 ssrc);
 
     // Unwraps one incoming frame for a given person.
-    QByteArray decrypt(const QString &userId, const QByteArray &frame);
+    //
+    // `video` must match the kind of frame: Discord's library keeps separate
+    // counters for the two, and a picture handed over as sound is refused.
+    QByteArray decrypt(const QString &userId, const QByteArray &frame, bool video = false);
 
 signals:
     // Raised when the library reports the group has gone wrong. The right

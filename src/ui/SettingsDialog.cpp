@@ -12,10 +12,12 @@
 #include <QAudioDevice>
 #include <QCheckBox>
 #include <QClipboard>
+#include <QColorDialog>
 #include <QComboBox>
 #include <QDesktopServices>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QListWidget>
@@ -76,6 +78,7 @@ SettingsDialog::SettingsDialog(MessageStore *store, RestClient *rest, PluginHost
     , m_meter(new AudioMeter(this))
 {
     setWindowTitle(QStringLiteral("Settings"));
+    setAccessibleName(QStringLiteral("Settings"));
     resize(900, 640);
 
     auto *root = new QHBoxLayout(this);
@@ -316,8 +319,10 @@ QWidget *SettingsDialog::buildVoicePage()
 
     m_inputVolume = makeSlider(0, 200, config.value(QStringLiteral("voice/inputVolume"), 100).toInt(), page);
     m_outputVolume = makeSlider(0, 200, config.value(QStringLiteral("voice/outputVolume"), 100).toInt(), page);
+    m_streamVolume = makeSlider(0, 200, config.value(QStringLiteral("voice/streamVolume"), 80).toInt(), page);
     levels->addRow(QStringLiteral("Input volume"), m_inputVolume);
     levels->addRow(QStringLiteral("Output volume"), m_outputVolume);
+    levels->addRow(QStringLiteral("Screen share volume"), m_streamVolume);
     layout->addLayout(levels);
 
     connect(m_inputVolume, &QSlider::valueChanged, this, [this](int value) {
@@ -326,6 +331,10 @@ QWidget *SettingsDialog::buildVoicePage()
     });
     connect(m_outputVolume, &QSlider::valueChanged, this, [this](int value) {
         AppConfig::instance().setValue(QStringLiteral("voice/outputVolume"), value);
+        emit voiceSettingsChanged();
+    });
+    connect(m_streamVolume, &QSlider::valueChanged, this, [this](int value) {
+        AppConfig::instance().setValue(QStringLiteral("voice/streamVolume"), value);
         emit voiceSettingsChanged();
     });
 
@@ -455,6 +464,91 @@ QWidget *SettingsDialog::buildAppearancePage()
 
     AppConfig &config = AppConfig::instance();
 
+    layout->addWidget(groupTitle(QStringLiteral("THEME"), page));
+    layout->addWidget(hint(QStringLiteral("One colour tints the black hole, the glass, and every accent at once."),
+                           page));
+
+    auto *chipRow = new QWidget(page);
+    auto *chipLayout = new QHBoxLayout(chipRow);
+    chipLayout->setContentsMargins(0, 4, 0, 10);
+    chipLayout->setSpacing(8);
+
+    const QString currentSeed = config.value(QStringLiteral("appearance/themeSeed"),
+                                             QStringLiteral("#6ee7d8")).toString();
+
+    int presetCount = 0;
+    const Theme::Preset *presets = Theme::presets(&presetCount);
+
+    auto isPresetHex = [presets, presetCount](const QString &hex) {
+        for (int i = 0; i < presetCount; ++i) {
+            if (QString::compare(hex, QLatin1String(presets[i].hex), Qt::CaseInsensitive) == 0)
+                return true;
+        }
+        return false;
+    };
+
+    auto *customChip = new QPushButton(chipRow);
+    customChip->setFixedSize(36, 36);
+    customChip->setCursor(Qt::PointingHandCursor);
+    customChip->setToolTip(QStringLiteral("Custom"));
+    customChip->setVisible(false);
+
+    auto restyleChips = [chipRow, customChip, isPresetHex](const QString &selectedHex) {
+        const bool customActive = !selectedHex.isEmpty() && !isPresetHex(selectedHex);
+        customChip->setVisible(customActive);
+        customChip->setProperty("seed", customActive ? selectedHex : QString());
+
+        const auto buttons = chipRow->findChildren<QPushButton *>();
+        for (QPushButton *btn : buttons) {
+            const QString hex = btn->property("seed").toString();
+            if (hex.isEmpty())
+                continue;
+            const bool selected = QString::compare(selectedHex, hex, Qt::CaseInsensitive) == 0;
+            btn->setStyleSheet(QStringLiteral(
+                "QPushButton { background: %1; border: 2px solid %2; border-radius: 18px; padding: 0; min-width: 36px; }"
+                "QPushButton:hover { border-color: #eef4fb; }")
+                                   .arg(hex, selected ? QStringLiteral("#eef4fb")
+                                                      : QStringLiteral("rgba(238, 244, 251, 70)")));
+        }
+    };
+
+    auto applyHex = [this, restyleChips](const QString &hex) {
+        AppConfig::instance().setValue(QStringLiteral("appearance/themeSeed"), hex);
+        restyleChips(hex);
+        emit appearanceChanged();
+    };
+
+    for (int i = 0; i < presetCount; ++i) {
+        auto *chip = new QPushButton(chipRow);
+        chip->setFixedSize(36, 36);
+        chip->setCursor(Qt::PointingHandCursor);
+        chip->setToolTip(QLatin1String(presets[i].name));
+        chip->setProperty("seed", QLatin1String(presets[i].hex));
+        chipLayout->addWidget(chip);
+        connect(chip, &QPushButton::clicked, this, [chip, applyHex]() {
+            applyHex(chip->property("seed").toString());
+        });
+    }
+
+    chipLayout->addWidget(customChip);
+    connect(customChip, &QPushButton::clicked, this, [customChip, applyHex]() {
+        const QString hex = customChip->property("seed").toString();
+        if (!hex.isEmpty())
+            applyHex(hex);
+    });
+
+    auto *custom = new QPushButton(QStringLiteral("Custom…"), chipRow);
+    connect(custom, &QPushButton::clicked, this, [this, applyHex]() {
+        const QColor picked = QColorDialog::getColor(Theme::seedColor(), this, QStringLiteral("Theme colour"));
+        if (!picked.isValid())
+            return;
+        applyHex(picked.name(QColor::HexRgb));
+    });
+    chipLayout->addWidget(custom);
+    chipLayout->addStretch(1);
+    layout->addWidget(chipRow);
+    restyleChips(currentSeed);
+
     layout->addWidget(groupTitle(QStringLiteral("MESSAGES"), page));
 
     auto *form = new QFormLayout;
@@ -506,6 +600,14 @@ QWidget *SettingsDialog::buildAppearancePage()
         emit appearanceChanged();
     });
     layout->addWidget(playGifs);
+
+    auto *playSky = new QCheckBox(QStringLiteral("Spin the black hole"), page);
+    playSky->setChecked(config.value(QStringLiteral("appearance/animatedBackground"), true).toBool());
+    connect(playSky, &QCheckBox::toggled, this, [this](bool on) {
+        AppConfig::instance().setValue(QStringLiteral("appearance/animatedBackground"), on);
+        emit appearanceChanged();
+    });
+    layout->addWidget(playSky);
 
     layout->addStretch(1);
     return page;

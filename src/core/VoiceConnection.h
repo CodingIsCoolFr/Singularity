@@ -11,6 +11,7 @@
 #include <QObject>
 #include <QSet>
 #include <QStringList>
+#include <QThread>
 #include <QTimer>
 #include <QUdpSocket>
 #include <QWebSocket>
@@ -52,8 +53,13 @@ public:
     ~VoiceConnection() override;
 
     // Called once both halves have arrived from the main gateway.
+    //
+    // `daveGroupId` is the MLS group the call uses. Voice channels use the
+    // channel id; a Go Live stream uses the stream's media-session id, which
+    // is one less than its rtc server id. Zero means "use the channel id".
     void connectToVoice(const QString &guildId, const QString &channelId, const QString &userId,
-                        const QString &sessionId, const QString &token, const QString &endpoint);
+                        const QString &sessionId, const QString &token, const QString &endpoint,
+                        quint64 daveGroupId = 0);
     void disconnectFromVoice();
 
     // Watching rather than taking part.
@@ -64,6 +70,12 @@ public:
     // microphone: opening one here would capture the sound of the call twice.
     void setViewerOnly(bool viewerOnly) { m_viewerOnly = viewerOnly; }
     bool isViewerOnly() const { return m_viewerOnly; }
+
+    // A Go Live viewer has no speakers of its own. Its sound is mixed into
+    // the call underneath, so two devices are not fighting over the same
+    // headset — which is what made shares blast and the voice sound late.
+    void setAudioHost(VoiceConnection *host) { m_audioHost = host; }
+    void offerExternalPcm(const QByteArray &pcm);
 
     State state() const { return m_state; }
     QString channelId() const { return m_channelId; }
@@ -154,23 +166,46 @@ private:
     // Encryption. Both are the "rtpsize" variants Discord offers today.
     QByteArray encryptFrame(const QByteArray &rtpHeader, const QByteArray &opusFrame);
     bool decryptFrame(const QByteArray &packet, QByteArray &opusFrame, quint32 &ssrc,
-                      bool *marker = nullptr);
+                      bool *marker = nullptr, quint16 *sequence = nullptr);
 
     // One person's pictures on their way to the screen.
     //
-    // Each needs its own decoder, because a decoder holds the earlier frames
-    // that later ones are described as changes from, and its own half built
-    // picture, because one picture spans many packets.
+    // The decoder itself lives on the video thread. What stays here is the
+    // half-built picture and the few packets that arrived out of order.
+    struct HeldPacket {
+        QByteArray payload;
+        bool endOfFrame = false;
+    };
+
     struct VideoStream
     {
-        VideoDecoder decoder;
         QByteArray assembling;
+        QHash<quint16, HeldPacket> held;
+        quint16 nextSeq = 0;
+        bool haveSeq = false;
+        bool gap = false;
+        bool loggedFirst = false;
+        qint64 lastPliMs = 0;
         int packets = 0;
         int frames = 0;
         int dropped = 0;
+        int hungry = 0;
     };
 
-    void handleVideoPacket(quint32 ssrc, const QByteArray &payload, bool endOfFrame);
+    void handleVideoPacket(quint32 ssrc, const QByteArray &payload, bool endOfFrame,
+                           quint16 sequence);
+    void ingestVideoPayload(VideoStream &stream, quint32 ssrc, const QString &userId,
+                            const QByteArray &payload, bool endOfFrame);
+    void finishVideoPicture(VideoStream &stream, quint32 ssrc, const QString &userId);
+    void flushHeldVideo(VideoStream &stream, quint32 ssrc, const QString &userId);
+    void skipLostVideo(VideoStream &stream, quint32 ssrc, const QString &userId);
+
+    // Asks the sender for a keyframe so a stream we joined in the middle can
+    // actually produce a picture, rather than waiting for the next one.
+    void sendPictureLossIndication(quint32 mediaSsrc);
+
+    // Picks the highest-quality layer we were offered and asks only for that.
+    void refreshVideoWants();
 
     // Held by pointer because a decoder cannot be copied, and a QHash copies
     // what it stores.
@@ -178,7 +213,16 @@ private:
     void clearVideoStreams();
 
     QHash<quint32, QString> m_videoSsrcToUser;
+    QHash<quint32, int> m_videoRid;
+    QHash<QString, quint32> m_bestVideoSsrc;
     QHash<quint32, VideoStream *> m_videoStreams;
+    QSet<quint32> m_rtxSsrcs;
+    QThread m_videoThread;
+    VideoDecodeWorker *m_videoWorker = nullptr;
+    QStringList m_experiments;
+    quint64 m_daveGroupId = 0;
+    quint8 m_videoPayloadType = 101;
+    quint8 m_rtxPayloadType = 102;
 
     void playDecoded(quint32 ssrc, const QByteArray &frame);
 
@@ -195,6 +239,8 @@ private:
 
     IncomingStream *streamFor(quint32 ssrc);
     void onPlayTick();
+    void catchUpQueues();
+    QByteArray mixWaitingStreams();
 
     QHash<quint32, IncomingStream> m_streams;
     QTimer m_playTimer;
@@ -261,8 +307,13 @@ private:
     int m_statOpenFailed = 0;    // someone else's words we could not open
     int m_statNoOwner = 0;       // sound from an ssrc we cannot name
     int m_statUndecryptable = 0; // transport layer refused the packet
+    int m_statVideoPackets = 0;  // UDP packets that looked like video
+    int m_statVideoDaveFailed = 0;
+    int m_statVideoUnknownSsrc = 0;
 
     bool m_viewerOnly = false;
+    VoiceConnection *m_audioHost = nullptr;
+    QByteArray m_externalPcm;
     bool m_muted = false;
     bool m_deafened = false;
     bool m_speaking = false;

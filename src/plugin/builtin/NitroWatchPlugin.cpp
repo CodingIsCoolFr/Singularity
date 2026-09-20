@@ -8,7 +8,9 @@
 #include <QCheckBox>
 #include <QGuiApplication>
 #include <QHBoxLayout>
+#include <QJsonArray>
 #include <QLabel>
+#include <QMainWindow>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScreen>
@@ -34,7 +36,9 @@ bool isOfficialGiftHost(const QString &host)
         || lower == QLatin1String("discord.com")
         || lower == QLatin1String("www.discord.com")
         || lower == QLatin1String("discordapp.com")
-        || lower == QLatin1String("www.discordapp.com");
+        || lower == QLatin1String("www.discordapp.com")
+        || lower == QLatin1String("ptb.discord.com")
+        || lower == QLatin1String("canary.discord.com");
 }
 
 // Any web address in a piece of text, taken whole.
@@ -115,10 +119,10 @@ QStringList NitroWatchPlugin::findGiftCodes(const QString &text)
             // The whole path is the code.
             if (path.startsWith(QLatin1Char('/')))
                 code = path.mid(1);
-        } else {
-            const QLatin1String prefix("/gifts/");
-            if (path.startsWith(prefix, Qt::CaseInsensitive))
-                code = path.mid(prefix.size());
+        } else if (path.startsWith(QLatin1String("/gifts/"), Qt::CaseInsensitive)) {
+            code = path.mid(7);
+        } else if (path.startsWith(QLatin1String("/gift/"), Qt::CaseInsensitive)) {
+            code = path.mid(6);
         }
 
         if (code.endsWith(QLatin1Char('/')))
@@ -133,6 +137,39 @@ QStringList NitroWatchPlugin::findGiftCodes(const QString &text)
     }
 
     return codes;
+}
+
+QString NitroWatchPlugin::messageText(const QJsonObject &data)
+{
+    QStringList parts;
+    const auto take = [&](const QJsonObject &obj, const QString &key) {
+        const QString s = obj.value(key).toString();
+        if (!s.isEmpty())
+            parts << s;
+    };
+
+    take(data, QStringLiteral("content"));
+
+    for (const QJsonValue &v : data.value(QStringLiteral("embeds")).toArray()) {
+        const QJsonObject embed = v.toObject();
+        take(embed, QStringLiteral("url"));
+        take(embed, QStringLiteral("title"));
+        take(embed, QStringLiteral("description"));
+        for (const QJsonValue &f : embed.value(QStringLiteral("fields")).toArray()) {
+            const QJsonObject field = f.toObject();
+            take(field, QStringLiteral("name"));
+            take(field, QStringLiteral("value"));
+        }
+    }
+
+    for (const QJsonValue &row : data.value(QStringLiteral("components")).toArray()) {
+        const QJsonObject rowObj = row.toObject();
+        take(rowObj, QStringLiteral("url"));
+        for (const QJsonValue &child : rowObj.value(QStringLiteral("components")).toArray())
+            take(child.toObject(), QStringLiteral("url"));
+    }
+
+    return parts.join(QLatin1Char('\n'));
 }
 
 void NitroWatchPlugin::onLoad(PluginContext *context)
@@ -179,6 +216,9 @@ void NitroWatchPlugin::selfCheck()
          "aBcDeF1234567890,ZyXwVu0987654321"},
         // A full stop ending the sentence, not the link.
         {"here: https://discord.gift/aBcDeF1234567890.", "aBcDeF1234567890"},
+        // Official client paths that are not discord.gift.
+        {"https://discord.com/gift/aBcDeF1234567890", "aBcDeF1234567890"},
+        {"https://ptb.discord.com/gifts/aBcDeF1234567890", "aBcDeF1234567890"},
     };
 
     QStringList failures;
@@ -190,6 +230,19 @@ void NitroWatchPlugin::selfCheck()
         if (actual != want) {
             failures << QStringLiteral("\"%1\" gave \"%2\", wanted \"%3\"")
                             .arg(QString::fromUtf8(test.text), actual, want);
+        }
+    }
+
+    {
+        QJsonObject msg;
+        msg.insert(QStringLiteral("content"), QString());
+        QJsonObject embed;
+        embed.insert(QStringLiteral("url"), QStringLiteral("https://discord.gift/aBcDeF1234567890"));
+        msg.insert(QStringLiteral("embeds"), QJsonArray{embed});
+        const QStringList got = findGiftCodes(messageText(msg));
+        if (got.join(QLatin1Char(',')) != QLatin1String("aBcDeF1234567890")) {
+            failures << QStringLiteral("empty content with gift embed url was missed (got \"%1\")")
+                            .arg(got.join(QLatin1Char(',')));
         }
     }
 
@@ -228,16 +281,19 @@ void NitroWatchPlugin::onGatewayEvent(const QString &eventType, const QJsonObjec
 {
     if (eventType != QLatin1String("MESSAGE_CREATE") && eventType != QLatin1String("MESSAGE_UPDATE"))
         return;
+    if (!watchEnabled())
+        return;
 
-    const QString content = data.value(QStringLiteral("content")).toString();
-    if (content.isEmpty() || !watchEnabled())
+    // Native gift cards often have empty content; the link is on the embed.
+    const QString text = messageText(data);
+    if (text.isEmpty())
         return;
 
     const QString channelId = data.value(QStringLiteral("channel_id")).toString();
     const QString authorId =
         data.value(QStringLiteral("author")).toObject().value(QStringLiteral("id")).toString();
 
-    const QStringList codes = m_matcherTrusted ? findGiftCodes(content) : QStringList();
+    const QStringList codes = m_matcherTrusted ? findGiftCodes(text) : QStringList();
 
     for (const QString &code : codes) {
         // A gift posted twice, or edited afterwards, must not raise two alerts.
@@ -253,7 +309,7 @@ void NitroWatchPlugin::onGatewayEvent(const QString &eventType, const QJsonObjec
 
     // Nothing real in this message. If something in it is dressed up as a
     // gift, say so once, because that is the actual danger here.
-    const QRegularExpressionMatch fake = lookalikePattern().match(content);
+    const QRegularExpressionMatch fake = lookalikePattern().match(text);
     if (fake.hasMatch()) {
         const QUrl url(fake.captured());
         if (!url.host().isEmpty() && !isOfficialGiftHost(url.host()))
@@ -291,10 +347,22 @@ void NitroWatchPlugin::offer(const QString &code, const QString &fromUserId, con
     if (m_alert)
         m_alert->deleteLater();
 
-    auto *alert = new QWidget(nullptr, Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
+    QWidget *parent = nullptr;
+    for (QWidget *w : QApplication::topLevelWidgets()) {
+        if (qobject_cast<QMainWindow *>(w) && w->isVisible()) {
+            parent = w;
+            break;
+        }
+    }
+
+    // Dialog + a real owner, not a parentless Qt::Tool window. Those get
+    // created on Windows and then never appear.
+    auto *alert = new QWidget(parent, Qt::Dialog | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
     m_alert = alert;
     alert->setAttribute(Qt::WA_DeleteOnClose);
     alert->setAttribute(Qt::WA_StyledBackground, true);
+    alert->setWindowModality(Qt::NonModal);
+    alert->setWindowTitle(QStringLiteral("Nitro gift"));
     alert->setFixedWidth(340);
     alert->setStyleSheet(QStringLiteral("background-color: %1; border: 1px solid %2; border-radius: 10px;")
                              .arg(QLatin1String(Theme::SurfaceInput), QLatin1String(Theme::Border)));
@@ -341,15 +409,19 @@ void NitroWatchPlugin::offer(const QString &code, const QString &fromUserId, con
     });
     QObject::connect(ignore, &QPushButton::clicked, alert, &QWidget::close);
 
-    // Top right of the screen, clear of the window.
+    // Sit on the Wisp window if we have one, otherwise the primary screen.
     alert->adjustSize();
-    if (QScreen *screen = QGuiApplication::primaryScreen()) {
+    if (parent) {
+        const QPoint topRight = parent->mapToGlobal(QPoint(parent->width() - 24, 24));
+        alert->move(topRight.x() - alert->width(), topRight.y());
+    } else if (QScreen *screen = QGuiApplication::primaryScreen()) {
         const QRect area = screen->availableGeometry();
         alert->move(area.right() - alert->width() - 24, area.top() + 24);
     }
 
     alert->show();
     alert->raise();
+    alert->activateWindow();
 
     // Gone after a minute if nobody touches it, so a missed gift does not
     // leave a panel sitting there for the rest of the day.

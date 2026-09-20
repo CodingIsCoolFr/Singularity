@@ -2,8 +2,11 @@
 
 #include "core/Logger.h"
 
+#include <cstring>
+
 extern "C" {
 #include <libavcodec/avcodec.h>
+#include <libavutil/error.h>
 #include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
 }
@@ -28,14 +31,14 @@ bool VideoDecoder::open()
     if (!m_context)
         return false;
 
-    // A call is live, so being a few milliseconds late matters more than
-    // being perfect. These let the decoder work on several frames at once and
-    // carry on through damage rather than stopping at it.
-    m_context->thread_count = 0;   // as many as the machine has
-    m_context->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+    // Live video: one frame in, one frame out. Frame threading holds pictures
+    // back, and CHUNKS tells FFmpeg to invent pixels from truncated NALs —
+    // which is the green/purple smear a damaged share turns into.
+    m_context->thread_count = 1;
+    m_context->thread_type = FF_THREAD_SLICE;
     m_context->flags |= AV_CODEC_FLAG_LOW_DELAY;
-    m_context->flags2 |= AV_CODEC_FLAG2_FAST | AV_CODEC_FLAG2_CHUNKS;
-    m_context->err_recognition = 0;
+    m_context->flags2 = 0;
+    m_context->err_recognition = AV_EF_CRCCHECK | AV_EF_CAREFUL;
 
     if (avcodec_open2(m_context, codec, nullptr) < 0) {
         wlog(QStringLiteral("video"), QStringLiteral("the H.264 decoder refused to start"));
@@ -85,15 +88,45 @@ bool VideoDecoder::decode(const QByteArray &annexB, QImage &out)
         return false;
     std::memcpy(m_packet->data, annexB.constData(), static_cast<size_t>(annexB.size()));
 
-    const int sent = avcodec_send_packet(m_context, m_packet);
+    int sent = avcodec_send_packet(m_context, m_packet);
+    if (sent == AVERROR(EAGAIN)) {
+        avcodec_receive_frame(m_context, m_frame);
+        av_frame_unref(m_frame);
+        sent = avcodec_send_packet(m_context, m_packet);
+    }
     av_packet_unref(m_packet);
 
     if (sent < 0 && sent != AVERROR(EAGAIN)) {
         ++m_hungry;
+        if (m_hungry == 1 || m_hungry == 30) {
+            char err[128] = {};
+            av_strerror(sent, err, sizeof(err));
+            wlog(QStringLiteral("video"),
+                 QStringLiteral("decoder refused a unit (%1): %2")
+                     .arg(m_hungry)
+                     .arg(QString::fromLatin1(err)));
+        }
         return false;
     }
 
-    if (avcodec_receive_frame(m_context, m_frame) < 0) {
+    bool got = false;
+    while (true) {
+        const int received = avcodec_receive_frame(m_context, m_frame);
+        if (received < 0)
+            break;
+#ifdef AV_FRAME_FLAG_CORRUPT
+        if (m_frame->flags & AV_FRAME_FLAG_CORRUPT) {
+            av_frame_unref(m_frame);
+            continue;
+        }
+#endif
+        got = toImage(out);
+        av_frame_unref(m_frame);
+        if (!got)
+            continue;
+    }
+
+    if (!got) {
         // Normal at the start of a stream and after loss: the decoder is
         // waiting for a keyframe before it can draw anything at all.
         ++m_hungry;
@@ -101,9 +134,7 @@ bool VideoDecoder::decode(const QByteArray &annexB, QImage &out)
     }
 
     m_hungry = 0;
-    const bool ok = toImage(out);
-    av_frame_unref(m_frame);
-    return ok;
+    return true;
 }
 
 bool VideoDecoder::toImage(QImage &out)
@@ -120,7 +151,7 @@ bool VideoDecoder::toImage(QImage &out)
             sws_freeContext(m_scaler);
 
         m_scaler = sws_getContext(width, height, static_cast<AVPixelFormat>(m_frame->format),
-                                  width, height, AV_PIX_FMT_RGB32, SWS_BILINEAR, nullptr, nullptr,
+                                  width, height, AV_PIX_FMT_RGB32, SWS_FAST_BILINEAR, nullptr, nullptr,
                                   nullptr);
         m_scalerWidth = width;
         m_scalerHeight = height;
@@ -137,4 +168,60 @@ bool VideoDecoder::toImage(QImage &out)
 
     sws_scale(m_scaler, m_frame->data, m_frame->linesize, 0, height, planes, strides);
     return true;
+}
+
+VideoDecodeWorker::VideoDecodeWorker(QObject *parent)
+    : QObject(parent)
+{
+}
+
+VideoDecodeWorker::~VideoDecodeWorker()
+{
+    reset();
+}
+
+void VideoDecodeWorker::submit(quint32 ssrc, const QString &userId, const QByteArray &annexB)
+{
+    if (annexB.isEmpty())
+        return;
+    m_latest.insert(ssrc, {userId, annexB});
+    if (m_busy)
+        return;
+    pump();
+}
+
+void VideoDecodeWorker::drop(quint32 ssrc)
+{
+    m_latest.remove(ssrc);
+    delete m_decoders.take(ssrc);
+}
+
+void VideoDecodeWorker::reset()
+{
+    m_latest.clear();
+    qDeleteAll(m_decoders);
+    m_decoders.clear();
+}
+
+void VideoDecodeWorker::pump()
+{
+    m_busy = true;
+    while (!m_latest.isEmpty()) {
+        const quint32 ssrc = m_latest.cbegin().key();
+        const Job job = m_latest.take(ssrc);
+
+        VideoDecoder *&decoder = m_decoders[ssrc];
+        if (!decoder)
+            decoder = new VideoDecoder;
+        if (!decoder->isOpen() && !decoder->open())
+            continue;
+
+        QImage image;
+        if (!decoder->decode(job.annexB, image)) {
+            emit decodeFailed(ssrc, decoder->hungryFrames());
+            continue;
+        }
+        emit frameReady(ssrc, job.userId, image);
+    }
+    m_busy = false;
 }

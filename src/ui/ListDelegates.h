@@ -56,6 +56,7 @@ private:
     void scheduleRepaint() const;
 
     mutable bool m_repaintQueued = false;
+    mutable QHash<const void *, QHash<int, qreal>> m_velocity;
 };
 
 // The server rail on the far left.

@@ -119,6 +119,7 @@ FriendsPage::FriendsPage(MessageStore *store, RestClient *rest, QWidget *parent)
     m_list->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_list->setSelectionMode(QAbstractItemView::NoSelection);
     m_list->setStyleSheet(QStringLiteral("QListWidget { background: transparent; border: none; }"));
+    m_list->viewport()->setAutoFillBackground(false);
     // Rows are drawn, not built, so a few hundred friends stay smooth.
     m_list->setUniformItemSizes(true);
 

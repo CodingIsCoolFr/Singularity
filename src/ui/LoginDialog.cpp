@@ -53,17 +53,17 @@ LoginDialog::LoginDialog(RestClient *rest, QWidget *parent)
     , m_rest(rest)
 {
     setWindowTitle(QStringLiteral("Wisp - sign in"));
-    setMinimumWidth(460);
+    setMinimumWidth(500);
 
     auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(28, 24, 28, 24);
-    layout->setSpacing(12);
+    layout->setContentsMargins(36, 32, 36, 28);
+    layout->setSpacing(14);
 
     auto *title = new QLabel(QStringLiteral("Wisp"), this);
-    title->setStyleSheet(QStringLiteral("font-size: 28px; font-weight: 600; color: %1;")
+    title->setStyleSheet(QStringLiteral("font-size: 34px; font-weight: 600; letter-spacing: 0.4px; color: %1;")
                              .arg(QLatin1String(Theme::Accent)));
     layout->addWidget(title);
-    layout->addWidget(makeHint(QStringLiteral("A small Discord client."), this));
+    layout->addWidget(makeHint(QStringLiteral("A Discord client."), this));
 
     auto *warning = new QLabel(
         QStringLiteral("Discord does not allow third party clients on a normal account. "

@@ -362,7 +362,7 @@ QByteArray DaveSession::encrypt(const QByteArray &opusFrame, quint32 ssrc)
 #endif
 }
 
-QByteArray DaveSession::decrypt(const QString &userId, const QByteArray &frame)
+QByteArray DaveSession::decrypt(const QString &userId, const QByteArray &frame, bool video)
 {
 #ifdef WISP_HAVE_DAVE
     const auto it = m_decryptors.constFind(userId);
@@ -370,15 +370,16 @@ QByteArray DaveSession::decrypt(const QString &userId, const QByteArray &frame)
         return {};
 
     auto *decryptor = static_cast<DAVEDecryptorHandle>(it.value());
+    const DAVEMediaType media = video ? DAVE_MEDIA_TYPE_VIDEO : DAVE_MEDIA_TYPE_AUDIO;
 
     const size_t room = daveDecryptorGetMaxPlaintextByteSize(
-        decryptor, DAVE_MEDIA_TYPE_AUDIO, static_cast<size_t>(frame.size()));
+        decryptor, media, static_cast<size_t>(frame.size()));
 
     QByteArray out(static_cast<int>(room), '\0');
     size_t written = 0;
 
     const DAVEDecryptorResultCode code =
-        daveDecryptorDecrypt(decryptor, DAVE_MEDIA_TYPE_AUDIO,
+        daveDecryptorDecrypt(decryptor, media,
                              reinterpret_cast<const uint8_t *>(frame.constData()),
                              static_cast<size_t>(frame.size()),
                              reinterpret_cast<uint8_t *>(out.data()), room, &written);
@@ -389,7 +390,7 @@ QByteArray DaveSession::decrypt(const QString &userId, const QByteArray &frame)
     out.resize(static_cast<int>(written));
     return out;
 #else
-    Q_UNUSED(userId) Q_UNUSED(frame)
+    Q_UNUSED(userId) Q_UNUSED(frame) Q_UNUSED(video)
     return {};
 #endif
 }

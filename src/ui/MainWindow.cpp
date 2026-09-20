@@ -7,6 +7,7 @@
 #include "ui/ChatView.h"
 #include "ui/FriendsPage.h"
 #include "ui/ImageViewer.h"
+#include "ui/AuroraWidget.h"
 #include "ui/CallView.h"
 #include "ui/ListDelegates.h"
 #include "ui/LogDialog.h"
@@ -22,6 +23,8 @@
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QCursor>
+#include <QEvent>
+#include <QIcon>
 #include <QMessageBox>
 #include <QDesktopServices>
 #include <QFrame>
@@ -37,10 +40,21 @@
 #include <QRegularExpression>
 #include <QStackedWidget>
 #include <QScrollBar>
+#include <QSlider>
+#include <QSplitter>
+#include <QShowEvent>
+#include <QSizePolicy>
 #include <QStatusBar>
 #include <QTextEdit>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QWindow>
+
+#ifdef Q_OS_WIN
+#    include <dwmapi.h>
+#    include <windows.h>
+#    include <windowsx.h>
+#endif
 
 namespace {
 
@@ -51,8 +65,8 @@ constexpr int FolderRole = WispRoles::Folder;
 constexpr int FolderOpenRole = WispRoles::FolderOpen;
 
 constexpr int GuildIconPixels = 48;
-constexpr int RailWidth = 72;
-constexpr int SidebarWidth = 240;
+constexpr int RailWidth = 84;
+constexpr int SidebarWidth = 256;
 
 // Discord asks clients to repeat the typing signal at most every 8 seconds.
 constexpr qint64 TypingIntervalMs = 8000;
@@ -140,6 +154,22 @@ QString elapsedWords(qint64 seconds)
     return QStringLiteral("%1 days").arg(hours / 24);
 }
 
+QPushButton *captionButton(QWidget *parent, const QString &name, const QString &text)
+{
+    auto *button = new QPushButton(text, parent);
+    button->setObjectName(name);
+    button->setFlat(true);
+    button->setFocusPolicy(Qt::NoFocus);
+    button->setFixedSize(46, 36);
+    button->setCursor(Qt::ArrowCursor);
+    return button;
+}
+
+bool containsGlobal(const QWidget *widget, const QPoint &global)
+{
+    return widget && widget->isVisible() && widget->rect().contains(widget->mapFromGlobal(global));
+}
+
 } // namespace
 
 MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *store, PluginHost *plugins,
@@ -152,10 +182,19 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     , m_voice(new VoiceConnection(this))
 {
     setWindowTitle(QStringLiteral("Wisp"));
-    resize(1280, 820);
+    setWindowIcon(QIcon(QStringLiteral(":/brand/wisp.png")));
+    resize(1440, 900);
+    setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
 
     buildUi();
     buildMenu();
+    applyAppearance();
+
+    m_statusClearTimer.setSingleShot(true);
+    connect(&m_statusClearTimer, &QTimer::timeout, this, [this]() {
+        if (m_statusMessage)
+            m_statusMessage->clear();
+    });
 
     m_typingClearTimer.setSingleShot(true);
     connect(&m_typingClearTimer, &QTimer::timeout, this, [this]() { setTypingHint(QString()); });
@@ -164,10 +203,10 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     connect(m_gateway, &GatewayClient::dispatch, this, &MainWindow::onGatewayDispatch);
     connect(m_gateway, &GatewayClient::stateChanged, this, &MainWindow::onGatewayState);
     connect(m_gateway, &GatewayClient::logLine, this, [this](const QString &line) {
-        statusBar()->showMessage(line, 6000);
+        flashStatus(line, 6000);
     });
     connect(m_gateway, &GatewayClient::fatalAuthError, this, [this]() {
-        statusBar()->showMessage(QStringLiteral("Discord refused this session. Log out and sign in again."), 0);
+        flashStatus(QStringLiteral("Discord refused this session. Log out and sign in again."), 0);
 
         if (m_selfStatus) {
             m_selfStatus->setText(QStringLiteral("signed out"));
@@ -187,7 +226,7 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
 
     connect(m_plugins, &PluginHost::repaintRequested, this, [this]() { renderChannel(); });
     connect(m_plugins, &PluginHost::pluginLogged, this, [this](const QString &id, const QString &line) {
-        statusBar()->showMessage(QStringLiteral("[%1] %2").arg(id, line), 5000);
+        flashStatus(QStringLiteral("[%1] %2").arg(id, line), 5000);
     });
 
     connect(m_store, &MessageStore::channelHistoryChanged, this, [this](const QString &channelId) {
@@ -218,24 +257,27 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     connect(m_voice, &VoiceConnection::videoFrame, this,
             [this](const QString &userId, const QImage &image) {
                 if (m_callView)
-                    m_callView->setFrame(userId, image);
+                    m_callView->setFrame(userId, image, CallView::Surface::Camera);
             });
 
     // The second connection, used only for watching somebody's shared screen.
     m_streamVoice = new VoiceConnection(this);
     m_streamVoice->setViewerOnly(true);
+    m_streamVoice->setAudioHost(m_voice);
+    m_streamVoice->setOutputVolume(
+        AppConfig::instance().value(QStringLiteral("voice/streamVolume"), 80).toInt());
 
     connect(m_streamVoice, &VoiceConnection::videoFrame, this,
             [this](const QString &, const QImage &image) {
                 // A stream carries one picture, and it belongs to whoever we
                 // asked to watch rather than to the sender named inside it.
                 if (m_callView && !m_watchingUserId.isEmpty())
-                    m_callView->setFrame(m_watchingUserId, image);
+                    m_callView->setFrame(m_watchingUserId, image, CallView::Surface::Share);
             });
 
     connect(m_streamVoice, &VoiceConnection::failed, this, [this](const QString &reason) {
         wlog(QStringLiteral("stream"), QStringLiteral("stream connection failed: %1").arg(reason));
-        statusBar()->showMessage(QStringLiteral("Could not watch that stream: %1").arg(reason), 6000);
+        flashStatus(QStringLiteral("Could not watch that stream: %1").arg(reason), 6000);
     });
 
     connect(m_voice, &VoiceConnection::videoAvailable, this,
@@ -243,7 +285,7 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
                 if (!m_callView)
                     return;
                 if (!available)
-                    m_callView->dropFrames(userId);
+                    m_callView->dropFrames(userId, CallView::Surface::Camera);
                 m_callView->refresh();
             });
 
@@ -257,14 +299,14 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         case VoiceConnection::State::Connected:
             m_voiceState->setText(QStringLiteral("Voice connected"));
             m_voiceRetries = 0;   // a good connection clears the slate
-            statusBar()->showMessage(QStringLiteral("Voice connected and encrypted."), 5000);
+            flashStatus(QStringLiteral("Voice connected and encrypted."), 5000);
             break;
         case VoiceConnection::State::Failed:      m_voiceState->setText(QStringLiteral("Voice failed")); break;
         }
     });
 
     connect(m_voice, &VoiceConnection::failed, this, [this](const QString &reason) {
-        statusBar()->showMessage(QStringLiteral("Voice: %1").arg(reason), 10000);
+        flashStatus(QStringLiteral("Voice: %1").arg(reason), 10000);
 
         // Nothing to retry if we are not meant to be in a call any more.
         if (m_voiceChannelId.isEmpty())
@@ -273,6 +315,24 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         // A retry that is already on its way must not start another.
         if (m_voiceRetryTimer.isActive())
             return;
+
+        // 4014 is Discord tearing down this voice socket. That happens when a
+        // mod kicks you, and also — far more often — when the gateway
+        // reconnects. Leaving would turn a blip into a real kick.
+        if (reason.contains(QStringLiteral("4014"))) {
+            wlog(QStringLiteral("voice"),
+                 QStringLiteral("voice server dropped us (4014); staying in the channel to rejoin"));
+            m_pendingVoiceToken.clear();
+            m_pendingVoiceEndpoint.clear();
+            m_voiceSessionId.clear();
+            m_rejoinVoiceAfterGateway = true;
+            if (m_voiceState)
+                m_voiceState->setText(QStringLiteral("Reconnecting..."));
+            flashStatus(QStringLiteral("Voice dropped, reconnecting..."), 5000);
+            if (m_gateway->state() == GatewayClient::State::Ready)
+                m_voiceRetryTimer.start(800);
+            return;
+        }
 
         // Marked final by the voice side: trying again would only repeat it.
         if (reason.contains(QStringLiteral("[final]"))) {
@@ -284,7 +344,7 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
                 // Since March 2026 Discord requires end-to-end encryption on
                 // every call, so no other channel will work either. Saying
                 // "try another one" would just waste someone's time.
-                statusBar()->showMessage(
+                flashStatus(
                     QStringLiteral("Discord now requires end-to-end encryption on every call. "
                                    "Wisp does not implement it yet, so voice cannot connect "
                                    "anywhere. Everything else works."),
@@ -307,7 +367,7 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
             // This one has a cause outside the client, so say so rather than
             // leaving a bare error on screen.
             if (reason.contains(QStringLiteral("4006"))) {
-                statusBar()->showMessage(
+                flashStatus(
                     QStringLiteral("Discord allows one voice connection per account. Close the "
                                    "official Discord app completely, including the tray icon, "
                                    "then try again."),
@@ -340,11 +400,16 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     connect(&m_voiceRetryTimer, &QTimer::timeout, this, [this]() {
         if (m_voiceChannelId.isEmpty())
             return;
+        if (m_rejoinVoiceAfterGateway) {
+            rejoinVoiceIfNeeded();
+            return;
+        }
 
         AppConfig &config = AppConfig::instance();
         m_gateway->joinVoice(m_voiceGuildId, m_voiceChannelId,
                              config.value(QStringLiteral("voice/joinMuted"), false).toBool(),
-                             config.value(QStringLiteral("voice/joinDeafened"), false).toBool());
+                             config.value(QStringLiteral("voice/joinDeafened"), false).toBool(),
+                             true);
     });
 
     // Reaching the top of a channel fetches what came before it.
@@ -389,7 +454,7 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
 
         if (m_voiceState)
             m_voiceState->setText(QStringLiteral("Discord did not answer"));
-        statusBar()->showMessage(
+        flashStatus(
             QStringLiteral("Discord never answered the join. It may not allow this channel."), 8000);
     });
 
@@ -474,16 +539,86 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
 
 void MainWindow::buildUi()
 {
-    auto *central = new QWidget(this);
-    auto *rootLayout = new QHBoxLayout(central);
-    rootLayout->setContentsMargins(0, 0, 0, 0);
-    rootLayout->setSpacing(0);
+    // On Windows, a translucent child of QOpenGLWidget paints whatever is
+    // BEHIND the GL widget (the black window fill), not the FBO. A full-size
+    // #Chrome overlay is why the disk vanished with no click: it covered
+    // every pixel. The hole is the window. Cards are opaque islands. Layout
+    // stretch and margins have no widget, so those pixels are the shader.
+    m_aurora = new AuroraWidget(this);
+    m_aurora->setAttribute(Qt::WA_OpaquePaintEvent, true);
+    m_aurora->setAttribute(Qt::WA_NoSystemBackground, true);
+    m_aurora->setAttribute(Qt::WA_StyledBackground, false);
+    m_aurora->setAutoFillBackground(false);
+    m_aurora->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    setCentralWidget(m_aurora);
 
-    rootLayout->addWidget(buildGuildRail(central));
-    rootLayout->addWidget(buildSidebar(central));
+    auto *shell = new QVBoxLayout(m_aurora);
+    shell->setContentsMargins(0, 0, 0, 0);
+    shell->setSpacing(0);
 
-    // The right hand side is either a conversation or the friends list.
-    m_chatStack = new QStackedWidget(central);
+    auto *titleLayout = new QHBoxLayout();
+    titleLayout->setContentsMargins(8, 4, 0, 0);
+    titleLayout->setSpacing(0);
+
+    m_menuBar = new QMenuBar(m_aurora);
+    m_menuBar->setObjectName(QStringLiteral("AppMenu"));
+    m_menuBar->setNativeMenuBar(false);
+    titleLayout->addWidget(m_menuBar);
+    titleLayout->addStretch(1);
+
+    auto *minBtn = captionButton(m_aurora, QStringLiteral("CaptionMin"), QStringLiteral("–"));
+    m_captionMax = captionButton(m_aurora, QStringLiteral("CaptionMax"), QStringLiteral("□"));
+    auto *closeBtn = captionButton(m_aurora, QStringLiteral("CaptionClose"), QStringLiteral("✕"));
+    connect(minBtn, &QPushButton::clicked, this, &QWidget::showMinimized);
+    connect(m_captionMax, &QPushButton::clicked, this, [this]() {
+        if (isMaximized())
+            showNormal();
+        else
+            showMaximized();
+    });
+    connect(closeBtn, &QPushButton::clicked, this, &QWidget::close);
+    titleLayout->addWidget(minBtn);
+    titleLayout->addWidget(m_captionMax);
+    titleLayout->addWidget(closeBtn);
+    shell->addLayout(titleLayout);
+
+    auto *rootLayout = new QHBoxLayout();
+    rootLayout->setContentsMargins(14, 8, 14, 8);
+    rootLayout->setSpacing(12);
+
+    rootLayout->addWidget(buildGuildRail(m_aurora));
+    rootLayout->addWidget(buildSidebar(m_aurora));
+
+    auto *chatCard = new QFrame(m_aurora);
+    chatCard->setObjectName(QStringLiteral("ChatColumn"));
+    chatCard->setAttribute(Qt::WA_StyledBackground, true);
+    chatCard->setAutoFillBackground(true);
+    auto *chatLayout = new QVBoxLayout(chatCard);
+    chatLayout->setContentsMargins(0, 0, 0, 0);
+    chatLayout->setSpacing(0);
+
+    m_chatSplitter = new QSplitter(Qt::Vertical, chatCard);
+    m_chatSplitter->setChildrenCollapsible(true);
+    m_chatSplitter->setHandleWidth(8);
+
+    m_callView = new CallView(m_store, m_chatSplitter);
+    connect(m_callView, &CallView::profileRequested, this,
+            [this](const QString &userId) { showProfile(userId, QCursor::pos()); });
+    connect(m_callView, &CallView::watchAttempted, this, &MainWindow::watchStream);
+    connect(m_callView, &CallView::focusRequested, this,
+            [this](const QString &userId, CallView::Surface surface) {
+                m_callView->setFocusedUser(userId, surface);
+            });
+    connect(m_callView, &CallView::visibilityChanged, this, [this](bool on) {
+        if (!on || !m_chatSplitter)
+            return;
+        const int h = m_chatSplitter->height();
+        if (h < 160)
+            return;
+        m_chatSplitter->setSizes({int(h * 0.62), int(h * 0.38)});
+    });
+
+    m_chatStack = new QStackedWidget(m_chatSplitter);
     m_chatPage = buildChatColumn(m_chatStack);
     m_chatStack->addWidget(m_chatPage);
 
@@ -496,29 +631,58 @@ void MainWindow::buildUi()
     });
     m_chatStack->addWidget(m_friends);
 
-    rootLayout->addWidget(m_chatStack, 1);
+    m_chatSplitter->addWidget(m_callView);
+    m_chatSplitter->addWidget(m_chatStack);
+    m_chatSplitter->setStretchFactor(0, 3);
+    m_chatSplitter->setStretchFactor(1, 2);
+    chatLayout->addWidget(m_chatSplitter);
 
-    setCentralWidget(central);
+    rootLayout->addWidget(chatCard, 1);
+    shell->addLayout(rootLayout, 1);
 
-    m_statusDot = new QLabel(QStringLiteral("offline"), this);
-    m_statusDot->setStyleSheet(QStringLiteral("color: %1; padding-right: 10px;").arg(QLatin1String(Theme::TextFaint)));
-    statusBar()->addPermanentWidget(m_statusDot);
+    auto *statusChip = new QWidget(m_aurora);
+    statusChip->setObjectName(QStringLiteral("StatusChip"));
+    statusChip->setFixedHeight(26);
+    auto *statusLayout = new QHBoxLayout(statusChip);
+    statusLayout->setContentsMargins(12, 0, 10, 0);
+    statusLayout->setSpacing(8);
+    m_statusMessage = new QLabel(statusChip);
+    m_statusMessage->setObjectName(QStringLiteral("StatusMessage"));
+    m_statusDot = new QLabel(QStringLiteral("offline"), statusChip);
+    m_statusDot->setObjectName(QStringLiteral("StatusDot"));
+    m_statusDot->setStyleSheet(
+        QStringLiteral("color: %1;").arg(QLatin1String(Theme::TextFaint)));
+    statusLayout->addWidget(m_statusMessage);
+    statusLayout->addWidget(m_statusDot);
+
+    auto *statusRow = new QHBoxLayout();
+    statusRow->setContentsMargins(14, 0, 14, 8);
+    statusRow->addStretch(1);
+    statusRow->addWidget(statusChip);
+    shell->addLayout(statusRow);
+
+    m_aurora->setHoleColors(Theme::holeAccent(), Theme::holeDisk(), Theme::holeGrade());
+    m_aurora->setRunning(
+        AppConfig::instance().value(QStringLiteral("appearance/animatedBackground"), true).toBool());
 }
 
 QWidget *MainWindow::buildGuildRail(QWidget *parent)
 {
     auto *rail = new QWidget(parent);
     rail->setObjectName(QStringLiteral("GuildRail"));
+    rail->setAttribute(Qt::WA_StyledBackground, true);
+    rail->setAutoFillBackground(true);
     rail->setFixedWidth(RailWidth);
 
     auto *layout = new QVBoxLayout(rail);
-    layout->setContentsMargins(0, 8, 0, 8);
+    layout->setContentsMargins(4, 10, 4, 10);
     layout->setSpacing(0);
 
     m_guildRail = new QListWidget(rail);
     m_guildRail->setIconSize(QSize(GuildIconPixels, GuildIconPixels));
     m_guildRail->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_guildRail->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_guildRail->viewport()->setAutoFillBackground(false);
     m_guildRail->setUniformItemSizes(true);
     // The delegate draws the rows itself, so the stylesheet must not.
     m_guildRail->setItemDelegate(new GuildRailDelegate(m_guildRail, m_guildRail));
@@ -548,6 +712,8 @@ QWidget *MainWindow::buildSidebar(QWidget *parent)
 {
     auto *sidebar = new QWidget(parent);
     sidebar->setObjectName(QStringLiteral("Sidebar"));
+    sidebar->setAttribute(Qt::WA_StyledBackground, true);
+    sidebar->setAutoFillBackground(true);
     sidebar->setFixedWidth(SidebarWidth);
 
     auto *layout = new QVBoxLayout(sidebar);
@@ -561,6 +727,7 @@ QWidget *MainWindow::buildSidebar(QWidget *parent)
 
     m_channelList = new QListWidget(sidebar);
     m_channelList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_channelList->viewport()->setAutoFillBackground(false);
 
     m_channelDelegate = new ChannelDelegate(m_channelList, m_channelList);
     m_channelList->setItemDelegate(m_channelDelegate);
@@ -593,10 +760,8 @@ QWidget *MainWindow::buildSidebar(QWidget *parent)
         // profile. Saying so is better than opening the wrong thing and
         // looking broken.
         if (item->data(WispRoles::Streaming).toBool()) {
-            statusBar()->showMessage(
-                QStringLiteral("Wisp can hear this call but cannot watch it yet. Video needs a "
-                               "second stream and a decoder, neither of which is built."),
-                6000);
+            watchStream(item->data(IdRole).toString());
+            return;
         }
 
         showProfile(item->data(IdRole).toString(), QCursor::pos());
@@ -643,7 +808,7 @@ QWidget *MainWindow::buildVoicePanel(QWidget *parent)
     auto *panel = new QFrame(parent);
     panel->setObjectName(QStringLiteral("VoicePanel"));
     panel->setVisible(false);
-    panel->setFixedHeight(82);
+    panel->setFixedHeight(132);
 
     // Two rows, because three buttons and a channel name do not fit across a
     // 240 pixel sidebar.
@@ -706,6 +871,61 @@ QWidget *MainWindow::buildVoicePanel(QWidget *parent)
     buttons->addStretch(1);
     layout->addLayout(buttons);
 
+    AppConfig &config = AppConfig::instance();
+
+    auto *volumeRow = new QHBoxLayout;
+    volumeRow->setContentsMargins(0, 2, 0, 0);
+    volumeRow->setSpacing(8);
+    auto *volumeLabel = new QLabel(QStringLiteral("Vol"), panel);
+    volumeLabel->setFixedWidth(36);
+    volumeLabel->setStyleSheet(QStringLiteral("color: %1; font-size: 11px; background: transparent;")
+                                   .arg(QLatin1String(Theme::TextMuted)));
+    m_outputVolumeSlider = new QSlider(Qt::Horizontal, panel);
+    m_outputVolumeSlider->setRange(0, 200);
+    m_outputVolumeSlider->setValue(config.value(QStringLiteral("voice/outputVolume"), 100).toInt());
+    m_outputVolumeSlider->setToolTip(QStringLiteral("How loud everyone in the call is"));
+    connect(m_outputVolumeSlider, &QSlider::valueChanged, this, [this](int value) {
+        AppConfig::instance().setValue(QStringLiteral("voice/outputVolume"), value);
+        if (m_voice)
+            m_voice->setOutputVolume(value);
+    });
+    volumeRow->addWidget(volumeLabel);
+    volumeRow->addWidget(m_outputVolumeSlider, 1);
+    layout->addLayout(volumeRow);
+
+    m_streamControls = new QWidget(panel);
+    m_streamControls->setVisible(false);
+    auto *streamLayout = new QVBoxLayout(m_streamControls);
+    streamLayout->setContentsMargins(0, 0, 0, 0);
+    streamLayout->setSpacing(6);
+
+    auto *shareRow = new QHBoxLayout;
+    shareRow->setContentsMargins(0, 0, 0, 0);
+    shareRow->setSpacing(8);
+    auto *shareLabel = new QLabel(QStringLiteral("Share"), m_streamControls);
+    shareLabel->setFixedWidth(36);
+    shareLabel->setStyleSheet(QStringLiteral("color: %1; font-size: 11px; background: transparent;")
+                                  .arg(QLatin1String(Theme::TextMuted)));
+    m_streamVolumeSlider = new QSlider(Qt::Horizontal, m_streamControls);
+    m_streamVolumeSlider->setRange(0, 200);
+    m_streamVolumeSlider->setValue(config.value(QStringLiteral("voice/streamVolume"), 80).toInt());
+    m_streamVolumeSlider->setToolTip(QStringLiteral("How loud the shared screen is"));
+    connect(m_streamVolumeSlider, &QSlider::valueChanged, this, [this](int value) {
+        AppConfig::instance().setValue(QStringLiteral("voice/streamVolume"), value);
+        if (m_streamVoice)
+            m_streamVoice->setOutputVolume(value);
+    });
+    shareRow->addWidget(shareLabel);
+    shareRow->addWidget(m_streamVolumeSlider, 1);
+    streamLayout->addLayout(shareRow);
+
+    m_stopWatchButton = new QPushButton(QStringLiteral("Stop watching"), m_streamControls);
+    m_stopWatchButton->setFixedHeight(26);
+    connect(m_stopWatchButton, &QPushButton::clicked, this, &MainWindow::stopWatchingStream);
+    streamLayout->addWidget(m_stopWatchButton);
+
+    layout->addWidget(m_streamControls);
+
     return panel;
 }
 
@@ -718,9 +938,9 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
 
     auto *header = new QWidget(chat);
     header->setObjectName(QStringLiteral("ChatHeader"));
-    header->setFixedHeight(56);
+    header->setFixedHeight(58);
     auto *headerLayout = new QVBoxLayout(header);
-    headerLayout->setContentsMargins(20, 8, 20, 8);
+    headerLayout->setContentsMargins(22, 10, 22, 10);
     headerLayout->setSpacing(1);
 
     m_channelTitle = new QLabel(QStringLiteral("Pick a channel"), header);
@@ -732,14 +952,6 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
     m_channelTopic->setVisible(false);
     headerLayout->addWidget(m_channelTopic);
     layout->addWidget(header);
-
-    // Sits above the conversation while a call is up, and takes no room at
-    // all otherwise.
-    m_callView = new CallView(m_store, chat);
-    connect(m_callView, &CallView::profileRequested, this,
-            [this](const QString &userId) { showProfile(userId, QCursor::pos()); });
-    connect(m_callView, &CallView::watchAttempted, this, &MainWindow::watchStream);
-    layout->addWidget(m_callView);
 
     m_messageView = new ChatView(chat);
     m_messageView->document()->setDefaultStyleSheet(Theme::messageViewCss(
@@ -761,7 +973,7 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
     auto *composerWrap = new QWidget(chat);
     composerWrap->setObjectName(QStringLiteral("Composer"));
     auto *composerLayout = new QVBoxLayout(composerWrap);
-    composerLayout->setContentsMargins(20, 0, 20, 16);
+    composerLayout->setContentsMargins(18, 4, 18, 16);
 
     auto *composerBox = new QFrame(composerWrap);
     composerBox->setObjectName(QStringLiteral("ComposerBox"));
@@ -771,7 +983,7 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
     m_composer = new QTextEdit(composerBox);
     m_composer->setObjectName(QStringLiteral("MessageInput"));
     m_composer->setPlaceholderText(QStringLiteral("Write a message"));
-    m_composer->setFixedHeight(48);
+    m_composer->setFixedHeight(52);
     m_composer->installEventFilter(this);
     m_composer->setEnabled(false);
     boxLayout->addWidget(m_composer);
@@ -785,7 +997,9 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
 
 void MainWindow::buildMenu()
 {
-    QMenu *fileMenu = menuBar()->addMenu(QStringLiteral("&Wisp"));
+    if (!m_menuBar)
+        return;
+    QMenu *fileMenu = m_menuBar->addMenu(QStringLiteral("&Wisp"));
 
     auto *settingsAction = fileMenu->addAction(QStringLiteral("Settings..."));
     settingsAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+,")));
@@ -812,7 +1026,7 @@ void MainWindow::buildMenu()
 void MainWindow::startSession(const QString &token)
 {
     m_gateway->start(token);
-    statusBar()->showMessage(QStringLiteral("Connecting..."));
+    flashStatus(QStringLiteral("Connecting..."));
 }
 
 // ---------------------------------------------------------------------------
@@ -849,17 +1063,19 @@ void MainWindow::onGatewayReady(const QJsonObject &payload)
     if (m_selfDisplayName.isEmpty())
         m_selfDisplayName = user.value(QStringLiteral("username")).toString();
 
-    // A new session makes any voice connection built on the old one invalid.
-    // Dropping it here avoids a call that looks joined but carries nothing.
+    // A new session makes any voice socket built on the old one invalid, but
+    // the user did not leave. Keep the channel and join again once the rest
+    // of READY has been ingested.
     if (!m_voiceChannelId.isEmpty()) {
-        wlog(QStringLiteral("voice"), QStringLiteral("signed in again, so the call must be rejoined"));
+        wlog(QStringLiteral("voice"), QStringLiteral("signed in again, will rejoin the call"));
+        stopWatchingStream();
         m_voice->disconnectFromVoice();
         m_pendingVoiceToken.clear();
         m_pendingVoiceEndpoint.clear();
         m_voiceSessionId.clear();
-        m_voiceChannelId.clear();
-        m_voiceGuildId.clear();
-        updateVoicePanel();
+        m_rejoinVoiceAfterGateway = true;
+        if (m_voiceState)
+            m_voiceState->setText(QStringLiteral("Reconnecting..."));
     }
 
     // A reconnect rebuilds everything. Without this you get dropped back to
@@ -885,13 +1101,22 @@ void MainWindow::onGatewayReady(const QJsonObject &payload)
     wlog(QStringLiteral("ui"), QStringLiteral("rail built: %1 servers, %2 direct chats")
                                    .arg(m_store->guilds().size())
                                    .arg(m_store->directChannels().size()));
-    statusBar()->showMessage(QStringLiteral("Connected."), 4000);
+    flashStatus(QStringLiteral("Connected."), 4000);
+    rejoinVoiceIfNeeded();
 }
 
 void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &data)
 {
     // Plugins see every event before the client reacts to it.
     m_plugins->dispatchGatewayEvent(eventType, data);
+
+    if (eventType == QLatin1String("RESUMED")) {
+        if (!m_voiceChannelId.isEmpty()
+            && m_voice->state() != VoiceConnection::State::Connected)
+            m_rejoinVoiceAfterGateway = true;
+        rejoinVoiceIfNeeded();
+        return;
+    }
 
     if (eventType == QLatin1String("MESSAGE_CREATE")) {
         m_store->appendMessage(data);
@@ -991,6 +1216,22 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
             wlog(QStringLiteral("voice"), QStringLiteral("own state: %1")
                                               .arg(nowIn.isEmpty() ? QStringLiteral("(left)") : nowIn));
 
+            if (nowIn.isEmpty() && !m_voiceChannelId.isEmpty()) {
+                if (m_voiceWatchdog.isActive()) {
+                    wlog(QStringLiteral("voice"),
+                         QStringLiteral("own state: (left) while join is in flight — ignoring"));
+                    return;
+                }
+                if (m_rejoinVoiceAfterGateway
+                    && m_gateway->state() != GatewayClient::State::Ready) {
+                    wlog(QStringLiteral("voice"),
+                         QStringLiteral("own state: (left) while gateway is reconnecting — ignoring"));
+                    return;
+                }
+                m_rejoinVoiceAfterGateway = false;
+                m_voiceRetryTimer.stop();
+            }
+
             // This is the half of the handshake that carries the session id.
             // Only keep it while we are actually in a channel, so it can never
             // be paired with a later call's server details.
@@ -1016,7 +1257,10 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
             return;
 
         m_streamServerId = data.value(QStringLiteral("rtc_server_id")).toString();
-        wlog(QStringLiteral("stream"), QStringLiteral("stream accepted, server %1").arg(m_streamServerId));
+        m_streamChannelId = data.value(QStringLiteral("rtc_channel_id")).toString();
+        wlog(QStringLiteral("stream"),
+             QStringLiteral("stream accepted, server %1 channel %2")
+                 .arg(m_streamServerId, m_streamChannelId));
         tryStartStream();
         return;
     }
@@ -1035,8 +1279,14 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
 
     if (eventType == QLatin1String("STREAM_DELETE")) {
         if (data.value(QStringLiteral("stream_key")).toString() == m_streamKey) {
-            wlog(QStringLiteral("stream"), QStringLiteral("the stream ended"));
-            statusBar()->showMessage(QStringLiteral("That stream ended."), 4000);
+            const QString reason = data.value(QStringLiteral("reason")).toString();
+            wlog(QStringLiteral("stream"),
+                 QStringLiteral("the stream ended%1")
+                     .arg(reason.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(reason)));
+            flashStatus(reason.isEmpty()
+                                         ? QStringLiteral("That stream ended.")
+                                         : QStringLiteral("Stream ended: %1").arg(reason),
+                                     4000);
             stopWatchingStream();
         }
         return;
@@ -1143,7 +1393,7 @@ void MainWindow::populateGuildRail()
     dmItem->setData(IdRole, QString());
     dmItem->setData(KindRole, QStringLiteral("guild"));
     dmItem->setToolTip(QStringLiteral("Direct messages"));
-    dmItem->setIcon(MediaCache::initialsAvatar(QStringLiteral("DM"), GuildIconPixels));
+    dmItem->setIcon(MediaCache::brandMark(GuildIconPixels));
     dmItem->setFlags(dmItem->flags() & ~Qt::ItemIsDragEnabled);
     m_guildRail->addItem(dmItem);
 
@@ -2190,13 +2440,13 @@ void MainWindow::sendCurrentMessage()
         return;
 
     if (!m_plugins->runOutgoingMessage(content, m_currentChannelId)) {
-        statusBar()->showMessage(QStringLiteral("A plugin cancelled that message."), 4000);
+        flashStatus(QStringLiteral("A plugin cancelled that message."), 4000);
         m_composer->clear();
         return;
     }
 
     if (content.length() > 2000) {
-        statusBar()->showMessage(QStringLiteral("Discord caps messages at 2000 characters."), 5000);
+        flashStatus(QStringLiteral("Discord caps messages at 2000 characters."), 5000);
         return;
     }
 
@@ -2212,13 +2462,34 @@ void MainWindow::sendCurrentMessage()
             QString reason = error.message;
             if (error.isRateLimit())
                 reason = QStringLiteral("rate limited");
-            statusBar()->showMessage(
+            flashStatus(
                 QStringLiteral("Send failed (%1). Your text: %2").arg(reason, content.left(60)), 8000);
         });
 }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 {
+    if (watched == m_captionDrag) {
+        if (event->type() == QEvent::MouseButtonPress) {
+            auto *mouse = static_cast<QMouseEvent *>(event);
+            if (mouse->button() == Qt::LeftButton) {
+                if (QWindow *handle = windowHandle())
+                    handle->startSystemMove();
+                return true;
+            }
+        }
+        if (event->type() == QEvent::MouseButtonDblClick) {
+            auto *mouse = static_cast<QMouseEvent *>(event);
+            if (mouse->button() == Qt::LeftButton) {
+                if (isMaximized())
+                    showNormal();
+                else
+                    showMaximized();
+                return true;
+            }
+        }
+    }
+
     // Clicking your own panel opens your own profile card.
     if (watched == m_userPanel && event->type() == QEvent::MouseButtonRelease) {
         auto *mouseEvent = static_cast<QMouseEvent *>(event);
@@ -2270,21 +2541,25 @@ void MainWindow::watchStream(const QString &userId)
         return;
 
     if (m_watchingUserId == userId)
-        return;   // already watching this one
+        return;
 
     stopWatchingStream();
 
     m_watchingUserId = userId;
+    if (m_callView)
+        m_callView->setFocusedUser(userId, CallView::Surface::Share);
     m_streamKey = GatewayClient::streamKeyFor(m_voiceGuildId, m_voiceChannelId, userId);
     m_streamServerId.clear();
+    m_streamChannelId.clear();
     m_streamToken.clear();
     m_streamEndpoint.clear();
 
     const QString name = m_store->userName(userId);
-    statusBar()->showMessage(
+    flashStatus(
         QStringLiteral("Asking to watch %1...").arg(name.isEmpty() ? userId : name), 5000);
 
     m_gateway->watchStream(m_streamKey);
+    updateVoicePanel();
 }
 
 void MainWindow::stopWatchingStream()
@@ -2297,13 +2572,15 @@ void MainWindow::stopWatchingStream()
     if (m_streamVoice)
         m_streamVoice->disconnectFromVoice();
     if (m_callView)
-        m_callView->dropFrames(m_watchingUserId);
+        m_callView->dropFrames(m_watchingUserId, CallView::Surface::Share);
 
     m_watchingUserId.clear();
     m_streamKey.clear();
     m_streamServerId.clear();
+    m_streamChannelId.clear();
     m_streamToken.clear();
     m_streamEndpoint.clear();
+    updateVoicePanel();
 }
 
 // Both halves of a stream's details arrive as separate events, in no fixed
@@ -2318,12 +2595,23 @@ void MainWindow::tryStartStream()
     if (sessionId.isEmpty())
         return;
 
-    wlog(QStringLiteral("stream"), QStringLiteral("opening the stream server %1").arg(m_streamEndpoint));
+    // A Go Live stream has its own MLS group. Discord uses the media-session
+    // id, which is one less than the stream's rtc server id, not the voice
+    // channel id the call underneath is using.
+    quint64 daveGroupId = 0;
+    const quint64 serverId = m_streamServerId.toULongLong();
+    if (serverId > 0)
+        daveGroupId = serverId - 1;
 
-    // The stream's own server id goes where a guild would, because a stream is
-    // its own place as far as the voice protocol is concerned.
-    m_streamVoice->connectToVoice(m_streamServerId, m_voiceChannelId, m_selfUserId, sessionId,
-                                  m_streamToken, m_streamEndpoint);
+    const QString channelId = m_streamChannelId.isEmpty() ? m_voiceChannelId : m_streamChannelId;
+
+    wlog(QStringLiteral("stream"),
+         QStringLiteral("opening the stream server %1 (group %2)")
+             .arg(m_streamEndpoint)
+             .arg(daveGroupId));
+
+    m_streamVoice->connectToVoice(m_streamServerId, channelId, m_selfUserId, sessionId,
+                                  m_streamToken, m_streamEndpoint, daveGroupId);
 
     m_streamToken.clear();
     m_streamEndpoint.clear();
@@ -2358,7 +2646,7 @@ void MainWindow::loadOlderMessages()
             if (added == 0) {
                 m_fullyLoaded.insert(channelId);
                 if (channelId == m_currentChannelId) {
-                    statusBar()->showMessage(QStringLiteral("That is the beginning of this channel."),
+                    flashStatus(QStringLiteral("That is the beginning of this channel."),
                                              4000);
                 }
             }
@@ -2407,6 +2695,7 @@ void MainWindow::joinVoice(const QString &channelId)
     // Anything left from a previous call is stale the moment a new one starts.
     // Pairing a fresh voice server with an old session is what Discord refuses
     // with "session no longer valid".
+    stopWatchingStream();
     m_voice->disconnectFromVoice();
     m_pendingVoiceToken.clear();
     m_pendingVoiceEndpoint.clear();
@@ -2418,11 +2707,12 @@ void MainWindow::joinVoice(const QString &channelId)
 
     m_voiceChannelId = channelId;
     m_voiceGuildId = channel.guildId;
-    m_gateway->joinVoice(channel.guildId, channelId, muted, deafened);
+    m_rejoinVoiceAfterGateway = false;
+    m_gateway->joinVoice(channel.guildId, channelId, muted, deafened, true);
     updateVoicePanel();
 
     m_voiceWatchdog.start(10000);
-    statusBar()->showMessage(QStringLiteral("Joining %1...").arg(channel.name), 4000);
+    flashStatus(QStringLiteral("Joining %1...").arg(channel.name), 4000);
 }
 
 void MainWindow::leaveVoice()
@@ -2439,8 +2729,10 @@ void MainWindow::leaveVoice()
 
     m_voiceRetryTimer.stop();
     m_voiceRetries = 0;
+    m_rejoinVoiceAfterGateway = false;
 
     m_voiceWatchdog.stop();
+    stopWatchingStream();
     m_gateway->leaveVoice(guildId);
     m_voice->disconnectFromVoice();
     m_speakingUsers.clear();
@@ -2450,6 +2742,19 @@ void MainWindow::leaveVoice()
     m_voiceChannelId.clear();
     m_voiceGuildId.clear();
     updateVoicePanel();
+}
+
+void MainWindow::rejoinVoiceIfNeeded()
+{
+    if (!m_rejoinVoiceAfterGateway || m_voiceChannelId.isEmpty())
+        return;
+    if (m_gateway->state() != GatewayClient::State::Ready)
+        return;
+
+    const QString channelId = m_voiceChannelId;
+    wlog(QStringLiteral("voice"),
+         QStringLiteral("gateway is back, rejoining %1").arg(channelId));
+    joinVoice(channelId);
 }
 
 void MainWindow::tryStartVoice()
@@ -2502,6 +2807,14 @@ void MainWindow::applyVoiceSettings()
     m_voice->setInputVolume(config.value(QStringLiteral("voice/inputVolume"), 100).toInt());
     m_voice->setOutputVolume(config.value(QStringLiteral("voice/outputVolume"), 100).toInt());
     m_voice->setSensitivity(config.value(QStringLiteral("voice/sensitivity"), 15).toInt());
+    if (m_streamVoice) {
+        m_streamVoice->setOutputDevice(config.value(QStringLiteral("voice/outputDevice")).toByteArray());
+        m_streamVoice->setOutputVolume(config.value(QStringLiteral("voice/streamVolume"), 80).toInt());
+    }
+    if (m_outputVolumeSlider)
+        m_outputVolumeSlider->setValue(config.value(QStringLiteral("voice/outputVolume"), 100).toInt());
+    if (m_streamVolumeSlider)
+        m_streamVolumeSlider->setValue(config.value(QStringLiteral("voice/streamVolume"), 80).toInt());
 }
 
 void MainWindow::updateVoicePanel()
@@ -2514,6 +2827,12 @@ void MainWindow::updateVoicePanel()
     // stays up while you wander off into another conversation.
     if (m_callView)
         m_callView->setChannel(m_voiceChannelId);
+
+    const bool watching = connected && !m_watchingUserId.isEmpty();
+    if (m_streamControls)
+        m_streamControls->setVisible(watching);
+    if (m_voicePanel && connected)
+        m_voicePanel->setFixedHeight(watching ? 186 : 132);
 
     if (!connected)
         return;
@@ -2562,12 +2881,12 @@ void MainWindow::createInvite(const QString &channelId)
                 return;
             const QString link = QStringLiteral("https://discord.gg/%1").arg(code);
             QApplication::clipboard()->setText(link);
-            statusBar()->showMessage(QStringLiteral("Invite copied: %1").arg(link), 10000);
+            flashStatus(QStringLiteral("Invite copied: %1").arg(link), 10000);
         },
         [this](const RestClient::Error &error) {
             wlog(QStringLiteral("invite"), QStringLiteral("failed: HTTP %1 %2")
                                                .arg(error.httpStatus).arg(error.message));
-            statusBar()->showMessage(error.httpStatus == 403
+            flashStatus(error.httpStatus == 403
                                          ? QStringLiteral("You cannot make invites for that channel.")
                                          : QStringLiteral("Could not make an invite."),
                                      6000);
@@ -2609,24 +2928,50 @@ void MainWindow::openPlugins()
 
 void MainWindow::openSettings()
 {
-    SettingsDialog dialog(m_store, m_rest, m_plugins, m_selfUserId, this);
-    connect(&dialog, &SettingsDialog::appearanceChanged, this, &MainWindow::applyAppearance);
-    connect(&dialog, &SettingsDialog::logOutRequested, this, &MainWindow::logOut);
-
-    // A call already running has to be told, or the sliders only take effect
-    // the next time you join one.
-    connect(&dialog, &SettingsDialog::voiceSettingsChanged, this, &MainWindow::applyVoiceSettings);
-    dialog.exec();
+    // Keep one dialog. A stack QDialog is created and destroyed at the same
+    // address every open; Windows UI Automation then hits Qt's accessibility
+    // cache for that pointer and QWidget::accessibleName crashes on a null
+    // widget (Qt6Widgets, same fault offset across dumps).
+    if (!m_settingsDialog) {
+        m_settingsDialog = new SettingsDialog(m_store, m_rest, m_plugins, m_selfUserId, this);
+        connect(m_settingsDialog, &SettingsDialog::appearanceChanged, this, &MainWindow::applyAppearance);
+        connect(m_settingsDialog, &SettingsDialog::logOutRequested, this, &MainWindow::logOut);
+        // A call already running has to be told, or the sliders only take effect
+        // the next time you join one.
+        connect(m_settingsDialog, &SettingsDialog::voiceSettingsChanged, this, &MainWindow::applyVoiceSettings);
+    }
+    m_settingsDialog->exec();
+    // Chip clicks already wrote the seed. Re-polish after the modal hides:
+    // setStyleSheet during QDialog::exec can leave the main window on the
+    // unpolished black fill, which is the "close Settings, hole gone" bug.
+    applyAppearance();
 }
 
 void MainWindow::applyAppearance()
 {
     AppConfig &config = AppConfig::instance();
 
-    m_messageView->document()->setDefaultStyleSheet(
-        Theme::messageViewCss(config.value(QStringLiteral("appearance/fontSize"), 14).toInt()));
-    m_messageView->setAnimationsEnabled(
-        config.value(QStringLiteral("appearance/playAnimations"), true).toBool());
+    const QColor seed(config.value(QStringLiteral("appearance/themeSeed"),
+                                   QStringLiteral("#6ee7d8")).toString());
+    Theme::applySeed(seed.isValid() ? seed : QColor(QStringLiteral("#6ee7d8")));
+    qApp->setStyleSheet(Theme::applicationStyleSheet());
+
+    if (m_messageView) {
+        m_messageView->document()->setDefaultStyleSheet(
+            Theme::messageViewCss(config.value(QStringLiteral("appearance/fontSize"), 14).toInt()));
+        m_messageView->setAnimationsEnabled(
+            config.value(QStringLiteral("appearance/playAnimations"), true).toBool());
+    }
+    if (m_aurora) {
+        m_aurora->setAttribute(Qt::WA_OpaquePaintEvent, true);
+        m_aurora->setAttribute(Qt::WA_NoSystemBackground, true);
+        m_aurora->setAttribute(Qt::WA_StyledBackground, false);
+        m_aurora->setAutoFillBackground(false);
+        m_aurora->setHoleColors(Theme::holeAccent(), Theme::holeDisk(), Theme::holeGrade());
+        m_aurora->setRunning(
+            config.value(QStringLiteral("appearance/animatedBackground"), true).toBool());
+        m_aurora->update();
+    }
 
     renderChannel();
 }
@@ -2646,6 +2991,84 @@ void MainWindow::logOut()
     emit loggedOut();
     close();
 }
+
+void MainWindow::flashStatus(const QString &text, int ms)
+{
+    if (!m_statusMessage)
+        return;
+    m_statusMessage->setText(text);
+    if (ms > 0)
+        m_statusClearTimer.start(ms);
+    else
+        m_statusClearTimer.stop();
+}
+
+void MainWindow::showEvent(QShowEvent *event)
+{
+    QMainWindow::showEvent(event);
+    wlog(QStringLiteral("app"), QStringLiteral("main window shown"));
+}
+
+void MainWindow::changeEvent(QEvent *event)
+{
+    QMainWindow::changeEvent(event);
+    if (event->type() == QEvent::WindowStateChange && m_captionMax)
+        m_captionMax->setText(isMaximized() ? QStringLiteral("❐") : QStringLiteral("□"));
+}
+
+#ifdef Q_OS_WIN
+bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr *result)
+{
+    if (eventType == "windows_generic_MSG") {
+        const MSG *msg = static_cast<MSG *>(message);
+        if (msg->message == WM_NCHITTEST) {
+            RECT winRect;
+            GetWindowRect(msg->hwnd, &winRect);
+            const int x = GET_X_LPARAM(msg->lParam);
+            const int y = GET_Y_LPARAM(msg->lParam);
+            const int border = GetSystemMetrics(SM_CXFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+            const int localX = x - winRect.left;
+            const int localY = y - winRect.top;
+            const int w = winRect.right - winRect.left;
+
+            if (!isMaximized() && !isFullScreen()) {
+                const bool left = localX < border;
+                const bool right = w - localX < border;
+                const bool top = localY < border;
+                const bool bottom = winRect.bottom - y < border;
+                if (top && left)
+                    *result = HTTOPLEFT;
+                else if (top && right)
+                    *result = HTTOPRIGHT;
+                else if (bottom && left)
+                    *result = HTBOTTOMLEFT;
+                else if (bottom && right)
+                    *result = HTBOTTOMRIGHT;
+                else if (left)
+                    *result = HTLEFT;
+                else if (right)
+                    *result = HTRIGHT;
+                else if (top)
+                    *result = HTTOP;
+                else if (bottom)
+                    *result = HTBOTTOM;
+                else if (localY < 36 && localX > 90 && localX < w - 46 * 3) {
+                    *result = HTCAPTION;
+                } else {
+                    return QMainWindow::nativeEvent(eventType, message, result);
+                }
+                return true;
+            }
+
+            if (localY < 36 && localX > 90 && localX < w - 46 * 3) {
+                *result = HTCAPTION;
+                return true;
+            }
+        }
+    }
+    return QMainWindow::nativeEvent(eventType, message, result);
+}
+#endif
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {

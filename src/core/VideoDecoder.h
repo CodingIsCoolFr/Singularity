@@ -1,7 +1,10 @@
 #pragma once
 
 #include <QByteArray>
+#include <QHash>
 #include <QImage>
+#include <QObject>
+#include <QString>
 
 struct AVCodecContext;
 struct AVFrame;
@@ -52,4 +55,40 @@ private:
     int m_scalerWidth = 0;
     int m_scalerHeight = 0;
     int m_hungry = 0;
+};
+
+// Owns one H.264 decoder per sender and runs on its own thread.
+//
+// Decoding 1080p on the thread that reads UDP and mixes sound is what made
+// a busy share hitch: the socket buffer overflowed, pictures arrived with
+// holes, and voices waited on swscale. This object never touches those.
+class VideoDecodeWorker : public QObject
+{
+    Q_OBJECT
+
+public:
+    explicit VideoDecodeWorker(QObject *parent = nullptr);
+    ~VideoDecodeWorker() override;
+
+    // Live: only the newest picture per sender is kept. Catching up a
+    // backlog is how a share falls a second behind and never recovers.
+    void submit(quint32 ssrc, const QString &userId, const QByteArray &annexB);
+    void drop(quint32 ssrc);
+    void reset();
+
+signals:
+    void frameReady(quint32 ssrc, const QString &userId, const QImage &image);
+    void decodeFailed(quint32 ssrc, int hungry);
+
+private:
+    struct Job {
+        QString userId;
+        QByteArray annexB;
+    };
+
+    void pump();
+
+    QHash<quint32, VideoDecoder *> m_decoders;
+    QHash<quint32, Job> m_latest;
+    bool m_busy = false;
 };

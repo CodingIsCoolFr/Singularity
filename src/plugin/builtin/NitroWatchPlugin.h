@@ -52,6 +52,10 @@ private:
     // contains "discord.gift/" somewhere in its path is not mistaken for one.
     static QStringList findGiftCodes(const QString &text);
 
+    // Content plus embed / button URLs. Discord's own gift card often has an
+    // empty content string; the link lives in the first embed.
+    static QString messageText(const QJsonObject &data);
+
     // Runs the above over known cases at load. If any comes out wrong the
     // watcher switches itself off rather than guess at links.
     void selfCheck();

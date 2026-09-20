@@ -6,11 +6,17 @@
 #include <QAudioDevice>
 #include <QAudioSink>
 #include <QAudioSource>
+#include <QDateTime>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QMediaDevices>
+#include <QMetaObject>
 #include <QNetworkDatagram>
+#include <QHostAddress>
 #include <QRandomGenerator>
+#include <QSet>
+#include <QThread>
+#include <QUuid>
 
 #include <opus/opus.h>
 #include <sodium.h>
@@ -83,13 +89,18 @@ constexpr int SilenceFramesBeforeStop = 10;   // 200 ms
 // How much of someone's sound to hold back before starting to play it.
 //
 // The internet does not deliver packets evenly. Playing each one the moment it
-// lands means every late arrival is a gap. Three frames is 60 milliseconds of
-// cushion: too small to hear as delay, big enough to smooth out normal jitter.
-constexpr int JitterFrames = 3;
+// lands means every late arrival is a gap. Two frames is 40 milliseconds of
+// cushion: Discord's own jitter buffer sits in this range, and four frames
+// (80 ms) plus the speaker buffer stacked into a delay you talk over.
+constexpr int JitterFrames = 2;
 
-// The most that may ever pile up for one person, half a second. Beyond this
-// the connection is behind in a way that waiting will not fix.
-constexpr int MaxQueuedFrames = 25;
+// The most that may ever pile up for one person. Anything past this is delay
+// that will not catch up on its own, so the oldest frames are thrown away.
+constexpr int MaxQueuedFrames = 4;
+
+// Start dropping once the queue is this far past the cushion, so a burst of
+// packets becomes a short skip instead of a lag that lasts the rest of the call.
+constexpr int CatchupFrames = 3;
 
 QByteArray buildRtpHeader(quint16 sequence, quint32 timestamp, quint32 ssrc)
 {
@@ -231,6 +242,29 @@ VoiceConnection::VoiceConnection(QObject *parent)
     connect(&m_heartbeatTimer, &QTimer::timeout, this, &VoiceConnection::sendHeartbeat);
     connect(&m_sendTimer, &QTimer::timeout, this, &VoiceConnection::onSendTick);
 
+    m_videoWorker = new VideoDecodeWorker;
+    m_videoWorker->moveToThread(&m_videoThread);
+    connect(m_videoWorker, &VideoDecodeWorker::frameReady, this,
+            [this](quint32 ssrc, const QString &userId, const QImage &image) {
+                if (VideoStream *stream = m_videoStreams.value(ssrc)) {
+                    ++stream->frames;
+                    stream->hungry = 0;
+                }
+                if (!userId.isEmpty())
+                    emit videoFrame(userId, image);
+            });
+    connect(m_videoWorker, &VideoDecodeWorker::decodeFailed, this,
+            [this](quint32 ssrc, int hungry) {
+                VideoStream *stream = m_videoStreams.value(ssrc);
+                if (!stream)
+                    return;
+                ++stream->dropped;
+                stream->hungry = hungry;
+                if (hungry == 8 || hungry == 40)
+                    sendPictureLossIndication(ssrc);
+            });
+    m_videoThread.start();
+
     m_handshakeWatchdog.setSingleShot(true);
     connect(&m_handshakeWatchdog, &QTimer::timeout, this, [this]() {
         if (m_state == State::Connected || m_state == State::Idle)
@@ -245,6 +279,12 @@ VoiceConnection::VoiceConnection(QObject *parent)
 VoiceConnection::~VoiceConnection()
 {
     teardown();
+    if (m_videoThread.isRunning()) {
+        m_videoThread.quit();
+        m_videoThread.wait(3000);
+    }
+    delete m_videoWorker;
+    m_videoWorker = nullptr;
 }
 
 void VoiceConnection::setState(State state)
@@ -257,7 +297,8 @@ void VoiceConnection::setState(State state)
 
 void VoiceConnection::connectToVoice(const QString &guildId, const QString &channelId,
                                      const QString &userId, const QString &sessionId,
-                                     const QString &token, const QString &endpoint)
+                                     const QString &token, const QString &endpoint,
+                                     quint64 daveGroupId)
 {
     disconnectFromVoice();
 
@@ -267,6 +308,7 @@ void VoiceConnection::connectToVoice(const QString &guildId, const QString &chan
     m_sessionId = sessionId;
     m_token = token;
     m_endpoint = endpoint;
+    m_daveGroupId = daveGroupId;
 
     // Fresh connection, fresh counters. A stale sequence number from the last
     // call is rejected as a bad payload.
@@ -325,6 +367,13 @@ void VoiceConnection::teardown()
     m_speaking = false;
     m_roster.clear();
     m_daveVersion = 0;
+    m_daveGroupId = 0;
+    m_experiments.clear();
+
+    if (m_videoWorker && m_videoThread.isRunning()) {
+        QMetaObject::invokeMethod(m_videoWorker, [w = m_videoWorker]() { w->reset(); },
+                                  Qt::BlockingQueuedConnection);
+    }
     clearVideoStreams();
 
     m_statTicks = 0;
@@ -334,6 +383,9 @@ void VoiceConnection::teardown()
     m_statOpenFailed = 0;
     m_statNoOwner = 0;
     m_statUndecryptable = 0;
+    m_statVideoPackets = 0;
+    m_statVideoDaveFailed = 0;
+    m_statVideoUnknownSsrc = 0;
 
     if (m_dave)
         m_dave->end();
@@ -407,8 +459,12 @@ void VoiceConnection::onSocketDisconnected()
     // Some refusals are about the channel or the account, not about this
     // attempt. Trying again just repeats them, so they are marked so the
     // window can stop rather than loop.
-    // 4004 bad token, 4014 kicked, 4017 needs end-to-end encryption,
-    // 4020 we sent something wrong, 4021 rate limited, 4022 the call ended.
+    // 4004 bad token, 4017 needs end-to-end encryption, 4020 we sent something
+    // wrong, 4021 rate limited, 4022 the call ended.
+    //
+    // 4014 means this voice socket is dead. Discord sends it for a real kick
+    // and also whenever the gateway reconnects. Same token will not come
+    // back; MainWindow rejoins the channel once the gateway can talk again.
     //
     // 4020 is on this list because sending the same wrong message again cannot
     // turn it into a right one. Retrying only kicks the person out repeatedly.
@@ -455,11 +511,15 @@ void VoiceConnection::sendIdentify()
     // The layers we are willing to be sent. Naming a full quality one and a
     // half quality one lets the server drop us to the smaller picture when the
     // connection cannot carry the larger, rather than sending nothing.
+    //
+    // A Go Live viewer offers `screen` rather than `video`; the server still
+    // answers with `video` as the actual media type.
+    const QString streamType = m_viewerOnly ? QStringLiteral("screen") : QStringLiteral("video");
     QJsonArray streams;
-    streams.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("video")},
+    streams.append(QJsonObject{{QStringLiteral("type"), streamType},
                                {QStringLiteral("rid"), QStringLiteral("100")},
                                {QStringLiteral("quality"), 100}});
-    streams.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("video")},
+    streams.append(QJsonObject{{QStringLiteral("type"), streamType},
                                {QStringLiteral("rid"), QStringLiteral("50")},
                                {QStringLiteral("quality"), 50}});
 
@@ -555,6 +615,9 @@ void VoiceConnection::onTextMessage(const QString &message)
     case OpVideo: {
         // Says which stream numbers belong to whom. Without this a picture
         // arrives with no name on it and there is nowhere to put it.
+        //
+        // Simulcast puts each quality on its own SSRC, listed under
+        // `streams`. The top-level `video_ssrc` is only one of them.
         const QString userId = data.value(QStringLiteral("user_id")).toString();
         const auto videoSsrc = static_cast<quint32>(data.value(QStringLiteral("video_ssrc")).toDouble());
         const auto audioSsrc = static_cast<quint32>(data.value(QStringLiteral("audio_ssrc")).toDouble());
@@ -565,23 +628,73 @@ void VoiceConnection::onTextMessage(const QString &message)
         if (audioSsrc != 0)
             m_ssrcToUser.insert(audioSsrc, userId);
 
+        QSet<quint32> keep;
         if (videoSsrc != 0) {
-            m_videoSsrcToUser.insert(videoSsrc, userId);
+            keep.insert(videoSsrc);
+            if (!m_videoRid.contains(videoSsrc))
+                m_videoRid.insert(videoSsrc, 100);
+        }
+
+        const QJsonArray streams = data.value(QStringLiteral("streams")).toArray();
+        for (const QJsonValue &value : streams) {
+            const QJsonObject stream = value.toObject();
+            const auto ssrc = static_cast<quint32>(stream.value(QStringLiteral("ssrc")).toDouble());
+            const auto rtx = static_cast<quint32>(stream.value(QStringLiteral("rtx_ssrc")).toDouble());
+            const bool active = stream.value(QStringLiteral("active")).toBool(true);
+            if (rtx != 0)
+                m_rtxSsrcs.insert(rtx);
+            if (ssrc == 0 || !active)
+                continue;
+            keep.insert(ssrc);
+            const int rid = stream.value(QStringLiteral("rid")).toString().toInt();
+            m_videoRid.insert(ssrc, rid > 0 ? rid : 100);
+            wlog(QStringLiteral("video"),
+                 QStringLiteral("%1 is sending pictures on stream %2 (rid %3)")
+                     .arg(userId)
+                     .arg(ssrc)
+                     .arg(stream.value(QStringLiteral("rid")).toString()));
+        }
+
+        // Keep the decoder for any stream that is still live. Throwing it away
+        // on every quality update was why a share sat on "waiting for a
+        // keyframe" and then drew garbage once one finally arrived.
+        const QList<quint32> old = m_videoSsrcToUser.keys(userId);
+        for (quint32 ssrc : old) {
+            if (keep.contains(ssrc))
+                continue;
+            m_videoSsrcToUser.remove(ssrc);
+            m_videoRid.remove(ssrc);
+            delete m_videoStreams.take(ssrc);
+        }
+
+        bool sending = false;
+        quint32 bestSsrc = 0;
+        int bestRid = -1;
+        for (quint32 ssrc : keep) {
+            m_videoSsrcToUser.insert(ssrc, userId);
+            sending = true;
+            const int rid = m_videoRid.value(ssrc, 0);
+            if (rid >= bestRid) {
+                bestRid = rid;
+                bestSsrc = ssrc;
+            }
+        }
+
+        if (bestSsrc != 0)
+            m_bestVideoSsrc.insert(userId, bestSsrc);
+        else
+            m_bestVideoSsrc.remove(userId);
+
+        if (sending && streams.isEmpty()) {
             wlog(QStringLiteral("video"), QStringLiteral("%1 is sending pictures on stream %2")
                                               .arg(userId)
                                               .arg(videoSsrc));
+        }
 
-            // Name it explicitly now that we know it, rather than leaving it
-            // to the catch-all.
-            sendVideoWants();
+        if (sending) {
+            refreshVideoWants();
             emit videoAvailable(userId, true);
         } else {
-            // Zero means they turned it off.
-            const auto stale = m_videoSsrcToUser.key(userId, 0);
-            if (stale != 0) {
-                m_videoSsrcToUser.remove(stale);
-                delete m_videoStreams.take(stale);
-            }
             emit videoAvailable(userId, false);
         }
         break;
@@ -798,6 +911,11 @@ void VoiceConnection::handleReady(const QJsonObject &data)
     for (const QJsonValue &value : modes)
         m_offeredModes.append(value.toString());
 
+    m_experiments.clear();
+    const QJsonArray experiments = data.value(QStringLiteral("experiments")).toArray();
+    for (const QJsonValue &value : experiments)
+        m_experiments.append(value.toString());
+
     wlog(QStringLiteral("voice"), QStringLiteral("ready: ssrc=%1 server=%2:%3 modes=[%4]")
                                       .arg(m_ssrc)
                                       .arg(m_serverAddress)
@@ -817,8 +935,11 @@ void VoiceConnection::handleSessionDescription(const QJsonObject &data)
     for (const QJsonValue &value : key)
         m_secretKey.append(static_cast<char>(value.toInt()));
 
-    wlog(QStringLiteral("voice"), QStringLiteral("session ready: mode=%1 key=%2 bytes")
-                                      .arg(m_mode).arg(m_secretKey.size()));
+    const QString videoCodec = data.value(QStringLiteral("video_codec")).toString();
+    wlog(QStringLiteral("voice"), QStringLiteral("session ready: mode=%1 key=%2 bytes video=%3")
+                                      .arg(m_mode)
+                                      .arg(m_secretKey.size())
+                                      .arg(videoCodec.isEmpty() ? QStringLiteral("none") : videoCodec));
 
     if (m_secretKey.size() != crypto_aead_xchacha20poly1305_ietf_KEYBYTES) {
         emit failed(QStringLiteral("Discord sent a key of an unexpected size."));
@@ -833,7 +954,8 @@ void VoiceConnection::handleSessionDescription(const QJsonObject &data)
         wlog(QStringLiteral("voice"), QStringLiteral("this call is end-to-end encrypted, version %1")
                                           .arg(m_daveVersion));
 
-        if (!m_dave->begin(m_daveVersion, m_channelId.toULongLong(), m_userId)) {
+        const quint64 groupId = m_daveGroupId != 0 ? m_daveGroupId : m_channelId.toULongLong();
+        if (!m_dave->begin(m_daveVersion, groupId, m_userId)) {
             emit failed(QStringLiteral("could not start the encryption group"));
             setState(State::Failed);
             return;
@@ -934,6 +1056,30 @@ void VoiceConnection::sendSelectProtocol(const QString &address, quint16 port)
                                       .arg(address).arg(port).arg(wanted));
     m_stage = QStringLiteral("waiting for the encryption key");
 
+    // Without this list the server assumes we cannot decode video, and either
+    // sends nothing or sends a codec we never open. H.264 on 101 is the
+    // fallback every official client still understands.
+    QJsonArray codecs;
+    codecs.append(QJsonObject{
+        {QStringLiteral("name"), QStringLiteral("opus")},
+        {QStringLiteral("type"), QStringLiteral("audio")},
+        {QStringLiteral("priority"), 1000},
+        {QStringLiteral("payload_type"), 120},
+    });
+    codecs.append(QJsonObject{
+        {QStringLiteral("name"), QStringLiteral("H264")},
+        {QStringLiteral("type"), QStringLiteral("video")},
+        {QStringLiteral("priority"), 1000},
+        {QStringLiteral("payload_type"), static_cast<int>(m_videoPayloadType)},
+        {QStringLiteral("rtx_payload_type"), static_cast<int>(m_rtxPayloadType)},
+        {QStringLiteral("encode"), false},
+        {QStringLiteral("decode"), true},
+    });
+
+    QJsonArray experiments;
+    for (const QString &name : m_experiments)
+        experiments.append(name);
+
     sendJson(QJsonObject{
         {QStringLiteral("op"), OpSelectProtocol},
         {QStringLiteral("d"),
@@ -945,6 +1091,9 @@ void VoiceConnection::sendSelectProtocol(const QString &address, quint16 port)
                   {QStringLiteral("port"), port},
                   {QStringLiteral("mode"), wanted},
               }},
+             {QStringLiteral("codecs"), codecs},
+             {QStringLiteral("rtc_connection_id"), QUuid::createUuid().toString(QUuid::WithoutBraces)},
+             {QStringLiteral("experiments"), experiments},
          }},
     });
 }
@@ -987,7 +1136,7 @@ QByteArray VoiceConnection::encryptFrame(const QByteArray &rtpHeader, const QByt
 }
 
 bool VoiceConnection::decryptFrame(const QByteArray &packet, QByteArray &opusFrame, quint32 &ssrc,
-                                   bool *marker)
+                                   bool *marker, quint16 *sequence)
 {
     // The top bit of the second byte marks the last packet of a video frame.
     // Sound does not use it, and video cannot be rebuilt without it.
@@ -1006,6 +1155,8 @@ bool VoiceConnection::decryptFrame(const QByteArray &packet, QByteArray &opusFra
     const auto *bytes = reinterpret_cast<const quint8 *>(packet.constData());
     ssrc = (static_cast<quint32>(bytes[8]) << 24) | (static_cast<quint32>(bytes[9]) << 16)
         | (static_cast<quint32>(bytes[10]) << 8) | static_cast<quint32>(bytes[11]);
+    if (sequence)
+        *sequence = static_cast<quint16>((bytes[2] << 8) | bytes[3]);
 
     unsigned char nonce[crypto_aead_xchacha20poly1305_ietf_NPUBBYTES];
     std::memset(nonce, 0, sizeof(nonce));
@@ -1033,6 +1184,17 @@ bool VoiceConnection::decryptFrame(const QByteArray &packet, QByteArray &opusFra
         if (opusFrame.size() < extensionBodyBytes)
             return false;
         opusFrame.remove(0, extensionBodyBytes);
+    }
+
+    // RTP padding is counted in the last byte and sits after the real payload.
+    // Leaving it on a picture makes the group seal look missing.
+    if ((bytes[0] & 0x20) != 0) {
+        if (opusFrame.isEmpty())
+            return false;
+        const int pad = static_cast<quint8>(opusFrame.at(opusFrame.size() - 1));
+        if (pad == 0 || pad > opusFrame.size())
+            return false;
+        opusFrame.chop(pad);
     }
 
     return true;
@@ -1065,16 +1227,17 @@ void VoiceConnection::startAudio()
         m_inputStream = m_input->start();
     }
 
-    m_output = new QAudioSink(findOutput(m_outputDeviceId), format, this);
+    // Speakers only belong on the call itself. A share's sound is mixed into
+    // that sink so the headset is driven by one clock, not two.
+    if (!m_audioHost) {
+        m_output = new QAudioSink(findOutput(m_outputDeviceId), format, this);
 
-    // Room for eight frames. Too small and the sound card runs dry between
-    // ticks, which is heard as clicking; this must be set before starting.
-    m_output->setBufferSize(FrameBytes * 8);
-    m_outputStream = m_output->start();
-
-    // The speaker exists now, so whatever the slider was set to can finally
-    // be applied to it.
-    m_output->setVolume(m_outputVolume / 100.0);
+        // Four frames of hardware cushion. Eight used to sit under a growing
+        // jitter queue and the call sounded a beat behind.
+        m_output->setBufferSize(FrameBytes * 4);
+        m_outputStream = m_output->start();
+        m_output->setVolume(1.0);
+    }
 
     m_captureBuffer.clear();
     m_rtpSequence = static_cast<quint16>(QRandomGenerator::global()->bounded(65535));
@@ -1084,7 +1247,9 @@ void VoiceConnection::startAudio()
     m_sendTimer.start();
     m_playTimer.start();
 
-    wlog(QStringLiteral("voice"), QStringLiteral("audio running"));
+    wlog(QStringLiteral("voice"),
+         m_audioHost ? QStringLiteral("share audio will mix into the call")
+                     : QStringLiteral("audio running"));
 }
 
 void VoiceConnection::stopAudio()
@@ -1114,6 +1279,7 @@ void VoiceConnection::stopAudio()
     }
     m_streams.clear();
     m_captureBuffer.clear();
+    m_externalPcm.clear();
 }
 
 void VoiceConnection::onSendTick()
@@ -1256,6 +1422,11 @@ void VoiceConnection::reportAudioStats()
         line += QStringLiteral(", %1 we could not open").arg(m_statOpenFailed);
     if (m_statUndecryptable > 0)
         line += QStringLiteral(", %1 rejected by the transport").arg(m_statUndecryptable);
+    if (m_statVideoPackets > 0 || m_statVideoDaveFailed > 0 || m_statVideoUnknownSsrc > 0)
+        line += QStringLiteral(", video packets %1 (unreadable %2, unnamed %3)")
+                    .arg(m_statVideoPackets)
+                    .arg(m_statVideoDaveFailed)
+                    .arg(m_statVideoUnknownSsrc);
 
     wlog(QStringLiteral("voice"), line);
 
@@ -1273,7 +1444,7 @@ void VoiceConnection::reportAudioStats()
                  .arg(stream->packets)
                  .arg(stream->frames)
                  .arg(stream->dropped)
-                 .arg(stream->decoder.hungryFrames()));
+                 .arg(stream->hungry));
 
         stream->packets = 0;
         stream->frames = 0;
@@ -1286,6 +1457,9 @@ void VoiceConnection::reportAudioStats()
     m_statOpenFailed = 0;
     m_statNoOwner = 0;
     m_statUndecryptable = 0;
+    m_statVideoPackets = 0;
+    m_statVideoDaveFailed = 0;
+    m_statVideoUnknownSsrc = 0;
 }
 
 void VoiceConnection::onUdpReadyRead()
@@ -1307,8 +1481,19 @@ void VoiceConnection::onUdpReadyRead()
         // Sound and pictures share this socket and are told apart by the
         // payload type in the second byte. Deafening silences the sound and
         // leaves the pictures alone, the same as the real client.
-        const bool isVideo = packet.size() > 1
-            && (static_cast<quint8>(packet[1]) & 0x7F) == VideoPayloadType;
+        //
+        // RTCP (sender reports, NACKs) uses 200-207 and is not media. Counting
+        // those as failed decrypts made a working call look broken.
+        const quint8 payloadType = packet.size() > 1
+            ? static_cast<quint8>(packet[1]) & 0x7F
+            : 0;
+        if (payloadType >= 200 && payloadType <= 207)
+            continue;
+        if (payloadType == m_rtxPayloadType)
+            continue;
+
+        const bool isVideo = payloadType == m_videoPayloadType
+            || payloadType == VideoPayloadType;
 
         if (m_deafened && !isVideo)
             continue;
@@ -1316,13 +1501,17 @@ void VoiceConnection::onUdpReadyRead()
         QByteArray payload;
         quint32 ssrc = 0;
         bool marker = false;
-        if (!decryptFrame(packet, payload, ssrc, &marker)) {
+        quint16 sequence = 0;
+        if (!decryptFrame(packet, payload, ssrc, &marker, &sequence)) {
             ++m_statUndecryptable;
             continue;
         }
 
         if (isVideo) {
-            handleVideoPacket(ssrc, payload, marker);
+            ++m_statVideoPackets;
+            if (m_rtxSsrcs.contains(ssrc))
+                continue;
+            handleVideoPacket(ssrc, payload, marker, sequence);
             continue;
         }
 
@@ -1361,20 +1550,126 @@ void VoiceConnection::clearVideoStreams()
     qDeleteAll(m_videoStreams);
     m_videoStreams.clear();
     m_videoSsrcToUser.clear();
+    m_videoRid.clear();
+    m_bestVideoSsrc.clear();
+    m_rtxSsrcs.clear();
 }
 
-void VoiceConnection::handleVideoPacket(quint32 ssrc, const QByteArray &payload, bool endOfFrame)
+void VoiceConnection::handleVideoPacket(quint32 ssrc, const QByteArray &payload, bool endOfFrame,
+                                        quint16 sequence)
 {
     if (payload.isEmpty())
         return;
 
     const QString userId = m_videoSsrcToUser.value(ssrc);
 
+    // Simulcast sends the same picture several times. Drawing every layer is
+    // wasted work and two decoders fighting over one tile.
+    const quint32 best = userId.isEmpty() ? 0 : m_bestVideoSsrc.value(userId);
+    if (best != 0 && best != ssrc)
+        return;
+
     VideoStream &stream = *videoStreamFor(ssrc);
     ++stream.packets;
 
+    if (!stream.haveSeq) {
+        stream.nextSeq = sequence;
+        stream.haveSeq = true;
+        ingestVideoPayload(stream, ssrc, userId, payload, endOfFrame);
+        stream.nextSeq = static_cast<quint16>(sequence + 1);
+        return;
+    }
+
+    const quint16 dist = static_cast<quint16>(sequence - stream.nextSeq);
+    if (dist == 0) {
+        ingestVideoPayload(stream, ssrc, userId, payload, endOfFrame);
+        stream.nextSeq = static_cast<quint16>(stream.nextSeq + 1);
+        flushHeldVideo(stream, ssrc, userId);
+        return;
+    }
+
+    if (dist < 0x8000 && dist <= 64) {
+        // Arrived early. Hold it and wait for the hole — treating this as
+        // loss is what dropped a whole busy 1080p picture when two packets
+        // swapped places.
+        stream.held.insert(sequence, {payload, endOfFrame});
+        bool markerHeld = false;
+        for (const HeldPacket &held : stream.held) {
+            if (held.endOfFrame) {
+                markerHeld = true;
+                break;
+            }
+        }
+        if ((markerHeld && !stream.held.contains(stream.nextSeq)) || stream.held.size() >= 64)
+            skipLostVideo(stream, ssrc, userId);
+        return;
+    }
+
+    if (dist < 0x8000) {
+        // Jumped far ahead: a burst was lost, not reordered.
+        stream.gap = true;
+        stream.held.clear();
+        stream.assembling.clear();
+        ingestVideoPayload(stream, ssrc, userId, payload, endOfFrame);
+        stream.nextSeq = static_cast<quint16>(sequence + 1);
+        return;
+    }
+
+    // Duplicate or late. Already assembled past it.
+}
+
+void VoiceConnection::flushHeldVideo(VideoStream &stream, quint32 ssrc, const QString &userId)
+{
+    while (true) {
+        const auto it = stream.held.constFind(stream.nextSeq);
+        if (it == stream.held.cend())
+            break;
+        const HeldPacket pkt = it.value();
+        stream.held.remove(stream.nextSeq);
+        ingestVideoPayload(stream, ssrc, userId, pkt.payload, pkt.endOfFrame);
+        stream.nextSeq = static_cast<quint16>(stream.nextSeq + 1);
+    }
+}
+
+void VoiceConnection::skipLostVideo(VideoStream &stream, quint32 ssrc, const QString &userId)
+{
+    if (stream.held.isEmpty())
+        return;
+    if (!stream.assembling.isEmpty())
+        stream.gap = true;
+
+    quint16 bestDist = 0xFFFF;
+    quint16 bestSeq = stream.nextSeq;
+    for (auto it = stream.held.cbegin(); it != stream.held.cend(); ++it) {
+        const quint16 dist = static_cast<quint16>(it.key() - stream.nextSeq);
+        if (dist < 0x8000 && dist < bestDist) {
+            bestDist = dist;
+            bestSeq = it.key();
+        }
+    }
+    if (bestDist == 0xFFFF)
+        return;
+    stream.nextSeq = bestSeq;
+    flushHeldVideo(stream, ssrc, userId);
+}
+
+void VoiceConnection::ingestVideoPayload(VideoStream &stream, quint32 ssrc, const QString &userId,
+                                         const QByteArray &payload, bool endOfFrame)
+{
     const auto *bytes = reinterpret_cast<const quint8 *>(payload.constData());
     const int kind = bytes[0] & 0x1F;
+
+    if (!stream.loggedFirst) {
+        stream.loggedFirst = true;
+        wlog(QStringLiteral("video"),
+             QStringLiteral("first packet from %1: %2 bytes, nal %3")
+                 .arg(userId.isEmpty() ? QString::number(ssrc) : userId)
+                 .arg(payload.size())
+                 .arg(kind));
+    }
+
+    if (stream.assembling.isEmpty())
+        stream.assembling.reserve(65536);
 
     // Every part is written with a four byte marker in front, which is how the
     // decoder finds where each one begins.
@@ -1397,6 +1692,11 @@ void VoiceConnection::handleVideoPacket(quint32 ssrc, const QByteArray &payload,
             stream.assembling += payload.mid(offset, size);
             offset += size;
         }
+        // Leftover on the last packet is the group seal. Leftover on an
+        // earlier STAP is an incomplete length, and stuffing it between
+        // SPS/PPS and the IDR is how Relic's share came out as invalid data.
+        if (endOfFrame && offset < payload.size())
+            stream.assembling += payload.mid(offset);
     } else if (kind == 28) {
         // One large part, split. The first packet carries a start flag and
         // the real type; the header has to be rebuilt from the two bytes.
@@ -1414,6 +1714,7 @@ void VoiceConnection::handleVideoPacket(quint32 ssrc, const QByteArray &payload,
         } else if (stream.assembling.isEmpty()) {
             // Joined a stream part way through a part. Nothing useful can be
             // built from the middle, so wait for the next beginning.
+            stream.gap = true;
             return;
         }
 
@@ -1423,24 +1724,68 @@ void VoiceConnection::handleVideoPacket(quint32 ssrc, const QByteArray &payload,
         return;
     }
 
-    if (!endOfFrame || stream.assembling.isEmpty())
+    if (endOfFrame)
+        finishVideoPicture(stream, ssrc, userId);
+}
+
+void VoiceConnection::finishVideoPicture(VideoStream &stream, quint32 ssrc, const QString &userId)
+{
+    if (stream.assembling.isEmpty())
         return;
 
-    const QByteArray picture = stream.assembling;
+    const bool gapped = stream.gap;
+    QByteArray picture = stream.assembling;
     stream.assembling.clear();
+    stream.gap = false;
 
-    if (!stream.decoder.isOpen() && !stream.decoder.open())
-        return;
-
-    QImage image;
-    if (!stream.decoder.decode(picture, image)) {
+    if (gapped) {
         ++stream.dropped;
+        sendPictureLossIndication(ssrc);
         return;
     }
 
-    ++stream.frames;
-    if (!userId.isEmpty())
-        emit videoFrame(userId, image);
+    if (stream.frames == 0 && stream.dropped == 0) {
+        const bool marked = picture.size() >= 2
+            && static_cast<quint8>(picture[picture.size() - 2]) == 0xFA
+            && static_cast<quint8>(picture[picture.size() - 1]) == 0xFA;
+        wlog(QStringLiteral("video"),
+             QStringLiteral("assembled a picture from %1: %2 bytes, group seal %3")
+                 .arg(userId.isEmpty() ? QString::number(ssrc) : userId)
+                 .arg(picture.size())
+                 .arg(marked ? QStringLiteral("present") : QStringLiteral("missing")));
+    }
+
+    // Transport decrypt only unwraps the packet. The picture itself is still
+    // sealed for the group, the same way the sound is, and has to be opened
+    // before the decoder will see H.264 rather than ciphertext.
+    if (m_daveVersion > 0) {
+        if (userId.isEmpty()) {
+            ++m_statVideoUnknownSsrc;
+            ++stream.dropped;
+            return;
+        }
+        picture = m_dave->decrypt(userId, picture, true);
+        if (picture.isEmpty()) {
+            ++m_statVideoDaveFailed;
+            ++stream.dropped;
+            if (stream.dropped == 1 || (stream.dropped % 60) == 0) {
+                wlog(QStringLiteral("video"),
+                     QStringLiteral("could not open a picture from %1 (%2 so far)")
+                         .arg(userId)
+                         .arg(stream.dropped));
+            }
+            sendPictureLossIndication(ssrc);
+            return;
+        }
+    }
+
+    if (!m_videoWorker)
+        return;
+
+    VideoDecodeWorker *worker = m_videoWorker;
+    QMetaObject::invokeMethod(worker, [worker, ssrc, userId, picture]() {
+        worker->submit(ssrc, userId, picture);
+    }, Qt::QueuedConnection);
 }
 
 VoiceConnection::IncomingStream *VoiceConnection::streamFor(quint32 ssrc)
@@ -1459,33 +1804,28 @@ VoiceConnection::IncomingStream *VoiceConnection::streamFor(quint32 ssrc)
     return &m_streams.insert(ssrc, stream).value();
 }
 
-// Hands one 20 millisecond slice of sound to the speakers, every 20
-// milliseconds, no matter how unevenly the network delivered it.
-//
-// Two things happen here that cannot happen packet by packet:
-//
-//   - Several people talking at once are added together. Writing two streams
-//     to the sound card one after the other does not mix them, it queues them,
-//     which is heard as chopped up and rushed speech.
-//   - A frame that has not arrived yet is replaced by Opus's own guess at what
-//     it would have been, so a late packet is a soft blur instead of a click.
-void VoiceConnection::onPlayTick()
+void VoiceConnection::catchUpQueues()
 {
-    if (!m_outputStream || m_streams.isEmpty())
-        return;
+    for (IncomingStream &stream : m_streams) {
+        while (stream.waiting.size() > CatchupFrames)
+            stream.waiting.removeFirst();
+    }
+}
 
-    // Never run ahead of the sound card.
-    if (m_output && m_output->bytesFree() < FrameBytes)
-        return;
+void VoiceConnection::offerExternalPcm(const QByteArray &pcm)
+{
+    if (pcm.size() == FrameBytes)
+        m_externalPcm = pcm;
+}
 
+QByteArray VoiceConnection::mixWaitingStreams()
+{
     qint32 mixed[FrameSamples * Channels] = {0};
     bool anyone = false;
 
     for (auto it = m_streams.begin(); it != m_streams.end(); ++it) {
         IncomingStream &stream = it.value();
 
-        // Wait for a small cushion before starting, so the first moments are
-        // not immediately starved.
         if (!stream.started) {
             if (stream.waiting.size() < JitterFrames)
                 continue;
@@ -1496,13 +1836,11 @@ void VoiceConnection::onPlayTick()
         if (!stream.waiting.isEmpty()) {
             frame = stream.waiting.takeFirst();
         } else {
-            // Nothing arrived in time. Let Opus invent a plausible frame
-            // rather than leaving a hole.
             frame = QByteArray(FrameBytes, '\0');
             const int samples = opus_decode(stream.decoder, nullptr, 0,
                                             reinterpret_cast<qint16 *>(frame.data()), FrameSamples, 0);
             if (samples <= 0) {
-                stream.started = false;   // rebuild the cushion before resuming
+                stream.started = false;
                 continue;
             }
             frame.resize(samples * Channels * 2);
@@ -1516,22 +1854,72 @@ void VoiceConnection::onPlayTick()
         anyone = true;
     }
 
+    if (!m_externalPcm.isEmpty() && m_externalPcm.size() == FrameBytes) {
+        const auto *extra = reinterpret_cast<const qint16 *>(m_externalPcm.constData());
+        for (int i = 0; i < FrameSamples * Channels; ++i)
+            mixed[i] += extra[i];
+        anyone = true;
+        m_externalPcm.clear();
+    } else {
+        m_externalPcm.clear();
+    }
+
     if (!anyone)
-        return;
+        return {};
+
+    const double gain = m_deafened ? 0.0 : (m_outputVolume / 100.0);
 
     QByteArray out(FrameBytes, '\0');
     auto *target = reinterpret_cast<qint16 *>(out.data());
     for (int i = 0; i < FrameSamples * Channels; ++i)
-        target[i] = static_cast<qint16>(qBound(-32768, mixed[i], 32767));
+        target[i] = static_cast<qint16>(qBound(-32768, static_cast<int>(mixed[i] * gain), 32767));
 
-    m_outputStream->write(out);
+    return out;
+}
+
+// Hands one 20 millisecond slice of sound to the speakers, every 20
+// milliseconds, no matter how unevenly the network delivered it.
+//
+// Two things happen here that cannot happen packet by packet:
+//
+//   - Several people talking at once are added together. Writing two streams
+//     to the sound card one after the other does not mix them, it queues them,
+//     which is heard as chopped up and rushed speech.
+//   - A frame that has not arrived yet is replaced by Opus's own guess at what
+//     it would have been, so a late packet is a soft blur instead of a click.
+void VoiceConnection::onPlayTick()
+{
+    catchUpQueues();
+
+    if (m_audioHost) {
+        const QByteArray mixed = mixWaitingStreams();
+        if (!mixed.isEmpty())
+            m_audioHost->offerExternalPcm(mixed);
+        return;
+    }
+
+    if (!m_outputStream)
+        return;
+
+    // Never run ahead of the sound card. Excess in the queues was already
+    // thrown away above, so sitting this tick out cannot grow into lag.
+    if (m_output && m_output->bytesFree() < FrameBytes)
+        return;
+
+    const QByteArray mixed = mixWaitingStreams();
+    if (mixed.isEmpty())
+        return;
+
+    m_outputStream->write(mixed);
     ++m_statPlayed;
 }
 
 void VoiceConnection::playDecoded(quint32 ssrc, const QByteArray &frame)
 {
     IncomingStream *stream = streamFor(ssrc);
-    if (!stream || !m_outputStream)
+    if (!stream)
+        return;
+    if (!m_outputStream && !m_audioHost)
         return;
 
     QByteArray opusFrame = frame;
@@ -1605,11 +1993,29 @@ void VoiceConnection::sendVideoState()
 // camera switched on later is not missed while we wait to hear about it.
 void VoiceConnection::sendVideoWants()
 {
+    refreshVideoWants();
+}
+
+void VoiceConnection::refreshVideoWants()
+{
     QJsonObject wants;
     wants.insert(QStringLiteral("any"), 100);
 
-    for (auto it = m_videoSsrcToUser.constBegin(); it != m_videoSsrcToUser.constEnd(); ++it)
-        wants.insert(QString::number(it.key()), 100);
+    QJsonObject pixelCounts;
+    QSet<quint32> wanted;
+    for (auto it = m_bestVideoSsrc.constBegin(); it != m_bestVideoSsrc.constEnd(); ++it)
+        wanted.insert(it.value());
+
+    const int pixels = m_viewerOnly ? (1920 * 1080) : (640 * 360);
+
+    for (auto it = m_videoSsrcToUser.constBegin(); it != m_videoSsrcToUser.constEnd(); ++it) {
+        const bool best = wanted.contains(it.key());
+        wants.insert(QString::number(it.key()), best ? 100 : 0);
+        if (best)
+            pixelCounts.insert(QString::number(it.key()), pixels);
+    }
+    if (!pixelCounts.isEmpty())
+        wants.insert(QStringLiteral("pixelCounts"), pixelCounts);
 
     sendJson(QJsonObject{
         {QStringLiteral("op"), OpMediaSinkWants},
@@ -1617,7 +2023,51 @@ void VoiceConnection::sendVideoWants()
     });
 
     wlog(QStringLiteral("video"),
-         QStringLiteral("asked for everyone's pictures (%1 named)").arg(m_videoSsrcToUser.size()));
+         QStringLiteral("asked for everyone's pictures (%1 named)")
+             .arg(wanted.size()));
+
+    if (!m_secretKey.isEmpty()) {
+        for (quint32 ssrc : wanted)
+            sendPictureLossIndication(ssrc);
+    }
+}
+
+void VoiceConnection::sendPictureLossIndication(quint32 mediaSsrc)
+{
+    if (m_secretKey.isEmpty() || m_ssrc == 0 || mediaSsrc == 0)
+        return;
+
+    VideoStream *stream = m_videoStreams.value(mediaSsrc);
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (stream) {
+        if (now - stream->lastPliMs < 750)
+            return;
+        stream->lastPliMs = now;
+    }
+
+    // RTCP PSFB PLI, RFC 4585. Twelve bytes: header, our ssrc, their ssrc.
+    QByteArray rtcp(12, '\0');
+    auto *bytes = reinterpret_cast<quint8 *>(rtcp.data());
+    bytes[0] = 0x81;   // version 2, FMT 1 (PLI)
+    bytes[1] = 206;    // payload-specific feedback
+    bytes[2] = 0;
+    bytes[3] = 2;      // length in 32-bit words minus one
+    bytes[4] = static_cast<quint8>(m_ssrc >> 24);
+    bytes[5] = static_cast<quint8>(m_ssrc >> 16);
+    bytes[6] = static_cast<quint8>(m_ssrc >> 8);
+    bytes[7] = static_cast<quint8>(m_ssrc & 0xFF);
+    bytes[8] = static_cast<quint8>(mediaSsrc >> 24);
+    bytes[9] = static_cast<quint8>(mediaSsrc >> 16);
+    bytes[10] = static_cast<quint8>(mediaSsrc >> 8);
+    bytes[11] = static_cast<quint8>(mediaSsrc & 0xFF);
+
+    // Same scheme as media: the eight-byte RTCP header stays in the clear
+    // and authenticates the encrypted body.
+    const QByteArray packet = encryptFrame(rtcp.left(8), rtcp.mid(8));
+    if (packet.isEmpty())
+        return;
+
+    m_udp.writeDatagram(packet, QHostAddress(m_serverAddress), m_serverPort);
 }
 
 void VoiceConnection::sendSpeaking(bool speaking)
@@ -1659,7 +2109,4 @@ void VoiceConnection::setOutputVolume(int percent)
     // to a null pointer check and was lost. Moving the slider did nothing at
     // any point in the call, which is exactly what it looked like.
     m_outputVolume = qBound(0, percent, 200);
-
-    if (m_output)
-        m_output->setVolume(m_outputVolume / 100.0);
 }
