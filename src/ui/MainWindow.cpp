@@ -535,8 +535,20 @@ QWidget *MainWindow::buildSidebar(QWidget *parent)
     // People under a voice channel are not selectable, so they need their own
     // click handler to open a profile.
     connect(m_channelList, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
-        if (item && item->data(KindRole).toString() == QLatin1String("voicemember"))
-            showProfile(item->data(IdRole).toString(), QCursor::pos());
+        if (!item || item->data(KindRole).toString() != QLatin1String("voicemember"))
+            return;
+
+        // Somebody clicking a LIVE tag is trying to watch, not to read a
+        // profile. Saying so is better than opening the wrong thing and
+        // looking broken.
+        if (item->data(WispRoles::Streaming).toBool()) {
+            statusBar()->showMessage(
+                QStringLiteral("Wisp can hear this call but cannot watch it yet. Video needs a "
+                               "second stream and a decoder, neither of which is built."),
+                6000);
+        }
+
+        showProfile(item->data(IdRole).toString(), QCursor::pos());
     });
 
     return sidebar;
@@ -1369,7 +1381,7 @@ void MainWindow::populateChannelList(bool autoSelectFirst)
 
             QStringList marks;
             if (state.streaming)
-                marks << QStringLiteral("sharing a screen");
+                marks << QStringLiteral("sharing a screen, which Wisp cannot show yet");
             if (state.video)
                 marks << QStringLiteral("camera on");
             if (state.deafened)
