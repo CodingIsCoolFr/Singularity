@@ -34,7 +34,11 @@ constexpr int OpSpeaking = 5;
 constexpr int OpHeartbeatAck = 6;
 constexpr int OpHello = 8;
 constexpr int OpClientsConnect = 11;
+constexpr int OpVideo = 12;
 constexpr int OpClientDisconnect = 13;
+
+// Payload types, carried in the low seven bits of the second RTP byte.
+constexpr int VideoPayloadType = 101;   // H.264
 
 // End-to-end encryption, straight from Discord's opcode table. The ones marked
 // binary do not arrive as JSON.
@@ -320,6 +324,7 @@ void VoiceConnection::teardown()
     m_speaking = false;
     m_roster.clear();
     m_daveVersion = 0;
+    clearVideoStreams();
 
     m_statTicks = 0;
     m_statSent = 0;
@@ -523,6 +528,37 @@ void VoiceConnection::onTextMessage(const QString &message)
         if (!userId.isEmpty()) {
             emit speakingChanged(userId, false);
             m_roster.remove(userId);
+        }
+        break;
+    }
+
+    case OpVideo: {
+        // Says which stream numbers belong to whom. Without this a picture
+        // arrives with no name on it and there is nowhere to put it.
+        const QString userId = data.value(QStringLiteral("user_id")).toString();
+        const auto videoSsrc = static_cast<quint32>(data.value(QStringLiteral("video_ssrc")).toDouble());
+        const auto audioSsrc = static_cast<quint32>(data.value(QStringLiteral("audio_ssrc")).toDouble());
+
+        if (userId.isEmpty())
+            break;
+
+        if (audioSsrc != 0)
+            m_ssrcToUser.insert(audioSsrc, userId);
+
+        if (videoSsrc != 0) {
+            m_videoSsrcToUser.insert(videoSsrc, userId);
+            wlog(QStringLiteral("video"), QStringLiteral("%1 is sending pictures on stream %2")
+                                              .arg(userId)
+                                              .arg(videoSsrc));
+            emit videoAvailable(userId, true);
+        } else {
+            // Zero means they turned it off.
+            const auto stale = m_videoSsrcToUser.key(userId, 0);
+            if (stale != 0) {
+                m_videoSsrcToUser.remove(stale);
+                delete m_videoStreams.take(stale);
+            }
+            emit videoAvailable(userId, false);
         }
         break;
     }
@@ -915,8 +951,14 @@ QByteArray VoiceConnection::encryptFrame(const QByteArray &rtpHeader, const QByt
     return packet;
 }
 
-bool VoiceConnection::decryptFrame(const QByteArray &packet, QByteArray &opusFrame, quint32 &ssrc)
+bool VoiceConnection::decryptFrame(const QByteArray &packet, QByteArray &opusFrame, quint32 &ssrc,
+                                   bool *marker)
 {
+    // The top bit of the second byte marks the last packet of a video frame.
+    // Sound does not use it, and video cannot be rebuilt without it.
+    if (marker)
+        *marker = packet.size() > 1 && (static_cast<quint8>(packet[1]) & 0x80) != 0;
+
     int extensionBodyBytes = 0;
     const int headerLength = clearHeaderLength(packet, &extensionBodyBytes);
     if (headerLength < RtpHeaderSize)
@@ -1170,6 +1212,27 @@ void VoiceConnection::reportAudioStats()
 
     wlog(QStringLiteral("voice"), line);
 
+    // Pictures, counted the same way and for the same reason: a black tile
+    // needs to say whether nothing arrived, or whether it arrived and could
+    // not be turned into a picture.
+    for (auto it = m_videoStreams.begin(); it != m_videoStreams.end(); ++it) {
+        VideoStream *stream = it.value();
+        if (stream->packets == 0)
+            continue;
+
+        wlog(QStringLiteral("video"),
+             QStringLiteral("%1: %2 packets, %3 pictures, %4 incomplete, %5 waiting on a keyframe")
+                 .arg(m_videoSsrcToUser.value(it.key(), QStringLiteral("unknown sender")))
+                 .arg(stream->packets)
+                 .arg(stream->frames)
+                 .arg(stream->dropped)
+                 .arg(stream->decoder.hungryFrames()));
+
+        stream->packets = 0;
+        stream->frames = 0;
+        stream->dropped = 0;
+    }
+
     m_statSent = 0;
     m_statPlayed = 0;
     m_statSealFailed = 0;
@@ -1194,22 +1257,143 @@ void VoiceConnection::onUdpReadyRead()
             continue;
         }
 
-        if (m_deafened)
+        // Sound and pictures share this socket and are told apart by the
+        // payload type in the second byte. Deafening silences the sound and
+        // leaves the pictures alone, the same as the real client.
+        const bool isVideo = packet.size() > 1
+            && (static_cast<quint8>(packet[1]) & 0x7F) == VideoPayloadType;
+
+        if (m_deafened && !isVideo)
             continue;
 
-        QByteArray opusFrame;
+        QByteArray payload;
         quint32 ssrc = 0;
-        if (!decryptFrame(packet, opusFrame, ssrc)) {
+        bool marker = false;
+        if (!decryptFrame(packet, payload, ssrc, &marker)) {
             ++m_statUndecryptable;
             continue;
         }
 
+        if (isVideo) {
+            handleVideoPacket(ssrc, payload, marker);
+            continue;
+        }
+
         // Discord sends tiny keep alive frames that decode to nothing useful.
-        if (opusFrame.size() < 3)
+        if (payload.size() < 3)
             continue;
 
-        playDecoded(ssrc, opusFrame);
+        playDecoded(ssrc, payload);
     }
+}
+
+// Rebuilds one picture out of the packets carrying it, then decodes it.
+//
+// A video frame is far too big for one packet, so H.264 is chopped up on the
+// way out and has to be glued back together here. Three shapes arrive:
+//
+//   - a whole small part on its own
+//   - several small parts bundled into one packet
+//   - one large part split across many packets
+//
+// The last packet of a picture is flagged, which is how we know the picture is
+// complete and can be handed to the decoder.
+VoiceConnection::VideoStream *VoiceConnection::videoStreamFor(quint32 ssrc)
+{
+    const auto it = m_videoStreams.constFind(ssrc);
+    if (it != m_videoStreams.constEnd())
+        return it.value();
+
+    auto *stream = new VideoStream;
+    m_videoStreams.insert(ssrc, stream);
+    return stream;
+}
+
+void VoiceConnection::clearVideoStreams()
+{
+    qDeleteAll(m_videoStreams);
+    m_videoStreams.clear();
+    m_videoSsrcToUser.clear();
+}
+
+void VoiceConnection::handleVideoPacket(quint32 ssrc, const QByteArray &payload, bool endOfFrame)
+{
+    if (payload.isEmpty())
+        return;
+
+    const QString userId = m_videoSsrcToUser.value(ssrc);
+
+    VideoStream &stream = *videoStreamFor(ssrc);
+    ++stream.packets;
+
+    const auto *bytes = reinterpret_cast<const quint8 *>(payload.constData());
+    const int kind = bytes[0] & 0x1F;
+
+    // Every part is written with a four byte marker in front, which is how the
+    // decoder finds where each one begins.
+    static const QByteArray startCode = QByteArray::fromHex("00000001");
+
+    if (kind >= 1 && kind <= 23) {
+        // A whole part, on its own.
+        stream.assembling += startCode;
+        stream.assembling += payload;
+    } else if (kind == 24) {
+        // Several small parts bundled together, each behind its own length.
+        int offset = 1;
+        while (offset + 2 <= payload.size()) {
+            const int size = (static_cast<quint8>(payload[offset]) << 8)
+                | static_cast<quint8>(payload[offset + 1]);
+            offset += 2;
+            if (size <= 0 || offset + size > payload.size())
+                break;
+            stream.assembling += startCode;
+            stream.assembling += payload.mid(offset, size);
+            offset += size;
+        }
+    } else if (kind == 28) {
+        // One large part, split. The first packet carries a start flag and
+        // the real type; the header has to be rebuilt from the two bytes.
+        if (payload.size() < 3)
+            return;
+
+        const quint8 indicator = bytes[0];
+        const quint8 fragment = bytes[1];
+        const bool first = (fragment & 0x80) != 0;
+        const int realKind = fragment & 0x1F;
+
+        if (first) {
+            stream.assembling += startCode;
+            stream.assembling += static_cast<char>((indicator & 0xE0) | realKind);
+        } else if (stream.assembling.isEmpty()) {
+            // Joined a stream part way through a part. Nothing useful can be
+            // built from the middle, so wait for the next beginning.
+            return;
+        }
+
+        stream.assembling += payload.mid(2);
+    } else {
+        // Types 25 to 27 and 29 exist and Discord does not send them.
+        return;
+    }
+
+    if (!endOfFrame || stream.assembling.isEmpty())
+        return;
+
+    const QByteArray picture = stream.assembling;
+    stream.assembling.clear();
+
+    if (!stream.decoder.isOpen() && !stream.decoder.open())
+        return;
+
+    QImage image;
+    if (!stream.decoder.decode(picture, image)) {
+        ++stream.dropped;
+        return;
+    }
+
+    ++stream.frames;
+    if (!userId.isEmpty())
+        emit videoFrame(userId, image);
 }
 
 VoiceConnection::IncomingStream *VoiceConnection::streamFor(quint32 ssrc)

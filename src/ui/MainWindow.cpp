@@ -214,6 +214,22 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
                     m_callView->setSpeaking(m_speakingUsers);
             });
 
+    // Cameras and shared screens, once they have been decoded.
+    connect(m_voice, &VoiceConnection::videoFrame, this,
+            [this](const QString &userId, const QImage &image) {
+                if (m_callView)
+                    m_callView->setFrame(userId, image);
+            });
+
+    connect(m_voice, &VoiceConnection::videoAvailable, this,
+            [this](const QString &userId, bool available) {
+                if (!m_callView)
+                    return;
+                if (!available)
+                    m_callView->dropFrames(userId);
+                m_callView->refresh();
+            });
+
     connect(m_voice, &VoiceConnection::stateChanged, this, [this](VoiceConnection::State state) {
         if (!m_voiceState)
             return;

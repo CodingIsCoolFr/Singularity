@@ -204,6 +204,28 @@ Wisp's CMake finds the result on its own and prints
 `end-to-end encrypted voice is available`. Without it Wisp still builds, and
 says plainly that calls cannot be joined.
 
+### Video, also one off
+
+Showing somebody's camera or shared screen needs an H.264 decoder. Wisp brings
+its own FFmpeg rather than borrowing the one Qt ships, because Qt's comes with
+no headers or link libraries and its version moves whenever Qt does.
+
+Download the **LGPL** shared build — linked dynamically, so nothing here
+imposes the GPL on this project — and unpack it so that
+`third_party/ffmpeg/lib/avcodec.lib` exists:
+
+```powershell
+cd third_party
+Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip" -OutFile ffmpeg.zip
+Expand-Archive ffmpeg.zip -DestinationPath .
+Rename-Item "ffmpeg-n8.1-latest-win64-lgpl-shared-8.1" ffmpeg
+```
+
+CMake prints `video decoding is available` when it finds it, and copies the
+runtime beside the exe. Those files are named `avcodec-62` and so on, while
+Qt's are `avcodec-61`, so the two never collide. Without FFmpeg everything
+else still builds and calls still carry sound.
+
 **`third_party/` is not in this repository.** It is about four gigabytes of
 Opus, libsodium, libdave and OpenSSL, all of it fetched or built by the commands
 above. A fresh clone will not build until you run them.

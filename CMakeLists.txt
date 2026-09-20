@@ -64,6 +64,8 @@ qt_add_executable(Wisp WIN32
     src/ui/ChatView.cpp
     src/ui/CallView.h
     src/ui/CallView.cpp
+    src/core/VideoDecoder.h
+    src/core/VideoDecoder.cpp
     src/ui/MediaCache.h
     src/ui/MediaCache.cpp
     src/ui/ListDelegates.h
@@ -139,6 +141,43 @@ target_link_libraries(Wisp PRIVATE
     # Dwmapi colours the title bar, which belongs to Windows rather than Qt.
     Dwmapi
 )
+
+# ---------------------------------------------------------------------------
+# FFmpeg, for decoding other people's cameras and screens.
+#
+# Wisp brings its own rather than borrowing the one Qt ships. Qt's is built for
+# Qt Multimedia and comes with no headers or link libraries, and its version
+# moves whenever Qt does. These are the LGPL builds, linked dynamically, so
+# nothing here imposes the GPL on this project.
+# ---------------------------------------------------------------------------
+set(FFMPEG_ROOT "${WISP_THIRD_PARTY}/ffmpeg")
+
+if(EXISTS "${FFMPEG_ROOT}/lib/avcodec.lib")
+    set(WISP_HAVE_VIDEO ON)
+    message(STATUS "Wisp: video decoding is available")
+
+    target_compile_definitions(Wisp PRIVATE WISP_HAVE_VIDEO=1)
+    target_include_directories(Wisp PRIVATE "${FFMPEG_ROOT}/include")
+    target_link_libraries(Wisp PRIVATE
+        "${FFMPEG_ROOT}/lib/avcodec.lib"
+        "${FFMPEG_ROOT}/lib/avutil.lib"
+        "${FFMPEG_ROOT}/lib/swscale.lib"
+    )
+
+    # The runtime has to sit beside the exe. These are named avcodec-62 and so
+    # on, which is not what Qt ships, so the two cannot be confused.
+    add_custom_command(TARGET Wisp POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${FFMPEG_ROOT}/bin/avcodec-62.dll"
+            "${FFMPEG_ROOT}/bin/avutil-60.dll"
+            "${FFMPEG_ROOT}/bin/swscale-9.dll"
+            "${FFMPEG_ROOT}/bin/swresample-6.dll"
+            "$<TARGET_FILE_DIR:Wisp>"
+        COMMENT "Copying the FFmpeg runtime beside Wisp")
+else()
+    message(STATUS "Wisp: no FFmpeg in third_party, so video cannot be shown. "
+                   "See the README for how to fetch it.")
+endif()
 
 if(WISP_HAVE_DAVE)
     target_compile_definitions(Wisp PRIVATE WISP_HAVE_DAVE=1)

@@ -1,8 +1,11 @@
 #pragma once
 
+#include "core/VideoDecoder.h"
+
 #include <QAudioFormat>
 #include <QByteArray>
 #include <QHash>
+#include <QImage>
 #include <QJsonObject>
 #include <QList>
 #include <QObject>
@@ -83,6 +86,12 @@ signals:
     void speakingChanged(const QString &userId, bool speaking);
     void failed(const QString &reason);
 
+    // One decoded picture from somebody's camera or shared screen.
+    void videoFrame(const QString &userId, const QImage &image);
+
+    // Somebody turned their camera or screen on, or off.
+    void videoAvailable(const QString &userId, bool available);
+
 private slots:
     void onSocketConnected();
     void onSocketDisconnected();
@@ -130,7 +139,32 @@ private:
 
     // Encryption. Both are the "rtpsize" variants Discord offers today.
     QByteArray encryptFrame(const QByteArray &rtpHeader, const QByteArray &opusFrame);
-    bool decryptFrame(const QByteArray &packet, QByteArray &opusFrame, quint32 &ssrc);
+    bool decryptFrame(const QByteArray &packet, QByteArray &opusFrame, quint32 &ssrc,
+                      bool *marker = nullptr);
+
+    // One person's pictures on their way to the screen.
+    //
+    // Each needs its own decoder, because a decoder holds the earlier frames
+    // that later ones are described as changes from, and its own half built
+    // picture, because one picture spans many packets.
+    struct VideoStream
+    {
+        VideoDecoder decoder;
+        QByteArray assembling;
+        int packets = 0;
+        int frames = 0;
+        int dropped = 0;
+    };
+
+    void handleVideoPacket(quint32 ssrc, const QByteArray &payload, bool endOfFrame);
+
+    // Held by pointer because a decoder cannot be copied, and a QHash copies
+    // what it stores.
+    VideoStream *videoStreamFor(quint32 ssrc);
+    void clearVideoStreams();
+
+    QHash<quint32, QString> m_videoSsrcToUser;
+    QHash<quint32, VideoStream *> m_videoStreams;
 
     void playDecoded(quint32 ssrc, const QByteArray &frame);
 

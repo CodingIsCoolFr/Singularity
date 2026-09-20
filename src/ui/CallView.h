@@ -2,6 +2,7 @@
 
 #include <QFrame>
 #include <QHash>
+#include <QImage>
 #include <QList>
 #include <QSet>
 #include <QString>
@@ -31,6 +32,11 @@ public:
     QString channelId() const { return m_channelId; }
 
     void setSpeaking(const QSet<QString> &userIds);
+
+    // The newest picture from somebody's camera or screen. Only the latest is
+    // kept: a frame that has been replaced was never going to be drawn.
+    void setFrame(const QString &userId, const QImage &image);
+    void dropFrames(const QString &userId);
 
     // Rebuilds from the store. Cheap enough to call whenever anything about
     // the call changes.
@@ -64,4 +70,5 @@ private:
     QString m_channelId;
     QList<Tile> m_tiles;
     QSet<QString> m_speaking;
+    QHash<QString, QImage> m_frames;
 };

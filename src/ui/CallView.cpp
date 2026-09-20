@@ -6,6 +6,7 @@
 
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QResizeEvent>
 
 #include <cmath>
@@ -55,6 +56,29 @@ void CallView::setSpeaking(const QSet<QString> &userIds)
     for (Tile &tile : m_tiles)
         tile.speaking = m_speaking.contains(tile.userId);
     update();
+}
+
+void CallView::setFrame(const QString &userId, const QImage &image)
+{
+    if (userId.isEmpty() || image.isNull())
+        return;
+
+    m_frames.insert(userId, image);
+
+    // Repaint only that tile. Frames arrive thirty times a second and
+    // redrawing the whole grid each time would be wasteful.
+    for (const Tile &tile : m_tiles) {
+        if (tile.userId == userId) {
+            update(tile.box);
+            return;
+        }
+    }
+}
+
+void CallView::dropFrames(const QString &userId)
+{
+    if (m_frames.remove(userId) > 0)
+        update();
 }
 
 void CallView::refresh()
@@ -149,19 +173,38 @@ void CallView::paintEvent(QPaintEvent *event)
             painter.drawRoundedRect(QRectF(tile.box).adjusted(1, 1, -1, -1), 10, 10);
         }
 
-        // The picture, where a camera would be.
-        const UserInfo user = m_store->user(tile.userId);
-        const QUrl url = MediaCache::avatarUrl(tile.userId, user.avatarHash, 160);
-        const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
+        // A live picture fills the tile. Anything else falls back to the
+        // person's photo in the middle.
+        const QImage live = m_frames.value(tile.userId);
 
-        const QRect avatarBox(tile.box.center().x() - AvatarPixels / 2,
-                              tile.box.center().y() - AvatarPixels / 2 - 6, AvatarPixels,
-                              AvatarPixels);
+        if (!live.isNull()) {
+            // Kept to its own shape inside the tile, so a wide screen share is
+            // letterboxed rather than stretched into the wrong proportions.
+            const QSize fitted = live.size().scaled(tile.box.size(), Qt::KeepAspectRatio);
+            const QRect target(tile.box.center().x() - fitted.width() / 2,
+                               tile.box.center().y() - fitted.height() / 2, fitted.width(),
+                               fitted.height());
 
-        const QPixmap face = picture.isNull()
-            ? MediaCache::initialsAvatar(tile.name, AvatarPixels)
-            : MediaCache::circular(picture, AvatarPixels);
-        painter.drawPixmap(avatarBox, face);
+            painter.save();
+            QPainterPath clip;
+            clip.addRoundedRect(tile.box, 10, 10);
+            painter.setClipPath(clip);
+            painter.drawImage(target, live);
+            painter.restore();
+        } else {
+            const UserInfo user = m_store->user(tile.userId);
+            const QUrl url = MediaCache::avatarUrl(tile.userId, user.avatarHash, 160);
+            const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
+
+            const QRect avatarBox(tile.box.center().x() - AvatarPixels / 2,
+                                  tile.box.center().y() - AvatarPixels / 2 - 6, AvatarPixels,
+                                  AvatarPixels);
+
+            const QPixmap face = picture.isNull()
+                ? MediaCache::initialsAvatar(tile.name, AvatarPixels)
+                : MediaCache::circular(picture, AvatarPixels);
+            painter.drawPixmap(avatarBox, face);
+        }
 
         // Name along the bottom.
         QFont nameFont = font();
@@ -195,17 +238,18 @@ void CallView::paintEvent(QPaintEvent *event)
 
             edgeX = badge.left() - 6;
 
-            // Said plainly rather than left as an empty rectangle, so nobody
-            // waits for a picture that is never coming.
-            QFont noteFont = font();
-            noteFont.setPixelSize(10);
-            painter.setFont(noteFont);
-            painter.setPen(QColor(Theme::TextFaint));
-            painter.drawText(QRect(tile.box.left() + 10, tile.box.bottom() - 38,
-                                   tile.box.width() - 20, 14),
-                             Qt::AlignLeft | Qt::AlignVCenter,
-                             tile.streaming ? QStringLiteral("sharing, not shown yet")
-                                            : QStringLiteral("camera on, not shown yet"));
+            // While the picture has not arrived, say what is being waited for
+            // rather than leaving an empty rectangle.
+            if (live.isNull()) {
+                QFont noteFont = font();
+                noteFont.setPixelSize(10);
+                painter.setFont(noteFont);
+                painter.setPen(QColor(Theme::TextFaint));
+                painter.drawText(QRect(tile.box.left() + 10, tile.box.bottom() - 38,
+                                       tile.box.width() - 20, 14),
+                                 Qt::AlignLeft | Qt::AlignVCenter,
+                                 QStringLiteral("waiting for the picture..."));
+            }
         }
 
         // Muted and deafened, bottom right, drawn rather than written.
