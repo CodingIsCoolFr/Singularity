@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/wisp-banner.svg" alt="Wisp" width="100%">
+<img src="assets/wisp-banner.png" alt="Wisp" width="100%">
 
 <br>
 
