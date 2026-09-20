@@ -45,6 +45,8 @@ qt_add_executable(Wisp WIN32
     src/plugin/builtin/QuickTextPlugin.cpp
     src/plugin/builtin/PresenceHintsPlugin.h
     src/plugin/builtin/PresenceHintsPlugin.cpp
+    src/plugin/builtin/AnonymousPlugin.h
+    src/plugin/builtin/AnonymousPlugin.cpp
 
     src/ui/Theme.h
     src/ui/Theme.cpp

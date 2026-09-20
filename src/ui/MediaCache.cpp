@@ -24,10 +24,14 @@ const QStringList kAllowedSuffixes{
 // Counts only large pictures. Avatars, icons and emoji are never evicted.
 constexpr int MaxCachedImages = 250;
 
-// Colours used for the fallback circle when someone has no avatar.
+// The circle drawn behind someone's initials when they have no picture.
+//
+// Greys rather than colours, so a missing avatar sits quietly in the list
+// instead of being the brightest thing on screen. Five of them, far enough
+// apart that two people beside each other rarely match.
 const QStringList kFallbackColours{
-    QStringLiteral("#d97757"), QStringLiteral("#6a9bcc"), QStringLiteral("#788c5d"),
-    QStringLiteral("#b0aea5"), QStringLiteral("#c76f57"),
+    QStringLiteral("#3a3a3a"), QStringLiteral("#4a4a4a"), QStringLiteral("#5a5a5a"),
+    QStringLiteral("#6a6a6a"), QStringLiteral("#2e2e2e"),
 };
 
 } // namespace

@@ -2,6 +2,7 @@
 
 #include "core/AppConfig.h"
 #include "plugin/builtin/MessageLoggerPlugin.h"
+#include "plugin/builtin/AnonymousPlugin.h"
 #include "plugin/builtin/PresenceHintsPlugin.h"
 #include "plugin/builtin/QuickTextPlugin.h"
 #include "plugin/builtin/SilentTypingPlugin.h"
@@ -56,6 +57,7 @@ void PluginHost::registerBuiltins()
     add(std::make_unique<MessageLoggerPlugin>());
     add(std::make_unique<QuickTextPlugin>());
     add(std::make_unique<PresenceHintsPlugin>());
+    add(std::make_unique<AnonymousPlugin>());
 }
 
 void PluginHost::add(std::unique_ptr<Plugin> plugin)

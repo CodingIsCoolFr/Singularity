@@ -48,12 +48,23 @@ public:
     // server looks offline.
     void subscribeToGuild(const QString &guildId, const QString &channelId = QString());
 
+    // The status Discord broadcasts on your behalf.
+    //
+    // "online" normally. "invisible" makes everyone else see you as offline.
+    // Be clear about what that does and does not do: Discord's own servers
+    // still know you are connected, because you are. It hides you from other
+    // people, not from Discord.
+    //
+    // Takes effect at once when already signed in, and is carried by the next
+    // sign-in otherwise.
+    void setPresenceStatus(const QString &status);
+    QString presenceStatus() const { return m_presenceStatus; }
+
     // Joins or leaves a voice channel.
     //
-    // This is only the first half of a voice connection: it puts you in the
-    // channel so everyone sees you there, and makes Discord send back the
-    // voice server details. Carrying actual sound needs an Opus encoder and
-    // libsodium, which this client does not have yet.
+    // This is the first half of a voice connection: it puts you in the channel
+    // so everyone sees you there, and makes Discord send back the voice server
+    // details. VoiceConnection does the rest, and carries the sound.
     void joinVoice(const QString &guildId, const QString &channelId, bool selfMute, bool selfDeaf);
     void leaveVoice(const QString &guildId);
 
@@ -130,4 +141,8 @@ private:
     QString m_voiceChannelId;
     bool m_voiceMuted = false;
     bool m_voiceDeafened = false;
+
+    // What Discord tells everybody else about you. The Anonymous plugin is
+    // the only thing that changes this.
+    QString m_presenceStatus{QStringLiteral("online")};
 };

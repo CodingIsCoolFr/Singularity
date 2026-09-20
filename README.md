@@ -287,6 +287,41 @@ Register a new one in `PluginHost::registerBuiltins()` and add its files to
 | Quick text | on | `:shrug:` and friends expand on send |
 | Silent typing | off | Never sends the typing signal |
 | Presence hints | off | Marks people active when they type, post or join voice, even if Discord reports them offline |
+| Anonymous | on | Strips tracking codes out of links you send, and can hide your typing and your status |
+
+### On Anonymous
+
+Most of the tracking people worry about in the official client is already
+absent from Wisp, not because a plugin switches it off but because the code to
+do it was never written. The plugin's page says so plainly rather than claiming
+it as a feature:
+
+| Never sent | |
+| --- | --- |
+| Analytics events | The official client posts to an endpoint called `/science` as you click around. Wisp never calls it. |
+| Read receipts | Nothing tells Discord which messages you have looked at, or when. |
+| A real fingerprint | The client details sent on sign-in are fixed numbers written into the source, not your actual Windows version, locale or hardware — and they are identical for everyone running Wisp. |
+| Session correlation | The fields the official client fills with identifiers linking your sessions together are sent empty. |
+| Game detection | Nothing looks at what programs you have open. |
+| Third party images | Pictures come only from Discord's own hosts, so a stranger's message cannot make your client contact an address of their choosing. |
+
+What the plugin genuinely does is the part Wisp *does* send and can stop
+sending. Three switches, and only the harmless one starts on:
+
+- **Remove tracking codes from links I send** (on). Share links often carry a
+  code naming who sent them, so opening one tells the site that you and the
+  sender know each other. This takes those out before the message leaves, which
+  protects whoever you send it to as much as it protects you.
+- **Never tell anyone I am typing** (off).
+- **Always appear offline** (off). This hides you from other people. It does
+  **not** hide you from Discord, whose servers still know you are connected,
+  because you are.
+
+The link cleaner is the one piece of Wisp that rewrites what you say before it
+is sent, so it checks itself against six known cases every time it loads. If
+any of them comes out wrong it refuses to touch messages for the rest of the
+session and says so in the log. A tracking code getting through is a small
+harm; a broken link the sender cannot see is a worse one.
 
 **On Presence hints.** It cannot read a hidden status, because Discord sends
 nothing for someone who set themselves invisible. It only notices people who

@@ -21,6 +21,7 @@ constexpr int OpReconnect = 7;
 constexpr int OpInvalidSession = 9;
 constexpr int OpHello = 10;
 constexpr int OpHeartbeatAck = 11;
+constexpr int OpPresenceUpdate = 3;
 constexpr int OpVoiceStateUpdate = 4;
 constexpr int OpGuildSubscribe = 14;
 
@@ -397,8 +398,10 @@ void GatewayClient::sendIdentify()
         {QStringLiteral("api_code_version"), 0},
     };
 
+    // Activities stay empty on purpose. The official client fills this with
+    // whatever game it caught you running, which nobody asked it to look for.
     const QJsonObject presence{
-        {QStringLiteral("status"), QStringLiteral("online")},
+        {QStringLiteral("status"), m_presenceStatus},
         {QStringLiteral("since"), 0},
         {QStringLiteral("activities"), QJsonArray{}},
         {QStringLiteral("afk"), false},
@@ -492,6 +495,30 @@ void GatewayClient::subscribeToGuild(const QString &guildId, const QString &chan
              {QStringLiteral("members"), QJsonArray{}},
              {QStringLiteral("channels"), channels},
              {QStringLiteral("thread_member_lists"), QJsonArray{}},
+         }},
+    });
+}
+
+void GatewayClient::setPresenceStatus(const QString &status)
+{
+    if (status.isEmpty() || status == m_presenceStatus)
+        return;
+
+    m_presenceStatus = status;
+    wlog(QStringLiteral("gateway"), QStringLiteral("presence is now \"%1\"").arg(status));
+
+    // A sign-in that has not happened yet will carry the new value on its own.
+    if (m_state != State::Ready)
+        return;
+
+    sendJson(QJsonObject{
+        {QStringLiteral("op"), OpPresenceUpdate},
+        {QStringLiteral("d"),
+         QJsonObject{
+             {QStringLiteral("since"), 0},
+             {QStringLiteral("activities"), QJsonArray{}},
+             {QStringLiteral("status"), m_presenceStatus},
+             {QStringLiteral("afk"), false},
          }},
     });
 }
