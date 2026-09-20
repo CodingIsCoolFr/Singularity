@@ -54,11 +54,11 @@ void MicShaperPlugin::resetState()
 
 void MicShaperPlugin::reloadSettings()
 {
-    if (!context())
-        return;
-
+    // Straight to the config file, not through the context. The settings page
+    // is usable while the plugin is switched off, and the context does not
+    // exist then.
     const auto get = [this](const char *key, const QVariant &fallback) {
-        return context()->setting(QLatin1String(key), fallback);
+        return settingValue(QLatin1String(key), fallback);
     };
 
     m_highPassOn = get("highPassOn", true).toBool();
@@ -236,18 +236,50 @@ void MicShaperPlugin::onMicrophoneFrame(qint16 *samples, int frames, int channel
         samples[left] = static_cast<qint16>(samples[left] * leftGain);
         samples[right] = static_cast<qint16>(samples[right] * rightGain);
     }
+
+    // Proof, roughly twice a second.
+    //
+    // "It does not seem to work" is impossible to answer from the outside:
+    // the sound has already left by the time anyone can say so. These two
+    // numbers say whether this ran at all, and whether the two channels really
+    // are different afterwards. If they are equal, nothing was placed.
+    if (++m_reportCounter >= 100) {
+        m_reportCounter = 0;
+
+        double leftSum = 0.0;
+        double rightSum = 0.0;
+        for (int frame = 0; frame < frames; ++frame) {
+            const double l = samples[frame * channels] / 32768.0;
+            const double r = samples[frame * channels + 1] / 32768.0;
+            leftSum += l * l;
+            rightSum += r * r;
+        }
+
+        wlog(QStringLiteral("mic"),
+             QStringLiteral("shaped: left %1%, right %2% (pan %3, channels %4)")
+                 .arg(std::sqrt(leftSum / frames) * 100.0, 0, 'f', 1)
+                 .arg(std::sqrt(rightSum / frames) * 100.0, 0, 'f', 1)
+                 .arg(m_pan)
+                 .arg(channels));
+    }
 }
 
 QWidget *MicShaperPlugin::createSettingsWidget(QWidget *parent)
 {
+    // The page can be opened while the plugin is switched off, and nothing has
+    // loaded its saved values in that case. Without this the controls show the
+    // built-in defaults rather than what you last chose.
+    reloadSettings();
+
     auto *page = new QWidget(parent);
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(6);
 
+    // Saves whether the plugin is running or not, then applies at once, so a
+    // slider moved during a call is heard immediately.
     const auto save = [this](const char *key, const QVariant &value) {
-        if (context())
-            context()->setSetting(QLatin1String(key), value);
+        setSettingValue(QLatin1String(key), value);
         reloadSettings();
     };
 
@@ -304,9 +336,7 @@ QWidget *MicShaperPlugin::createSettingsWidget(QWidget *parent)
     gate->setChecked(m_gateOn);
     layout->addWidget(gate);
 
-    auto *gateLevel = makeSlider(0, 100,
-                                 context() ? context()->setting(QStringLiteral("gateLevel"), 12).toInt() : 12,
-                                 page);
+    auto *gateLevel = makeSlider(0, 100, settingValue(QStringLiteral("gateLevel"), 12).toInt(), page);
     auto *gateForm = new QFormLayout;
     gateForm->addRow(QStringLiteral("Opens above"), gateLevel);
     layout->addLayout(gateForm);

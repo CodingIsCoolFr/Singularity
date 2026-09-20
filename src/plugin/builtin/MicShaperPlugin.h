@@ -76,4 +76,8 @@ private:
     // Compressor. Gain moves smoothly rather than jumping, or every syllable
     // would be heard being grabbed.
     double m_compressorGain = 1.0;
+
+    // Counts slices so the log line below happens about twice a second rather
+    // than fifty times.
+    int m_reportCounter = 0;
 };

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/AppConfig.h"
 #include "core/MessageStore.h"
 
 #include <QJsonObject>
@@ -130,6 +131,23 @@ public:
 
 protected:
     PluginContext *context() const { return m_context; }
+
+    // Settings that work whether the plugin is running or not.
+    //
+    // The context only exists while a plugin is loaded, so reading settings
+    // through it means a disabled plugin sees none of its own saved values and
+    // silently throws away any change made to them. Its settings page is still
+    // on screen while it is off, so that is exactly when somebody sets it up.
+    // These go straight to the config file instead.
+    QVariant settingValue(const QString &key, const QVariant &fallback = {}) const
+    {
+        return AppConfig::instance().pluginValue(id(), key, fallback);
+    }
+
+    void setSettingValue(const QString &key, const QVariant &value)
+    {
+        AppConfig::instance().setPluginValue(id(), key, value);
+    }
 
 private:
     PluginContext *m_context = nullptr;
