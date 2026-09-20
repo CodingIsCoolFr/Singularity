@@ -155,7 +155,20 @@ private:
             return;
 
         const double share = qBound(0.0, (x - left) / (right - left), 1.0);
-        apply(static_cast<int>(std::lround(share * 200.0)) - 100);
+        int wanted = static_cast<int>(std::lround(share * 200.0)) - 100;
+
+        // Centre is a place people want to get back to, and hitting one exact
+        // pixel with a mouse is luck. Anything near the middle counts as the
+        // middle; the same for the two ends, so "left ear only" is reachable
+        // without pressing against the edge of the widget.
+        if (std::abs(wanted) <= 4)
+            wanted = 0;
+        else if (wanted <= -96)
+            wanted = -100;
+        else if (wanted >= 96)
+            wanted = 100;
+
+        apply(wanted);
     }
 
     void apply(int pan)
