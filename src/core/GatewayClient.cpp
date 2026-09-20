@@ -25,6 +25,11 @@ constexpr int OpPresenceUpdate = 3;
 constexpr int OpVoiceStateUpdate = 4;
 constexpr int OpGuildSubscribe = 14;
 
+// Go Live. Watching somebody's shared screen is a request on this socket, and
+// the answer is a whole second voice server to connect to.
+constexpr int OpStreamWatch = 20;
+constexpr int OpStreamDelete = 21;
+
 // Capability bitfield the desktop client sends. It tells Discord which
 // optimised payload shapes this client understands.
 constexpr int ClientCapabilities = 161789;
@@ -561,6 +566,41 @@ void GatewayClient::joinVoice(const QString &guildId, const QString &channelId, 
                   QString::fromUtf8(QJsonDocument(request).toJson(QJsonDocument::Compact))));
 
     sendJson(request);
+}
+
+QString GatewayClient::streamKeyFor(const QString &guildId, const QString &channelId,
+                                    const QString &userId)
+{
+    // A private call has no server, and its key is shorter for that reason.
+    if (guildId.isEmpty())
+        return QStringLiteral("call:%1:%2").arg(channelId, userId);
+    return QStringLiteral("guild:%1:%2:%3").arg(guildId, channelId, userId);
+}
+
+void GatewayClient::watchStream(const QString &streamKey)
+{
+    if (streamKey.isEmpty())
+        return;
+
+    wlog(QStringLiteral("stream"), QStringLiteral("asking to watch %1").arg(streamKey));
+
+    sendJson(QJsonObject{
+        {QStringLiteral("op"), OpStreamWatch},
+        {QStringLiteral("d"), QJsonObject{{QStringLiteral("stream_key"), streamKey}}},
+    });
+}
+
+void GatewayClient::stopWatchingStream(const QString &streamKey)
+{
+    if (streamKey.isEmpty())
+        return;
+
+    wlog(QStringLiteral("stream"), QStringLiteral("no longer watching %1").arg(streamKey));
+
+    sendJson(QJsonObject{
+        {QStringLiteral("op"), OpStreamDelete},
+        {QStringLiteral("d"), QJsonObject{{QStringLiteral("stream_key"), streamKey}}},
+    });
 }
 
 void GatewayClient::leaveVoice(const QString &guildId)

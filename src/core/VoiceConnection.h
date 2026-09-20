@@ -56,6 +56,15 @@ public:
                         const QString &sessionId, const QString &token, const QString &endpoint);
     void disconnectFromVoice();
 
+    // Watching rather than taking part.
+    //
+    // A Go Live stream is a second connection of exactly this shape, so the
+    // same class carries it. The differences are that `guildId` is the stream
+    // server's own id rather than a server, and that a viewer has no
+    // microphone: opening one here would capture the sound of the call twice.
+    void setViewerOnly(bool viewerOnly) { m_viewerOnly = viewerOnly; }
+    bool isViewerOnly() const { return m_viewerOnly; }
+
     State state() const { return m_state; }
     QString channelId() const { return m_channelId; }
 
@@ -253,6 +262,7 @@ private:
     int m_statNoOwner = 0;       // sound from an ssrc we cannot name
     int m_statUndecryptable = 0; // transport layer refused the packet
 
+    bool m_viewerOnly = false;
     bool m_muted = false;
     bool m_deafened = false;
     bool m_speaking = false;

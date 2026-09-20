@@ -221,6 +221,23 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
                     m_callView->setFrame(userId, image);
             });
 
+    // The second connection, used only for watching somebody's shared screen.
+    m_streamVoice = new VoiceConnection(this);
+    m_streamVoice->setViewerOnly(true);
+
+    connect(m_streamVoice, &VoiceConnection::videoFrame, this,
+            [this](const QString &, const QImage &image) {
+                // A stream carries one picture, and it belongs to whoever we
+                // asked to watch rather than to the sender named inside it.
+                if (m_callView && !m_watchingUserId.isEmpty())
+                    m_callView->setFrame(m_watchingUserId, image);
+            });
+
+    connect(m_streamVoice, &VoiceConnection::failed, this, [this](const QString &reason) {
+        wlog(QStringLiteral("stream"), QStringLiteral("stream connection failed: %1").arg(reason));
+        statusBar()->showMessage(QStringLiteral("Could not watch that stream: %1").arg(reason), 6000);
+    });
+
     connect(m_voice, &VoiceConnection::videoAvailable, this,
             [this](const QString &userId, bool available) {
                 if (!m_callView)
@@ -721,12 +738,7 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
     m_callView = new CallView(m_store, chat);
     connect(m_callView, &CallView::profileRequested, this,
             [this](const QString &userId) { showProfile(userId, QCursor::pos()); });
-    connect(m_callView, &CallView::watchAttempted, this, [this](const QString &) {
-        statusBar()->showMessage(
-            QStringLiteral("Wisp can hear this call but cannot show video yet. That needs a second "
-                           "stream and a decoder, neither of which is built."),
-            6000);
-    });
+    connect(m_callView, &CallView::watchAttempted, this, &MainWindow::watchStream);
     layout->addWidget(m_callView);
 
     m_messageView = new ChatView(chat);
@@ -994,6 +1006,38 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
                 m_voice->disconnectFromVoice();
             else
                 tryStartVoice();
+        }
+        return;
+    }
+
+    if (eventType == QLatin1String("STREAM_CREATE")) {
+        // Names the stream and the server that will carry it.
+        if (data.value(QStringLiteral("stream_key")).toString() != m_streamKey)
+            return;
+
+        m_streamServerId = data.value(QStringLiteral("rtc_server_id")).toString();
+        wlog(QStringLiteral("stream"), QStringLiteral("stream accepted, server %1").arg(m_streamServerId));
+        tryStartStream();
+        return;
+    }
+
+    if (eventType == QLatin1String("STREAM_SERVER_UPDATE")) {
+        // The other half: where that server is, and the password for it.
+        if (data.value(QStringLiteral("stream_key")).toString() != m_streamKey)
+            return;
+
+        m_streamToken = data.value(QStringLiteral("token")).toString();
+        m_streamEndpoint = data.value(QStringLiteral("endpoint")).toString();
+        wlog(QStringLiteral("stream"), QStringLiteral("stream server: %1").arg(m_streamEndpoint));
+        tryStartStream();
+        return;
+    }
+
+    if (eventType == QLatin1String("STREAM_DELETE")) {
+        if (data.value(QStringLiteral("stream_key")).toString() == m_streamKey) {
+            wlog(QStringLiteral("stream"), QStringLiteral("the stream ended"));
+            statusBar()->showMessage(QStringLiteral("That stream ended."), 4000);
+            stopWatchingStream();
         }
         return;
     }
@@ -2216,6 +2260,75 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 // starting point. Coming back empty, or with nothing that was not already
 // there, means the beginning of the channel, and that is remembered so the
 // same request is not made again every time somebody scrolls up.
+// Asks to watch somebody's shared screen.
+//
+// You have to be in the call first, and you have to stay in it: the stream
+// rides alongside the voice connection rather than replacing it.
+void MainWindow::watchStream(const QString &userId)
+{
+    if (userId.isEmpty() || m_voiceChannelId.isEmpty())
+        return;
+
+    if (m_watchingUserId == userId)
+        return;   // already watching this one
+
+    stopWatchingStream();
+
+    m_watchingUserId = userId;
+    m_streamKey = GatewayClient::streamKeyFor(m_voiceGuildId, m_voiceChannelId, userId);
+    m_streamServerId.clear();
+    m_streamToken.clear();
+    m_streamEndpoint.clear();
+
+    const QString name = m_store->userName(userId);
+    statusBar()->showMessage(
+        QStringLiteral("Asking to watch %1...").arg(name.isEmpty() ? userId : name), 5000);
+
+    m_gateway->watchStream(m_streamKey);
+}
+
+void MainWindow::stopWatchingStream()
+{
+    if (m_streamKey.isEmpty())
+        return;
+
+    m_gateway->stopWatchingStream(m_streamKey);
+
+    if (m_streamVoice)
+        m_streamVoice->disconnectFromVoice();
+    if (m_callView)
+        m_callView->dropFrames(m_watchingUserId);
+
+    m_watchingUserId.clear();
+    m_streamKey.clear();
+    m_streamServerId.clear();
+    m_streamToken.clear();
+    m_streamEndpoint.clear();
+}
+
+// Both halves of a stream's details arrive as separate events, in no fixed
+// order, exactly like a voice connection. This runs on each and only acts once
+// everything is in hand.
+void MainWindow::tryStartStream()
+{
+    if (m_streamServerId.isEmpty() || m_streamToken.isEmpty() || m_streamEndpoint.isEmpty())
+        return;
+
+    const QString sessionId = m_gateway->sessionId();
+    if (sessionId.isEmpty())
+        return;
+
+    wlog(QStringLiteral("stream"), QStringLiteral("opening the stream server %1").arg(m_streamEndpoint));
+
+    // The stream's own server id goes where a guild would, because a stream is
+    // its own place as far as the voice protocol is concerned.
+    m_streamVoice->connectToVoice(m_streamServerId, m_voiceChannelId, m_selfUserId, sessionId,
+                                  m_streamToken, m_streamEndpoint);
+
+    m_streamToken.clear();
+    m_streamEndpoint.clear();
+}
+
 void MainWindow::loadOlderMessages()
 {
     if (m_loadingOlder || m_currentChannelId.isEmpty())

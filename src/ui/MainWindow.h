@@ -159,6 +159,22 @@ private:
     // flight, which scrolling at the top would otherwise fire every few
     // pixels. Channels known to have no more are remembered so reaching the
     // beginning does not ask again for ever.
+    // Watching somebody's shared screen.
+    //
+    // A Go Live stream is a whole second connection, with its own server, and
+    // the call underneath has to stay up while it runs. So there is a second
+    // VoiceConnection here, used only as a viewer.
+    void watchStream(const QString &userId);
+    void stopWatchingStream();
+    void tryStartStream();
+
+    VoiceConnection *m_streamVoice = nullptr;
+    QString m_watchingUserId;
+    QString m_streamKey;
+    QString m_streamServerId;
+    QString m_streamToken;
+    QString m_streamEndpoint;
+
     void loadOlderMessages();
     bool m_loadingOlder = false;
     QSet<QString> m_fullyLoaded;

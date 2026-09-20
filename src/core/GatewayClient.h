@@ -68,6 +68,21 @@ public:
     void joinVoice(const QString &guildId, const QString &channelId, bool selfMute, bool selfDeaf);
     void leaveVoice(const QString &guildId);
 
+    // Asks to watch somebody's shared screen.
+    //
+    // A Go Live stream is not carried by the voice connection. It has its own
+    // server, its own websocket and its own packets, and the voice connection
+    // has to stay up underneath it. This asks the main gateway for that second
+    // server; the answer arrives as STREAM_CREATE and STREAM_SERVER_UPDATE.
+    //
+    // The key names the stream: "guild:<guild>:<channel>:<user>" in a server,
+    // or "call:<channel>:<user>" in a private call.
+    void watchStream(const QString &streamKey);
+    void stopWatchingStream(const QString &streamKey);
+
+    static QString streamKeyFor(const QString &guildId, const QString &channelId,
+                                const QString &userId);
+
     QString voiceChannelId() const { return m_voiceChannelId; }
     QString voiceGuildId() const { return m_voiceGuildId; }
 

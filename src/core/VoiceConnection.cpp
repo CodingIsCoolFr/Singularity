@@ -1058,8 +1058,12 @@ void VoiceConnection::startAudio()
 
     const QAudioFormat format = voiceFormat();
 
-    m_input = new QAudioSource(findInput(m_inputDeviceId), format, this);
-    m_inputStream = m_input->start();
+    // A viewer opens no microphone. The call underneath is already carrying
+    // one, and a second would capture the same room twice.
+    if (!m_viewerOnly) {
+        m_input = new QAudioSource(findInput(m_inputDeviceId), format, this);
+        m_inputStream = m_input->start();
+    }
 
     m_output = new QAudioSink(findOutput(m_outputDeviceId), format, this);
 
@@ -1121,6 +1125,14 @@ void VoiceConnection::onSendTick()
     if (!canCapture) {
         if (++m_statTicks >= 250) {
             m_statTicks = 0;
+
+            // A viewer has no microphone on purpose, so saying so every five
+            // seconds would be noise rather than news.
+            if (m_viewerOnly) {
+                reportAudioStats();
+                return;
+            }
+
             wlog(QStringLiteral("voice"),
                  QStringLiteral("no sound is being captured: microphone %1, encoder %2, key %3")
                      .arg(m_inputStream ? QStringLiteral("open") : QStringLiteral("missing"))
