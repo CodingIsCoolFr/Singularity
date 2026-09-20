@@ -150,6 +150,17 @@ private:
     // not fire the same lookup again every few seconds.
     void requestUnknownName(const QString &userId);
     QSet<QString> m_namesRequested;
+
+    // Scrolling back through a channel.
+    //
+    // `m_loadingOlder` stops a second request going out while one is still in
+    // flight, which scrolling at the top would otherwise fire every few
+    // pixels. Channels known to have no more are remembered so reaching the
+    // beginning does not ask again for ever.
+    void loadOlderMessages();
+    bool m_loadingOlder = false;
+    QSet<QString> m_fullyLoaded;
+    int m_pendingScrollAnchor = -1;
     QString m_pendingVoiceToken;
     QString m_pendingVoiceEndpoint;
     QSet<QString> m_speakingUsers;

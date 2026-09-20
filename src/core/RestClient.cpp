@@ -77,9 +77,13 @@ void RestClient::fetchCurrentUser(ObjectHandler onOk, ErrorHandler onError)
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
-void RestClient::fetchMessages(const QString &channelId, int limit, ArrayHandler onOk, ErrorHandler onError)
+void RestClient::fetchMessages(const QString &channelId, int limit, ArrayHandler onOk,
+                               ErrorHandler onError, const QString &before)
 {
-    const QString path = QStringLiteral("/channels/%1/messages?limit=%2").arg(channelId).arg(limit);
+    QString path = QStringLiteral("/channels/%1/messages?limit=%2").arg(channelId).arg(limit);
+    if (!before.isEmpty())
+        path += QStringLiteral("&before=%1").arg(before);
+
     QNetworkReply *reply = m_network.get(buildRequest(path));
     dispatch(reply, nullptr, std::move(onOk), std::move(onError));
 }

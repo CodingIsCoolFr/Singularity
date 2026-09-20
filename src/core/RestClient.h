@@ -40,7 +40,11 @@ public:
     void fetchCurrentUser(ObjectHandler onOk, ErrorHandler onError);
 
     // GET /channels/{id}/messages?limit=n
-    void fetchMessages(const QString &channelId, int limit, ArrayHandler onOk, ErrorHandler onError);
+    //
+    // `before` asks for the messages older than that one, which is how
+    // scrolling back through a channel works. Leave it empty for the newest.
+    void fetchMessages(const QString &channelId, int limit, ArrayHandler onOk, ErrorHandler onError,
+                       const QString &before = QString());
 
     // POST /channels/{id}/messages
     void sendMessage(const QString &channelId, const QString &content, ObjectHandler onOk, ErrorHandler onError);

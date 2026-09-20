@@ -230,6 +230,15 @@ public:
     void ingestChannelObject(const QJsonObject &rawChannel);
 
     void setHistory(const QString &channelId, const QJsonArray &rawMessages);
+
+    // Puts a batch of older messages on the front of a channel, skipping any
+    // already there. Returns how many were actually new, so the view knows
+    // whether it reached the beginning of the channel.
+    int prependHistory(const QString &channelId, const QJsonArray &rawMessages);
+
+    // The oldest message being held for a channel, which is where the next
+    // request back in time starts from.
+    QString oldestMessageId(const QString &channelId) const;
     void appendMessage(const QJsonObject &rawMessage);
     void updateMessage(const QJsonObject &rawMessage);
     void markDeleted(const QString &channelId, const QString &messageId);

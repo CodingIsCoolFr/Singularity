@@ -311,6 +311,16 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
                              config.value(QStringLiteral("voice/joinDeafened"), false).toBool());
     });
 
+    // Reaching the top of a channel fetches what came before it.
+    //
+    // A margin rather than exactly zero, so the next batch is already on its
+    // way by the time the reader gets there and the scroll does not stop dead
+    // while they wait.
+    connect(m_messageView->verticalScrollBar(), &QScrollBar::valueChanged, this, [this](int value) {
+        if (value <= 120 && m_messageView->verticalScrollBar()->maximum() > 0)
+            loadOlderMessages();
+    });
+
     // Hands each slice of microphone sound to the plugins on its way out.
     //
     // Wired here rather than inside VoiceConnection so the network code keeps
@@ -1599,6 +1609,16 @@ void MainWindow::renderChannel()
     m_messageView->setHtml(html);
     m_renderedChannelId = m_currentChannelId;
 
+    // Older messages were just put on top, so the whole conversation slid
+    // down. Restoring the old number would jump the reader back up by however
+    // much was added; measuring from the bottom keeps the same words under
+    // the same part of the screen.
+    if (m_pendingScrollAnchor >= 0) {
+        bar->setValue(qMax(0, bar->maximum() - m_pendingScrollAnchor));
+        m_pendingScrollAnchor = -1;
+        return;
+    }
+
     // A freshly opened channel always starts at the newest message.
     if (!sameChannel || wasAtBottom)
         bar->setValue(bar->maximum());
@@ -2076,6 +2096,56 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 // have never spoken to is a list of eighteen digit numbers, which is what it
 // was. The reply goes into the store, the store tells the window, and the row
 // redraws with a name and a face.
+// Fetches the batch of messages older than the oldest one on screen.
+//
+// Discord answers "before this id", so the oldest message being held is the
+// starting point. Coming back empty, or with nothing that was not already
+// there, means the beginning of the channel, and that is remembered so the
+// same request is not made again every time somebody scrolls up.
+void MainWindow::loadOlderMessages()
+{
+    if (m_loadingOlder || m_currentChannelId.isEmpty())
+        return;
+    if (m_fullyLoaded.contains(m_currentChannelId))
+        return;
+
+    const QString oldest = m_store->oldestMessageId(m_currentChannelId);
+    if (oldest.isEmpty())
+        return;
+
+    m_loadingOlder = true;
+    const QString channelId = m_currentChannelId;
+
+    // Where the view is now, measured from the bottom. The document is about
+    // to grow above this point, so the number that stays meaningful is the
+    // distance to the end, not the distance from the start.
+    QScrollBar *bar = m_messageView->verticalScrollBar();
+    m_pendingScrollAnchor = bar->maximum() - bar->value();
+
+    m_rest->fetchMessages(
+        channelId, 50,
+        [this, channelId](const QJsonArray &messages) {
+            m_loadingOlder = false;
+
+            const int added = m_store->prependHistory(channelId, messages);
+            if (added == 0) {
+                m_fullyLoaded.insert(channelId);
+                if (channelId == m_currentChannelId) {
+                    statusBar()->showMessage(QStringLiteral("That is the beginning of this channel."),
+                                             4000);
+                }
+            }
+        },
+        [this, channelId](const RestClient::Error &error) {
+            m_loadingOlder = false;
+            m_pendingScrollAnchor = -1;
+            wlog(QStringLiteral("rest"), QStringLiteral("older messages failed for %1: HTTP %2")
+                                             .arg(channelId)
+                                             .arg(error.httpStatus));
+        },
+        oldest);
+}
+
 void MainWindow::requestUnknownName(const QString &userId)
 {
     if (userId.isEmpty() || m_namesRequested.contains(userId) || !m_rest)

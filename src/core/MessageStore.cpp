@@ -829,6 +829,55 @@ void MessageStore::setHistory(const QString &channelId, const QJsonArray &rawMes
     emit channelHistoryChanged(channelId);
 }
 
+int MessageStore::prependHistory(const QString &channelId, const QJsonArray &rawMessages)
+{
+    if (rawMessages.isEmpty())
+        return 0;
+
+    // Discord returns newest first here as well, so this walks backwards to
+    // end up oldest first, the same order the view wants.
+    QList<MessageInfo> older;
+    older.reserve(rawMessages.size());
+    for (auto it = rawMessages.constEnd(); it != rawMessages.constBegin();) {
+        --it;
+        rememberUser(it->toObject().value(QStringLiteral("author")).toObject());
+        MessageInfo message = parseMessage(it->toObject());
+        if (message.channelId.isEmpty())
+            message.channelId = channelId;
+        older.append(message);
+    }
+
+    QList<MessageInfo> &list = m_messages[channelId];
+
+    // Anything already on screen is dropped from the new batch rather than
+    // added twice. Discord can repeat a message at the boundary, and a
+    // duplicate reads as the person having said it twice.
+    QSet<QString> known;
+    known.reserve(list.size());
+    for (const MessageInfo &message : list)
+        known.insert(message.id);
+
+    QList<MessageInfo> fresh;
+    fresh.reserve(older.size());
+    for (const MessageInfo &message : older) {
+        if (!known.contains(message.id))
+            fresh.append(message);
+    }
+
+    if (fresh.isEmpty())
+        return 0;
+
+    list = fresh + list;
+    emit channelHistoryChanged(channelId);
+    return fresh.size();
+}
+
+QString MessageStore::oldestMessageId(const QString &channelId) const
+{
+    const QList<MessageInfo> list = m_messages.value(channelId);
+    return list.isEmpty() ? QString() : list.first().id;
+}
+
 void MessageStore::appendMessage(const QJsonObject &rawMessage)
 {
     rememberUser(rawMessage.value(QStringLiteral("author")).toObject());
