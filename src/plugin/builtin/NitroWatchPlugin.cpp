@@ -17,6 +17,8 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <iterator>
+
 namespace {
 
 // The only two places a real gift link can live.
@@ -35,12 +37,28 @@ bool isOfficialGiftHost(const QString &host)
         || lower == QLatin1String("www.discordapp.com");
 }
 
-// Real gift links, and only those.
-const QRegularExpression &giftPattern()
+// Any web address in a piece of text, taken whole.
+//
+// Whole is the important word. An earlier version of this looked for the gift
+// part directly, which meant that in
+//
+//     https://evil.com/discord.gift/aBcDeF1234567890
+//
+// the pattern matched from "discord.gift/" onwards, and the address it then
+// checked was one it had invented rather than the one that was posted. It
+// passed. Its own check caught it. An address has to be read from its start.
+const QRegularExpression &urlPattern()
 {
     static const QRegularExpression pattern(
-        QStringLiteral(R"((?:https?://)?(?:www\.)?(?:discord\.gift/|discord(?:app)?\.com/gifts/)([A-Za-z0-9]{12,24}))"),
+        QStringLiteral(R"((?:https?://)?[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+(?:/[^\s<>"']*)?)"),
         QRegularExpression::CaseInsensitiveOption);
+    return pattern;
+}
+
+// A gift code on its own: letters and digits, nothing else.
+const QRegularExpression &codePattern()
+{
+    static const QRegularExpression pattern(QStringLiteral(R"(^[A-Za-z0-9]{12,24}$)"));
     return pattern;
 }
 
@@ -65,6 +83,128 @@ QLabel *line(const QString &text, const char *colour, int size, bool bold, QWidg
 }
 
 } // namespace
+
+QStringList NitroWatchPlugin::findGiftCodes(const QString &text)
+{
+    QStringList codes;
+
+    auto matches = urlPattern().globalMatch(text);
+    while (matches.hasNext()) {
+        QString whole = matches.next().captured();
+
+        // Trailing punctuation belongs to the sentence.
+        while (!whole.isEmpty() && QStringLiteral(".,;:!?)]}").contains(whole.back()))
+            whole.chop(1);
+
+        const QUrl url(whole.startsWith(QLatin1String("http"), Qt::CaseInsensitive)
+                           ? whole
+                           : QStringLiteral("https://") + whole);
+        if (!url.isValid())
+            continue;
+
+        const QString host = url.host().toLower();
+        if (!isOfficialGiftHost(host))
+            continue;
+
+        // The address points at Discord. Now the path has to be a gift and
+        // nothing else, because discord.com serves plenty of other things.
+        QString code;
+        const QString path = url.path();
+
+        if (host == QLatin1String("discord.gift")) {
+            // The whole path is the code.
+            if (path.startsWith(QLatin1Char('/')))
+                code = path.mid(1);
+        } else {
+            const QLatin1String prefix("/gifts/");
+            if (path.startsWith(prefix, Qt::CaseInsensitive))
+                code = path.mid(prefix.size());
+        }
+
+        if (code.endsWith(QLatin1Char('/')))
+            code.chop(1);
+
+        // Anything left over means this was a longer path that merely began
+        // like a gift link, so it is not one.
+        if (!codePattern().match(code).hasMatch())
+            continue;
+
+        codes << code;
+    }
+
+    return codes;
+}
+
+void NitroWatchPlugin::onLoad(PluginContext *context)
+{
+    Plugin::onLoad(context);
+    selfCheck();
+}
+
+// Checks the link matcher against cases that must pass and cases that must
+// fail. The failures matter more: treating a phishing domain as a real gift is
+// how somebody loses an account, so a wrong answer here switches the watcher
+// off rather than let it guess.
+void NitroWatchPlugin::selfCheck()
+{
+    struct Case
+    {
+        const char *text;
+        const char *expected;   // empty means nothing should match
+    };
+
+    static const Case cases[] = {
+        // The two real shapes.
+        {"free nitro https://discord.gift/aBcDeF1234567890 go", "aBcDeF1234567890"},
+        {"https://discord.com/gifts/aBcDeF1234567890", "aBcDeF1234567890"},
+        // Written without the scheme, as people paste it.
+        {"discord.gift/aBcDeF1234567890", "aBcDeF1234567890"},
+        // A real path on somebody else's domain. Must not match.
+        {"https://evil.com/discord.gift/aBcDeF1234567890", ""},
+        // A lookalike domain, the usual phishing shape. Must not match.
+        {"https://dlscord.gift/aBcDeF1234567890", ""},
+        {"https://discord-nitro.com/gifts/aBcDeF1234567890", ""},
+        // Too short to be a code.
+        {"discord.gift/short", ""},
+        // Ordinary text.
+        {"nothing to see here", ""},
+        // A real Discord address that is not a gift.
+        {"https://discord.com/channels/123/456", ""},
+        // The gift part buried deeper in somebody else's path.
+        {"https://evil.com/a/b/discord.gift/aBcDeF1234567890", ""},
+        // A subdomain dressed up to read as the real host.
+        {"https://discord.gift.evil.com/aBcDeF1234567890", ""},
+        // Two real ones in one message.
+        {"discord.gift/aBcDeF1234567890 and discord.gift/ZyXwVu0987654321",
+         "aBcDeF1234567890,ZyXwVu0987654321"},
+        // A full stop ending the sentence, not the link.
+        {"here: https://discord.gift/aBcDeF1234567890.", "aBcDeF1234567890"},
+    };
+
+    QStringList failures;
+    for (const Case &test : cases) {
+        const QStringList got = findGiftCodes(QString::fromUtf8(test.text));
+        const QString want = QString::fromUtf8(test.expected);
+
+        const QString actual = got.join(QStringLiteral(","));
+        if (actual != want) {
+            failures << QStringLiteral("\"%1\" gave \"%2\", wanted \"%3\"")
+                            .arg(QString::fromUtf8(test.text), actual, want);
+        }
+    }
+
+    if (failures.isEmpty()) {
+        wlog(QStringLiteral("nitro"),
+             QStringLiteral("link matcher passed its own check, %1 cases")
+                 .arg(static_cast<int>(std::size(cases))));
+        return;
+    }
+
+    m_matcherTrusted = false;
+    wlog(QStringLiteral("nitro"),
+         QStringLiteral("link matcher failed its own check, so nothing will be offered: %1")
+             .arg(failures.join(QStringLiteral("; "))));
+}
 
 void NitroWatchPlugin::onUnload()
 {
@@ -97,23 +237,10 @@ void NitroWatchPlugin::onGatewayEvent(const QString &eventType, const QJsonObjec
     const QString authorId =
         data.value(QStringLiteral("author")).toObject().value(QStringLiteral("id")).toString();
 
-    bool foundReal = false;
+    const QStringList codes = m_matcherTrusted ? findGiftCodes(content) : QStringList();
 
-    auto matches = giftPattern().globalMatch(content);
-    while (matches.hasNext()) {
-        const QRegularExpressionMatch match = matches.next();
-        const QString code = match.captured(1);
-
-        // Check the host of what actually matched, not the pattern's promise.
-        // A link like evil.com/discord.gift/abc would otherwise slip through.
-        const QUrl url(match.captured().startsWith(QLatin1String("http"))
-                           ? match.captured()
-                           : QStringLiteral("https://") + match.captured());
-        if (!isOfficialGiftHost(url.host()))
-            continue;
-
-        foundReal = true;
-
+    for (const QString &code : codes) {
+        // A gift posted twice, or edited afterwards, must not raise two alerts.
         if (m_seen.contains(code))
             continue;
         m_seen.insert(code);
@@ -121,7 +248,7 @@ void NitroWatchPlugin::onGatewayEvent(const QString &eventType, const QJsonObjec
         offer(code, authorId, channelId);
     }
 
-    if (foundReal || !warnFakes())
+    if (!codes.isEmpty() || !warnFakes())
         return;
 
     // Nothing real in this message. If something in it is dressed up as a

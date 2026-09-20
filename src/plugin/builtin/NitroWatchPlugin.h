@@ -39,11 +39,24 @@ public:
     }
     bool enabledByDefault() const override { return false; }
 
+    void onLoad(PluginContext *context) override;
     void onUnload() override;
     void onGatewayEvent(const QString &eventType, const QJsonObject &data) override;
     QWidget *createSettingsWidget(QWidget *parent) override;
 
 private:
+    // Every real gift code in a piece of text, and nothing else.
+    //
+    // Pulled out of the event handler so it can be checked on its own. The
+    // host is verified against what actually matched, so a link that merely
+    // contains "discord.gift/" somewhere in its path is not mistaken for one.
+    static QStringList findGiftCodes(const QString &text);
+
+    // Runs the above over known cases at load. If any comes out wrong the
+    // watcher switches itself off rather than guess at links.
+    void selfCheck();
+    bool m_matcherTrusted = true;
+
     void offer(const QString &code, const QString &fromUserId, const QString &channelId);
     void claim(const QString &code);
     void warnAboutFake(const QString &host);
