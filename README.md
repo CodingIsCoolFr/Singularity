@@ -12,7 +12,7 @@
 
 <br>
 
-### [Download Singularity 0.1.2](https://github.com/CodingIsCoolFr/Singularity/releases/latest)
+### [Download Singularity 0.1.3](https://github.com/CodingIsCoolFr/singularity-updates/releases/latest)
 
 Windows x64 · 54 MB · installs for you only, no administrator prompt
 
@@ -241,6 +241,29 @@ Uninstalling asks whether to remove your saved sign-in and settings, and
 defaults to leaving them. Those live in your roaming profile rather than the
 install folder, so removing the program does not silently take the account
 with it.
+
+### Updating
+
+The program checks for a newer version a few seconds after it starts, and
+quietly: an up to date copy says nothing at all. `Singularity → Check for
+updates...` asks and reports either way. Nothing downloads or installs without
+being agreed to.
+
+It reads **[singularity-updates](https://github.com/CodingIsCoolFr/singularity-updates)**,
+a public repository carrying the installers and no source, rather than this
+one. This repository is private, and a private repository answers `404` to
+anyone without a token, so an updater pointed at it would need a token shipped
+inside the program. Anything shipped inside a program can be taken back out of
+it, and that token would grant read access to all of this. A public channel
+carrying only the installers costs nothing and gives nothing away.
+
+Publishing a release means building the installer and attaching it there:
+
+```powershell
+.\build.ps1 -Installer
+gh release create v0.1.3 "dist-installer\Singularity-0.1.3-setup.exe" `
+    --repo CodingIsCoolFr/singularity-updates
+```
 Requires **Qt 6.10.3 (msvc2022_64)** and **Visual Studio 2022**.
 
 > **The running program locks its own file.** A build while Singularity is open fails
