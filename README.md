@@ -288,6 +288,32 @@ Register a new one in `PluginHost::registerBuiltins()` and add its files to
 | Silent typing | off | Never sends the typing signal |
 | Presence hints | off | Marks people active when they type, post or join voice, even if Discord reports them offline |
 | Anonymous | on | Strips tracking codes out of links you send, and can hide your typing and your status |
+| Nitro watch | off | Spots gift links the instant they are posted and offers a Claim button |
+
+### On Nitro watch, and why it does not claim by itself
+
+Discord does not catch automated accounts by measuring how fast you click. It
+catches them on the shape of the account: a redeem arriving from a session that
+never opened the channel, never scrolled, never moved a pointer, and that does
+it again next week at four in the morning. A random delay hides none of that,
+because none of it is about timing.
+
+Dead codes are also posted deliberately, to see who bites. A person glances at
+a suspicious link and moves on. Anything redeeming on its own takes the bait
+every time, and marks itself doing it.
+
+So the part worth automating is the part that is slow for a person: **noticing**.
+Wisp watches every channel at once, including the ones you are not looking at,
+and takes you from "a gift exists" to one button straight away. You are still
+ahead of anyone who has to read their messages first. The press stays yours,
+which is the part that keeps the account ordinary.
+
+It also refuses to treat a lookalike domain as a gift. `discord.gift` and
+`discord.com/gifts` are the only two places a real one lives, and the host is
+checked on what actually matched rather than trusted from the pattern, so
+`evil.com/discord.gift/abc` is not mistaken for the real thing. Fake links are
+reported instead, because that is the actual danger in a channel full of free
+Nitro posts.
 
 ### On Anonymous
 

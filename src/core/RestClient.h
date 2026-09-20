@@ -74,6 +74,13 @@ public:
     // POST /channels/{id}/invites - makes a share link for a channel.
     void createInvite(const QString &channelId, ObjectHandler onOk, ErrorHandler onError);
 
+    // POST /entitlements/gift-codes/{code}/redeem - claims a gift.
+    //
+    // Only ever called because somebody pressed a button. Nothing in Wisp
+    // calls this on its own, and nothing should: a client that redeems by
+    // itself is the single clearest sign of an automated account.
+    void redeemGift(const QString &code, ObjectHandler onOk, ErrorHandler onError);
+
     // Private notes you keep about someone. Only you can read them.
     void fetchNote(const QString &userId, ObjectHandler onOk, ErrorHandler onError);
     void saveNote(const QString &userId, const QString &note, ObjectHandler onOk, ErrorHandler onError);

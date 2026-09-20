@@ -47,6 +47,8 @@ qt_add_executable(Wisp WIN32
     src/plugin/builtin/PresenceHintsPlugin.cpp
     src/plugin/builtin/AnonymousPlugin.h
     src/plugin/builtin/AnonymousPlugin.cpp
+    src/plugin/builtin/NitroWatchPlugin.h
+    src/plugin/builtin/NitroWatchPlugin.cpp
 
     src/ui/Theme.h
     src/ui/Theme.cpp

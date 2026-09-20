@@ -174,6 +174,15 @@ void RestClient::createInvite(const QString &channelId, ObjectHandler onOk, Erro
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+void RestClient::redeemGift(const QString &code, ObjectHandler onOk, ErrorHandler onError)
+{
+    // An empty body is all this endpoint needs. The official client also names
+    // a payment source, which only matters for gifts that cost something.
+    const QString path = QStringLiteral("/entitlements/gift-codes/%1/redeem").arg(code);
+    QNetworkReply *reply = m_network.post(buildRequest(path), QByteArray("{}"));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::fetchNote(const QString &userId, ObjectHandler onOk, ErrorHandler onError)
 {
     QNetworkReply *reply = m_network.get(buildRequest(QStringLiteral("/users/@me/notes/%1").arg(userId)));
