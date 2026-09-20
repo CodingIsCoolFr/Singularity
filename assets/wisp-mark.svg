@@ -2,26 +2,26 @@
   <title>Wisp</title>
 
   <defs>
-    <linearGradient id="markBeam" x1="0.2" y1="1" x2="0.8" y2="0">
-      <stop offset="0" stop-color="#5a6fd0"/>
-      <stop offset="0.5" stop-color="#7aa2f7"/>
-      <stop offset="1" stop-color="#7dcfff"/>
+    <linearGradient id="markSteel" x1="0.2" y1="1" x2="0.8" y2="0">
+      <stop offset="0" stop-color="#4a4a4a"/>
+      <stop offset="0.5" stop-color="#9c9c9c"/>
+      <stop offset="1" stop-color="#ededed"/>
     </linearGradient>
 
     <linearGradient id="markThread" x1="0" y1="1" x2="0.4" y2="0">
-      <stop offset="0" stop-color="#7aa2f7" stop-opacity="0.2"/>
-      <stop offset="0.45" stop-color="#7aa2f7" stop-opacity="1"/>
-      <stop offset="1" stop-color="#7dcfff" stop-opacity="0.35"/>
+      <stop offset="0" stop-color="#8f8f8f" stop-opacity="0.2"/>
+      <stop offset="0.45" stop-color="#d4d4d4" stop-opacity="1"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.35"/>
     </linearGradient>
 
     <radialGradient id="markGlow" cx="0.5" cy="0.62" r="0.5">
-      <stop offset="0" stop-color="#7aa2f7" stop-opacity="0.26"/>
-      <stop offset="1" stop-color="#7aa2f7" stop-opacity="0"/>
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
     </radialGradient>
   </defs>
 
   <!-- squircle, the same shape the server rail morphs into -->
-  <rect width="256" height="256" rx="72" fill="#16171f"/>
+  <rect width="256" height="256" rx="72" fill="#0a0a0a"/>
   <rect width="256" height="256" rx="72" fill="url(#markGlow)"/>
 
   <!-- the wisp: one thread of smoke, rising and turning -->
@@ -31,5 +31,5 @@
   </g>
 
   <!-- the ember at its foot -->
-  <circle cx="128" cy="216" r="11" fill="url(#markBeam)"/>
+  <circle cx="128" cy="216" r="11" fill="url(#markSteel)"/>
 </svg>

@@ -717,8 +717,8 @@ void MainWindow::onGatewayState(GatewayClient::State state)
     QString colour = Theme::TextFaint;
     switch (state) {
     case GatewayClient::State::Disconnected: text = QStringLiteral("offline"); break;
-    case GatewayClient::State::Connecting:   text = QStringLiteral("connecting"); colour = Theme::Blue; break;
-    case GatewayClient::State::Identifying:  text = QStringLiteral("signing in"); colour = Theme::Blue; break;
+    case GatewayClient::State::Connecting:   text = QStringLiteral("connecting"); colour = Theme::Highlight; break;
+    case GatewayClient::State::Identifying:  text = QStringLiteral("signing in"); colour = Theme::Highlight; break;
     case GatewayClient::State::Ready:        text = QStringLiteral("online"); colour = Theme::Green; break;
     case GatewayClient::State::Reconnecting: text = QStringLiteral("reconnecting"); colour = Theme::Accent; break;
     }
@@ -1685,7 +1685,7 @@ QString MainWindow::embedsHtml(const MessageInfo &message) const
             continue;
 
         const QColor edge = embed.colour != 0 ? QColor::fromRgb(static_cast<QRgb>(embed.colour))
-                                              : QColor(Theme::Blue);
+                                              : QColor(Theme::Highlight);
 
         // Qt's rich text has no left border on a div, so a one cell table
         // stands in for the coloured strip Discord draws.

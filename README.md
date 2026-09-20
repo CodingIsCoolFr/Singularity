@@ -4,12 +4,11 @@
 
 <br>
 
-![C++20](https://img.shields.io/badge/C%2B%2B-20-7aa2f7?style=flat-square&labelColor=16171f)
-![Qt 6.10](https://img.shields.io/badge/Qt-6.10-7aa2f7?style=flat-square&labelColor=16171f)
-![Windows](https://img.shields.io/badge/platform-Windows-7aa2f7?style=flat-square&labelColor=16171f)
-![Voice](https://img.shields.io/badge/voice-end--to--end%20encrypted-9ece6a?style=flat-square&labelColor=16171f)
-![Plugins](https://img.shields.io/badge/plugins-compiled%20in-7aa2f7?style=flat-square&labelColor=16171f)
-![Theme](https://img.shields.io/badge/theme-Tokyo%20Night-bb9af7?style=flat-square&labelColor=16171f)
+![C++20](https://img.shields.io/badge/C%2B%2B-20-ededed?style=flat-square&labelColor=0a0a0a)
+![Qt 6.10](https://img.shields.io/badge/Qt-6.10-ededed?style=flat-square&labelColor=0a0a0a)
+![Windows](https://img.shields.io/badge/platform-Windows-a3a3a3?style=flat-square&labelColor=0a0a0a)
+![Voice](https://img.shields.io/badge/voice-end--to--end%20encrypted-3ba55c?style=flat-square&labelColor=0a0a0a)
+![Plugins](https://img.shields.io/badge/plugins-compiled%20in-a3a3a3?style=flat-square&labelColor=0a0a0a)
 
 </div>
 
@@ -87,24 +86,30 @@ Looks and behaves like the real client in these ways:
 
 ## The look
 
-**Tokyo Night**, one of the three most used dark themes going, chosen over
-inventing one. Three rules shape it, and all of them are in
-[`src/ui/Theme.h`](src/ui/Theme.h), which is the only file that holds a colour.
+Black and grey, with colour kept back for the few things that carry meaning.
+Three rules shape it, and all of them live in
+[`src/ui/Theme.h`](src/ui/Theme.h), which is the only file holding a colour.
 
 | | |
 | --- | --- |
-| **Nothing is pure black** | White text on `#000` bleeds at its edges — halation — and is tiring to read. The deepest surface here is `#13141c`. |
+| **No pure black, no pure white** | White text on `#000` bleeds at its edges — halation — and is tiring to read. The darkest surface is `#0a0a0a` and the brightest text is `#ededed`. |
 | **Depth comes from layers** | The rail, the sidebar and the conversation each sit a real step lighter than the one behind, so they read as separate planes without a single border. |
-| **Accents are muted** | A fully saturated colour on a dark ground appears to vibrate. Every accent is pulled back. |
+| **Colour is information** | The only coloured things left are the status dots and errors, because green, yellow and red are what tell you somebody is online, away or busy. Making those grey would look tidier and say less. |
 
 ```
-#13141c  rail, the ground              #c0caf5  text
-#16171f  sidebar                       #a9b1d6  secondary text
-#1a1b26  the conversation              #6e769e  timestamps and hints
-#20222f  the composer, lifted          #7aa2f7  selection and links
-#292e42  hover, the only surface       #9ece6a  online, and the speaking ring
-         that moves                    #f7768e  errors and deletions
+#0a0a0a  rail, the ground              #ededed  text, and the selected pill
+#101010  sidebar                       #a3a3a3  secondary text
+#161616  the conversation              #6b6b6b  timestamps and hints
+#1e1e1e  the composer, lifted          #8f8f8f  embed edges, passing states
+#2a2a2a  hover, the only surface
+         that moves                    #3ba55c  online, and the speaking ring
+                                       #d9a441  idle
+                                       #e05561  busy, errors, deletions
 ```
+
+Every grey above is neutral — equal red, green and blue — so no surface leans
+warm or cool. Links are **underlined** rather than tinted, because in a grey
+scheme a colour on its own cannot mark them apart from the words around them.
 
 The title bar is painted too. It belongs to Windows rather than Qt, so it is
 coloured through `DwmSetWindowAttribute` rather than replaced with a hand made

@@ -4,48 +4,59 @@
 
 class QWidget;
 
-// Tokyo Night: deep blue-black surfaces and desaturated accents.
+// Black and grey, with colour kept for the few things that mean something.
 //
-// Three rules shape everything here, and they are the reason the numbers look
-// the way they do rather than being rounder:
+// Every grey below is neutral: equal red, green and blue, so no surface leans
+// warm or cool. Three rules shape the numbers, and they are the reason none of
+// them is round:
 //
-//   - Nothing is pure black. White text on #000 bleeds at its edges, an effect
-//     called halation, and it is tiring to read. The darkest surface below is
-//     still a colour.
+//   - Nothing is pure black, and nothing is pure white. White text on #000
+//     bleeds at its edges, an effect called halation, and it is tiring to
+//     read. The darkest surface here is #0a0a0a and the brightest text is
+//     #ededed.
 //   - Depth is built from layers, not from shadows. Each surface is a real
 //     step lighter than the one behind it, so the rail, the sidebar and the
-//     conversation read as separate planes without a single border.
-//   - Accents are muted. A fully saturated colour on a dark ground appears to
-//     vibrate, so every accent here is pulled back.
+//     conversation read as separate planes without needing a single border.
+//   - Colour is information, never decoration. The only coloured things left
+//     are the status dots and errors, because green, yellow and red are what
+//     tell you somebody is online, away or busy. Making those grey would look
+//     tidier and say less.
 //
 // Every colour in the app comes from this file, so a future light theme only
 // has to change one place.
 namespace Theme {
 
-// Palette.
-constexpr auto Dark = "#13141c";       // the ground everything sits on
-constexpr auto Light = "#c0caf5";      // text, not white
-constexpr auto MidGray = "#a9b1d6";    // secondary text
-constexpr auto LightGray = "#d9def0";  // text that sits on an accent
-constexpr auto Accent = "#7aa2f7";     // selection, links, anything active
-constexpr auto Blue = "#7dcfff";       // a cooler accent, for links in prose
-constexpr auto Green = "#9ece6a";      // online, and the speaking ring
-constexpr auto Yellow = "#e0af68";     // idle, and warnings
-constexpr auto Red = "#f7768e";        // busy, errors, destructive buttons
+// Greys.
+constexpr auto Dark = "#0a0a0a";       // the ground everything sits on
+constexpr auto Light = "#ededed";      // text, not white
+constexpr auto MidGray = "#a3a3a3";    // secondary text
+constexpr auto LightGray = "#d4d4d4";  // text that sits on a bright fill
+
+// The bright one: the selected pill, mentions, links, anything active.
+constexpr auto Accent = "#ededed";
+
+// The quiet one: embed edges, badges, and states that are passing through,
+// like "connecting". Dim on purpose, so it never competes with Accent.
+constexpr auto Highlight = "#8f8f8f";
+
+// The only colour left, and only where it carries meaning.
+constexpr auto Green = "#3ba55c";      // online, and the speaking ring
+constexpr auto Yellow = "#d9a441";     // idle
+constexpr auto Red = "#e05561";        // busy, errors, deletions
 
 // Surfaces, darkest first. Furthest back to closest, the way Discord stacks
 // them: the rail sits deepest, the conversation nearest.
-constexpr auto SurfaceRail = "#13141c";
-constexpr auto SurfaceSidebar = "#16171f";
-constexpr auto SurfaceChat = "#1a1b26";
-constexpr auto SurfaceInput = "#20222f";   // the composer, lifted off the chat
-constexpr auto SurfaceHover = "#292e42";   // the only surface that moves
-constexpr auto Border = "#262838";
+constexpr auto SurfaceRail = "#0a0a0a";
+constexpr auto SurfaceSidebar = "#101010";
+constexpr auto SurfaceChat = "#161616";
+constexpr auto SurfaceInput = "#1e1e1e";   // the composer, lifted off the chat
+constexpr auto SurfaceHover = "#2a2a2a";   // the only surface that moves
+constexpr auto Border = "#242424";
 
-constexpr auto TextPrimary = "#c0caf5";
-constexpr auto TextMuted = "#a9b1d6";
-constexpr auto TextFaint = "#6e769e";
-constexpr auto Deleted = "#f7768e";
+constexpr auto TextPrimary = "#ededed";
+constexpr auto TextMuted = "#a3a3a3";
+constexpr auto TextFaint = "#6b6b6b";
+constexpr auto Deleted = "#e05561";
 
 // Qt stylesheet for the whole application.
 QString applicationStyleSheet();

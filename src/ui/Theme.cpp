@@ -25,7 +25,7 @@ QString expand(QString sheet)
         {QStringLiteral("@midGray"), QLatin1String(MidGray)},
         {QStringLiteral("@lightGray"), QLatin1String(LightGray)},
         {QStringLiteral("@accent"), QLatin1String(Accent)},
-        {QStringLiteral("@blue"), QLatin1String(Blue)},
+        {QStringLiteral("@highlight"), QLatin1String(Highlight)},
         {QStringLiteral("@green"), QLatin1String(Green)},
         {QStringLiteral("@yellow"), QLatin1String(Yellow)},
         {QStringLiteral("@red"), QLatin1String(Red)},
@@ -446,7 +446,9 @@ table.embed { margin: 6px 0 4px 0; }
     font-family: "Poppins", "Segoe UI", sans-serif;
 }
 
-a { color: @blue; }
+/* Underlined, not just tinted. In a grey scheme a colour alone is not enough
+   to mark a link apart from the words around it. */
+a { color: @accent; text-decoration: underline; }
 code {
     background-color: @input;
     font-family: Consolas, monospace;

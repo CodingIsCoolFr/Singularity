@@ -39,10 +39,11 @@ QColor statusColourFor(const QString &status)
     if (status == QLatin1String("online"))
         return QColor(Theme::Green);
     if (status == QLatin1String("idle"))
-        return QColor(QStringLiteral("#f0b232"));
+        return QColor(Theme::Yellow);
     if (status == QLatin1String("dnd"))
-        return QColor(QStringLiteral("#f23f43"));
-    return QColor(QStringLiteral("#80848e"));
+        return QColor(Theme::Red);
+    // Offline, which is a grey rather than a status colour.
+    return QColor(Theme::TextFaint);
 }
 
 // The little bubble on the corner of an avatar, cut out of the picture the

@@ -42,7 +42,7 @@ QPushButton *makeLinkButton(const QString &text, QWidget *parent)
     button->setStyleSheet(QStringLiteral("QPushButton { background: transparent; border: none; color: %1; "
                                          "text-align: left; padding: 2px 0; } "
                                          "QPushButton:hover { color: %2; }")
-                              .arg(QLatin1String(Theme::Blue), QLatin1String(Theme::Accent)));
+                              .arg(QLatin1String(Theme::Highlight), QLatin1String(Theme::Accent)));
     return button;
 }
 

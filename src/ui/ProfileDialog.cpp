@@ -863,7 +863,7 @@ void ProfileDialog::rebuildBadges(int publicFlags)
         auto *badge = new QLabel(name, m_badgeHost);
         badge->setStyleSheet(QStringLiteral("background-color: %1; color: %2; border-radius: 6px; "
                                             "padding: 2px 7px; font-size: 10px; font-weight: 600;")
-                                 .arg(QLatin1String(Theme::SurfaceInput), QLatin1String(Theme::Blue)));
+                                 .arg(QLatin1String(Theme::SurfaceInput), QLatin1String(Theme::Highlight)));
         m_badgeFlow->addWidget(badge);
     }
 
