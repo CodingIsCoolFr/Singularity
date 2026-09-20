@@ -4,11 +4,11 @@
 
 <br>
 
-![C++20](https://img.shields.io/badge/C%2B%2B-20-6ee7d8?style=flat-square&labelColor=07090e)
-![Qt 6.10](https://img.shields.io/badge/Qt-6.10-6ee7d8?style=flat-square&labelColor=07090e)
-![Windows](https://img.shields.io/badge/platform-Windows-8aa4ff?style=flat-square&labelColor=07090e)
-![Voice](https://img.shields.io/badge/voice-end--to--end%20encrypted-3dd68c?style=flat-square&labelColor=07090e)
-![Plugins](https://img.shields.io/badge/plugins-compiled%20in-8aa4ff?style=flat-square&labelColor=07090e)
+![C++20](https://img.shields.io/badge/C%2B%2B-20-cdd6e6?style=flat-square&labelColor=07090e)
+![Qt 6.10](https://img.shields.io/badge/Qt-6.10-cdd6e6?style=flat-square&labelColor=07090e)
+![Windows](https://img.shields.io/badge/platform-Windows-8892a6?style=flat-square&labelColor=07090e)
+![Voice](https://img.shields.io/badge/voice-end--to--end%20encrypted-a9c6e0?style=flat-square&labelColor=07090e)
+![Plugins](https://img.shields.io/badge/plugins-compiled%20in-8892a6?style=flat-square&labelColor=07090e)
 
 </div>
 

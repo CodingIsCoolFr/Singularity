@@ -24,10 +24,16 @@ ASSETS = ROOT / "assets"
 BANNER = (1280, 480)
 MARK = 512
 
-# Straight from src/ui/Theme.h, so the page and the window agree.
+# Sampled from the render rather than taken from the theme.
+#
+# The application's accent is a teal, which is right on a dark window and
+# wrong here: this disk is almost colourless, a cool silver, and a teal chip
+# sitting on it reads as a mistake. The brightest part of the disk measures
+# #b4bbcc and the body of it #8892a6, so the words use those, lifted just
+# enough to stay legible against the black.
 TEXT = (238, 244, 251)
-MUTED = (107, 118, 140)
-ACCENT = (110, 231, 216)
+MUTED = (136, 146, 166)
+ACCENT = (205, 214, 230)
 
 
 def load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
