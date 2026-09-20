@@ -257,13 +257,21 @@ inside the program. Anything shipped inside a program can be taken back out of
 it, and that token would grant read access to all of this. A public channel
 carrying only the installers costs nothing and gives nothing away.
 
-Publishing a release means building the installer and attaching it there:
+### Publishing a release
 
 ```powershell
-.\build.ps1 -Installer
-gh release create v0.1.3 "dist-installer\Singularity-0.1.3-setup.exe" `
-    --repo CodingIsCoolFr/singularity-updates
+.\release.ps1            # or -DryRun to build and check without publishing
 ```
+
+It reads the version out of `CMakeLists.txt`, refuses to go on if
+`src\main.cpp` or the installer script still say something different, refuses
+to reuse a tag that already exists, refuses to run with uncommitted changes,
+then builds and publishes to **both** repositories.
+
+Both, because both have a releases page and they have to agree. That is not
+hypothetical: 0.1.3 went to the channel and the source repository stopped at
+0.1.2, so its page said *Latest* about something that was not. The channel is
+published first, since it is the one the program reads.
 Requires **Qt 6.10.3 (msvc2022_64)** and **Visual Studio 2022**.
 
 > **The running program locks its own file.** A build while Singularity is open fails
