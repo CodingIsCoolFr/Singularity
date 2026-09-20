@@ -1,5 +1,10 @@
-# Build output.
+# Build output, and the finished program.
+#
+# build/ is what the compiler leaves behind. dist/ is what comes out of it:
+# the exe and the runtime beside it. Neither belongs in the repository, and
+# dist/ is roughly two hundred megabytes of somebody else's libraries.
 build/
+dist/
 out/
 *.obj
 *.exe

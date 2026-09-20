@@ -202,7 +202,17 @@ cannot be rebuilt. Without that the tile simply stays black for ever.
 | `-Debug` | Debug build |
 | `-Clean` | Wipe the build folder first |
 
-Output lands at `build\Release\Singularity.exe` with the Qt runtime beside it.
+Two folders come out of this, and keeping them apart is the point:
+
+| | |
+| --- | --- |
+| `build\` | Everything the compiler needs and nobody else ever opens |
+| `dist\` | The program, and only the program |
+
+Run `dist\Singularity.exe`. Qt's plugins live in one `plugins` folder rather
+than the eight it wants by default, which `qt.conf` arranges; that and leaving
+out the Visual C++ installer is most of the difference between twenty four
+items in there and forty two.
 Requires **Qt 6.10.3 (msvc2022_64)** and **Visual Studio 2022**.
 
 > **The running program locks its own file.** A build while Singularity is open fails

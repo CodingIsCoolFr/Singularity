@@ -8,6 +8,15 @@ set(CMAKE_AUTOMOC ON)
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network WebSockets Multimedia OpenGL OpenGLWidgets)
 qt_standard_project_setup()
 
+# Where the finished program goes.
+#
+# Deliberately not the build folder. CMake, Ninja and moc between them leave
+# forty odd files and directories wherever they work, and an exe sitting in the
+# middle of that is hard to find and impossible to hand to anybody.
+if(NOT DEFINED SINGULARITY_DIST_DIR)
+    set(SINGULARITY_DIST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/dist")
+endif()
+
 qt_add_executable(Singularity WIN32
     src/main.cpp
 
@@ -90,6 +99,12 @@ qt_add_executable(Singularity WIN32
     src/ui/ProfileDialog.cpp
     src/ui/MainWindow.h
     src/ui/MainWindow.cpp
+)
+
+set_target_properties(Singularity PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${SINGULARITY_DIST_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${SINGULARITY_DIST_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${SINGULARITY_DIST_DIR}"
 )
 
 qt_add_resources(Singularity brand
