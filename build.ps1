@@ -14,10 +14,12 @@
         .\build.ps1              # release build
         .\build.ps1 -Debug       # debug build
         .\build.ps1 -Clean       # wipe both folders first
+        .\build.ps1 -Installer   # also build the setup program
 #>
 param(
     [switch]$Debug,
-    [switch]$Clean
+    [switch]$Clean,
+    [switch]$Installer
 )
 
 $ErrorActionPreference = 'Stop'
@@ -90,3 +92,27 @@ $count = (Get-ChildItem $distDir -ErrorAction SilentlyContinue | Measure-Object)
 Write-Host ""
 Write-Host "Built: $distDir\Singularity.exe" -ForegroundColor Green
 Write-Host "       $count items in dist, build leftovers stayed in build\" -ForegroundColor DarkGray
+
+if ($Installer) {
+    # Inno Setup installs per user by default, so the compiler is under the
+    # local profile rather than Program Files.
+    $iscc = @(
+        "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
+        "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+        "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+    if (-not $iscc) {
+        throw "Inno Setup not found. Install it with: winget install JRSoftware.InnoSetup"
+    }
+
+    & $iscc (Join-Path $root 'installer\Singularity.iss') | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Installer failed with exit code $LASTEXITCODE" }
+
+    $setup = Get-ChildItem (Join-Path $root 'dist-installer') -Filter '*-setup.exe' |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+
+    Write-Host ""
+    Write-Host "Installer: $($setup.FullName)" -ForegroundColor Green
+    Write-Host ("           {0:N0} MB" -f ($setup.Length / 1MB)) -ForegroundColor DarkGray
+}

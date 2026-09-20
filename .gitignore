@@ -5,6 +5,7 @@
 # dist/ is roughly two hundred megabytes of somebody else's libraries.
 build/
 dist/
+dist-installer/
 out/
 *.obj
 *.exe

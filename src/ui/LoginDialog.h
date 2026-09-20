@@ -20,6 +20,8 @@ class RestClient;
 //
 // The password lives in the password field and in one network request. It is
 // never saved and never logged.
+class AuroraWidget;
+
 class LoginDialog : public QDialog
 {
     Q_OBJECT
@@ -53,6 +55,9 @@ private:
 
     RestClient *m_rest = nullptr;
     AuthClient m_auth;
+
+    // The black hole behind everything, the same one the main window uses.
+    AuroraWidget *m_aurora = nullptr;
 
     QStackedWidget *m_pages = nullptr;
 

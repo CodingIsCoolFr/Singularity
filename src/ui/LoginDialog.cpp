@@ -16,6 +16,10 @@
 #include <QUrl>
 #include <QVBoxLayout>
 
+#include "ui/AuroraWidget.h"
+
+#include <QFrame>
+
 namespace {
 
 QLabel *makeHeading(const QString &text, QWidget *parent)
@@ -52,24 +56,60 @@ LoginDialog::LoginDialog(RestClient *rest, QWidget *parent)
     : QDialog(parent)
     , m_rest(rest)
 {
-    setWindowTitle(QStringLiteral("Singularity - sign in"));
-    setMinimumWidth(500);
+    setWindowTitle(QStringLiteral("Singularity"));
+    setMinimumSize(760, 620);
 
-    auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(36, 32, 36, 28);
+    // The hole is the window here too, exactly as in the main window. The
+    // sign-in used to be a flat panel, which made the first thing anybody saw
+    // the one screen that looked like nothing else in the program.
+    //
+    // Two rules make this work, both learned the hard way in MainWindow: a
+    // translucent child of a QOpenGLWidget paints what is behind the GL
+    // surface rather than the rendered frame, so the card has to be opaque;
+    // and any pixel with no widget on it is the shader, so margins and
+    // stretch are how the hole gets seen at all.
+    m_aurora = new AuroraWidget(this);
+    m_aurora->setAttribute(Qt::WA_OpaquePaintEvent, true);
+    m_aurora->setAttribute(Qt::WA_NoSystemBackground, true);
+    m_aurora->setAutoFillBackground(false);
+    m_aurora->setHoleColors(Theme::holeAccent(), Theme::holeDisk(), Theme::holeGrade());
+
+    auto *shell = new QVBoxLayout(this);
+    shell->setContentsMargins(0, 0, 0, 0);
+    shell->setSpacing(0);
+    shell->addWidget(m_aurora);
+
+    // The card floats left of centre, so the hole is not hidden behind it.
+    auto *centre = new QHBoxLayout(m_aurora);
+    centre->setContentsMargins(56, 40, 56, 40);
+    centre->setSpacing(0);
+
+    auto *card = new QFrame(m_aurora);
+    card->setObjectName(QStringLiteral("LoginCard"));
+    card->setFixedWidth(430);
+    card->setStyleSheet(QStringLiteral("#LoginCard { background-color: %1; border: 1px solid %2; "
+                                       "border-radius: 16px; }")
+                            .arg(QLatin1String(Theme::SurfaceChat), QLatin1String(Theme::Border)));
+    centre->addWidget(card, 0, Qt::AlignVCenter);
+    centre->addStretch(1);
+
+    m_aurora->setOverlay(card);
+
+    auto *layout = new QVBoxLayout(card);
+    layout->setContentsMargins(34, 30, 34, 26);
     layout->setSpacing(14);
 
-    auto *title = new QLabel(QStringLiteral("Singularity"), this);
+    auto *title = new QLabel(QStringLiteral("Singularity"), card);
     title->setStyleSheet(QStringLiteral("font-size: 34px; font-weight: 600; letter-spacing: 0.4px; color: %1;")
-                             .arg(QLatin1String(Theme::Accent)));
+                             .arg(QLatin1String(Theme::TextPrimary)));
     layout->addWidget(title);
-    layout->addWidget(makeHint(QStringLiteral("A Discord client."), this));
+    layout->addWidget(makeHint(QStringLiteral("A Discord client."), card));
 
     auto *warning = new QLabel(
         QStringLiteral("Discord does not allow third party clients on a normal account. "
                        "Using one can get the account banned. Your password is sent only to "
                        "discord.com and is never saved."),
-        this);
+        card);
     warning->setWordWrap(true);
     warning->setStyleSheet(QStringLiteral("color: %1; background-color: %2; border: 1px solid %3; "
                                           "border-radius: 10px; padding: 10px;")
@@ -77,19 +117,19 @@ LoginDialog::LoginDialog(RestClient *rest, QWidget *parent)
                                     QLatin1String(Theme::Border)));
     layout->addWidget(warning);
 
-    m_pages = new QStackedWidget(this);
+    m_pages = new QStackedWidget(card);
     m_pages->addWidget(buildCredentialsPage());
     m_pages->addWidget(buildMfaPage());
     m_pages->addWidget(buildTokenPage());
     layout->addWidget(m_pages);
 
-    m_statusLabel = new QLabel(this);
+    m_statusLabel = new QLabel(card);
     m_statusLabel->setWordWrap(true);
     m_statusLabel->setStyleSheet(QStringLiteral("color: %1;").arg(QLatin1String(Theme::TextFaint)));
     layout->addWidget(m_statusLabel);
 
     auto *bottomRow = new QHBoxLayout;
-    auto *quitButton = new QPushButton(QStringLiteral("Quit"), this);
+    auto *quitButton = new QPushButton(QStringLiteral("Quit"), card);
     connect(quitButton, &QPushButton::clicked, this, &QDialog::reject);
     bottomRow->addWidget(quitButton);
     bottomRow->addStretch(1);

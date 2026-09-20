@@ -202,17 +202,39 @@ cannot be rebuilt. Without that the tile simply stays black for ever.
 | `-Debug` | Debug build |
 | `-Clean` | Wipe the build folder first |
 
-Two folders come out of this, and keeping them apart is the point:
+Three folders come out of this, and keeping them apart is the point:
 
 | | |
 | --- | --- |
 | `build\` | Everything the compiler needs and nobody else ever opens |
 | `dist\` | The program, and only the program |
+| `dist-installer\` | The setup program, with `-Installer` |
 
 Run `dist\Singularity.exe`. Qt's plugins live in one `plugins` folder rather
 than the eight it wants by default, which `qt.conf` arranges; that and leaving
 out the Visual C++ installer is most of the difference between twenty four
 items in there and forty two.
+
+### The installer
+
+```powershell
+.\build.ps1 -Installer
+```
+
+Needs Inno Setup once: `winget install JRSoftware.InnoSetup`. The script is
+[`installer\Singularity.iss`](installer/Singularity.iss) and it packs whatever
+`dist\` currently holds, so what ships is what was tested rather than a second
+list of files that has to be kept in step. About 175 MB becomes about 54.
+
+**It installs per user and never asks for administrator.** There is no service,
+no driver and nothing shared, so there is nothing to elevate for, and a small
+program asking for rights it does not need is how it starts looking
+untrustworthy.
+
+Uninstalling asks whether to remove your saved sign-in and settings, and
+defaults to leaving them. Those live in your roaming profile rather than the
+install folder, so removing the program does not silently take the account
+with it.
 Requires **Qt 6.10.3 (msvc2022_64)** and **Visual Studio 2022**.
 
 > **The running program locks its own file.** A build while Singularity is open fails
