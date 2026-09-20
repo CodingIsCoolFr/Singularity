@@ -7,6 +7,7 @@
 #include "ui/ChatView.h"
 #include "ui/FriendsPage.h"
 #include "ui/ImageViewer.h"
+#include "ui/CallView.h"
 #include "ui/ListDelegates.h"
 #include "ui/LogDialog.h"
 #include "ui/MediaCache.h"
@@ -209,6 +210,8 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
                 else
                     m_speakingUsers.remove(userId);
                 m_channelDelegate->setSpeakingUsers(m_speakingUsers);
+                if (m_callView)
+                    m_callView->setSpeaking(m_speakingUsers);
             });
 
     connect(m_voice, &VoiceConnection::stateChanged, this, [this](VoiceConnection::State state) {
@@ -376,6 +379,11 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
 
     m_voiceRefreshTimer.setSingleShot(true);
     connect(&m_voiceRefreshTimer, &QTimer::timeout, this, [this]() {
+        // Whoever is in the call, and what they are doing, changes on the same
+        // events the sidebar watches.
+        if (m_callView)
+            m_callView->refresh();
+
         // Direct messages only change their pictures and their second line, so
         // the rows are edited where they stand. Nothing moves.
         if (m_currentGuildId.isEmpty()) {
@@ -691,6 +699,19 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
     m_channelTopic->setVisible(false);
     headerLayout->addWidget(m_channelTopic);
     layout->addWidget(header);
+
+    // Sits above the conversation while a call is up, and takes no room at
+    // all otherwise.
+    m_callView = new CallView(m_store, chat);
+    connect(m_callView, &CallView::profileRequested, this,
+            [this](const QString &userId) { showProfile(userId, QCursor::pos()); });
+    connect(m_callView, &CallView::watchAttempted, this, [this](const QString &) {
+        statusBar()->showMessage(
+            QStringLiteral("Wisp can hear this call but cannot show video yet. That needs a second "
+                           "stream and a decoder, neither of which is built."),
+            6000);
+    });
+    layout->addWidget(m_callView);
 
     m_messageView = new ChatView(chat);
     m_messageView->document()->setDefaultStyleSheet(Theme::messageViewCss(
@@ -2340,6 +2361,11 @@ void MainWindow::updateVoicePanel()
     const bool connected = !m_voiceChannelId.isEmpty();
     m_voicePanel->setVisible(connected);
     m_channelDelegate->setJoinedVoiceChannel(m_voiceChannelId);
+
+    // The grid of faces follows the call, not the channel being read, so it
+    // stays up while you wander off into another conversation.
+    if (m_callView)
+        m_callView->setChannel(m_voiceChannelId);
 
     if (!connected)
         return;

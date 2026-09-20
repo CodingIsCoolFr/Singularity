@@ -14,6 +14,7 @@ class RestClient;
 class PluginHost;
 
 class QPushButton;
+class CallView;
 class ChannelDelegate;
 class ChatView;
 class FriendsPage;
@@ -168,6 +169,7 @@ private:
     QPushButton *m_muteButton = nullptr;
     QPushButton *m_deafenButton = nullptr;
     QLabel *m_voiceState = nullptr;
+    CallView *m_callView = nullptr;
 
     void tryStartVoice();
     void applyVoiceSettings();

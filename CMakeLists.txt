@@ -62,6 +62,8 @@ qt_add_executable(Wisp WIN32
     src/ui/LogDialog.cpp
     src/ui/ChatView.h
     src/ui/ChatView.cpp
+    src/ui/CallView.h
+    src/ui/CallView.cpp
     src/ui/MediaCache.h
     src/ui/MediaCache.cpp
     src/ui/ListDelegates.h
