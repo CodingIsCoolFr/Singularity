@@ -23,10 +23,10 @@ int main(int argc, char *argv[])
     QSurfaceFormat::setDefaultFormat(format);
 
     QApplication app(argc, argv);
-    app.setApplicationName(QStringLiteral("Wisp"));
-    app.setOrganizationName(QStringLiteral("Wisp"));
+    app.setApplicationName(QStringLiteral("Singularity"));
+    app.setOrganizationName(QStringLiteral("Singularity"));
     app.setApplicationVersion(QStringLiteral("0.1.0"));
-    app.setWindowIcon(QIcon(QStringLiteral(":/brand/wisp.png")));
+    app.setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
 
     Theme::applySeed(QColor(AppConfig::instance().value(QStringLiteral("appearance/themeSeed"),
                                                        QStringLiteral("#6ee7d8")).toString()));
@@ -37,7 +37,7 @@ int main(int argc, char *argv[])
     Theme::installDarkTitleBars();
 
     // Touch the log first so the file exists even if startup fails early.
-    wlog(QStringLiteral("app"), QStringLiteral("Wisp %1 starting").arg(app.applicationVersion()));
+    wlog(QStringLiteral("app"), QStringLiteral("Singularity %1 starting").arg(app.applicationVersion()));
 
     RestClient rest;
     MessageStore store;

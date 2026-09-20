@@ -4,11 +4,11 @@
 
 #include <QHash>
 
-#ifdef WISP_HAVE_DAVE
+#ifdef SINGULARITY_HAVE_DAVE
 #include <dave/dave.h>
 #endif
 
-#ifdef WISP_HAVE_DAVE
+#ifdef SINGULARITY_HAVE_DAVE
 
 namespace {
 
@@ -63,7 +63,7 @@ void onMlsFailure(const char *source, const char *reason, void *userData)
 
 } // namespace
 
-#endif // WISP_HAVE_DAVE
+#endif // SINGULARITY_HAVE_DAVE
 
 // ---------------------------------------------------------------------------
 
@@ -79,7 +79,7 @@ DaveSession::~DaveSession()
 
 int DaveSession::maxSupportedVersion()
 {
-#ifdef WISP_HAVE_DAVE
+#ifdef SINGULARITY_HAVE_DAVE
     return static_cast<int>(daveMaxSupportedProtocolVersion());
 #else
     return 0;
@@ -93,7 +93,7 @@ bool DaveSession::isAvailable()
 
 bool DaveSession::begin(int version, quint64 groupId, const QString &selfUserId)
 {
-#ifdef WISP_HAVE_DAVE
+#ifdef SINGULARITY_HAVE_DAVE
     end();
 
     m_selfUserId = selfUserId;
@@ -120,7 +120,7 @@ bool DaveSession::begin(int version, quint64 groupId, const QString &selfUserId)
 
 void DaveSession::releaseKeys()
 {
-#ifdef WISP_HAVE_DAVE
+#ifdef SINGULARITY_HAVE_DAVE
     if (m_myKey) {
         daveKeyRatchetDestroy(static_cast<DAVEKeyRatchetHandle>(m_myKey));
         m_myKey = nullptr;
@@ -133,7 +133,7 @@ void DaveSession::releaseKeys()
 
 void DaveSession::end()
 {
-#ifdef WISP_HAVE_DAVE
+#ifdef SINGULARITY_HAVE_DAVE
     for (void *decryptor : m_decryptors)
         daveDecryptorDestroy(static_cast<DAVEDecryptorHandle>(decryptor));
     m_decryptors.clear();
@@ -154,7 +154,7 @@ void DaveSession::end()
 
 void DaveSession::setExternalSender(const QByteArray &credential)
 {
-#ifdef WISP_HAVE_DAVE
+#ifdef SINGULARITY_HAVE_DAVE
     if (!m_session || credential.isEmpty())
         return;
 
@@ -171,7 +171,7 @@ void DaveSession::setExternalSender(const QByteArray &credential)
 
 QByteArray DaveSession::keyPackage()
 {
-#ifdef WISP_HAVE_DAVE
+#ifdef SINGULARITY_HAVE_DAVE
     if (!m_session)
         return {};
 
@@ -189,7 +189,7 @@ QByteArray DaveSession::keyPackage()
 
 QByteArray DaveSession::processProposals(const QByteArray &proposals, const QSet<QString> &knownUserIds)
 {
-#ifdef WISP_HAVE_DAVE
+#ifdef SINGULARITY_HAVE_DAVE
     if (!m_session || proposals.isEmpty())
         return {};
 
@@ -215,7 +215,7 @@ QByteArray DaveSession::processProposals(const QByteArray &proposals, const QSet
 
 bool DaveSession::processCommit(const QByteArray &commit)
 {
-#ifdef WISP_HAVE_DAVE
+#ifdef SINGULARITY_HAVE_DAVE
     if (!m_session || commit.isEmpty())
         return false;
 
@@ -246,7 +246,7 @@ bool DaveSession::processCommit(const QByteArray &commit)
 
 bool DaveSession::processWelcome(const QByteArray &welcome, const QSet<QString> &knownUserIds)
 {
-#ifdef WISP_HAVE_DAVE
+#ifdef SINGULARITY_HAVE_DAVE
     if (!m_session || welcome.isEmpty())
         return false;
 
@@ -272,7 +272,7 @@ bool DaveSession::processWelcome(const QByteArray &welcome, const QSet<QString> 
 
 bool DaveSession::applyKeys(const QString &selfUserId, const QSet<QString> &otherUserIds)
 {
-#ifdef WISP_HAVE_DAVE
+#ifdef SINGULARITY_HAVE_DAVE
     if (!m_session || !m_encryptor)
         return false;
 
@@ -331,7 +331,7 @@ bool DaveSession::applyKeys(const QString &selfUserId, const QSet<QString> &othe
 
 QByteArray DaveSession::encrypt(const QByteArray &opusFrame, quint32 ssrc)
 {
-#ifdef WISP_HAVE_DAVE
+#ifdef SINGULARITY_HAVE_DAVE
     if (!m_encryptor || opusFrame.isEmpty())
         return {};
 
@@ -364,7 +364,7 @@ QByteArray DaveSession::encrypt(const QByteArray &opusFrame, quint32 ssrc)
 
 QByteArray DaveSession::decrypt(const QString &userId, const QByteArray &frame, bool video)
 {
-#ifdef WISP_HAVE_DAVE
+#ifdef SINGULARITY_HAVE_DAVE
     const auto it = m_decryptors.constFind(userId);
     if (it == m_decryptors.constEnd() || frame.isEmpty())
         return {};

@@ -22,7 +22,7 @@ extern char Light[8];
 extern char MidGray[8];
 extern char LightGray[8];
 
-// The wisp: selected pills, mentions, links, primary buttons.
+// The singularity: selected pills, mentions, links, primary buttons.
 extern char Accent[8];
 extern char AccentHover[8];
 

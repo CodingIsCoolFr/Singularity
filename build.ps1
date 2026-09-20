@@ -1,5 +1,5 @@
 ﻿<#
-    Builds Wisp and copies the Qt runtime next to the exe.
+    Builds Singularity and copies the Qt runtime next to the exe.
 
     Usage:
         .\build.ps1              # release build
@@ -43,15 +43,15 @@ if errorlevel 1 exit /b 1
 cmake --build "$buildDir"
 if errorlevel 1 exit /b 1
 
-"$qtRoot\bin\windeployqt.exe" --$($config.ToLower()) --no-translations --no-system-d3d-compiler --no-opengl-sw "$buildDir\Wisp.exe"
+"$qtRoot\bin\windeployqt.exe" --$($config.ToLower()) --no-translations --no-system-d3d-compiler --no-opengl-sw "$buildDir\Singularity.exe"
 if errorlevel 1 exit /b 1
 "@
 
-$scriptPath = Join-Path $env:TEMP 'wisp-build.cmd'
+$scriptPath = Join-Path $env:TEMP 'singularity-build.cmd'
 Set-Content -Path $scriptPath -Value $script -Encoding ASCII
 
 & cmd.exe /c $scriptPath
 if ($LASTEXITCODE -ne 0) { throw "Build failed with exit code $LASTEXITCODE" }
 
 Write-Host ""
-Write-Host "Built: $buildDir\Wisp.exe" -ForegroundColor Green
+Write-Host "Built: $buildDir\Singularity.exe" -ForegroundColor Green

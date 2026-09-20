@@ -118,7 +118,7 @@ void PresenceHintsPlugin::onGatewayEvent(const QString &eventType, const QJsonOb
     }
 
     // Everyone already sitting in a voice channel when we connected. Without
-    // this, someone who joined the call before Wisp started is missed, which
+    // this, someone who joined the call before Singularity started is missed, which
     // is the most obvious case of all.
     if (eventType == QLatin1String("READY_SUPPLEMENTAL")) {
         const QJsonArray guilds = data.value(QStringLiteral("guilds")).toArray();

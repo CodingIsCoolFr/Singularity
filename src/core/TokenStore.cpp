@@ -28,7 +28,7 @@ QByteArray seal(const QByteArray &plain)
                  reinterpret_cast<BYTE *>(const_cast<char *>(plain.constData()))};
     DATA_BLOB out{};
 
-    if (!CryptProtectData(&in, L"Wisp session", nullptr, nullptr, nullptr, 0, &out)) {
+    if (!CryptProtectData(&in, L"Singularity session", nullptr, nullptr, nullptr, 0, &out)) {
         wlog(QStringLiteral("token"), QStringLiteral("could not seal the token, error %1")
                                           .arg(static_cast<uint>(GetLastError())));
         return {};

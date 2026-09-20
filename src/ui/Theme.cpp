@@ -46,7 +46,7 @@ QVector3D g_holeDisk(0.18f, 0.72f, 0.70f);
 QVector3D g_holeGrade(0.86f, 1.06f, 1.04f);
 
 const Preset kPresets[] = {
-    {"Wisp", "#6ee7d8"},
+    {"Singularity", "#6ee7d8"},
     {"Ember", "#eb2e4a"},
     {"Ocean", "#468cbe"},
     {"Violet", "#9b59b6"},

@@ -24,7 +24,7 @@ class QWidget;
 // takes the bait every time and marks itself in the process.
 //
 // So the part worth automating is the part that is slow for a person: noticing.
-// Wisp watches every channel at once, including ones you are not looking at,
+// Singularity watches every channel at once, including ones you are not looking at,
 // and takes you from "a gift exists" to "one button" instantly. The press
 // stays yours, which is also what keeps the account ordinary.
 class NitroWatchPlugin : public Plugin

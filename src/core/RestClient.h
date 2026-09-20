@@ -80,7 +80,7 @@ public:
 
     // POST /entitlements/gift-codes/{code}/redeem - claims a gift.
     //
-    // Only ever called because somebody pressed a button. Nothing in Wisp
+    // Only ever called because somebody pressed a button. Nothing in Singularity
     // calls this on its own, and nothing should: a client that redeems by
     // itself is the single clearest sign of an automated account.
     void redeemGift(const QString &code, ObjectHandler onOk, ErrorHandler onError);

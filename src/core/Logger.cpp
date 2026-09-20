@@ -14,11 +14,11 @@ Logger::Logger()
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir().mkpath(dir);
 
-    m_file.setFileName(dir + QStringLiteral("/wisp.log"));
+    m_file.setFileName(dir + QStringLiteral("/singularity.log"));
     // Truncate on every start so the file always describes this run.
     if (m_file.open(QIODevice::WriteOnly | QIODevice::Text)) {
         m_stream.setDevice(&m_file);
-        m_stream << QStringLiteral("=== Wisp started %1 ===\n")
+        m_stream << QStringLiteral("=== Singularity started %1 ===\n")
                         .arg(QDateTime::currentDateTime().toString(Qt::ISODate));
         m_stream.flush();
     }

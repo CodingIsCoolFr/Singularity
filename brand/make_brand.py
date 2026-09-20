@@ -1,4 +1,4 @@
-"""Render the Wisp mark: a lensed photon ring on a transparent field."""
+"""Render the Singularity mark: a lensed photon ring on a transparent field."""
 
 from __future__ import annotations
 
@@ -91,12 +91,12 @@ def render(size: int) -> Image.Image:
 def main() -> None:
     ROOT.mkdir(parents=True, exist_ok=True)
     master = render(512)
-    png_path = ROOT / "wisp.png"
+    png_path = ROOT / "singularity.png"
     master.save(png_path, "PNG")
 
     sizes = [16, 24, 32, 48, 64, 128, 256]
     frames = [render(s) for s in sizes]
-    ico_path = ROOT / "wisp.ico"
+    ico_path = ROOT / "singularity.ico"
     frames[-1].save(
         ico_path,
         format="ICO",

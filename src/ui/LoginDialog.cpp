@@ -52,14 +52,14 @@ LoginDialog::LoginDialog(RestClient *rest, QWidget *parent)
     : QDialog(parent)
     , m_rest(rest)
 {
-    setWindowTitle(QStringLiteral("Wisp - sign in"));
+    setWindowTitle(QStringLiteral("Singularity - sign in"));
     setMinimumWidth(500);
 
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(36, 32, 36, 28);
     layout->setSpacing(14);
 
-    auto *title = new QLabel(QStringLiteral("Wisp"), this);
+    auto *title = new QLabel(QStringLiteral("Singularity"), this);
     title->setStyleSheet(QStringLiteral("font-size: 34px; font-weight: 600; letter-spacing: 0.4px; color: %1;")
                              .arg(QLatin1String(Theme::Accent)));
     layout->addWidget(title);
@@ -208,7 +208,7 @@ QWidget *LoginDialog::buildTokenPage()
 
     layout->addWidget(makeHeading(QStringLiteral("Sign in with a token"), page));
     layout->addWidget(makeHint(
-        QStringLiteral("Use this when Discord asks for a captcha. Wisp cannot answer a captcha, "
+        QStringLiteral("Use this when Discord asks for a captcha. Singularity cannot answer a captcha, "
                        "so the password path stops there."),
         page));
 
@@ -368,7 +368,7 @@ void LoginDialog::onMfaRequired(const AuthClient::MfaOptions &options)
     refreshMfaMethodUi();
 
     if (options.webauthn) {
-        setStatus(QStringLiteral("This account also offers a security key. Wisp does not support "
+        setStatus(QStringLiteral("This account also offers a security key. Singularity does not support "
                                  "security keys, so use one of the other choices."));
     } else {
         setStatus(QStringLiteral("Password accepted. One more step."));
@@ -381,7 +381,7 @@ void LoginDialog::onCaptchaRequired(const QString &service, const QString &siteK
 {
     Q_UNUSED(siteKey)
     setBusy(false);
-    setStatus(QStringLiteral("Discord asked for a %1 captcha. Wisp cannot answer one. "
+    setStatus(QStringLiteral("Discord asked for a %1 captcha. Singularity cannot answer one. "
                              "Log in at discord.com in a browser, then use a token here.")
                   .arg(service),
               true);
@@ -425,7 +425,7 @@ void LoginDialog::finishWith(const QString &token)
 
     // Say so rather than quietly asking again next time.
     if (remember && !saved) {
-        setStatus(QStringLiteral("Signed in, but the session could not be saved, so Wisp will ask "
+        setStatus(QStringLiteral("Signed in, but the session could not be saved, so Singularity will ask "
                                  "again next time. The log has the reason."),
                   true);
     }

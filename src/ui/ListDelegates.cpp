@@ -280,8 +280,8 @@ void GuildRailDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
     const int row = index.row();
     const bool hovered = option.state & QStyle::State_MouseOver;
     const bool selected = option.state & QStyle::State_Selected;
-    const bool isFolder = index.data(WispRoles::Kind).toString() == QLatin1String("folder");
-    const bool inFolder = !index.data(WispRoles::Folder).toString().isEmpty();
+    const bool isFolder = index.data(SingularityRoles::Kind).toString() == QLatin1String("folder");
+    const bool inFolder = !index.data(SingularityRoles::Folder).toString().isEmpty();
 
     const qreal hoverAmount = progress(m_hover, row, hovered);
     const qreal selectAmount = progress(m_select, row, selected);
@@ -299,7 +299,7 @@ void GuildRailDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
                          iconSize, iconSize);
 
     if (isFolder) {
-        const bool open = index.data(WispRoles::FolderOpen).toBool();
+        const bool open = index.data(SingularityRoles::FolderOpen).toBool();
         const QRectF box(iconRect);
 
         painter->setPen(Qt::NoPen);
@@ -439,7 +439,7 @@ void FriendDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     if (!icon.isNull())
         icon.paint(painter, avatarRect, Qt::AlignCenter);
 
-    drawStatusBubble(painter, avatarRect, index.data(WispRoles::Status).toString(),
+    drawStatusBubble(painter, avatarRect, index.data(SingularityRoles::Status).toString(),
                      QColor(Theme::SurfaceChat));
 
     // Buttons appear on hover, the way the real client does it.
@@ -482,7 +482,7 @@ void FriendDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     painter->drawText(QRect(textLeft, cell.top() + 7, textWidth, 18), Qt::AlignLeft | Qt::AlignVCenter,
                       painter->fontMetrics().elidedText(name, Qt::ElideRight, textWidth));
 
-    const QString subtitle = index.data(WispRoles::Subtitle).toString();
+    const QString subtitle = index.data(SingularityRoles::Subtitle).toString();
     if (!subtitle.isEmpty()) {
         QFont subFont = option.font;
         subFont.setPixelSize(11);
@@ -508,7 +508,7 @@ bool FriendDelegate::editorEvent(QEvent *event, QAbstractItemModel *model,
         if (event->type() == QEvent::MouseButtonPress)
             return true;   // swallow, so the row is not also selected
 
-        const QString userId = index.data(WispRoles::Id).toString();
+        const QString userId = index.data(SingularityRoles::Id).toString();
         if (which == Button::Message)
             emit messageRequested(userId);
         else
@@ -568,11 +568,11 @@ ChannelDelegate::Button ChannelDelegate::buttonAt(const QRect &row, const QPoint
 bool ChannelDelegate::editorEvent(QEvent *event, QAbstractItemModel *model,
                                   const QStyleOptionViewItem &option, const QModelIndex &index)
 {
-    const QString kind = index.data(WispRoles::Kind).toString();
+    const QString kind = index.data(SingularityRoles::Kind).toString();
     if (kind != QLatin1String("voice"))
         return AnimatedDelegate::editorEvent(event, model, option, index);
 
-    const QString channelId = index.data(WispRoles::Id).toString();
+    const QString channelId = index.data(SingularityRoles::Id).toString();
 
     if (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonRelease) {
         auto *mouse = static_cast<QMouseEvent *>(event);
@@ -610,7 +610,7 @@ bool ChannelDelegate::editorEvent(QEvent *event, QAbstractItemModel *model,
 
 QSize ChannelDelegate::sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const
 {
-    const QString kind = index.data(WispRoles::Kind).toString();
+    const QString kind = index.data(SingularityRoles::Kind).toString();
     if (kind == QLatin1String("header"))
         return QSize(option.rect.width(), HeaderRowHeight);
     if (kind == QLatin1String("voicemember"))
@@ -628,7 +628,7 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
 
     const QRect cell = option.rect;
     const QString text = index.data(Qt::DisplayRole).toString();
-    const QString kind = index.data(WispRoles::Kind).toString();
+    const QString kind = index.data(SingularityRoles::Kind).toString();
 
     if (kind == QLatin1String("header")) {
         QFont font = option.font;
@@ -647,7 +647,7 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
         const QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
         const QRect avatarRect(cell.left() + 34, cell.center().y() - 9, 18, 18);
 
-        const bool talking = m_speaking.contains(index.data(WispRoles::Id).toString());
+        const bool talking = m_speaking.contains(index.data(SingularityRoles::Id).toString());
         if (talking) {
             // Braces, not parentheses: with parentheses the compiler reads
             // this as a function declaration rather than a variable.
@@ -670,7 +670,7 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
         // than running underneath them.
         int rightEdge = cell.right() - 10;
 
-        if (index.data(WispRoles::Streaming).toBool()) {
+        if (index.data(SingularityRoles::Streaming).toBool()) {
             // The same red LIVE tag the real client uses, because everybody
             // already knows what it means.
             QFont badgeFont = option.font;
@@ -716,7 +716,7 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
                               box.bottomRight() - QPointF(1.5, 1.5));
         };
 
-        if (index.data(WispRoles::Video).toBool()) {
+        if (index.data(SingularityRoles::Video).toBool()) {
             // A camera: a rounded body with a lens barrel on its side.
             const QRectF box = reserve();
             painter->setPen(Qt::NoPen);
@@ -731,7 +731,7 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
             painter->drawPolygon(barrel);
         }
 
-        if (index.data(WispRoles::VoiceDeafened).toBool()) {
+        if (index.data(SingularityRoles::VoiceDeafened).toBool()) {
             // Headphones: a band over two earpieces, struck through.
             const QRectF box = reserve();
             const QColor colour(Theme::Red);
@@ -751,7 +751,7 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
                                      1.2, 1.2);
 
             strikeThrough(box, colour);
-        } else if (index.data(WispRoles::VoiceMuted).toBool()) {
+        } else if (index.data(SingularityRoles::VoiceMuted).toBool()) {
             // A microphone: a capsule on a stem, struck through.
             const QRectF box = reserve();
             const QColor colour(Theme::Red);
@@ -805,10 +805,10 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
         if (!icon.isNull())
             icon.paint(painter, avatarRect, Qt::AlignCenter);
 
-        drawStatusBubble(painter, avatarRect, index.data(WispRoles::Status).toString(),
+        drawStatusBubble(painter, avatarRect, index.data(SingularityRoles::Status).toString(),
                          QColor(Theme::SurfaceSidebar));
 
-        const QString subtitle = index.data(WispRoles::Subtitle).toString();
+        const QString subtitle = index.data(SingularityRoles::Subtitle).toString();
         const int textLeft = avatarRect.right() + 10;
         const int textWidth = cell.right() - textLeft - 10;
 
@@ -919,7 +919,7 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
     const QRect textRect = panel.toRect().adjusted(30, 0, -textRightInset, 0);
     QString label = text;
     if (isVoice && !m_joinedChannelId.isEmpty()
-        && index.data(WispRoles::Id).toString() == m_joinedChannelId) {
+        && index.data(SingularityRoles::Id).toString() == m_joinedChannelId) {
         label += QStringLiteral("  •  connected");
     }
     const QString elided = painter->fontMetrics().elidedText(label, Qt::ElideRight, textRect.width());

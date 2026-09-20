@@ -7,7 +7,7 @@
 // How the server rail is arranged: the order of the tiles, and which servers
 // are tucked inside folders.
 //
-// Discord keeps this on its own servers in a private format Wisp does not
+// Discord keeps this on its own servers in a private format Singularity does not
 // speak, so this arrangement is saved on this machine only. It will not match
 // the official client or your phone, and that is stated plainly in the app.
 class RailLayout

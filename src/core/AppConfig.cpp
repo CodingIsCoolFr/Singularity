@@ -21,7 +21,7 @@ QString describe(QSettings::Status status)
 } // namespace
 
 AppConfig::AppConfig()
-    : m_settings(QSettings::IniFormat, QSettings::UserScope, QStringLiteral("Wisp"), QStringLiteral("Wisp"))
+    : m_settings(QSettings::IniFormat, QSettings::UserScope, QStringLiteral("Singularity"), QStringLiteral("Singularity"))
 {
     const QFileInfo info(m_settings.fileName());
     wlog(QStringLiteral("config"), QStringLiteral("settings file %1 (%2, folder writable: %3)")

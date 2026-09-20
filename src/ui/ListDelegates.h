@@ -6,7 +6,7 @@
 #include <QStyledItemDelegate>
 
 // Roles hung off list rows. Shared so the window and the painters agree.
-namespace WispRoles {
+namespace SingularityRoles {
 constexpr int Id = Qt::UserRole + 1;
 
 // "guild", "channel" (text), "voice", "voicemember", "dm", or "header".
@@ -30,7 +30,7 @@ constexpr int Video = Qt::UserRole + 8;
 constexpr int VoiceMuted = Qt::UserRole + 9;
 constexpr int VoiceDeafened = Qt::UserRole + 10;
 constexpr int Elapsed = Qt::UserRole + 11;
-} // namespace WispRoles
+} // namespace SingularityRoles
 
 // Shared easing used by both delegates below.
 //

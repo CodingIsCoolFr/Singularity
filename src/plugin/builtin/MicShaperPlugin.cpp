@@ -354,7 +354,7 @@ void MicShaperPlugin::onMicrophoneFrame(qint16 *samples, int frames, int channel
     // ---- 5. Placing ---------------------------------------------------
     //
     // The part the official client cannot do at all, because it throws the
-    // second channel away before encoding. Wisp sends two, so this really does
+    // second channel away before encoding. Singularity sends two, so this really does
     // put your voice in one ear of everybody listening.
     if (channels < 2)
         return;
@@ -453,7 +453,7 @@ QWidget *MicShaperPlugin::createSettingsWidget(QWidget *parent)
     layout->addWidget(hint(QStringLiteral(
         "Drag to move. Double click to put yourself back in the middle.\n\n"
         "The official client cannot do this at all: it folds your microphone down to one channel "
-        "before sending, so there is no left or right left to place. Wisp sends two, which is what "
+        "before sending, so there is no left or right left to place. Singularity sends two, which is what "
         "lets your voice actually arrive in one ear."), page));
 
     // ---- the one switch ------------------------------------------------

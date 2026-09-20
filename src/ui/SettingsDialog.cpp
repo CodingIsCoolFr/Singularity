@@ -265,7 +265,7 @@ QWidget *SettingsDialog::buildVoicePage()
     layout->addWidget(pageTitle(QStringLiteral("Voice & Video"), page));
 
     auto *warning = new QLabel(
-        QStringLiteral("Wisp can join a voice channel, so other people see you there, but it cannot "
+        QStringLiteral("Singularity can join a voice channel, so other people see you there, but it cannot "
                        "send or receive sound yet. The devices and levels below are real and are "
                        "saved, and the microphone test works now."),
         page);
@@ -625,7 +625,7 @@ QWidget *SettingsDialog::buildPluginsPage()
     layout->setSpacing(10);
 
     layout->addWidget(pageTitle(QStringLiteral("Plugins"), page));
-    layout->addWidget(hint(QStringLiteral("Plugins are built into Wisp itself, not loaded from files, "
+    layout->addWidget(hint(QStringLiteral("Plugins are built into Singularity itself, not loaded from files, "
                                           "so nothing outside this program can add code."),
                            page));
 
@@ -709,7 +709,7 @@ QWidget *SettingsDialog::buildAdvancedPage()
 
     layout->addWidget(groupTitle(QStringLiteral("CONNECTION"), page));
 
-    auto *reconnectNote = hint(QStringLiteral("Wisp reconnects by itself with a growing wait, capped at "
+    auto *reconnectNote = hint(QStringLiteral("Singularity reconnects by itself with a growing wait, capped at "
                                               "one minute. Close codes are written to the log."),
                                page);
     layout->addWidget(reconnectNote);

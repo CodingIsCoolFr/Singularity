@@ -254,7 +254,7 @@ QPixmap MediaCache::brandMark(int size)
 
     static QPixmap source;
     if (source.isNull())
-        source = QPixmap(QStringLiteral(":/brand/wisp.png"));
+        source = QPixmap(QStringLiteral(":/brand/singularity.png"));
     if (source.isNull())
         return initialsAvatar(QStringLiteral("W"), size);
 

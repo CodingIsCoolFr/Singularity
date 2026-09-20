@@ -7,14 +7,14 @@
 // Keeps back what does not need to be sent.
 //
 // A note on what this plugin is not. Most of the tracking people worry about
-// in the official client is absent from Wisp already, not because a plugin
+// in the official client is absent from Singularity already, not because a plugin
 // switched it off but because the code to do it was never written: no
 // analytics events, no read receipts, no reading of your real machine for a
 // fingerprint, no watching which programs you have open. Those are facts about
 // the client, and the settings page says so plainly rather than claiming them
 // as features of this plugin.
 //
-// What is left here are the three things Wisp genuinely does send, and can
+// What is left here are the three things Singularity genuinely does send, and can
 // stop sending.
 class AnonymousPlugin : public Plugin
 {

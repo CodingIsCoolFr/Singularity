@@ -8,7 +8,7 @@ carries the lensed arcs outward without repeating anything recognisable.
 
 Run from the repository root:
 
-    python tools/make_banner.py <source image>
+    python brand/make_banner.py <source image>
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 ROOT = Path(__file__).resolve().parent.parent
-ASSETS = ROOT / "assets"
+BRAND = ROOT / "brand"
 
 BANNER = (1280, 480)
 MARK = 512
@@ -111,23 +111,35 @@ def build_banner(source: Image.Image) -> Image.Image:
     banner = widen(source, BANNER)
     draw = ImageDraw.Draw(banner)
 
-    title = load_font(104, bold=True)
-    body = load_font(23)
+    # Sized to the word, not to a number picked once.
+    #
+    # "Singularity" is nearly three times the length of the name it replaced,
+    # and at the old size it ran straight into the disk. The title shrinks
+    # until it fits the space left of the hole, so renaming the project again
+    # will not silently break the picture.
+    title = None
+    for size in range(84, 39, -2):
+        title = load_font(size, bold=True)
+        left, _, right, _ = draw.textbbox((0, 0), "Singularity", font=title)
+        if right - left <= TEXT_ZONE - 150:
+            break
+
+    body = load_font(22)
     chip = load_font(14, bold=True)
 
-    draw.text((96, 150), "Wisp", font=title, fill=TEXT)
-    draw.text((102, 276), "A Discord client in C++,", font=body, fill=MUTED)
-    draw.text((102, 308), "built from scratch.", font=body, fill=MUTED)
+    draw.text((96, 156), "Singularity", font=title, fill=TEXT)
+    draw.text((100, 268), "A Discord client in C++,", font=body, fill=MUTED)
+    draw.text((100, 298), "built from scratch.", font=body, fill=MUTED)
 
-    x = 102
+    x = 100
     for label in ("C++20", "Qt 6", "DAVE E2EE"):
         left, top, right, bottom = draw.textbbox((0, 0), label, font=chip)
         width = right - left + 26
         draw.rounded_rectangle(
-            (x, 356, x + width, 386), radius=15, outline=ACCENT + (110,), width=1
+            (x, 344, x + width, 374), radius=15, outline=ACCENT + (110,), width=1
         )
         draw.text(
-            (x + 13, 371 - (bottom - top) // 2 - top), label, font=chip, fill=ACCENT
+            (x + 13, 359 - (bottom - top) // 2 - top), label, font=chip, fill=ACCENT
         )
         x += width + 12
 
@@ -154,13 +166,13 @@ def main() -> int:
         return 1
 
     source = Image.open(path).convert("RGB")
-    ASSETS.mkdir(exist_ok=True)
+    BRAND.mkdir(exist_ok=True)
 
-    build_banner(source).save(ASSETS / "wisp-banner.png", optimize=True)
-    build_mark(source).save(ASSETS / "wisp-mark.png", optimize=True)
+    build_banner(source).save(BRAND / "banner.png", optimize=True)
+    build_mark(source).save(BRAND / "mark.png", optimize=True)
 
-    print(f"wrote {ASSETS / 'wisp-banner.png'}")
-    print(f"wrote {ASSETS / 'wisp-mark.png'}")
+    print(f"wrote {BRAND / 'banner.png'}")
+    print(f"wrote {BRAND / 'mark.png'}")
     return 0
 
 

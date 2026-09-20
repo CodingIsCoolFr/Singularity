@@ -109,7 +109,7 @@ void AnonymousPlugin::onLoad(PluginContext *context)
 
 // Runs the link cleaner over a handful of known cases as the plugin loads.
 //
-// This is the one hook in Wisp that rewrites what you say before it is sent,
+// This is the one hook in Singularity that rewrites what you say before it is sent,
 // so a quiet mistake here does not show up as an error: it shows up as a
 // broken link in somebody else's conversation. A line in the log is cheap, and
 // silence means all of these passed.
@@ -328,9 +328,9 @@ QWidget *AnonymousPlugin::createSettingsWidget(QWidget *parent)
         "Hides you from other people. It does not hide you from Discord, whose servers "
         "still know you are connected, because you are."), page));
 
-    // ---- what Wisp never did in the first place ------------------------
+    // ---- what Singularity never did in the first place ------------------------
 
-    auto *heading = new QLabel(QStringLiteral("Things Wisp never sends"), page);
+    auto *heading = new QLabel(QStringLiteral("Things Singularity never sends"), page);
     heading->setStyleSheet(QStringLiteral("color: %1; font-weight: 600; margin-top: 12px;")
                                .arg(QLatin1String(Theme::TextMuted)));
     layout->addWidget(heading);
@@ -339,12 +339,12 @@ QWidget *AnonymousPlugin::createSettingsWidget(QWidget *parent)
         "These are not settings, and no switch turns them on. They are missing because "
         "the code to do them was never written.\n\n"
         "•  No analytics events. The official client posts to an endpoint called "
-        "/science as you click around. Wisp never calls it.\n"
+        "/science as you click around. Singularity never calls it.\n"
         "•  No read receipts. Nothing tells Discord which messages you have looked "
         "at, or when.\n"
         "•  No real fingerprint. The client details sent on sign-in are fixed "
         "numbers written into the source, not your actual Windows version, locale or "
-        "hardware, and they are identical for everyone running Wisp.\n"
+        "hardware, and they are identical for everyone running Singularity.\n"
         "•  No session correlation. The fields the official client fills with "
         "identifiers that link your sessions together are sent empty.\n"
         "•  No game detection. Nothing looks at what programs you have open.\n"

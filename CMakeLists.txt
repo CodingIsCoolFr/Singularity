@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(Wisp VERSION 0.1.0 LANGUAGES CXX)
+project(Singularity VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -8,7 +8,7 @@ set(CMAKE_AUTOMOC ON)
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network WebSockets Multimedia OpenGL OpenGLWidgets)
 qt_standard_project_setup()
 
-qt_add_executable(Wisp WIN32
+qt_add_executable(Singularity WIN32
     src/main.cpp
 
     src/core/AppConfig.h
@@ -92,40 +92,40 @@ qt_add_executable(Wisp WIN32
     src/ui/MainWindow.cpp
 )
 
-qt_add_resources(Wisp brand
+qt_add_resources(Singularity brand
     PREFIX "/brand"
-    BASE "${CMAKE_CURRENT_SOURCE_DIR}/resources"
-    FILES resources/wisp.png
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/brand"
+    FILES brand/singularity.png
 )
 
 if(WIN32)
-    set(WISP_ICON_PATH "${CMAKE_CURRENT_SOURCE_DIR}/resources/wisp.ico")
+    set(SINGULARITY_ICON_PATH "${CMAKE_CURRENT_SOURCE_DIR}/brand/singularity.ico")
     configure_file(
-        "${CMAKE_CURRENT_SOURCE_DIR}/resources/wisp.rc.in"
-        "${CMAKE_CURRENT_BINARY_DIR}/wisp.rc"
+        "${CMAKE_CURRENT_SOURCE_DIR}/brand/singularity.rc.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/singularity.rc"
         @ONLY
     )
-    target_sources(Wisp PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/wisp.rc")
+    target_sources(Singularity PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/singularity.rc")
 endif()
 
 # Opus compresses the sound, libsodium encrypts it. Both are built or shipped
 # under third_party and linked statically, so the exe stays self contained.
-set(WISP_THIRD_PARTY "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
-set(OPUS_INSTALL "${WISP_THIRD_PARTY}/opus-install")
-set(SODIUM_ROOT "${WISP_THIRD_PARTY}/libsodium")
+set(SINGULARITY_THIRD_PARTY "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
+set(OPUS_INSTALL "${SINGULARITY_THIRD_PARTY}/opus-install")
+set(SODIUM_ROOT "${SINGULARITY_THIRD_PARTY}/libsodium")
 
 # Discord requires end-to-end encrypted voice on every call since March 2026,
 # so joining one at all needs their DAVE library. It is built from
 # third_party/libdave; see the README for the exact command.
-set(DAVE_ROOT "${WISP_THIRD_PARTY}/libdave/cpp")
+set(DAVE_ROOT "${SINGULARITY_THIRD_PARTY}/libdave/cpp")
 set(DAVE_LIBS "${DAVE_ROOT}/build/vcpkg_installed/x64-windows-static-md/lib")
-set(WISP_HAVE_DAVE OFF)
+set(SINGULARITY_HAVE_DAVE OFF)
 
 if(EXISTS "${DAVE_ROOT}/build/libdave.lib")
-    set(WISP_HAVE_DAVE ON)
-    message(STATUS "Wisp: end-to-end encrypted voice is available")
+    set(SINGULARITY_HAVE_DAVE ON)
+    message(STATUS "Singularity: end-to-end encrypted voice is available")
 else()
-    message(WARNING "Wisp: libdave is missing, so voice calls cannot be joined. "
+    message(WARNING "Singularity: libdave is missing, so voice calls cannot be joined. "
                     "Everything else still builds.")
 endif()
 
@@ -136,16 +136,16 @@ if(NOT EXISTS "${SODIUM_ROOT}/x64/Release/v143/static/libsodium.lib")
     message(FATAL_ERROR "libsodium is missing from third_party/libsodium.")
 endif()
 
-target_include_directories(Wisp PRIVATE
+target_include_directories(Singularity PRIVATE
     src
     "${OPUS_INSTALL}/include"
     "${SODIUM_ROOT}/include"
 )
 
 # The prebuilt libsodium is a static library, which its headers must be told.
-target_compile_definitions(Wisp PRIVATE SODIUM_STATIC=1)
+target_compile_definitions(Singularity PRIVATE SODIUM_STATIC=1)
 
-target_link_libraries(Wisp PRIVATE
+target_link_libraries(Singularity PRIVATE
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets
@@ -165,20 +165,20 @@ target_link_libraries(Wisp PRIVATE
 # ---------------------------------------------------------------------------
 # FFmpeg, for decoding other people's cameras and screens.
 #
-# Wisp brings its own rather than borrowing the one Qt ships. Qt's is built for
+# Singularity brings its own rather than borrowing the one Qt ships. Qt's is built for
 # Qt Multimedia and comes with no headers or link libraries, and its version
 # moves whenever Qt does. These are the LGPL builds, linked dynamically, so
 # nothing here imposes the GPL on this project.
 # ---------------------------------------------------------------------------
-set(FFMPEG_ROOT "${WISP_THIRD_PARTY}/ffmpeg")
+set(FFMPEG_ROOT "${SINGULARITY_THIRD_PARTY}/ffmpeg")
 
 if(EXISTS "${FFMPEG_ROOT}/lib/avcodec.lib")
-    set(WISP_HAVE_VIDEO ON)
-    message(STATUS "Wisp: video decoding is available")
+    set(SINGULARITY_HAVE_VIDEO ON)
+    message(STATUS "Singularity: video decoding is available")
 
-    target_compile_definitions(Wisp PRIVATE WISP_HAVE_VIDEO=1)
-    target_include_directories(Wisp PRIVATE "${FFMPEG_ROOT}/include")
-    target_link_libraries(Wisp PRIVATE
+    target_compile_definitions(Singularity PRIVATE SINGULARITY_HAVE_VIDEO=1)
+    target_include_directories(Singularity PRIVATE "${FFMPEG_ROOT}/include")
+    target_link_libraries(Singularity PRIVATE
         "${FFMPEG_ROOT}/lib/avcodec.lib"
         "${FFMPEG_ROOT}/lib/avutil.lib"
         "${FFMPEG_ROOT}/lib/swscale.lib"
@@ -186,26 +186,26 @@ if(EXISTS "${FFMPEG_ROOT}/lib/avcodec.lib")
 
     # The runtime has to sit beside the exe. These are named avcodec-62 and so
     # on, which is not what Qt ships, so the two cannot be confused.
-    add_custom_command(TARGET Wisp POST_BUILD
+    add_custom_command(TARGET Singularity POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${FFMPEG_ROOT}/bin/avcodec-62.dll"
             "${FFMPEG_ROOT}/bin/avutil-60.dll"
             "${FFMPEG_ROOT}/bin/swscale-9.dll"
             "${FFMPEG_ROOT}/bin/swresample-6.dll"
-            "$<TARGET_FILE_DIR:Wisp>"
-        COMMENT "Copying the FFmpeg runtime beside Wisp")
+            "$<TARGET_FILE_DIR:Singularity>"
+        COMMENT "Copying the FFmpeg runtime beside Singularity")
 else()
-    message(STATUS "Wisp: no FFmpeg in third_party, so video cannot be shown. "
+    message(STATUS "Singularity: no FFmpeg in third_party, so video cannot be shown. "
                    "See the README for how to fetch it.")
 endif()
 
-if(WISP_HAVE_DAVE)
-    target_compile_definitions(Wisp PRIVATE WISP_HAVE_DAVE=1)
-    target_include_directories(Wisp PRIVATE "${DAVE_ROOT}/includes")
+if(SINGULARITY_HAVE_DAVE)
+    target_compile_definitions(Singularity PRIVATE SINGULARITY_HAVE_DAVE=1)
+    target_include_directories(Singularity PRIVATE "${DAVE_ROOT}/includes")
 
     # Order matters for a static link: libdave leans on mlspp, mlspp on hpke
     # and the syntax helpers, and all of them on OpenSSL underneath.
-    target_link_libraries(Wisp PRIVATE
+    target_link_libraries(Singularity PRIVATE
         "${DAVE_ROOT}/build/libdave.lib"
         "${DAVE_LIBS}/mlspp.lib"
         "${DAVE_LIBS}/hpke.lib"
@@ -218,6 +218,6 @@ if(WISP_HAVE_DAVE)
     )
 endif()
 
-set_target_properties(Wisp PROPERTIES
-    OUTPUT_NAME "Wisp"
+set_target_properties(Singularity PROPERTIES
+    OUTPUT_NAME "Singularity"
 )

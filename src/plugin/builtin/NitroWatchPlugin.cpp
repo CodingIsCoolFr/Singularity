@@ -373,7 +373,7 @@ void NitroWatchPlugin::offer(const QString &code, const QString &fromUserId, con
 
     layout->addWidget(line(QStringLiteral("Nitro gift"), Theme::TextPrimary, 15, true, alert));
     layout->addWidget(line(QStringLiteral("%1 posted one%2").arg(who, where), Theme::TextMuted, 12, false, alert));
-    layout->addWidget(line(QStringLiteral("Claim it yourself. Wisp will not do it for you, and that "
+    layout->addWidget(line(QStringLiteral("Claim it yourself. Singularity will not do it for you, and that "
                                           "is what keeps this account looking ordinary."),
                            Theme::TextFaint, 11, false, alert));
 
@@ -409,7 +409,7 @@ void NitroWatchPlugin::offer(const QString &code, const QString &fromUserId, con
     });
     QObject::connect(ignore, &QPushButton::clicked, alert, &QWidget::close);
 
-    // Sit on the Wisp window if we have one, otherwise the primary screen.
+    // Sit on the Singularity window if we have one, otherwise the primary screen.
     alert->adjustSize();
     if (parent) {
         const QPoint topRight = parent->mapToGlobal(QPoint(parent->width() - 24, 24));
@@ -478,7 +478,7 @@ QWidget *NitroWatchPlugin::createSettingsWidget(QWidget *parent)
         "Dead codes are also posted on purpose to see who bites. A person glances at a suspicious "
         "link and moves on. Anything claiming on its own takes the bait every time, and marks "
         "itself doing it.\n\n"
-        "So this automates the slow part, which is noticing. Wisp watches every channel at once, "
+        "So this automates the slow part, which is noticing. Singularity watches every channel at once, "
         "including the ones you are not looking at, and gets you from \"a gift exists\" to one "
         "button straight away. You are still faster than anyone reading their messages. The press "
         "stays yours, which is the part that keeps the account ordinary."),

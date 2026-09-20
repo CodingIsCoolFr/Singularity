@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/wisp-banner.png" alt="Wisp" width="100%">
+<img src="brand/banner.png" alt="Singularity" width="100%">
 
 <br>
 
@@ -28,7 +28,7 @@ appear.
 Discord does not permit third party clients on a normal user account. Running
 this can get the account banned. That risk is accepted here on purpose.
 
-What Wisp does with your credentials:
+What Singularity does with your credentials:
 
 | | |
 | --- | --- |
@@ -98,7 +98,7 @@ accent, never pure black and never pure white.
 
 | | |
 | --- | --- |
-| **One seed colour** | Pick a colour and the whole application is derived from it at runtime — surfaces, accents, every stylesheet token, and the hole's own disk. No rebuild. Six presets ship: Wisp, Ember, Ocean, Violet, Jade and Gold. |
+| **One seed colour** | Pick a colour and the whole application is derived from it at runtime — surfaces, accents, every stylesheet token, and the hole's own disk. No rebuild. Six presets ship: Singularity, Ember, Ocean, Violet, Jade and Gold. |
 | **Depth comes from layers** | The rail, the sidebar and the conversation each sit a real step lighter than the one behind, so they read as separate planes without a single border. |
 | **Colour is information** | The status dots are the one thing the seed never touches. Green, yellow and red have to keep meaning online, away and busy whatever else changes. |
 
@@ -106,7 +106,7 @@ accent, never pure black and never pure white.
 #07090e  the ground, and the hole      #eef4fb  text
 #0a0d14  rail                          #9aa6bc  secondary text
 #10151f  sidebar                       #6b768c  timestamps and hints
-#151b28  the conversation              #6ee7d8  the wisp: selection, links
+#151b28  the conversation              #6ee7d8  the singularity: selection, links
 #1c2433  the composer, lifted          #8aa4ff  moonlight: badges, connecting
 #273044  hover, the only surface
          that moves                    #3dd68c  online, and the speaking ring
@@ -202,16 +202,16 @@ cannot be rebuilt. Without that the tile simply stays black for ever.
 | `-Debug` | Debug build |
 | `-Clean` | Wipe the build folder first |
 
-Output lands at `build\Release\Wisp.exe` with the Qt runtime beside it.
+Output lands at `build\Release\Singularity.exe` with the Qt runtime beside it.
 Requires **Qt 6.10.3 (msvc2022_64)** and **Visual Studio 2022**.
 
-> **The running program locks its own file.** A build while Wisp is open fails
-> with `LNK1104: cannot open file 'Wisp.exe'`. Close it first.
+> **The running program locks its own file.** A build while Singularity is open fails
+> with `LNK1104: cannot open file 'Singularity.exe'`. Close it first.
 
 ### Encrypted voice, a one off
 
 Since 1 March 2026 Discord accepts **only** end to end encrypted calls, so
-joining any voice channel needs its DAVE library. Everything else in Wisp
+joining any voice channel needs its DAVE library. Everything else in Singularity
 builds and runs without it.
 
 ```powershell
@@ -240,13 +240,13 @@ About eight minutes, nearly all of it OpenSSL.
 > linked with Qt. The `-md` form keeps the static libraries but uses the shared
 > runtime, matching Qt.
 
-Wisp's CMake finds the result on its own and prints
-`end-to-end encrypted voice is available`. Without it Wisp still builds, and
+Singularity's CMake finds the result on its own and prints
+`end-to-end encrypted voice is available`. Without it Singularity still builds, and
 says plainly that calls cannot be joined.
 
 ### Video, also one off
 
-Showing somebody's camera or shared screen needs an H.264 decoder. Wisp brings
+Showing somebody's camera or shared screen needs an H.264 decoder. Singularity brings
 its own FFmpeg rather than borrowing the one Qt ships, because Qt's comes with
 no headers or link libraries and its version moves whenever Qt does.
 
@@ -303,12 +303,12 @@ src/
 
 | What | Where | Why there |
 | --- | --- | --- |
-| Sign-in token | `%APPDATA%\Wisp\Wisp\session.dat` | Sealed with your Windows account key. It needs its own file because the settings file silently failed to keep it, which forced a password sign-in every start |
-| Settings | `%APPDATA%\Wisp\Wisp.ini` | Every write is read back, and a failure is logged |
-| Log | `%APPDATA%\Wisp\Wisp\wisp.log` | Fresh each run, flushed line by line. `Ctrl+L` opens it in the app |
+| Sign-in token | `%APPDATA%\Singularity\Singularity\session.dat` | Sealed with your Windows account key. It needs its own file because the settings file silently failed to keep it, which forced a password sign-in every start |
+| Settings | `%APPDATA%\Singularity\Singularity.ini` | Every write is read back, and a failure is logged |
+| Log | `%APPDATA%\Singularity\Singularity\singularity.log` | Fresh each run, flushed line by line. `Ctrl+L` opens it in the app |
 
 **Server folders are saved on this machine only.** Discord keeps its own
-arrangement in a private format Wisp cannot read or write, so the order here
+arrangement in a private format Singularity cannot read or write, so the order here
 will not match the official client or your phone.
 
 ## Settings
@@ -365,7 +365,7 @@ a suspicious link and moves on. Anything redeeming on its own takes the bait
 every time, and marks itself doing it.
 
 So the part worth automating is the part that is slow for a person: **noticing**.
-Wisp watches every channel at once, including the ones you are not looking at,
+Singularity watches every channel at once, including the ones you are not looking at,
 and takes you from "a gift exists" to one button straight away. You are still
 ahead of anyone who has to read their messages first. The press stays yours,
 which is the part that keeps the account ordinary.
@@ -380,20 +380,20 @@ Nitro posts.
 ### On Anonymous
 
 Most of the tracking people worry about in the official client is already
-absent from Wisp, not because a plugin switches it off but because the code to
+absent from Singularity, not because a plugin switches it off but because the code to
 do it was never written. The plugin's page says so plainly rather than claiming
 it as a feature:
 
 | Never sent | |
 | --- | --- |
-| Analytics events | The official client posts to an endpoint called `/science` as you click around. Wisp never calls it. |
+| Analytics events | The official client posts to an endpoint called `/science` as you click around. Singularity never calls it. |
 | Read receipts | Nothing tells Discord which messages you have looked at, or when. |
-| A real fingerprint | The client details sent on sign-in are fixed numbers written into the source, not your actual Windows version, locale or hardware — and they are identical for everyone running Wisp. |
+| A real fingerprint | The client details sent on sign-in are fixed numbers written into the source, not your actual Windows version, locale or hardware — and they are identical for everyone running Singularity. |
 | Session correlation | The fields the official client fills with identifiers linking your sessions together are sent empty. |
 | Game detection | Nothing looks at what programs you have open. |
 | Third party images | Pictures come only from Discord's own hosts, so a stranger's message cannot make your client contact an address of their choosing. |
 
-What the plugin genuinely does is the part Wisp *does* send and can stop
+What the plugin genuinely does is the part Singularity *does* send and can stop
 sending. Three switches, and only the harmless one starts on:
 
 - **Remove tracking codes from links I send** (on). Share links often carry a
@@ -405,7 +405,7 @@ sending. Three switches, and only the harmless one starts on:
   **not** hide you from Discord, whose servers still know you are connected,
   because you are.
 
-The link cleaner is the one piece of Wisp that rewrites what you say before it
+The link cleaner is the one piece of Singularity that rewrites what you say before it
 is sent, so it checks itself against six known cases every time it loads. If
 any of them comes out wrong it refuses to touch messages for the rest of the
 session and says so in the log. A tracking code getting through is a small

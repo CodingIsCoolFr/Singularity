@@ -8,7 +8,7 @@
 //
 // The headline is stereo, and it is the one thing the official client cannot
 // do at all: Discord folds your microphone down to mono before encoding it, so
-// there is no left or right left to place. Wisp already encodes two channels,
+// there is no left or right left to place. Singularity already encodes two channels,
 // which is what let Ripcord do this, so the pan control here genuinely puts
 // your voice in one ear of everybody listening.
 //

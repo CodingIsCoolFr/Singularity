@@ -21,7 +21,7 @@
 #include <opus/opus.h>
 #include <sodium.h>
 
-#ifdef WISP_HAVE_DAVE
+#ifdef SINGULARITY_HAVE_DAVE
 #include <dave/dave.h>
 #endif
 
@@ -428,7 +428,7 @@ void VoiceConnection::onSocketDisconnected()
     case 4016: meaning = QStringLiteral("unknown encryption mode"); break;
     // Taken from Discord's own table, not guessed.
     case 4017: meaning = QStringLiteral("this channel requires end-to-end encryption, which "
-                                        "Wisp does not have yet"); break;
+                                        "Singularity does not have yet"); break;
     case 4020: meaning = QStringLiteral("malformed request"); break;
     case 4021: meaning = QStringLiteral("rate limited"); break;
     case 4022: meaning = QStringLiteral("the call ended"); break;
@@ -1047,7 +1047,7 @@ void VoiceConnection::sendSelectProtocol(const QString &address, quint16 port)
 
     if (!m_offeredModes.isEmpty() && !m_offeredModes.contains(wanted)) {
         wlog(QStringLiteral("voice"), QStringLiteral("server does not offer %1").arg(wanted));
-        emit failed(QStringLiteral("This voice server wants an encryption scheme Wisp does not have."));
+        emit failed(QStringLiteral("This voice server wants an encryption scheme Singularity does not have."));
         setState(State::Failed);
         return;
     }

@@ -43,7 +43,7 @@ signals:
     // The password was right but the account wants a second factor.
     void mfaRequired(const AuthClient::MfaOptions &options);
 
-    // Discord demanded a captcha. Wisp cannot solve one, so the flow stops
+    // Discord demanded a captcha. Singularity cannot solve one, so the flow stops
     // here and the person is told what happened.
     void captchaRequired(const QString &service, const QString &siteKey);
 

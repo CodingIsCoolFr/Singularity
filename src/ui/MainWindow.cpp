@@ -59,10 +59,10 @@
 namespace {
 
 // Roles hung off list rows, shared with the painters.
-constexpr int IdRole = WispRoles::Id;
-constexpr int KindRole = WispRoles::Kind;
-constexpr int FolderRole = WispRoles::Folder;
-constexpr int FolderOpenRole = WispRoles::FolderOpen;
+constexpr int IdRole = SingularityRoles::Id;
+constexpr int KindRole = SingularityRoles::Kind;
+constexpr int FolderRole = SingularityRoles::Folder;
+constexpr int FolderOpenRole = SingularityRoles::FolderOpen;
 
 constexpr int GuildIconPixels = 48;
 constexpr int RailWidth = 84;
@@ -181,8 +181,8 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     , m_plugins(plugins)
     , m_voice(new VoiceConnection(this))
 {
-    setWindowTitle(QStringLiteral("Wisp"));
-    setWindowIcon(QIcon(QStringLiteral(":/brand/wisp.png")));
+    setWindowTitle(QStringLiteral("Singularity"));
+    setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
     resize(1440, 900);
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
 
@@ -219,8 +219,8 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
             "<br><br>This nearly always means the saved token is stale. Discord retires a token "
             "when you change your password, sign out elsewhere, or when it decides a sign-in looked "
             "unusual."
-            "<br><br>Fix it: <b>Wisp &gt; Log out</b>, then sign in again."
-            "<br><br><b>Wisp &gt; Log</b> shows the exact reason, on the line beginning "
+            "<br><br>Fix it: <b>Singularity &gt; Log out</b>, then sign in again."
+            "<br><br><b>Singularity &gt; Log</b> shows the exact reason, on the line beginning "
             "\"giving up\".</p>"));
     });
 
@@ -346,7 +346,7 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
                 // "try another one" would just waste someone's time.
                 flashStatus(
                     QStringLiteral("Discord now requires end-to-end encryption on every call. "
-                                   "Wisp does not implement it yet, so voice cannot connect "
+                                   "Singularity does not implement it yet, so voice cannot connect "
                                    "anywhere. Everything else works."),
                     0);
             }
@@ -759,7 +759,7 @@ QWidget *MainWindow::buildSidebar(QWidget *parent)
         // Somebody clicking a LIVE tag is trying to watch, not to read a
         // profile. Saying so is better than opening the wrong thing and
         // looking broken.
-        if (item->data(WispRoles::Streaming).toBool()) {
+        if (item->data(SingularityRoles::Streaming).toBool()) {
             watchStream(item->data(IdRole).toString());
             return;
         }
@@ -999,7 +999,7 @@ void MainWindow::buildMenu()
 {
     if (!m_menuBar)
         return;
-    QMenu *fileMenu = m_menuBar->addMenu(QStringLiteral("&Wisp"));
+    QMenu *fileMenu = m_menuBar->addMenu(QStringLiteral("&Singularity"));
 
     auto *settingsAction = fileMenu->addAction(QStringLiteral("Settings..."));
     settingsAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+,")));
@@ -1658,8 +1658,8 @@ void MainWindow::refreshDirectRows()
         const UserInfo info = m_store->user(otherId);
         const PresenceInfo presence = m_store->presence(otherId);
 
-        item->setData(WispRoles::Status, m_store->presenceBubble(otherId));
-        item->setData(WispRoles::Subtitle, describePresence(presence, m_store->activityHint(otherId)));
+        item->setData(SingularityRoles::Status, m_store->presenceBubble(otherId));
+        item->setData(SingularityRoles::Subtitle, describePresence(presence, m_store->activityHint(otherId)));
 
         const QUrl url = MediaCache::avatarUrl(otherId, info.avatarHash, 64);
         const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
@@ -1699,12 +1699,12 @@ void MainWindow::populateChannelList(bool autoSelectFirst)
                 picture = MediaCache::instance().image(url);
 
             const PresenceInfo presence = m_store->presence(otherId);
-            item->setData(WispRoles::Status, m_store->presenceBubble(otherId));
-            item->setData(WispRoles::Subtitle,
+            item->setData(SingularityRoles::Status, m_store->presenceBubble(otherId));
+            item->setData(SingularityRoles::Subtitle,
                           describePresence(presence, m_store->activityHint(otherId)));
         } else {
-            item->setData(WispRoles::Status, QStringLiteral("offline"));
-            item->setData(WispRoles::Subtitle,
+            item->setData(SingularityRoles::Status, QStringLiteral("offline"));
+            item->setData(SingularityRoles::Subtitle,
                           QStringLiteral("%1 people").arg(channel.recipientIds.size() + 1));
         }
 
@@ -1750,14 +1750,14 @@ void MainWindow::populateChannelList(bool autoSelectFirst)
             memberItem->setFlags(Qt::ItemIsEnabled);
 
             const VoiceStateInfo state = m_store->voiceState(memberId);
-            memberItem->setData(WispRoles::Streaming, state.streaming);
-            memberItem->setData(WispRoles::Video, state.video);
-            memberItem->setData(WispRoles::VoiceMuted, state.muted);
-            memberItem->setData(WispRoles::VoiceDeafened, state.deafened);
+            memberItem->setData(SingularityRoles::Streaming, state.streaming);
+            memberItem->setData(SingularityRoles::Video, state.video);
+            memberItem->setData(SingularityRoles::VoiceMuted, state.muted);
+            memberItem->setData(SingularityRoles::VoiceDeafened, state.deafened);
 
             QStringList marks;
             if (state.streaming)
-                marks << QStringLiteral("sharing a screen, which Wisp cannot show yet");
+                marks << QStringLiteral("sharing a screen, which Singularity cannot show yet");
             if (state.video)
                 marks << QStringLiteral("camera on");
             if (state.deafened)
@@ -1783,7 +1783,7 @@ void MainWindow::populateChannelList(bool autoSelectFirst)
     if (m_currentGuildId.isEmpty()) {
         // The Friends row sits above the chats, as in the real client.
         auto *friends = new QListWidgetItem(QStringLiteral("Friends"));
-        friends->setData(IdRole, QStringLiteral("wisp:friends"));
+        friends->setData(IdRole, QStringLiteral("singularity:friends"));
         friends->setData(KindRole, QStringLiteral("channel"));
         friends->setToolTip(QStringLiteral("Everyone you are friends with"));
         m_channelList->addItem(friends);
@@ -1859,7 +1859,7 @@ void MainWindow::onChannelSelected(int row)
 void MainWindow::openChannel(const QString &channelId)
 {
     // The Friends row is not a channel, it swaps the whole chat area.
-    if (channelId == QLatin1String("wisp:friends")) {
+    if (channelId == QLatin1String("singularity:friends")) {
         m_currentChannelId.clear();
         m_friends->refresh();
         m_chatStack->setCurrentWidget(m_friends);
@@ -2020,7 +2020,7 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
 
         if (attachment.isImage() && ChatView::isAllowedImageHost(QUrl(attachment.url))) {
             // Wrapped so a click opens the big view rather than a browser.
-            body += QStringLiteral("<div class=\"attach\"><a href=\"wisp-image:%1\">"
+            body += QStringLiteral("<div class=\"attach\"><a href=\"singularity-image:%1\">"
                                    "<img src=\"%1\"></a></div>")
                         .arg(safeUrl);
         } else {
@@ -2055,7 +2055,7 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
     const QString authorClass = isSelf ? QStringLiteral("author author-self") : QStringLiteral("author");
 
     // Both the picture and the name open the profile card.
-    const QString profileLink = QStringLiteral("wisp-user:%1").arg(message.authorId);
+    const QString profileLink = QStringLiteral("singularity-user:%1").arg(message.authorId);
 
     QString avatarCell;
     if (!grouped) {
@@ -2091,7 +2091,7 @@ QString MainWindow::stickersHtml(const MessageInfo &message) const
         const QString ext = sticker.formatType == 4 ? QStringLiteral("gif") : QStringLiteral("png");
         const QString url = QStringLiteral("https://media.discordapp.net/stickers/%1.%2?size=240")
                                 .arg(sticker.id, ext);
-        html += QStringLiteral("<div class=\"attach\"><a href=\"wisp-image:%1\">"
+        html += QStringLiteral("<div class=\"attach\"><a href=\"singularity-image:%1\">"
                                "<img src=\"%1\" alt=\"%2\" title=\"%2\"></a></div>")
                     .arg(url, sticker.name.toHtmlEscaped());
     }
@@ -2151,7 +2151,7 @@ QString MainWindow::embedsHtml(const MessageInfo &message) const
         if (embed.isPictureOnly()) {
             if (!pictureReachable)
                 continue;
-            html += QStringLiteral("<div class=\"attach\"><a href=\"wisp-image:%1\">"
+            html += QStringLiteral("<div class=\"attach\"><a href=\"singularity-image:%1\">"
                                    "<img src=\"%1\"></a></div>")
                         .arg(embed.imageUrl.toHtmlEscaped());
             continue;
@@ -2183,7 +2183,7 @@ QString MainWindow::embedsHtml(const MessageInfo &message) const
             inner += QStringLiteral("<div class=\"embed-body\">%1</div>").arg(description);
         }
         if (pictureReachable) {
-            inner += QStringLiteral("<div class=\"attach\"><a href=\"wisp-image:%1\">"
+            inner += QStringLiteral("<div class=\"attach\"><a href=\"singularity-image:%1\">"
                                     "<img src=\"%1\"></a></div>")
                          .arg(embed.imageUrl.toHtmlEscaped());
         }
@@ -2341,7 +2341,7 @@ void MainWindow::handleAnchor(const QUrl &url)
     const QString whole = url.toString();
 
     // Our own scheme: open the profile card for that person.
-    if (url.scheme() == QLatin1String("wisp-user")) {
+    if (url.scheme() == QLatin1String("singularity-user")) {
         const QString userId = url.path().isEmpty() ? whole.mid(10) : url.path();
         showProfile(userId, QCursor::pos());
         return;
@@ -2350,8 +2350,8 @@ void MainWindow::handleAnchor(const QUrl &url)
     // A picture in chat opens the big view instead of a browser. The address
     // is taken from the raw text, because a full web address inside another
     // address does not survive being parsed into parts.
-    if (url.scheme() == QLatin1String("wisp-image")) {
-        const QString target = whole.mid(QStringLiteral("wisp-image:").size());
+    if (url.scheme() == QLatin1String("singularity-image")) {
+        const QString target = whole.mid(QStringLiteral("singularity-image:").size());
         if (target.isEmpty())
             return;
 

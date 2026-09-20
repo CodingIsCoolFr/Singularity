@@ -233,9 +233,9 @@ void FriendsPage::refresh()
         }
 
         auto *item = new QListWidgetItem(name);
-        item->setData(WispRoles::Id, person.id);
-        item->setData(WispRoles::Subtitle, activityLine(*m_store, person.id));
-        item->setData(WispRoles::Status, m_store->presenceBubble(person.id));
+        item->setData(SingularityRoles::Id, person.id);
+        item->setData(SingularityRoles::Subtitle, activityLine(*m_store, person.id));
+        item->setData(SingularityRoles::Status, m_store->presenceBubble(person.id));
 
         // The plain round picture. The status bubble is painted on top by the
         // delegate, so nothing is composed per row.
