@@ -69,8 +69,19 @@ if (git -C $root status --porcelain) {
 # ---------------------------------------------------------------------------
 # Build.
 # ---------------------------------------------------------------------------
+# Stop is relaxed just for the build.
+#
+# vcvars writes a complaint about a missing vswhere to the error stream on
+# this machine and still sets the environment correctly. With Stop in force
+# that write becomes a terminating error and the release dies on a message
+# that means nothing. The exit code is what actually decides.
+$previous = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
 & (Join-Path $root 'build.ps1') -Installer
-if ($LASTEXITCODE -ne 0) { throw "Build failed" }
+$buildExit = $LASTEXITCODE
+$ErrorActionPreference = $previous
+
+if ($buildExit -ne 0) { throw "Build failed with exit code $buildExit" }
 
 $setup = Join-Path $root "dist-installer\Singularity-$version-setup.exe"
 if (-not (Test-Path $setup)) { throw "No installer at $setup" }
