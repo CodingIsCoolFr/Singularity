@@ -30,3 +30,6 @@ session.dat
 *.ini
 secrets*
 .env
+
+# wrangler's local cache; it holds the Cloudflare account id and nothing this repo needs
+site/.wrangler/
