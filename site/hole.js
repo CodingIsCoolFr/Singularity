@@ -195,7 +195,10 @@ export function startHole(canvas) {
         antialias: false,
         depth: false,
         stencil: false,
-        powerPreference: 'low-power',
+        // Was 'low-power', which on a desktop with both a built-in and a real
+        // graphics chip is an invitation to draw a hundred-step ray march on
+        // the weaker one.
+        powerPreference: 'high-performance',
         preserveDrawingBuffer: false,
     });
     // No WebGL2 means no hole. The page stays on its flat background, which is
@@ -206,8 +209,20 @@ export function startHole(canvas) {
     // fewer steps and a smaller buffer; the picture is the same one, drawn
     // more coarsely, which is a fairer trade than a still image.
     const small = Math.min(window.innerWidth, window.innerHeight) < 700;
-    const steps = small ? 56 : 100;
-    const maxScale = small ? 1.0 : 1.5;
+    const steps = small ? 52 : 84;
+
+    // Every pixel costs a full ray march, so the count is capped rather than
+    // left to the display. A maximised window on a 4K screen at 1.5 device
+    // pixels is around eight million of them; this is under two and a half,
+    // and the canvas is stretched back up by CSS. The picture is a soft glow
+    // with no fine detail in it, so the loss is close to invisible and the
+    // saving is better than threefold.
+    const BUDGET = small ? 900000 : 2400000;
+
+    // Frames are capped too. requestAnimationFrame runs at the refresh rate,
+    // and on a 240 Hz monitor that is four times the work for an animation
+    // that drifts slowly enough to look identical at sixty.
+    const FRAME_MS = 1000 / 60 - 1;
 
     const vs = compile(gl, gl.VERTEX_SHADER, VERT);
     const fs = compile(gl, gl.FRAGMENT_SHADER, FRAG(steps));
@@ -242,9 +257,17 @@ export function startHole(canvas) {
 
     let w = 0, h = 0;
     function resize() {
-        const scale = Math.min(window.devicePixelRatio || 1, maxScale);
-        const nw = Math.max(1, Math.round(canvas.clientWidth * scale));
-        const nh = Math.max(1, Math.round(canvas.clientHeight * scale));
+        const scale = Math.min(window.devicePixelRatio || 1, 1);
+        let nw = Math.max(1, Math.round(canvas.clientWidth * scale));
+        let nh = Math.max(1, Math.round(canvas.clientHeight * scale));
+
+        const over = (nw * nh) / BUDGET;
+        if (over > 1) {
+            const k = Math.sqrt(over);
+            nw = Math.max(1, Math.round(nw / k));
+            nh = Math.max(1, Math.round(nh / k));
+        }
+
         if (nw === w && nh === h) return;
         w = canvas.width = nw;
         h = canvas.height = nh;
@@ -262,10 +285,16 @@ export function startHole(canvas) {
 
     let time = 0;
     let last = performance.now();
+    let drawn = 0;
     let running = true;
 
     function frame(now) {
         if (!running) return;
+        requestAnimationFrame(frame);
+
+        if (now - drawn < FRAME_MS) return;
+        drawn = now;
+
         const dt = Math.min((now - last) / 1000, 0.05);
         last = now;
         if (!still) time += dt;
@@ -277,21 +306,35 @@ export function startHole(canvas) {
         gl.uniform1f(uTime, time);
         gl.uniform2f(uPointer, px, py);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
 
+    function stop() { running = false; }
+    function start() {
+        if (running) return;
+        running = true;
+        last = drawn = performance.now();
         requestAnimationFrame(frame);
+    }
+
+    // Below the hero the veil dims the hole and the reader is reading, so
+    // there is no reason to keep ray marching behind their paragraphs. This
+    // is what makes scrolling smooth: the page stops competing with itself.
+    let heroVisible = true;
+    const hero = document.querySelector('header.hero');
+    if (hero && 'IntersectionObserver' in window) {
+        new IntersectionObserver((entries) => {
+            heroVisible = entries[0].isIntersecting;
+            if (!heroVisible) stop();
+            else if (!document.hidden) start();
+        }, { threshold: 0 }).observe(hero);
     }
 
     // A hidden tab gets no frames from the browser anyway, but the clock would
     // keep running and the hole would jump on return. Stopping the clock too
     // means it carries on from where it was.
     document.addEventListener('visibilitychange', () => {
-        if (document.hidden) {
-            running = false;
-        } else if (!running) {
-            running = true;
-            last = performance.now();
-            requestAnimationFrame(frame);
-        }
+        if (document.hidden) stop();
+        else if (heroVisible) start();
     });
 
     resize();

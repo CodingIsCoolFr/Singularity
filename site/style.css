@@ -270,10 +270,19 @@ h1 {
 
 /* --------------------------------------------------------------- panels */
 
+/* No backdrop blur here, deliberately.
+
+   There are eleven of these on the page, and a blurred backdrop has to be
+   recomputed from whatever is behind it every time that moves - which, with a
+   ray marched background and a scrolling page, is every single frame. Eleven
+   of them was most of the stutter.
+
+   The glass look survives without it. These sit on the veil rather than
+   straight on the hole, so a slightly more opaque fill reads the same and
+   costs nothing. The navigation bar keeps its blur: there is one of it, it is
+   thin, and it is the only place the effect is actually noticed. */
 .panel {
-    background: rgba(21, 27, 40, 0.62);
-    backdrop-filter: blur(16px) saturate(130%);
-    -webkit-backdrop-filter: blur(16px) saturate(130%);
+    background: rgba(21, 27, 40, 0.78);
     border: 1px solid var(--edge);
     border-radius: 14px;
     padding: 26px 28px;
