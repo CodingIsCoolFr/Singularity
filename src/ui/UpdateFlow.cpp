@@ -23,6 +23,43 @@ QPointer<QWidget> g_owner;
 // progress rather than like nothing happening.
 QPointer<QProgressDialog> g_progress;
 
+// Trims release notes down to something that fits in a dialog.
+//
+// The old version took the first 600 characters flat, which landed in the
+// middle of a word: the box ended "...written on the repositor" and stopped,
+// reading like the program had broken rather than run out of room. The cut is
+// now moved back to a paragraph break, or failing that a line break, and says
+// that it happened.
+//
+// Angle brackets are dropped first. Notes are the body of a release, which is
+// text fetched from a web service, and it is about to be handed to a renderer
+// that understands HTML. Markdown needs no angle brackets, so removing them
+// costs nothing and takes away the only thing in there that could reach back
+// out to the network for an image.
+QString summarise(const QString &notes)
+{
+    QString text = notes;
+    text.remove(QLatin1Char('<'));
+    text.remove(QLatin1Char('>'));
+    text = text.trimmed();
+
+    constexpr int Limit = 700;
+    if (text.size() <= Limit)
+        return text;
+
+    QString cut = text.left(Limit);
+
+    int end = cut.lastIndexOf(QLatin1String("\n\n"));
+    if (end < Limit / 3)
+        end = cut.lastIndexOf(QLatin1Char('\n'));
+    if (end < Limit / 3)
+        end = cut.lastIndexOf(QLatin1Char(' '));
+    if (end > 0)
+        cut.truncate(end);
+
+    return cut.trimmed() + QStringLiteral("\n\nThe rest is on the release page.");
+}
+
 // One updater for the whole run, owned by the application.
 //
 // The flow is a chain of network replies, so the object has to outlive the
@@ -58,15 +95,27 @@ Updater *updater()
 
     QObject::connect(instance, &Updater::updateAvailable, qApp,
                      [](const QString &version, const QString &notes, qint64 bytes) {
-                         QString text = QStringLiteral("Singularity %1 is available. You have %2.\n\n")
-                                            .arg(version, QApplication::applicationVersion());
-                         if (!notes.isEmpty())
-                             text += notes.left(600) + QStringLiteral("\n\n");
-                         text += QStringLiteral("Download it now? It is about %1 MB.")
-                                     .arg(bytes / (1024 * 1024));
+                         QMessageBox box(g_owner);
+                         box.setWindowTitle(QStringLiteral("Update available"));
+                         box.setIcon(QMessageBox::Question);
+                         box.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+                         box.setDefaultButton(QMessageBox::Yes);
 
-                         if (QMessageBox::question(g_owner, QStringLiteral("Update available"), text)
-                             != QMessageBox::Yes) {
+                         box.setText(QStringLiteral("Singularity %1 is available. You have %2.\n\n"
+                                                    "Download it now? It is about %3 MB.")
+                                         .arg(version, QApplication::applicationVersion())
+                                         .arg(bytes / (1024 * 1024)));
+
+                         // Release notes are written in Markdown, so they were
+                         // being shown with their asterisks and hashes still in
+                         // them. Qt can render Markdown; it just has to be told
+                         // that is what this is.
+                         if (!notes.isEmpty()) {
+                             box.setTextFormat(Qt::MarkdownText);
+                             box.setInformativeText(summarise(notes));
+                         }
+
+                         if (box.exec() != QMessageBox::Yes) {
                              wlog(QStringLiteral("update"),
                                   QStringLiteral("%1 offered and declined").arg(version));
                              return;
