@@ -25,6 +25,7 @@ namespace {
 QLabel *makeHeading(const QString &text, QWidget *parent)
 {
     auto *label = new QLabel(text, parent);
+    label->setAlignment(Qt::AlignCenter);
     label->setStyleSheet(QStringLiteral("font-size: 17px; font-weight: 600; color: %1;")
                              .arg(QLatin1String(Theme::TextPrimary)));
     return label;
@@ -34,8 +35,34 @@ QLabel *makeHint(const QString &text, QWidget *parent)
 {
     auto *label = new QLabel(text, parent);
     label->setWordWrap(true);
+    label->setAlignment(Qt::AlignCenter);
     label->setStyleSheet(QStringLiteral("color: %1;").arg(QLatin1String(Theme::TextMuted)));
     return label;
+}
+
+// The button that actually does the thing, styled on the widget itself.
+//
+// It was relying on an application wide rule for #PrimaryButton, and on this
+// screen it came out as dark text on a dark ground: present, clickable, and
+// almost invisible. Rules that reach a widget through a cascade can be lost
+// to anything else that matches, and the one control somebody has to find on
+// a sign-in screen is a poor place to discover that. These colours are set
+// where they cannot be overruled.
+QPushButton *makePrimaryButton(const QString &text, QWidget *parent)
+{
+    auto *button = new QPushButton(text, parent);
+    button->setCursor(Qt::PointingHandCursor);
+    button->setMinimumHeight(44);
+    button->setStyleSheet(QStringLiteral(
+        "QPushButton { background-color: %1; color: %2; border: none; border-radius: 10px; "
+        "font-size: 14px; font-weight: 600; padding: 0 18px; } "
+        "QPushButton:hover { background-color: %3; } "
+        "QPushButton:pressed { background-color: %4; } "
+        "QPushButton:disabled { background-color: %5; color: %6; }")
+            .arg(QLatin1String(Theme::Accent), QLatin1String(Theme::Dark),
+                 QLatin1String(Theme::AccentHover), QLatin1String(Theme::LightGray),
+                 QLatin1String(Theme::SurfaceHover), QLatin1String(Theme::TextFaint)));
+    return button;
 }
 
 QPushButton *makeLinkButton(const QString &text, QWidget *parent)
@@ -95,27 +122,33 @@ LoginDialog::LoginDialog(RestClient *rest, QWidget *parent)
     auto *centre = new QHBoxLayout(m_aurora);
     centre->setContentsMargins(0, 0, 0, 0);
     centre->setSpacing(0);
+    centre->addStretch(1);
 
     auto *card = new QWidget(m_aurora);
     card->setObjectName(QStringLiteral("LoginPanel"));
-    card->setFixedWidth(560);
+    card->setFixedWidth(460);
+
+    // Symmetric now that the column is centred. A one-sided fade only works
+    // against an edge; in the middle of the window it would be a bright seam
+    // down one side of the text and nothing down the other.
     card->setStyleSheet(QStringLiteral(
         "#LoginPanel { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
-        "stop:0 rgba(5, 7, 12, 242), stop:0.55 rgba(5, 7, 12, 214), "
-        "stop:0.86 rgba(5, 7, 12, 96), stop:1 rgba(5, 7, 12, 0)); }"));
+        "stop:0 rgba(5, 7, 12, 0), stop:0.22 rgba(5, 7, 12, 214), "
+        "stop:0.78 rgba(5, 7, 12, 214), stop:1 rgba(5, 7, 12, 0)); }"));
     centre->addWidget(card);
     centre->addStretch(1);
 
     m_aurora->setOverlay(card);
 
-    // The right margin is wide on purpose. It keeps the words clear of the
-    // part of the gradient that has begun to fade, so nothing is ever read
-    // against a half transparent background.
+    // Margins wide enough on both sides that no word is ever read against the
+    // part of the gradient that has started to fade.
     auto *layout = new QVBoxLayout(card);
-    layout->setContentsMargins(60, 48, 150, 44);
+    layout->setContentsMargins(70, 0, 70, 0);
     layout->setSpacing(14);
+    layout->addStretch(1);
 
     auto *title = new QLabel(QStringLiteral("Singularity"), card);
+    title->setAlignment(Qt::AlignCenter);
     title->setStyleSheet(QStringLiteral("font-size: 34px; font-weight: 600; letter-spacing: 0.4px; color: %1;")
                              .arg(QLatin1String(Theme::TextPrimary)));
     layout->addWidget(title);
@@ -149,9 +182,14 @@ LoginDialog::LoginDialog(RestClient *rest, QWidget *parent)
     auto *bottomRow = new QHBoxLayout;
     auto *quitButton = new QPushButton(QStringLiteral("Quit"), card);
     connect(quitButton, &QPushButton::clicked, this, &QDialog::reject);
+    bottomRow->addStretch(1);
     bottomRow->addWidget(quitButton);
     bottomRow->addStretch(1);
     layout->addLayout(bottomRow);
+
+    // Balances the stretch above, so the whole column sits in the middle of
+    // the window rather than against the top of it.
+    layout->addStretch(1);
 
     connect(&m_auth, &AuthClient::succeeded, this, &LoginDialog::onAuthSucceeded);
     connect(&m_auth, &AuthClient::mfaRequired, this, &LoginDialog::onMfaRequired);
@@ -191,8 +229,7 @@ QWidget *LoginDialog::buildCredentialsPage()
     m_rememberBox->setChecked(true);
     layout->addWidget(m_rememberBox);
 
-    m_logInButton = new QPushButton(QStringLiteral("Log in"), page);
-    m_logInButton->setObjectName(QStringLiteral("PrimaryButton"));
+    m_logInButton = makePrimaryButton(QStringLiteral("Log in"), page);
     m_logInButton->setDefault(true);
     layout->addWidget(m_logInButton);
 
@@ -232,8 +269,7 @@ QWidget *LoginDialog::buildMfaPage()
     buttonRow->addWidget(m_sendSmsButton);
     buttonRow->addStretch(1);
 
-    m_verifyButton = new QPushButton(QStringLiteral("Verify"), page);
-    m_verifyButton->setObjectName(QStringLiteral("PrimaryButton"));
+    m_verifyButton = makePrimaryButton(QStringLiteral("Verify"), page);
     buttonRow->addWidget(m_verifyButton);
     layout->addLayout(buttonRow);
 
@@ -276,8 +312,7 @@ QWidget *LoginDialog::buildTokenPage()
     m_tokenEdit->setText(AppConfig::instance().token());
     layout->addWidget(m_tokenEdit);
 
-    m_tokenButton = new QPushButton(QStringLiteral("Connect"), page);
-    m_tokenButton->setObjectName(QStringLiteral("PrimaryButton"));
+    m_tokenButton = makePrimaryButton(QStringLiteral("Connect"), page);
     layout->addWidget(m_tokenButton);
 
     auto *backLink = makeLinkButton(QStringLiteral("Back to sign in"), page);

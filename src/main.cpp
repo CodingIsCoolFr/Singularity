@@ -30,6 +30,17 @@ int main(int argc, char *argv[])
 
     Theme::applySeed(QColor(AppConfig::instance().value(QStringLiteral("appearance/themeSeed"),
                                                        QLatin1String(Theme::DefaultSeed)).toString()));
+
+    // What the seed actually produced.
+    //
+    // The palette is derived at runtime, so a control that comes out invisible
+    // cannot be explained by reading the stylesheet: the colours are not in
+    // it. One line here turns "the button vanished" into a number.
+    wlog(QStringLiteral("theme"),
+         QStringLiteral("seed %1 -> accent %2, surface %3, text %4, ground %5")
+             .arg(Theme::seedColor().name(), QLatin1String(Theme::Accent),
+                  QLatin1String(Theme::SurfaceChat), QLatin1String(Theme::TextPrimary),
+                  QLatin1String(Theme::Dark)));
     app.setStyleSheet(Theme::applicationStyleSheet());
 
     // The title bar belongs to Windows, not to Qt, so it has to be coloured
