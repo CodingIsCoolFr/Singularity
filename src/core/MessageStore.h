@@ -52,6 +52,19 @@ struct VoiceStateInfo
 {
     QString channelId;
     QString guildId;
+
+    bool streaming = false;   // sharing a screen, which Discord shows as LIVE
+    bool video = false;       // camera on
+    bool muted = false;       // muted themselves
+    bool deafened = false;    // cannot hear anyone
+
+    // When this person was first seen in this channel.
+    //
+    // Discord does not say how long somebody has been sitting there, so this
+    // is counted from when we noticed, and the official client does the same.
+    // For people already present when you signed in, that is the moment you
+    // arrived rather than the moment they did.
+    QDateTime since;
 };
 
 // What we know about one person. Filled in from READY and from every message

@@ -145,6 +145,11 @@ private:
     // neither, nothing else in the client ever complains, and the panel reads
     // "Connecting..." for ever. This says out loud which half never came.
     QTimer m_voiceWatchdog;
+
+    // People we have already asked Discord to name, so a sidebar rebuild does
+    // not fire the same lookup again every few seconds.
+    void requestUnknownName(const QString &userId);
+    QSet<QString> m_namesRequested;
     QString m_pendingVoiceToken;
     QString m_pendingVoiceEndpoint;
     QSet<QString> m_speakingUsers;

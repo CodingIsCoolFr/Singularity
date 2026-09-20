@@ -12,6 +12,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QStyle>
 #include <QVBoxLayout>
 
@@ -65,6 +66,36 @@ FriendsPage::FriendsPage(MessageStore *store, RestClient *rest, QWidget *parent)
     layout->setSpacing(0);
 
     layout->addWidget(buildTabBar());
+
+    // Faces arrive long after the rows do.
+    //
+    // Without this the page drew the initials circle once and never looked
+    // again, so every friend kept a grey placeholder for the whole session
+    // even though the picture had been downloaded seconds later. Redraw when
+    // the arrivals stop rather than on each one: a few hundred friends means a
+    // few hundred arrivals, and rebuilding on every one makes the list thrash.
+    m_artworkTimer.setSingleShot(true);
+    m_artworkTimer.setInterval(250);
+    connect(&m_artworkTimer, &QTimer::timeout, this, [this]() {
+        if (!isVisible())
+            return;
+
+        // A rebuild starts at the top, which would drag the list out from
+        // under anyone scrolling through it.
+        const int scroll = m_list->verticalScrollBar()->value();
+        refresh();
+        m_list->verticalScrollBar()->setValue(scroll);
+    });
+
+    connect(&MediaCache::instance(), &MediaCache::ready, this, [this](const QUrl &url) {
+        if (!isVisible())
+            return;
+        if (!url.path().startsWith(QLatin1String("/avatars/"))
+            && !url.path().startsWith(QLatin1String("/embed/avatars/"))) {
+            return;
+        }
+        m_artworkTimer.start();
+    });
 
     auto *top = new QWidget(this);
     auto *topLayout = new QVBoxLayout(top);

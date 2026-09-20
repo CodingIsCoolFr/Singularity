@@ -117,6 +117,28 @@ QString humanSize(qint64 bytes)
         .arg(units.at(unit));
 }
 
+// How long somebody has been sitting in a call, in words rather than digits.
+//
+// Seconds are only interesting for the first minute; after that a ticking
+// second counter in a sidebar is noise.
+QString elapsedWords(qint64 seconds)
+{
+    if (seconds < 60)
+        return QStringLiteral("just now");
+
+    const qint64 minutes = seconds / 60;
+    if (minutes < 60)
+        return QStringLiteral("%1 min").arg(minutes);
+
+    const qint64 hours = minutes / 60;
+    const qint64 spare = minutes % 60;
+    if (hours < 24)
+        return spare == 0 ? QStringLiteral("%1 hr").arg(hours)
+                          : QStringLiteral("%1 hr %2 min").arg(hours).arg(spare);
+
+    return QStringLiteral("%1 days").arg(hours / 24);
+}
+
 } // namespace
 
 MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *store, PluginHost *plugins,
@@ -373,8 +395,13 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         if (url.path().startsWith(QLatin1String("/avatars/"))
             || url.path().startsWith(QLatin1String("/embed/avatars/"))) {
             updateUserPanel();
-            // A late avatar belongs in the direct message list too.
-            if (m_currentGuildId.isEmpty() && !m_voiceRefreshTimer.isActive())
+
+            // A late avatar belongs in whichever list is on screen: the direct
+            // messages, or the people sitting under a voice channel. This used
+            // to run only in the direct message list, which is why a face in a
+            // server stayed a grey circle until something else forced a
+            // redraw. The timer already knows how to refresh either one.
+            if (!m_voiceRefreshTimer.isActive())
                 m_voiceRefreshTimer.start(400);
         }
     });
@@ -1309,12 +1336,42 @@ void MainWindow::populateChannelList(bool autoSelectFirst)
         const QStringList members = m_store->voiceMembers(channel.id);
         for (const QString &memberId : members) {
             const UserInfo info = m_store->user(memberId);
+
+            // Voice states carry an id and nothing else. Somebody who has not
+            // spoken in a channel we have open is a stranger to us, and a bare
+            // number is no use to anyone, so ask Discord who they are. Once
+            // each: the answer lands in the store and the list redraws itself.
+            if (info.displayName().isEmpty())
+                requestUnknownName(memberId);
+
             const QString name = info.displayName().isEmpty() ? memberId : info.displayName();
 
             auto *memberItem = new QListWidgetItem(name);
             memberItem->setData(IdRole, memberId);
             memberItem->setData(KindRole, QStringLiteral("voicemember"));
             memberItem->setFlags(Qt::ItemIsEnabled);
+
+            const VoiceStateInfo state = m_store->voiceState(memberId);
+            memberItem->setData(WispRoles::Streaming, state.streaming);
+            memberItem->setData(WispRoles::Video, state.video);
+            memberItem->setData(WispRoles::VoiceMuted, state.muted);
+            memberItem->setData(WispRoles::VoiceDeafened, state.deafened);
+
+            QStringList marks;
+            if (state.streaming)
+                marks << QStringLiteral("sharing a screen");
+            if (state.video)
+                marks << QStringLiteral("camera on");
+            if (state.deafened)
+                marks << QStringLiteral("cannot hear anyone");
+            else if (state.muted)
+                marks << QStringLiteral("muted");
+            if (state.since.isValid()) {
+                marks << QStringLiteral("here %1")
+                             .arg(elapsedWords(state.since.secsTo(QDateTime::currentDateTimeUtc())));
+            }
+            if (!marks.isEmpty())
+                memberItem->setToolTip(QStringLiteral("%1 — %2").arg(name, marks.join(QStringLiteral(", "))));
 
             const QUrl url = MediaCache::avatarUrl(memberId, info.avatarHash, 64);
             const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
@@ -1990,6 +2047,33 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 // ---------------------------------------------------------------------------
 // Voice
 // ---------------------------------------------------------------------------
+
+// Asks Discord who somebody is, at most once per person per run.
+//
+// A voice state names only an id. Without this a channel full of people you
+// have never spoken to is a list of eighteen digit numbers, which is what it
+// was. The reply goes into the store, the store tells the window, and the row
+// redraws with a name and a face.
+void MainWindow::requestUnknownName(const QString &userId)
+{
+    if (userId.isEmpty() || m_namesRequested.contains(userId) || !m_rest)
+        return;
+    m_namesRequested.insert(userId);
+
+    m_rest->fetchUser(
+        userId,
+        [this](const QJsonObject &user) {
+            m_store->rememberUser(user);
+            if (!m_voiceRefreshTimer.isActive())
+                m_voiceRefreshTimer.start(400);
+        },
+        [userId](const RestClient::Error &error) {
+            // Deleted accounts and the like. The number stays, which is honest.
+            wlog(QStringLiteral("ui"), QStringLiteral("could not look up user %1: HTTP %2")
+                                           .arg(userId)
+                                           .arg(error.httpStatus));
+        });
+}
 
 void MainWindow::joinVoice(const QString &channelId)
 {

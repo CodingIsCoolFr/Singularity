@@ -192,6 +192,22 @@ void MessageStore::setVoiceState(const QJsonObject &rawState)
         VoiceStateInfo state;
         state.channelId = channelId;
         state.guildId = rawState.value(QStringLiteral("guild_id")).toString();
+        state.streaming = rawState.value(QStringLiteral("self_stream")).toBool();
+        state.video = rawState.value(QStringLiteral("self_video")).toBool();
+        state.muted = rawState.value(QStringLiteral("self_mute")).toBool()
+            || rawState.value(QStringLiteral("mute")).toBool();
+        state.deafened = rawState.value(QStringLiteral("self_deaf")).toBool()
+            || rawState.value(QStringLiteral("deaf")).toBool();
+
+        // Muting yourself sends a fresh voice state for the same channel.
+        // Taking the clock from that would restart the timer every time
+        // somebody touched a button, so the old one is kept while the channel
+        // is the same.
+        const VoiceStateInfo previous = m_voiceStates.value(userId);
+        state.since = (previous.channelId == channelId && previous.since.isValid())
+            ? previous.since
+            : QDateTime::currentDateTimeUtc();
+
         m_voiceStates.insert(userId, state);
     }
 

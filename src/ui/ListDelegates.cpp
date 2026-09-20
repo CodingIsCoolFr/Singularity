@@ -631,8 +631,57 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
         painter->setFont(font);
         painter->setPen(QColor(talking ? Theme::TextPrimary : Theme::TextMuted));
 
-        const QRect textRect(avatarRect.right() + 8, cell.top(), cell.width() - avatarRect.right() - 18,
-                             cell.height());
+        // Badges sit hard against the right edge, so the name shortens rather
+        // than running underneath them.
+        int rightEdge = cell.right() - 10;
+
+        if (index.data(WispRoles::Streaming).toBool()) {
+            // The same red LIVE tag the real client uses, because everybody
+            // already knows what it means.
+            QFont badgeFont = option.font;
+            badgeFont.setPixelSize(8);
+            badgeFont.setWeight(QFont::Bold);
+            painter->setFont(badgeFont);
+
+            const int badgeWidth = painter->fontMetrics().horizontalAdvance(QStringLiteral("LIVE")) + 8;
+            const QRect badge(rightEdge - badgeWidth, cell.center().y() - 6, badgeWidth, 12);
+
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(QColor(Theme::Red));
+            painter->drawRoundedRect(badge, 3, 3);
+
+            painter->setPen(QColor(Theme::TextPrimary));
+            painter->drawText(badge, Qt::AlignCenter, QStringLiteral("LIVE"));
+
+            rightEdge = badge.left() - 6;
+        }
+
+        // Camera, mute and deafen are drawn as small marks rather than words,
+        // for the same reason the channel glyphs are: at this size a word
+        // would not fit and an icon file would be one more thing to ship.
+        const auto mark = [&](const QString &glyph, const char *colour) {
+            QFont markFont = option.font;
+            markFont.setPixelSize(11);
+            painter->setFont(markFont);
+            const int width = painter->fontMetrics().horizontalAdvance(glyph) + 2;
+            painter->setPen(QColor(colour));
+            painter->drawText(QRect(rightEdge - width, cell.top(), width, cell.height()),
+                              Qt::AlignRight | Qt::AlignVCenter, glyph);
+            rightEdge -= width + 4;
+        };
+
+        if (index.data(WispRoles::Video).toBool())
+            mark(QStringLiteral("▣"), Theme::TextMuted);        // camera
+        if (index.data(WispRoles::VoiceDeafened).toBool())
+            mark(QStringLiteral("⊘"), Theme::Red);              // hears nobody
+        else if (index.data(WispRoles::VoiceMuted).toBool())
+            mark(QStringLiteral("✕"), Theme::Red);              // says nothing
+
+        painter->setFont(font);
+        painter->setPen(QColor(talking ? Theme::TextPrimary : Theme::TextMuted));
+
+        const QRect textRect(avatarRect.right() + 8, cell.top(),
+                             qMax(0, rightEdge - avatarRect.right() - 10), cell.height());
         const QString elided = painter->fontMetrics().elidedText(text, Qt::ElideRight, textRect.width());
         painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter, elided);
 

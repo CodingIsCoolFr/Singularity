@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QTimer>
 #include <QWidget>
 
 class MessageStore;
@@ -46,6 +47,12 @@ private:
     QLineEdit *m_search = nullptr;
     QLabel *m_heading = nullptr;
     QListWidget *m_list = nullptr;
+
+    // Pictures arrive one at a time, long after the rows are on screen, and
+    // with a few hundred friends that is a few hundred arrivals. Rebuilding on
+    // each one would make the list thrash, so they are gathered up and the
+    // page is redrawn once when they stop coming.
+    QTimer m_artworkTimer;
 
     Tab m_tab = Tab::Online;
 };

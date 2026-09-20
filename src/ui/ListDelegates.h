@@ -21,6 +21,15 @@ constexpr int Status = Qt::UserRole + 4;
 // open.
 constexpr int Folder = Qt::UserRole + 5;
 constexpr int FolderOpen = Qt::UserRole + 6;
+
+// Voice rows only. On a person: sharing a screen, camera on, muted, deafened.
+// On the channel itself: how long the call has been running, already written
+// out as text.
+constexpr int Streaming = Qt::UserRole + 7;
+constexpr int Video = Qt::UserRole + 8;
+constexpr int VoiceMuted = Qt::UserRole + 9;
+constexpr int VoiceDeafened = Qt::UserRole + 10;
+constexpr int Elapsed = Qt::UserRole + 11;
 } // namespace WispRoles
 
 // Shared easing used by both delegates below.
