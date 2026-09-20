@@ -293,10 +293,12 @@ QWidget *SettingsDialog::buildVoicePage()
         // Follow the new device straight away if the test is running.
         if (m_meter->isRunning())
             startMicTest();
+        emit voiceSettingsChanged();
     });
     connect(m_outputDevice, &QComboBox::currentIndexChanged, this, [this](int) {
         AppConfig::instance().setValue(QStringLiteral("voice/outputDevice"),
                                        m_outputDevice->currentData());
+        emit voiceSettingsChanged();
     });
 
     // Devices come and go when headsets are plugged in.
@@ -318,11 +320,13 @@ QWidget *SettingsDialog::buildVoicePage()
     levels->addRow(QStringLiteral("Output volume"), m_outputVolume);
     layout->addLayout(levels);
 
-    connect(m_inputVolume, &QSlider::valueChanged, this, [](int value) {
+    connect(m_inputVolume, &QSlider::valueChanged, this, [this](int value) {
         AppConfig::instance().setValue(QStringLiteral("voice/inputVolume"), value);
+        emit voiceSettingsChanged();
     });
-    connect(m_outputVolume, &QSlider::valueChanged, this, [](int value) {
+    connect(m_outputVolume, &QSlider::valueChanged, this, [this](int value) {
         AppConfig::instance().setValue(QStringLiteral("voice/outputVolume"), value);
+        emit voiceSettingsChanged();
     });
 
     // --- microphone test --------------------------------------------------
@@ -364,6 +368,7 @@ QWidget *SettingsDialog::buildVoicePage()
     connect(m_sensitivity, &QSlider::valueChanged, this, [this](int value) {
         AppConfig::instance().setValue(QStringLiteral("voice/sensitivity"), value);
         m_levelBar->setThreshold(value / 100.0);
+        emit voiceSettingsChanged();
     });
 
     layout->addWidget(hint(QStringLiteral("The white mark on the bar is the line. Sound above it counts "

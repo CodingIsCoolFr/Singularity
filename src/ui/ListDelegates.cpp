@@ -656,26 +656,86 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
             rightEdge = badge.left() - 6;
         }
 
-        // Camera, mute and deafen are drawn as small marks rather than words,
-        // for the same reason the channel glyphs are: at this size a word
-        // would not fit and an icon file would be one more thing to ship.
-        const auto mark = [&](const QString &glyph, const char *colour) {
-            QFont markFont = option.font;
-            markFont.setPixelSize(11);
-            painter->setFont(markFont);
-            const int width = painter->fontMetrics().horizontalAdvance(glyph) + 2;
-            painter->setPen(QColor(colour));
-            painter->drawText(QRect(rightEdge - width, cell.top(), width, cell.height()),
-                              Qt::AlignRight | Qt::AlignVCenter, glyph);
-            rightEdge -= width + 4;
+        // Microphone, headphones and camera, drawn by hand.
+        //
+        // These were plain characters first: a cross for muted and a crossed
+        // circle for deafened. Both were misread the moment somebody saw one,
+        // because a cross beside a name reads as a button that removes them.
+        // A shape that looks like the thing it is about does not need
+        // explaining, so they are drawn like the # and speaker marks above.
+        const int markSize = 13;
+
+        const auto reserve = [&]() {
+            const QRect box(rightEdge - markSize, cell.center().y() - markSize / 2, markSize, markSize);
+            rightEdge -= markSize + 5;
+            return box;
         };
 
-        if (index.data(WispRoles::Video).toBool())
-            mark(QStringLiteral("▣"), Theme::TextMuted);        // camera
-        if (index.data(WispRoles::VoiceDeafened).toBool())
-            mark(QStringLiteral("⊘"), Theme::Red);              // hears nobody
-        else if (index.data(WispRoles::VoiceMuted).toBool())
-            mark(QStringLiteral("✕"), Theme::Red);              // says nothing
+        // The diagonal bar that means "off", drawn across whatever it crosses.
+        const auto strikeThrough = [&](const QRectF &box, const QColor &colour) {
+            QPen bar(colour);
+            bar.setWidthF(1.6);
+            bar.setCapStyle(Qt::RoundCap);
+            painter->setPen(bar);
+            painter->drawLine(box.topLeft() + QPointF(1.5, 1.5),
+                              box.bottomRight() - QPointF(1.5, 1.5));
+        };
+
+        if (index.data(WispRoles::Video).toBool()) {
+            // A camera: a rounded body with a lens barrel on its side.
+            const QRectF box = reserve();
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(QColor(Theme::TextMuted));
+            painter->drawRoundedRect(QRectF(box.left(), box.top() + 3.5, box.width() - 4.5, box.height() - 7),
+                                     2, 2);
+            QPolygonF barrel;
+            barrel << QPointF(box.right() - 3.5, box.center().y() - 1.5)
+                   << QPointF(box.right(), box.center().y() - 3.5)
+                   << QPointF(box.right(), box.center().y() + 3.5)
+                   << QPointF(box.right() - 3.5, box.center().y() + 1.5);
+            painter->drawPolygon(barrel);
+        }
+
+        if (index.data(WispRoles::VoiceDeafened).toBool()) {
+            // Headphones: a band over two earpieces, struck through.
+            const QRectF box = reserve();
+            const QColor colour(Theme::Red);
+
+            QPen band(colour);
+            band.setWidthF(1.6);
+            painter->setPen(band);
+            painter->setBrush(Qt::NoBrush);
+            painter->drawArc(QRectF(box.left() + 1, box.top() + 2, box.width() - 2, box.height() - 3),
+                             0 * 16, 180 * 16);
+
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(colour);
+            painter->drawRoundedRect(QRectF(box.left() + 0.5, box.center().y(), 3, box.height() / 2 - 1),
+                                     1.2, 1.2);
+            painter->drawRoundedRect(QRectF(box.right() - 3.5, box.center().y(), 3, box.height() / 2 - 1),
+                                     1.2, 1.2);
+
+            strikeThrough(box, colour);
+        } else if (index.data(WispRoles::VoiceMuted).toBool()) {
+            // A microphone: a capsule on a stem, struck through.
+            const QRectF box = reserve();
+            const QColor colour(Theme::Red);
+
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(colour);
+            painter->drawRoundedRect(QRectF(box.center().x() - 2, box.top() + 1.5, 4, 6.5), 2, 2);
+
+            QPen stem(colour);
+            stem.setWidthF(1.4);
+            stem.setCapStyle(Qt::RoundCap);
+            painter->setPen(stem);
+            painter->setBrush(Qt::NoBrush);
+            painter->drawArc(QRectF(box.center().x() - 4, box.top() + 4, 8, 7), 180 * 16, 180 * 16);
+            painter->drawLine(QPointF(box.center().x(), box.top() + 10.5),
+                              QPointF(box.center().x(), box.bottom() - 1));
+
+            strikeThrough(box, colour);
+        }
 
         painter->setFont(font);
         painter->setPen(QColor(talking ? Theme::TextPrimary : Theme::TextMuted));

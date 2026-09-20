@@ -991,6 +991,10 @@ void VoiceConnection::startAudio()
     m_output->setBufferSize(FrameBytes * 8);
     m_outputStream = m_output->start();
 
+    // The speaker exists now, so whatever the slider was set to can finally
+    // be applied to it.
+    m_output->setVolume(m_outputVolume / 100.0);
+
     m_captureBuffer.clear();
     m_rtpSequence = static_cast<quint16>(QRandomGenerator::global()->bounded(65535));
     m_rtpTimestamp = QRandomGenerator::global()->generate();
@@ -1363,6 +1367,14 @@ void VoiceConnection::setDeafened(bool deafened)
 
 void VoiceConnection::setOutputVolume(int percent)
 {
+    // Remembered, not just handed to the speaker.
+    //
+    // This used to set the volume and keep nothing. Settings are applied just
+    // before a call is built, when there is no speaker yet, so the number went
+    // to a null pointer check and was lost. Moving the slider did nothing at
+    // any point in the call, which is exactly what it looked like.
+    m_outputVolume = qBound(0, percent, 200);
+
     if (m_output)
-        m_output->setVolume(qBound(0, percent, 200) / 100.0);
+        m_output->setVolume(m_outputVolume / 100.0);
 }

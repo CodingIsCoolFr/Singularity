@@ -2265,6 +2265,10 @@ void MainWindow::openSettings()
     SettingsDialog dialog(m_store, m_rest, m_plugins, m_selfUserId, this);
     connect(&dialog, &SettingsDialog::appearanceChanged, this, &MainWindow::applyAppearance);
     connect(&dialog, &SettingsDialog::logOutRequested, this, &MainWindow::logOut);
+
+    // A call already running has to be told, or the sliders only take effect
+    // the next time you join one.
+    connect(&dialog, &SettingsDialog::voiceSettingsChanged, this, &MainWindow::applyVoiceSettings);
     dialog.exec();
 }
 

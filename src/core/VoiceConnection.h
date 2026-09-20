@@ -207,6 +207,7 @@ private:
     bool m_speaking = false;
     int m_silentFrames = 0;
     int m_inputVolume = 100;
+    int m_outputVolume = 100;
     int m_sensitivity = 15;
     QByteArray m_inputDeviceId;
     QByteArray m_outputDeviceId;

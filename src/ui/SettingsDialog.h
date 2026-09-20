@@ -34,6 +34,13 @@ signals:
     void appearanceChanged();
     void logOutRequested();
 
+    // Raised whenever a voice setting moves.
+    //
+    // Writing the value to the config file is not enough: a call already in
+    // progress read those numbers when it started and never looks again, so
+    // without this the sliders do nothing until the next time you join.
+    void voiceSettingsChanged();
+
 private:
     QWidget *buildAccountPage();
     QWidget *buildVoicePage();
