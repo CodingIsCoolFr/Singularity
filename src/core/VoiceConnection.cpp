@@ -36,6 +36,7 @@ constexpr int OpHello = 8;
 constexpr int OpClientsConnect = 11;
 constexpr int OpVideo = 12;
 constexpr int OpClientDisconnect = 13;
+constexpr int OpMediaSinkWants = 15;
 
 // Payload types, carried in the low seven bits of the second RTP byte.
 constexpr int VideoPayloadType = 101;   // H.264
@@ -550,6 +551,10 @@ void VoiceConnection::onTextMessage(const QString &message)
             wlog(QStringLiteral("video"), QStringLiteral("%1 is sending pictures on stream %2")
                                               .arg(userId)
                                               .arg(videoSsrc));
+
+            // Name it explicitly now that we know it, rather than leaving it
+            // to the catch-all.
+            sendVideoWants();
             emit videoAvailable(userId, true);
         } else {
             // Zero means they turned it off.
@@ -823,6 +828,11 @@ void VoiceConnection::handleSessionDescription(const QJsonObject &data)
     m_stage = QStringLiteral("connected");
     setState(State::Connected);
     startAudio();
+
+    // Say what we send, then ask for what we want. Without the second of
+    // these the server sends no video at all, and every camera stays blank.
+    sendVideoState();
+    sendVideoWants();
 }
 
 void VoiceConnection::handleSpeaking(const QJsonObject &data)
@@ -1529,6 +1539,49 @@ void VoiceConnection::playDecoded(quint32 ssrc, const QByteArray &frame)
 // ---------------------------------------------------------------------------
 // Controls
 // ---------------------------------------------------------------------------
+
+// Tells the server what we are sending, which for us is sound and nothing
+// else. It is also how a client says it understands video at all.
+void VoiceConnection::sendVideoState()
+{
+    sendJson(QJsonObject{
+        {QStringLiteral("op"), OpVideo},
+        {QStringLiteral("d"),
+         QJsonObject{
+             {QStringLiteral("audio_ssrc"), static_cast<qint64>(m_ssrc)},
+             {QStringLiteral("video_ssrc"), 0},   // zero means we send no pictures
+             {QStringLiteral("rtx_ssrc"), 0},
+             {QStringLiteral("streams"), QJsonArray{}},
+         }},
+    });
+}
+
+// Asks for other people's video.
+//
+// This is the piece whose absence made every camera invisible. Discord does
+// not push video at a client that has not asked for it: the server waits to be
+// told which streams are wanted and how good they should be. A client that
+// never sends this is treated as wanting none, which is exactly what we got.
+//
+// Values run from 0, meaning do not send this at all, to 100, the best
+// available. "any" covers anyone whose stream we have not named yet, so a
+// camera switched on later is not missed while we wait to hear about it.
+void VoiceConnection::sendVideoWants()
+{
+    QJsonObject wants;
+    wants.insert(QStringLiteral("any"), 100);
+
+    for (auto it = m_videoSsrcToUser.constBegin(); it != m_videoSsrcToUser.constEnd(); ++it)
+        wants.insert(QString::number(it.key()), 100);
+
+    sendJson(QJsonObject{
+        {QStringLiteral("op"), OpMediaSinkWants},
+        {QStringLiteral("d"), wants},
+    });
+
+    wlog(QStringLiteral("video"),
+         QStringLiteral("asked for everyone's pictures (%1 named)").arg(m_videoSsrcToUser.size()));
+}
 
 void VoiceConnection::sendSpeaking(bool speaking)
 {

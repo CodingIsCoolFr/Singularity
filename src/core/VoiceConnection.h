@@ -111,6 +111,11 @@ private:
     void sendSelectProtocol(const QString &address, quint16 port);
     void sendSpeaking(bool speaking);
 
+    // What we send, and what we want sent to us. The second is the one that
+    // makes other people's cameras appear at all.
+    void sendVideoState();
+    void sendVideoWants();
+
     void handleReady(const QJsonObject &data);
     void handleSessionDescription(const QJsonObject &data);
     void handleSpeaking(const QJsonObject &data);
