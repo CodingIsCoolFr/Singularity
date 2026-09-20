@@ -10,6 +10,12 @@
 ![Voice](https://img.shields.io/badge/voice-end--to--end%20encrypted-a9c6e0?style=flat-square&labelColor=07090e)
 ![Plugins](https://img.shields.io/badge/plugins-compiled%20in-8892a6?style=flat-square&labelColor=07090e)
 
+<br>
+
+### [Download Singularity 0.1.0](https://github.com/CodingIsCoolFr/Singularity/releases/latest)
+
+Windows x64 · 54 MB · installs for you only, no administrator prompt
+
 </div>
 
 ---
