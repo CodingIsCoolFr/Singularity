@@ -12,7 +12,7 @@
 
 <br>
 
-### [Download Singularity 0.1.4](https://github.com/CodingIsCoolFr/singularity-updates/releases/latest)
+### [Download Singularity 0.1.5](https://github.com/CodingIsCoolFr/singularity-updates/releases/latest)
 
 Windows x64 · 54 MB · installs for you only, no administrator prompt
 
