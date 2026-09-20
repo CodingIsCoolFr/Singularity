@@ -20,7 +20,6 @@ class QSlider;
 class QSplitter;
 class CallView;
 class ChannelDelegate;
-class Updater;
 class ChatView;
 class FriendsPage;
 class ImageViewer;
@@ -135,11 +134,6 @@ private:
     QLabel *m_statusMessage = nullptr;
     QMenuBar *m_menuBar = nullptr;
     QWidget *m_titleBar = nullptr;
-
-    // Checking for a newer version. Made on first use rather than at startup,
-    // because most runs never need it.
-    void checkForUpdates(bool quiet);
-    Updater *m_updater = nullptr;
 
     // Frameless window handling: which edges a point counts as grabbing, and
     // the cursor that says so.

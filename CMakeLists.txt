@@ -79,6 +79,8 @@ qt_add_executable(Singularity WIN32
     src/core/VideoDecoder.cpp
     src/core/Updater.h
     src/core/Updater.cpp
+    src/ui/UpdateFlow.h
+    src/ui/UpdateFlow.cpp
     src/ui/MediaCache.h
     src/ui/MediaCache.cpp
     src/ui/ListDelegates.h

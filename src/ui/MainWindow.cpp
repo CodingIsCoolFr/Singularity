@@ -8,7 +8,7 @@
 #include "ui/FriendsPage.h"
 #include "ui/ImageViewer.h"
 #include "ui/AuroraWidget.h"
-#include "core/Updater.h"
+#include "ui/UpdateFlow.h"
 
 #include <QProcess>
 
@@ -248,15 +248,6 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
 
     m_typingClearTimer.setSingleShot(true);
     connect(&m_typingClearTimer, &QTimer::timeout, this, [this]() { setTypingHint(QString()); });
-
-    // A quiet look for a newer version, a few seconds after the window is up.
-    //
-    // Delayed so it never competes with signing in, and quiet so a program
-    // that is already current says nothing. An updater that interrupts to
-    // report that nothing has happened is one people learn to dismiss without
-    // reading, which is exactly the habit you do not want when it eventually
-    // has something to say.
-    QTimer::singleShot(8000, this, [this]() { checkForUpdates(true); });
 
     connect(m_gateway, &GatewayClient::ready, this, &MainWindow::onGatewayReady);
     connect(m_gateway, &GatewayClient::dispatch, this, &MainWindow::onGatewayDispatch);
@@ -1091,7 +1082,7 @@ void MainWindow::buildMenu()
     fileMenu->addSeparator();
 
     auto *updateAction = fileMenu->addAction(QStringLiteral("Check for updates..."));
-    connect(updateAction, &QAction::triggered, this, [this]() { checkForUpdates(false); });
+    connect(updateAction, &QAction::triggered, this, [this]() { UpdateFlow::run(false, this); });
 
     fileMenu->addSeparator();
 
@@ -1101,77 +1092,6 @@ void MainWindow::buildMenu()
     auto *quitAction = fileMenu->addAction(QStringLiteral("Quit"));
     quitAction->setShortcut(QKeySequence::Quit);
     connect(quitAction, &QAction::triggered, this, &QWidget::close);
-}
-
-// Asks whether a newer version exists, and offers it.
-//
-// Nothing happens without being agreed to. The check on startup is quiet, so
-// an up to date program says nothing at all; only a check somebody asked for
-// reports both answers. The download waits for a yes, and so does running the
-// installer once it has arrived.
-void MainWindow::checkForUpdates(bool quiet)
-{
-    if (!m_updater) {
-        m_updater = new Updater(this);
-
-        connect(m_updater, &Updater::upToDate, this, [this]() {
-            QMessageBox::information(this, QStringLiteral("Up to date"),
-                                     QStringLiteral("Singularity %1 is the newest version.")
-                                         .arg(QApplication::applicationVersion()));
-        });
-
-        connect(m_updater, &Updater::failed, this, [this](const QString &reason) {
-            QMessageBox::warning(this, QStringLiteral("Could not check for updates"), reason);
-        });
-
-        connect(m_updater, &Updater::updateAvailable, this,
-                [this](const QString &version, const QString &notes, qint64 bytes) {
-                    QString text = QStringLiteral("Singularity %1 is available. You have %2.\n\n")
-                                       .arg(version, QApplication::applicationVersion());
-                    if (!notes.isEmpty())
-                        text += notes.left(600) + QStringLiteral("\n\n");
-                    text += QStringLiteral("Download it now? It is about %1 MB.")
-                                .arg(bytes / (1024 * 1024));
-
-                    if (QMessageBox::question(this, QStringLiteral("Update available"), text)
-                        != QMessageBox::Yes) {
-                        return;
-                    }
-
-                    flashStatus(QStringLiteral("Downloading %1...").arg(version));
-                    m_updater->download();
-                });
-
-        connect(m_updater, &Updater::progress, this, [this](qint64 got, qint64 total) {
-            if (total > 0) {
-                flashStatus(QStringLiteral("Downloading update: %1%")
-                                .arg(got * 100 / total));
-            }
-        });
-
-        connect(m_updater, &Updater::readyToInstall, this, [this](const QString &path) {
-            flashStatus(QString());
-
-            const auto answer = QMessageBox::question(
-                this, QStringLiteral("Ready to install"),
-                QStringLiteral("The update has been downloaded. Singularity will close while it "
-                               "installs, and the installer will offer to start it again.\n\n"
-                               "Install now?"));
-            if (answer != QMessageBox::Yes)
-                return;
-
-            // Started before closing, because once this process is gone there
-            // is nothing left to start anything.
-            if (!QProcess::startDetached(path, {})) {
-                QMessageBox::warning(this, QStringLiteral("Could not start the installer"),
-                                     QStringLiteral("It was downloaded to:\n%1").arg(path));
-                return;
-            }
-            close();
-        });
-    }
-
-    m_updater->check(quiet);
 }
 
 void MainWindow::startSession(const QString &token)
