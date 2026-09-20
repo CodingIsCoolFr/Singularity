@@ -1,0 +1,367 @@
+#include "ui/Theme.h"
+
+#include <QHash>
+
+namespace Theme {
+
+namespace {
+
+// Colours are written as @name in the sheets below and swapped in here. That
+// beats a long chain of numbered placeholders, which is easy to miscount.
+QString expand(QString sheet)
+{
+    static const QHash<QString, QString> tokens{
+        {QStringLiteral("@dark"), QLatin1String(Dark)},
+        {QStringLiteral("@light"), QLatin1String(Light)},
+        {QStringLiteral("@midGray"), QLatin1String(MidGray)},
+        {QStringLiteral("@lightGray"), QLatin1String(LightGray)},
+        {QStringLiteral("@orange"), QLatin1String(Orange)},
+        {QStringLiteral("@blue"), QLatin1String(Blue)},
+        {QStringLiteral("@green"), QLatin1String(Green)},
+        {QStringLiteral("@rail"), QLatin1String(SurfaceRail)},
+        {QStringLiteral("@sidebar"), QLatin1String(SurfaceSidebar)},
+        {QStringLiteral("@chat"), QLatin1String(SurfaceChat)},
+        {QStringLiteral("@input"), QLatin1String(SurfaceInput)},
+        {QStringLiteral("@hover"), QLatin1String(SurfaceHover)},
+        {QStringLiteral("@border"), QLatin1String(Border)},
+        {QStringLiteral("@text"), QLatin1String(TextPrimary)},
+        {QStringLiteral("@muted"), QLatin1String(TextMuted)},
+        {QStringLiteral("@faint"), QLatin1String(TextFaint)},
+        {QStringLiteral("@deleted"), QLatin1String(Deleted)},
+    };
+
+    // Longest names first, so @lightGray is not eaten by @light.
+    QStringList names = tokens.keys();
+    std::sort(names.begin(), names.end(), [](const QString &a, const QString &b) {
+        return a.size() > b.size();
+    });
+    for (const QString &name : names)
+        sheet.replace(name, tokens.value(name));
+
+    return sheet;
+}
+
+} // namespace
+
+QString applicationStyleSheet()
+{
+    return expand(QStringLiteral(R"(
+QWidget {
+    background-color: @chat;
+    color: @text;
+    font-family: "Poppins", "Segoe UI", Arial, sans-serif, "Segoe UI Emoji";
+    font-size: 13px;
+}
+QMainWindow, QDialog { background-color: @chat; }
+
+/* ---- server rail ---------------------------------------------------- */
+#GuildRail {
+    background-color: @rail;
+    border-right: 1px solid @border;
+}
+#GuildRail QListWidget {
+    background-color: transparent;
+    border: none;
+    outline: none;
+}
+/* Rows here are drawn by GuildRailDelegate, so no item rules belong in this
+   sheet. Anything set below would fight the painter. */
+
+/* ---- channel sidebar ------------------------------------------------ */
+#Sidebar {
+    background-color: @sidebar;
+    border-right: 1px solid @border;
+}
+#Sidebar QListWidget {
+    background-color: transparent;
+    border: none;
+    outline: none;
+}
+/* Channel rows are drawn by ChannelDelegate, for the same reason. */
+
+#SidebarHeader {
+    color: @text;
+    font-size: 15px;
+    font-weight: 600;
+    padding: 17px 14px 12px 14px;
+    border-bottom: 1px solid @border;
+}
+
+/* ---- who you are ---------------------------------------------------- */
+#UserPanel {
+    background-color: @rail;
+    border-top: 1px solid @border;
+}
+#SelfName   { color: @text; font-size: 13px; font-weight: 600; background: transparent; }
+#SelfStatus { color: @faint; font-size: 11px; background: transparent; }
+
+/* Shown only while you are sitting in a voice channel. */
+#VoicePanel {
+    background-color: @rail;
+    border-top: 1px solid @border;
+}
+#VoiceHeading { color: @green; font-size: 12px; font-weight: 700; background: transparent; }
+#VoiceChannel { color: @muted; font-size: 11px; background: transparent; }
+
+/* These three share a 240 pixel sidebar, so they cannot carry the roomy
+   padding the rest of the app uses or the words get cut in half. */
+#VoicePanel QPushButton {
+    padding: 3px 4px;
+    font-size: 11px;
+    border-radius: 6px;
+}
+#VoicePanel QPushButton:checked {
+    background-color: @orange;
+    color: @dark;
+    border-color: @orange;
+    font-weight: 600;
+}
+
+/* ---- chat ----------------------------------------------------------- */
+#ChatHeader {
+    background-color: @chat;
+    border-bottom: 1px solid @border;
+}
+#ChannelTitle { color: @text; font-size: 15px; font-weight: 600; }
+#ChannelTopic { color: @faint; font-size: 12px; }
+
+QTextBrowser {
+    background-color: @chat;
+    border: none;
+    padding: 14px 20px;
+}
+
+#Composer { background-color: @chat; }
+#ComposerBox {
+    background-color: @input;
+    border: 1px solid @border;
+    border-radius: 10px;
+}
+#ComposerBox:focus-within { border-color: @orange; }
+QTextEdit#MessageInput {
+    background-color: transparent;
+    border: none;
+    padding: 11px 14px;
+    color: @text;
+    font-family: "Lora", Georgia, serif;
+    font-size: 14px;
+}
+
+#TypingLabel {
+    color: @faint;
+    font-size: 11px;
+    font-style: italic;
+    padding: 1px 22px;
+    background-color: @chat;
+}
+
+/* ---- controls ------------------------------------------------------- */
+QPushButton {
+    background-color: @input;
+    color: @text;
+    border: 1px solid @border;
+    border-radius: 8px;
+    padding: 8px 16px;
+}
+QPushButton:hover   { background-color: @hover; border-color: @orange; }
+QPushButton:pressed { background-color: @rail; }
+QPushButton#PrimaryButton {
+    background-color: @orange;
+    color: @dark;
+    border: none;
+    font-weight: 600;
+}
+QPushButton#PrimaryButton:hover { background-color: #e08b6d; }
+
+QLineEdit {
+    background-color: @input;
+    border: 1px solid @border;
+    border-radius: 8px;
+    padding: 9px 12px;
+    color: @text;
+    selection-background-color: @orange;
+}
+QLineEdit:focus { border-color: @orange; }
+
+QComboBox {
+    background-color: @input;
+    border: 1px solid @border;
+    border-radius: 8px;
+    padding: 6px 10px;
+}
+QComboBox QAbstractItemView {
+    background-color: @sidebar;
+    border: 1px solid @border;
+    selection-background-color: @hover;
+}
+
+QListWidget, QTableWidget {
+    background-color: @sidebar;
+    border: 1px solid @border;
+    border-radius: 10px;
+    outline: none;
+}
+QHeaderView::section {
+    background-color: @input;
+    color: @muted;
+    border: none;
+    padding: 6px;
+}
+
+QCheckBox { spacing: 8px; }
+QCheckBox::indicator {
+    width: 16px; height: 16px;
+    border-radius: 4px;
+    border: 1px solid @midGray;
+    background-color: @input;
+}
+QCheckBox::indicator:checked { background-color: @orange; border-color: @orange; }
+
+QScrollBar:vertical {
+    background: transparent;
+    width: 10px;
+    margin: 4px 2px;
+}
+QScrollBar::handle:vertical {
+    background: @border;
+    border-radius: 5px;
+    min-height: 30px;
+}
+QScrollBar::handle:vertical:hover { background: @midGray; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
+
+QStatusBar {
+    background-color: @rail;
+    color: @faint;
+    border-top: 1px solid @border;
+}
+QMenuBar { background-color: @rail; color: @muted; }
+QMenuBar::item:selected { background-color: @hover; color: @text; }
+QMenu { background-color: @sidebar; border: 1px solid @border; padding: 4px; }
+QMenu::item { padding: 6px 22px; border-radius: 6px; }
+QMenu::item:selected { background-color: @hover; }
+
+QTabWidget::pane { border: 1px solid @border; border-radius: 10px; }
+QTabBar::tab {
+    background: transparent;
+    color: @muted;
+    padding: 8px 14px;
+    margin-right: 4px;
+    border-radius: 8px;
+}
+QTabBar::tab:selected { background: @hover; color: @text; }
+)"));
+}
+
+QString messageViewCss(int bodyFontSize)
+{
+    return expand(QStringLiteral(R"(
+body {
+    background-color: @chat;
+    color: @text;
+    /* Segoe UI Emoji is last so ordinary letters keep the serif face while
+       emoji still come out in colour instead of empty boxes. */
+    font-family: "Lora", Georgia, serif, "Segoe UI Emoji";
+    font-size: @bodySizepx;
+}
+
+/* One message block. The left cell holds the avatar. */
+table.row { margin: 0 0 2px 0; }
+td.ava { padding-top: 2px; }
+
+.hdr { margin-bottom: 1px; }
+.author {
+    color: @lightGray;
+    font-family: "Poppins", "Segoe UI", sans-serif;
+    font-weight: 600;
+    font-size: 13px;
+}
+.author-self { color: @orange; }
+
+/* The name is a link so it can open a profile, but it must not look like a
+   web link. */
+a.namelink { color: @lightGray; text-decoration: none; }
+
+.stamp, .meta {
+    color: @faint;
+    font-family: "Poppins", "Segoe UI", sans-serif;
+    font-size: 11px;
+}
+
+/* The strip left of a grouped message. */
+td.gut { padding-right: 6px; }
+.gutter {
+    color: @faint;
+    font-family: "Poppins", "Segoe UI", sans-serif;
+    font-size: 10px;
+}
+
+.body { color: @text; }
+.deleted { color: @deleted; }
+
+.tag-deleted {
+    color: @deleted;
+    font-family: "Poppins", "Segoe UI", sans-serif;
+    font-size: 10px;
+}
+.tag-edited {
+    color: @faint;
+    font-family: "Poppins", "Segoe UI", sans-serif;
+    font-size: 10px;
+}
+
+.attach { margin: 5px 0 2px 0; }
+
+/* Link previews. The coloured strip is a table cell, because Qt's rich text
+   has no left border on a div. */
+table.embed { margin: 6px 0 4px 0; }
+.embed-inner {
+    background-color: @input;
+    padding: 8px 12px;
+}
+.embed-provider {
+    color: @faint;
+    font-family: "Poppins", "Segoe UI", sans-serif;
+    font-size: 10px;
+}
+.embed-author {
+    color: @lightGray;
+    font-family: "Poppins", "Segoe UI", sans-serif;
+    font-size: 11px;
+}
+.embed-title {
+    font-family: "Poppins", "Segoe UI", sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+}
+.embed-body {
+    color: @muted;
+    font-size: 12px;
+}
+.file {
+    margin: 4px 0 2px 0;
+    font-family: "Poppins", "Segoe UI", sans-serif;
+    font-size: 12px;
+}
+
+.mention {
+    color: @orange;
+    font-family: "Poppins", "Segoe UI", sans-serif;
+}
+
+a { color: @blue; }
+code {
+    background-color: @input;
+    font-family: Consolas, monospace;
+    font-size: 13px;
+}
+.system {
+    color: @faint;
+    font-style: italic;
+}
+)")
+                      .replace(QStringLiteral("@bodySize"), QString::number(qBound(11, bodyFontSize, 20))));
+}
+
+} // namespace Theme

@@ -1,0 +1,140 @@
+#pragma once
+
+#include <QElapsedTimer>
+#include <QHash>
+#include <QSet>
+#include <QStyledItemDelegate>
+
+// Roles hung off list rows. Shared so the window and the painters agree.
+namespace WispRoles {
+constexpr int Id = Qt::UserRole + 1;
+
+// "guild", "channel" (text), "voice", "voicemember", "dm", or "header".
+constexpr int Kind = Qt::UserRole + 2;
+
+// Direct message rows only: the second line, and the online state that
+// colours the little bubble on the avatar.
+constexpr int Subtitle = Qt::UserRole + 3;
+constexpr int Status = Qt::UserRole + 4;
+
+// Server rail only: which folder a tile sits in, and whether a folder tile is
+// open.
+constexpr int Folder = Qt::UserRole + 5;
+constexpr int FolderOpen = Qt::UserRole + 6;
+} // namespace WispRoles
+
+// Shared easing used by both delegates below.
+//
+// Each row keeps a number between 0 and 1 for "hovered" and "selected". Every
+// paint nudges that number toward its target and, while it is still moving,
+// asks for another paint. That gives a smooth slide with no timers to manage
+// and nothing to clean up when rows come and go.
+class AnimatedDelegate : public QStyledItemDelegate
+{
+    Q_OBJECT
+
+public:
+    explicit AnimatedDelegate(QAbstractItemView *view, QObject *parent = nullptr);
+
+protected:
+    // Returns the eased value for this row and schedules a repaint if it is
+    // still settling.
+    qreal progress(QHash<int, qreal> &store, int row, bool on) const;
+
+    QAbstractItemView *m_view = nullptr;
+
+private:
+    void scheduleRepaint() const;
+
+    mutable bool m_repaintQueued = false;
+};
+
+// The server rail on the far left.
+//
+// Idle icons are circles. Hovering or selecting one squares it off and slides
+// a pill out on the left edge, the way the real client does.
+class GuildRailDelegate : public AnimatedDelegate
+{
+    Q_OBJECT
+
+public:
+    using AnimatedDelegate::AnimatedDelegate;
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override;
+    QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override;
+
+private:
+    mutable QHash<int, qreal> m_hover;
+    mutable QHash<int, qreal> m_select;
+};
+
+// One row of the friends list: picture, name, what they are doing, and two
+// small round buttons that fade in when the mouse is over the row.
+class FriendDelegate : public AnimatedDelegate
+{
+    Q_OBJECT
+
+public:
+    using AnimatedDelegate::AnimatedDelegate;
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override;
+    QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override;
+    bool editorEvent(QEvent *event, QAbstractItemModel *model, const QStyleOptionViewItem &option,
+                     const QModelIndex &index) override;
+
+signals:
+    void messageRequested(const QString &userId);
+    void profileRequested(const QString &userId);
+
+private:
+    enum class Button { Message, Profile, None };
+
+    static QRect buttonRect(const QRect &row, Button button);
+    static Button buttonAt(const QRect &row, const QPoint &point);
+
+    mutable QHash<int, qreal> m_hover;
+    mutable QHash<int, qreal> m_select;
+};
+
+// The channel list.
+//
+// Selected and hovered rows fade a rounded panel in behind the text, and the
+// selected row grows a short accent bar on its left edge.
+class ChannelDelegate : public AnimatedDelegate
+{
+    Q_OBJECT
+
+public:
+    using AnimatedDelegate::AnimatedDelegate;
+
+    // Which channel is currently joined, so its row can show "Leave".
+    void setJoinedVoiceChannel(const QString &channelId);
+
+    // Whoever is talking right now gets a green ring round their picture.
+    void setSpeakingUsers(const QSet<QString> &userIds);
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override;
+    QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override;
+    bool editorEvent(QEvent *event, QAbstractItemModel *model, const QStyleOptionViewItem &option,
+                     const QModelIndex &index) override;
+
+signals:
+    // Raised by the small buttons that appear on a voice row when hovered.
+    void joinVoiceRequested(const QString &channelId);
+    void leaveVoiceRequested(const QString &channelId);
+    void openChatRequested(const QString &channelId);
+    void inviteRequested(const QString &channelId);
+    void channelSettingsRequested(const QString &channelId);
+
+private:
+    // The three buttons, left to right, inside one row.
+    enum class Button { Chat, Invite, Settings, None };
+
+    static QRect buttonRect(const QRect &row, Button button);
+    static Button buttonAt(const QRect &row, const QPoint &point);
+
+    mutable QHash<int, qreal> m_hover;
+    mutable QHash<int, qreal> m_select;
+    QString m_joinedChannelId;
+    QSet<QString> m_speaking;
+};

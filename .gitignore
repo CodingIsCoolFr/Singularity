@@ -1,0 +1,26 @@
+# Build output.
+build/
+out/
+*.obj
+*.exe
+*.pdb
+*.ilk
+
+# Libraries fetched or built on this machine, about 4 GB of them.
+# The README says how to get each one back.
+third_party/
+
+# Visual Studio and editor leftovers.
+.vs/
+.vscode/
+*.user
+CMakeSettings.json
+CMakeUserPresets.json
+
+# Nothing here should ever hold a token or a password, but these are the
+# names such a file usually takes, so they are refused up front.
+*.log
+session.dat
+*.ini
+secrets*
+.env

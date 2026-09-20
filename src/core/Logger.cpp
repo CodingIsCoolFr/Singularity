@@ -1,0 +1,63 @@
+#include "core/Logger.h"
+
+#include <QDateTime>
+#include <QDir>
+#include <QFileInfo>
+#include <QStandardPaths>
+
+namespace {
+constexpr int MaxHistoryLines = 2000;
+}
+
+Logger::Logger()
+{
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QDir().mkpath(dir);
+
+    m_file.setFileName(dir + QStringLiteral("/wisp.log"));
+    // Truncate on every start so the file always describes this run.
+    if (m_file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        m_stream.setDevice(&m_file);
+        m_stream << QStringLiteral("=== Wisp started %1 ===\n")
+                        .arg(QDateTime::currentDateTime().toString(Qt::ISODate));
+        m_stream.flush();
+    }
+}
+
+Logger::~Logger()
+{
+    if (m_file.isOpen()) {
+        m_stream.flush();
+        m_file.close();
+    }
+}
+
+Logger &Logger::instance()
+{
+    static Logger logger;
+    return logger;
+}
+
+QString Logger::filePath() const
+{
+    return QFileInfo(m_file).absoluteFilePath();
+}
+
+void Logger::log(const QString &source, const QString &message)
+{
+    const QString line = QStringLiteral("%1  [%2] %3")
+                             .arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss.zzz")),
+                                  source.leftJustified(8), message);
+
+    m_history.append(line);
+    if (m_history.size() > MaxHistoryLines)
+        m_history.remove(0, m_history.size() - MaxHistoryLines);
+
+    if (m_file.isOpen()) {
+        m_stream << line << '\n';
+        // Flushed every line on purpose: a crash must not lose the last one.
+        m_stream.flush();
+    }
+
+    emit lineLogged(line);
+}
