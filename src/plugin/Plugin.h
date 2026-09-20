@@ -75,6 +75,25 @@ public:
         return true;
     }
 
+    // Called with one 20 millisecond slice of your microphone, before it is
+    // encoded and sent, so a plugin can change how you sound to other people.
+    //
+    // `samples` is interleaved: left, right, left, right. `frames` counts
+    // positions in time, so the array holds `frames * channels` numbers.
+    // Editing it in place is the point.
+    //
+    // Three rules, because this runs inside the audio path:
+    //
+    //   - Be quick. The whole slice is 20 milliseconds long and another one
+    //     arrives every 20 milliseconds. Work that overruns is heard as
+    //     stuttering, not as lateness.
+    //   - Never allocate, lock, or wait here.
+    //   - Keep values inside the range a 16 bit number can hold. Going past it
+    //     wraps around, which sounds like tearing rather than loudness.
+    virtual void onMicrophoneFrame(qint16 *samples, int frames, int channels, int sampleRate) {
+        Q_UNUSED(samples) Q_UNUSED(frames) Q_UNUSED(channels) Q_UNUSED(sampleRate)
+    }
+
     // Called before the typing indicator is sent. Return false to stay silent.
     virtual bool onBeforeTyping(const QString &channelId) {
         Q_UNUSED(channelId)

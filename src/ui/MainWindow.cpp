@@ -311,6 +311,16 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
                              config.value(QStringLiteral("voice/joinDeafened"), false).toBool());
     });
 
+    // Hands each slice of microphone sound to the plugins on its way out.
+    //
+    // Wired here rather than inside VoiceConnection so the network code keeps
+    // knowing nothing about plugins. Captured by raw pointer on purpose: this
+    // runs fifty times a second, and both objects outlive the window.
+    m_voice->setMicrophoneProcessor(
+        [plugins = m_plugins](qint16 *samples, int frames, int channels, int rate) {
+            plugins->runMicrophoneFrame(samples, frames, channels, rate);
+        });
+
     // Discord normally answers a join within a second. Ten is generous.
     m_voiceWatchdog.setSingleShot(true);
     connect(&m_voiceWatchdog, &QTimer::timeout, this, [this]() {

@@ -1063,13 +1063,24 @@ void VoiceConnection::onSendTick()
         auto *samples = reinterpret_cast<qint16 *>(frame.data());
         const int count = FrameBytes / 2;
 
-        // Loudness, so we know whether to announce that we are speaking.
+        // The slider first, so a plugin is handed sound at the level you set
+        // rather than whatever the microphone happened to produce.
+        for (int i = 0; i < count; ++i) {
+            const double value = qBound(-32768.0, samples[i] * (m_inputVolume / 100.0), 32767.0);
+            samples[i] = static_cast<qint16>(value);
+        }
+
+        // Plugins get the sound next, and may rewrite it entirely.
+        if (m_micProcessor)
+            m_micProcessor(samples, FrameSamples, Channels, SampleRate);
+
+        // Loudness is measured afterwards, on what will actually be sent. A
+        // plugin holding back quiet sound should make you count as silent, and
+        // one boosting it should make you count as talking; measuring first
+        // would ignore both.
         double sum = 0.0;
         for (int i = 0; i < count; ++i) {
-            double value = samples[i] * (m_inputVolume / 100.0);
-            value = qBound(-32768.0, value, 32767.0);
-            samples[i] = static_cast<qint16>(value);
-            const double normalised = value / 32768.0;
+            const double normalised = samples[i] / 32768.0;
             sum += normalised * normalised;
         }
         const double level = std::sqrt(sum / count);

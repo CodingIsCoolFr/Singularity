@@ -3,6 +3,7 @@
 #include "core/AppConfig.h"
 #include "plugin/builtin/MessageLoggerPlugin.h"
 #include "plugin/builtin/AnonymousPlugin.h"
+#include "plugin/builtin/MicShaperPlugin.h"
 #include "plugin/builtin/NitroWatchPlugin.h"
 #include "plugin/builtin/PresenceHintsPlugin.h"
 #include "plugin/builtin/QuickTextPlugin.h"
@@ -60,6 +61,7 @@ void PluginHost::registerBuiltins()
     add(std::make_unique<PresenceHintsPlugin>());
     add(std::make_unique<AnonymousPlugin>());
     add(std::make_unique<NitroWatchPlugin>());
+    add(std::make_unique<MicShaperPlugin>());
 }
 
 void PluginHost::add(std::unique_ptr<Plugin> plugin)
@@ -178,6 +180,16 @@ QString PluginHost::runDecorateHeader(const MessageInfo &message)
         result += QStringLiteral("&#160;&#160;") + part;
     }
     return result;
+}
+
+void PluginHost::runMicrophoneFrame(qint16 *samples, int frames, int channels, int sampleRate)
+{
+    // No logging and nothing clever in this loop. It runs fifty times a second
+    // inside the audio path, and anything slow here is heard rather than read.
+    for (Entry *entry : m_entries) {
+        if (entry->enabled)
+            entry->plugin->onMicrophoneFrame(samples, frames, channels, sampleRate);
+    }
 }
 
 QString PluginHost::runDecorateGutter(const MessageInfo &message)

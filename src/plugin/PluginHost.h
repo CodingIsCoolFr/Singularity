@@ -45,6 +45,9 @@ public:
     QString runDecorateHeader(const MessageInfo &message);
     QString runDecorateGutter(const MessageInfo &message);
 
+    // Runs inside the audio path, every 20 milliseconds, while a call is up.
+    void runMicrophoneFrame(qint16 *samples, int frames, int channels, int sampleRate);
+
 signals:
     void pluginLogged(const QString &pluginId, const QString &line);
     void pluginToggled(const QString &pluginId, bool enabled);

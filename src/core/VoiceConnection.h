@@ -12,6 +12,8 @@
 #include <QUdpSocket>
 #include <QWebSocket>
 
+#include <functional>
+
 class DaveSession;
 class QAudioSource;
 class QAudioSink;
@@ -65,6 +67,16 @@ public:
     void setInputDevice(const QByteArray &deviceId) { m_inputDeviceId = deviceId; }
     void setOutputDevice(const QByteArray &deviceId) { m_outputDeviceId = deviceId; }
     void setSensitivity(int percent) { m_sensitivity = percent; }
+
+    // Handed each slice of microphone sound just before it is encoded, so a
+    // plugin can change how you sound to other people.
+    //
+    // A plain function rather than a signal: this is called fifty times a
+    // second from the middle of the audio path, and it has to finish before
+    // the next slice arrives. It is also why core does not include the plugin
+    // headers — the window hands this in, so the layering stays one way.
+    using MicrophoneProcessor = std::function<void(qint16 *samples, int frames, int channels, int sampleRate)>;
+    void setMicrophoneProcessor(MicrophoneProcessor processor) { m_micProcessor = std::move(processor); }
 
 signals:
     void stateChanged(VoiceConnection::State state);
@@ -206,6 +218,8 @@ private:
     bool m_deafened = false;
     bool m_speaking = false;
     int m_silentFrames = 0;
+    MicrophoneProcessor m_micProcessor;
+
     int m_inputVolume = 100;
     int m_outputVolume = 100;
     int m_sensitivity = 15;
