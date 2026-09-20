@@ -968,6 +968,22 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
         return;
     }
 
+    if (eventType == QLatin1String("MESSAGE_REACTION_ADD")) {
+        m_store->applyReaction(data, true, m_selfUserId);
+        return;
+    }
+
+    if (eventType == QLatin1String("MESSAGE_REACTION_REMOVE")) {
+        m_store->applyReaction(data, false, m_selfUserId);
+        return;
+    }
+
+    if (eventType == QLatin1String("MESSAGE_REACTION_REMOVE_ALL")
+        || eventType == QLatin1String("MESSAGE_REACTION_REMOVE_EMOJI")) {
+        m_store->clearReactions(data);
+        return;
+    }
+
     if (eventType == QLatin1String("MESSAGE_DELETE")) {
         const QString channelId = data.value(QStringLiteral("channel_id")).toString();
         const QString messageId = data.value(QStringLiteral("id")).toString();
@@ -1665,6 +1681,7 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
 
     body += stickersHtml(message);
     body += embedsHtml(message);
+    body += reactionsHtml(message);
 
     if (body.isEmpty())
         body = QStringLiteral("<span class=\"system\">(no text)</span>");
@@ -1728,6 +1745,47 @@ QString MainWindow::stickersHtml(const MessageInfo &message) const
                                "<img src=\"%1\" alt=\"%2\" title=\"%2\"></a></div>")
                     .arg(url, sticker.name.toHtmlEscaped());
     }
+    return html;
+}
+
+// The row of pills under a message.
+//
+// Qt's rich text has no flexbox, so these are laid out as inline spans with a
+// non-breaking space between them. Custom emoji come through as pictures from
+// Discord's own host, the same as everywhere else in the client.
+QString MainWindow::reactionsHtml(const MessageInfo &message) const
+{
+    if (message.reactions.isEmpty())
+        return {};
+
+    const bool animate =
+        AppConfig::instance().value(QStringLiteral("appearance/animate"), true).toBool();
+
+    QString html = QStringLiteral("<div class=\"reactions\">");
+
+    for (const ReactionInfo &reaction : message.reactions) {
+        QString face;
+        if (reaction.isCustom()) {
+            const QString ext = (reaction.animated && animate) ? QStringLiteral("gif")
+                                                               : QStringLiteral("png");
+            face = QStringLiteral("<img src=\"https://cdn.discordapp.com/emojis/%1.%2?size=32\" "
+                                  "width=\"16\" height=\"16\">")
+                       .arg(reaction.id, ext);
+        } else {
+            face = reaction.name.toHtmlEscaped();
+        }
+
+        // Yours is marked, the way the real client outlines one you pressed.
+        const char *background = reaction.mine ? Theme::SurfaceHover : Theme::SurfaceInput;
+        const char *ink = reaction.mine ? Theme::TextPrimary : Theme::TextMuted;
+
+        html += QStringLiteral("<span style=\"background-color: %1; color: %2; "
+                               "border-radius: 8px; padding: 2px 7px;\">%3&#160;%4</span>&#160;")
+                    .arg(QLatin1String(background), QLatin1String(ink), face)
+                    .arg(reaction.count);
+    }
+
+    html += QStringLiteral("</div>");
     return html;
 }
 

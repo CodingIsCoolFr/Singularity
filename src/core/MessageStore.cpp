@@ -807,6 +807,23 @@ MessageInfo MessageStore::parseMessage(const QJsonObject &raw)
         message.stickers.append(sticker);
     }
 
+    // --- reactions --------------------------------------------------------
+    const QJsonArray reactions = raw.value(QStringLiteral("reactions")).toArray();
+    for (const QJsonValue &value : reactions) {
+        const QJsonObject rawReaction = value.toObject();
+        const QJsonObject emoji = rawReaction.value(QStringLiteral("emoji")).toObject();
+
+        ReactionInfo reaction;
+        reaction.name = emoji.value(QStringLiteral("name")).toString();
+        reaction.id = emoji.value(QStringLiteral("id")).toString();
+        reaction.animated = emoji.value(QStringLiteral("animated")).toBool();
+        reaction.count = rawReaction.value(QStringLiteral("count")).toInt();
+        reaction.mine = rawReaction.value(QStringLiteral("me")).toBool();
+
+        if (reaction.count > 0 && (!reaction.name.isEmpty() || !reaction.id.isEmpty()))
+            message.reactions.append(reaction);
+    }
+
     return message;
 }
 
@@ -876,6 +893,93 @@ QString MessageStore::oldestMessageId(const QString &channelId) const
 {
     const QList<MessageInfo> list = m_messages.value(channelId);
     return list.isEmpty() ? QString() : list.first().id;
+}
+
+void MessageStore::applyReaction(const QJsonObject &data, bool added, const QString &selfUserId)
+{
+    const QString channelId = data.value(QStringLiteral("channel_id")).toString();
+    const QString messageId = data.value(QStringLiteral("message_id")).toString();
+    if (channelId.isEmpty() || messageId.isEmpty())
+        return;
+
+    QList<MessageInfo> &list = m_messages[channelId];
+    const auto target = std::find_if(list.begin(), list.end(), [&messageId](const MessageInfo &item) {
+        return item.id == messageId;
+    });
+    // A reaction on a message we never loaded has nowhere to go. Discord sends
+    // these for the whole channel, not only for what is on screen.
+    if (target == list.end())
+        return;
+
+    const QJsonObject emoji = data.value(QStringLiteral("emoji")).toObject();
+
+    ReactionInfo incoming;
+    incoming.name = emoji.value(QStringLiteral("name")).toString();
+    incoming.id = emoji.value(QStringLiteral("id")).toString();
+    incoming.animated = emoji.value(QStringLiteral("animated")).toBool();
+
+    const bool isMine = !selfUserId.isEmpty()
+        && data.value(QStringLiteral("user_id")).toString() == selfUserId;
+
+    QList<ReactionInfo> &reactions = target->reactions;
+    const auto existing = std::find_if(reactions.begin(), reactions.end(),
+                                       [&incoming](const ReactionInfo &item) {
+                                           return item.matches(incoming);
+                                       });
+
+    if (added) {
+        if (existing == reactions.end()) {
+            incoming.count = 1;
+            incoming.mine = isMine;
+            reactions.append(incoming);
+        } else {
+            ++existing->count;
+            if (isMine)
+                existing->mine = true;
+        }
+    } else {
+        if (existing == reactions.end())
+            return;
+
+        --existing->count;
+        if (isMine)
+            existing->mine = false;
+
+        // The last one going means the pill goes with it.
+        if (existing->count <= 0)
+            reactions.erase(existing);
+    }
+
+    emit messageChanged(channelId, messageId);
+}
+
+void MessageStore::clearReactions(const QJsonObject &data)
+{
+    const QString channelId = data.value(QStringLiteral("channel_id")).toString();
+    const QString messageId = data.value(QStringLiteral("message_id")).toString();
+    if (channelId.isEmpty() || messageId.isEmpty())
+        return;
+
+    QList<MessageInfo> &list = m_messages[channelId];
+    const auto target = std::find_if(list.begin(), list.end(), [&messageId](const MessageInfo &item) {
+        return item.id == messageId;
+    });
+    if (target == list.end() || target->reactions.isEmpty())
+        return;
+
+    // REMOVE_EMOJI names one; REMOVE_ALL names none and takes the lot.
+    const QJsonObject emoji = data.value(QStringLiteral("emoji")).toObject();
+    if (emoji.isEmpty()) {
+        target->reactions.clear();
+    } else {
+        ReactionInfo wanted;
+        wanted.name = emoji.value(QStringLiteral("name")).toString();
+        wanted.id = emoji.value(QStringLiteral("id")).toString();
+
+        target->reactions.removeIf([&wanted](const ReactionInfo &item) { return item.matches(wanted); });
+    }
+
+    emit messageChanged(channelId, messageId);
 }
 
 void MessageStore::appendMessage(const QJsonObject &rawMessage)

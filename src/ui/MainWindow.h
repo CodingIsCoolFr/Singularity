@@ -89,6 +89,7 @@ private:
     QString renderContent(const QString &raw) const;
     QString stickersHtml(const MessageInfo &message) const;
     QString embedsHtml(const MessageInfo &message) const;
+    QString reactionsHtml(const MessageInfo &message) const;
     void updateUserPanel();
     void setTypingHint(const QString &text);
     void handleAnchor(const QUrl &url);

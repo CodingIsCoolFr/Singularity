@@ -177,6 +177,27 @@ struct StickerInfo
     bool isDrawable() const { return formatType != 3; }
 };
 
+// One kind of reaction on a message, with a running count.
+//
+// Discord sends these as a summary rather than a list of who did what, so a
+// count and whether you are one of them is all there is to hold.
+struct ReactionInfo
+{
+    QString name;   // the character itself, or a custom emoji's name
+    QString id;     // set only for a custom emoji, which has a picture
+    bool animated = false;
+    int count = 0;
+    bool mine = false;
+
+    bool isCustom() const { return !id.isEmpty(); }
+
+    // Two reactions are the same one if they are the same emoji.
+    bool matches(const ReactionInfo &other) const
+    {
+        return id.isEmpty() ? (other.id.isEmpty() && name == other.name) : id == other.id;
+    }
+};
+
 struct MessageInfo
 {
     QString id;
@@ -189,6 +210,7 @@ struct MessageInfo
     QList<Attachment> attachments;
     QList<EmbedInfo> embeds;
     QList<StickerInfo> stickers;
+    QList<ReactionInfo> reactions;
     bool edited = false;
     bool deleted = false;   // set by the MessageLogger plugin
     bool pendingLocal = false;
@@ -239,6 +261,13 @@ public:
     // The oldest message being held for a channel, which is where the next
     // request back in time starts from.
     QString oldestMessageId(const QString &channelId) const;
+
+    // MESSAGE_REACTION_ADD and MESSAGE_REACTION_REMOVE. `selfUserId` decides
+    // whether the change was yours, which is what highlights the pill.
+    void applyReaction(const QJsonObject &data, bool added, const QString &selfUserId);
+
+    // MESSAGE_REACTION_REMOVE_ALL, and REMOVE_EMOJI when an emoji is given.
+    void clearReactions(const QJsonObject &data);
     void appendMessage(const QJsonObject &rawMessage);
     void updateMessage(const QJsonObject &rawMessage);
     void markDeleted(const QString &channelId, const QString &messageId);

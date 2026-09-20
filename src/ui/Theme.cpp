@@ -505,6 +505,10 @@ code {
     color: @faint;
     font-style: italic;
 }
+.reactions {
+    margin-top: 4px;
+    font-size: 11px;
+}
 )")
                       .replace(QStringLiteral("@bodySize"), QString::number(qBound(11, bodyFontSize, 20))));
 }
