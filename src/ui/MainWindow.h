@@ -134,7 +134,11 @@ private:
     QLabel *m_statusMessage = nullptr;
     QMenuBar *m_menuBar = nullptr;
     QWidget *m_titleBar = nullptr;
-    QWidget *m_captionDrag = nullptr;
+
+    // Frameless window handling: which edges a point counts as grabbing, and
+    // the cursor that says so.
+    Qt::Edges edgesAt(const QPoint &pos) const;
+    static Qt::CursorShape cursorForEdges(Qt::Edges edges);
     QPushButton *m_captionMax = nullptr;
     QTimer m_statusClearTimer;
     QLabel *m_selfAvatar = nullptr;

@@ -170,6 +170,52 @@ bool containsGlobal(const QWidget *widget, const QPoint &global)
     return widget && widget->isVisible() && widget->rect().contains(widget->mapFromGlobal(global));
 }
 
+// The strip along the top that a frameless window can be dragged by.
+//
+// startSystemMove hands the drag to Windows rather than moving the window by
+// hand from mouse deltas. That is what makes it feel like a title bar: snap
+// to the screen edges, snap to the half of the screen, and the shake to
+// minimise everything else all come for free, and none of them can be
+// imitated by setting a position.
+class TitleDragArea : public QWidget
+{
+public:
+    TitleDragArea(QWidget *window, QWidget *parent)
+        : QWidget(parent)
+        , m_window(window)
+    {
+        setAttribute(Qt::WA_TranslucentBackground, false);
+        setAutoFillBackground(false);
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() != Qt::LeftButton || !m_window) {
+            QWidget::mousePressEvent(event);
+            return;
+        }
+        if (QWindow *handle = m_window->windowHandle())
+            handle->startSystemMove();
+    }
+
+    // Double click does what double clicking a title bar does.
+    void mouseDoubleClickEvent(QMouseEvent *event) override
+    {
+        if (event->button() != Qt::LeftButton || !m_window) {
+            QWidget::mouseDoubleClickEvent(event);
+            return;
+        }
+        if (m_window->isMaximized())
+            m_window->showNormal();
+        else
+            m_window->showMaximized();
+    }
+
+private:
+    QWidget *m_window = nullptr;
+};
+
 } // namespace
 
 MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *store, PluginHost *plugins,
@@ -552,6 +598,12 @@ void MainWindow::buildUi()
     m_aurora->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     setCentralWidget(m_aurora);
 
+    // Needed for the resize edges below: without tracking, move events only
+    // arrive while a button is held, so the cursor would never change until
+    // after the press it is meant to invite.
+    m_aurora->setMouseTracking(true);
+    m_aurora->installEventFilter(this);
+
     auto *shell = new QVBoxLayout(m_aurora);
     shell->setContentsMargins(0, 0, 0, 0);
     shell->setSpacing(0);
@@ -564,7 +616,17 @@ void MainWindow::buildUi()
     m_menuBar->setObjectName(QStringLiteral("AppMenu"));
     m_menuBar->setNativeMenuBar(false);
     titleLayout->addWidget(m_menuBar);
-    titleLayout->addStretch(1);
+
+    // Something to actually take hold of.
+    //
+    // The window is frameless, so Windows draws no title bar to drag it by,
+    // and the strip where one would be was layout stretch rather than a
+    // widget: nothing there to receive a press. This is that strip, and it
+    // hands the drag to the window manager through startSystemMove, which
+    // behaves like a real title bar including snapping to edges.
+    auto *dragStrip = new TitleDragArea(this, m_aurora);
+    dragStrip->setFixedHeight(32);
+    titleLayout->addWidget(dragStrip, 1);
 
     auto *minBtn = captionButton(m_aurora, QStringLiteral("CaptionMin"), QStringLiteral("–"));
     m_captionMax = captionButton(m_aurora, QStringLiteral("CaptionMax"), QStringLiteral("□"));
@@ -2467,27 +2529,74 @@ void MainWindow::sendCurrentMessage()
         });
 }
 
+// Which window edges a point is close enough to count as grabbing.
+//
+// Ten pixels rather than the four or so Windows uses for a frame it draws
+// itself. That frame has a visible edge to aim at; this one does not, so the
+// target has to be wide enough to find by waving at the corner.
+Qt::Edges MainWindow::edgesAt(const QPoint &pos) const
+{
+    constexpr int grab = 10;
+
+    Qt::Edges edges;
+    if (pos.x() <= grab)
+        edges |= Qt::LeftEdge;
+    if (pos.x() >= m_aurora->width() - grab)
+        edges |= Qt::RightEdge;
+    if (pos.y() <= grab)
+        edges |= Qt::TopEdge;
+    if (pos.y() >= m_aurora->height() - grab)
+        edges |= Qt::BottomEdge;
+    return edges;
+}
+
+Qt::CursorShape MainWindow::cursorForEdges(Qt::Edges edges)
+{
+    if ((edges & Qt::TopEdge && edges & Qt::LeftEdge)
+        || (edges & Qt::BottomEdge && edges & Qt::RightEdge)) {
+        return Qt::SizeFDiagCursor;
+    }
+    if ((edges & Qt::TopEdge && edges & Qt::RightEdge)
+        || (edges & Qt::BottomEdge && edges & Qt::LeftEdge)) {
+        return Qt::SizeBDiagCursor;
+    }
+    if (edges & (Qt::LeftEdge | Qt::RightEdge))
+        return Qt::SizeHorCursor;
+    if (edges & (Qt::TopEdge | Qt::BottomEdge))
+        return Qt::SizeVerCursor;
+    return Qt::ArrowCursor;
+}
+
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 {
-    if (watched == m_captionDrag) {
+    // Dragging and resizing the window without a frame.
+    //
+    // The black hole covers every pixel, so it is what the mouse lands on
+    // anywhere the interface has not put a card. That makes it the right
+    // place to notice a press near an edge and hand the resize to Windows.
+    // Both of these go through the window manager rather than moving the
+    // window by hand: snapping to edges and to half the screen come with it,
+    // and neither can be imitated by setting a position.
+    if (watched == m_aurora && !isMaximized() && !isFullScreen()) {
+        if (event->type() == QEvent::MouseMove) {
+            auto *mouse = static_cast<QMouseEvent *>(event);
+            const Qt::Edges edges = edgesAt(mouse->position().toPoint());
+            m_aurora->setCursor(cursorForEdges(edges));
+        }
+
         if (event->type() == QEvent::MouseButtonPress) {
             auto *mouse = static_cast<QMouseEvent *>(event);
-            if (mouse->button() == Qt::LeftButton) {
-                if (QWindow *handle = windowHandle())
-                    handle->startSystemMove();
-                return true;
+            const Qt::Edges edges = edgesAt(mouse->position().toPoint());
+            if (mouse->button() == Qt::LeftButton && edges) {
+                if (QWindow *handle = windowHandle()) {
+                    handle->startSystemResize(edges);
+                    return true;
+                }
             }
         }
-        if (event->type() == QEvent::MouseButtonDblClick) {
-            auto *mouse = static_cast<QMouseEvent *>(event);
-            if (mouse->button() == Qt::LeftButton) {
-                if (isMaximized())
-                    showNormal();
-                else
-                    showMaximized();
-                return true;
-            }
-        }
+
+        if (event->type() == QEvent::Leave)
+            m_aurora->unsetCursor();
     }
 
     // Clicking your own panel opens your own profile card.
@@ -3026,7 +3135,12 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
             GetWindowRect(msg->hwnd, &winRect);
             const int x = GET_X_LPARAM(msg->lParam);
             const int y = GET_Y_LPARAM(msg->lParam);
-            const int border = GetSystemMetrics(SM_CXFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+            // Windows reports about eight pixels for a frame it draws itself,
+            // complete with a visible edge to aim at. This window has no such
+            // edge, so eight invisible pixels is a target nobody can hit.
+            // Widened to something a person can find by waving at the corner.
+            const int border =
+                qMax(10, GetSystemMetrics(SM_CXFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER));
             const int localX = x - winRect.left;
             const int localY = y - winRect.top;
             const int w = winRect.right - winRect.left;
