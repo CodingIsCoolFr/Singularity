@@ -12,9 +12,9 @@
 
 <br>
 
-### [Download Singularity 0.1.6](https://github.com/CodingIsCoolFr/singularity-updates/releases/latest)
+### [singularity-client.pages.dev](https://singularity-client.pages.dev)
 
-Windows x64 · 54 MB · installs for you only, no administrator prompt
+[Download Singularity 0.1.6](https://github.com/CodingIsCoolFr/singularity-updates/releases/latest) · Windows x64 · 54 MB · installs for you only, no administrator prompt
 
 </div>
 

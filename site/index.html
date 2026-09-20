@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Singularity — a Discord client in C++</title>
+<meta name="description" content="A Discord client written from scratch in C++ with Qt 6. No Electron, no web view. Encrypted voice, received video, plugins compiled into the binary. Windows.">
+<meta name="theme-color" content="#05070b">
+<link rel="icon" href="mark.png" type="image/png">
+
+<meta property="og:type" content="website">
+<meta property="og:title" content="Singularity — a Discord client in C++">
+<meta property="og:description" content="Written from scratch in C++ with Qt 6. No Electron, no web view. Encrypted voice, received video, plugins compiled in.">
+<meta property="og:image" content="banner.png">
+<meta name="twitter:card" content="summary_large_image">
+
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<canvas id="hole" aria-hidden="true"></canvas>
+<div id="shade" aria-hidden="true"></div>
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="#top"><img src="mark.png" alt="">Singularity</a>
+    <div class="links">
+      <a href="#what" class="hideable">What it does</a>
+      <a href="#voice" class="hideable">Calls</a>
+      <a href="#privacy">Privacy</a>
+      <a href="#get">Download</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="wrap">
+    <div class="hero-inner">
+      <h1>Singularity</h1>
+      <p class="tag">A Discord client written from scratch in <b>C++</b>.<br>No Electron. No web view. No plugin folder.</p>
+
+      <div class="chips">
+        <span class="chip">C++20</span>
+        <span class="chip">Qt 6.10</span>
+        <span class="chip">Windows x64</span>
+        <span class="chip">End-to-end encrypted voice</span>
+        <span class="chip">Plugins compiled in</span>
+      </div>
+
+      <div class="cta">
+        <a class="btn primary" id="download" href="https://github.com/CodingIsCoolFr/singularity-updates/releases/latest">Download for Windows</a>
+        <a class="btn ghost" href="#warning">Read the warning first</a>
+      </div>
+
+      <p class="meta" id="relmeta">Windows x64 · about 54 MB · installs for you only, no administrator prompt</p>
+    </div>
+  </div>
+</header>
+
+<main class="veil">
+
+<section id="warning">
+  <div class="wrap">
+    <div class="panel danger">
+      <h2>Read this before you install it</h2>
+      <p class="lede"><b style="color:var(--text)">Discord does not permit third party clients on a normal user account. Running this can get the account banned.</b> That risk is accepted here on purpose. Nothing on this page makes it smaller, and you should decide about it before you download anything.</p>
+
+      <dl class="rows">
+        <div class="row"><dt>Your password</dt><dd>Sent to <code>discord.com</code> and nowhere else. Never written to disk. Never logged.</dd></div>
+        <div class="row"><dt>Your session token</dt><dd>Sealed with your Windows account key, so no other account on the machine can read it. The log records its length, never its value.</dd></div>
+        <div class="row"><dt>Captchas</dt><dd>Not answered, ever. If Discord demands one, the sign-in window says so and offers token entry instead.</dd></div>
+        <div class="row"><dt>Images</dt><dd>Fetched only from Discord's own hosts, so a stranger's message cannot make your client call an address of their choosing.</dd></div>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<section id="what">
+  <div class="wrap">
+    <h2>What it does</h2>
+    <p class="lede">Everything below is built and working today. What is not built is further down, named plainly.</p>
+
+    <div class="grid">
+      <div class="panel card">
+        <h3><span class="dot ok"></span>Talking</h3>
+        <p>Voice channels you can actually join, with sound both ways, encrypted end to end the way Discord now requires.</p>
+        <p>Mute, deafen, device and volume control, a speaking threshold, and a microphone test with a live level bar.</p>
+      </div>
+
+      <div class="panel card">
+        <h3><span class="dot moon"></span>Watching</h3>
+        <p>Other people's cameras and shared screens are received and decoded, and appear in a grid above the conversation.</p>
+        <p>Sending your own is the other half of that problem, and is not built yet.</p>
+      </div>
+
+      <div class="panel card">
+        <h3><span class="dot"></span>Reading</h3>
+        <p>Message history, live messages, edits and deletes. Images, GIFs, custom emoji, stickers and link previews, animated ones included.</p>
+        <p>Click any picture for a full size viewer with scroll to zoom and drag to pan.</p>
+      </div>
+
+      <div class="panel card">
+        <h3><span class="dot"></span>Everything else</h3>
+        <p>Email and password sign-in with second factor. Server folders you can drag and rename. A Friends page with Online, All, Pending and Blocked.</p>
+        <p>Full profile windows with banners, badges, coloured role pills, notes, and mutual friends and servers.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="look">
+  <div class="wrap">
+    <h2>The look</h2>
+    <p class="lede">A drawn black hole, with night ink laid over it. The background on this page is not a video or a picture — it is the program's own shader, recompiled for the browser. Same ray marching, same photon ring, same Doppler boost on the side of the disk turning toward you.</p>
+
+    <dl class="rows">
+      <div class="row"><dt>One seed colour</dt><dd>Pick a colour and the whole application is derived from it while it runs — surfaces, accents, every stylesheet token, and the hole's own disk. No restart. Twelve presets ship, from Monochrome to Ember to Void.</dd></div>
+      <div class="row"><dt>Depth from layers</dt><dd>The rail, the sidebar and the conversation each sit a real step lighter than the one behind, so they read as separate planes without a single border drawn.</dd></div>
+      <div class="row"><dt>Colour is information</dt><dd>The status dots are the one thing the seed never touches. Green, yellow and red have to keep meaning online, away and busy whatever else changes.</dd></div>
+      <div class="row"><dt>Even the title bar</dt><dd>It belongs to Windows rather than Qt, so it is recoloured through the system instead of replaced with a hand made one. Snap layouts and double click to maximise keep working, and there is still no seam across the top.</dd></div>
+    </dl>
+
+    <div class="palette">
+      <span class="sw"><i style="background:#07090e"></i>#07090e ground</span>
+      <span class="sw"><i style="background:#0a0d14"></i>#0a0d14 rail</span>
+      <span class="sw"><i style="background:#10151f"></i>#10151f sidebar</span>
+      <span class="sw"><i style="background:#151b28"></i>#151b28 conversation</span>
+      <span class="sw"><i style="background:#1c2433"></i>#1c2433 composer</span>
+      <span class="sw"><i style="background:#6ee7d8"></i>#6ee7d8 selection</span>
+      <span class="sw"><i style="background:#8aa4ff"></i>#8aa4ff moonlight</span>
+      <span class="sw"><i style="background:#3dd68c"></i>#3dd68c online</span>
+    </div>
+  </div>
+</section>
+
+<section id="voice">
+  <div class="wrap">
+    <h2>How a call actually works</h2>
+    <p class="lede">Getting sound in and out took four separate fixes, each of which looked like the whole problem at the time. They are written down because every one of them presents as plain silence.</p>
+
+    <div class="grid">
+      <div class="panel card">
+        <h3><span class="dot"></span>1 · Keep the port</h3>
+        <p>The voice gateway is version 8, and the server hands back a host <i>and</i> a port. Dropping the port reaches a different machine, which answers, and then closes. That reply looks like progress and is not.</p>
+      </div>
+      <div class="panel card">
+        <h3><span class="dot"></span>2 · Encryption is not optional</h3>
+        <p>Since 1 March 2026 Discord accepts only end-to-end encrypted calls. Singularity uses Discord's own DAVE library for the key exchange — and its list of known members must include your own id, because you are in the group too.</p>
+      </div>
+      <div class="panel card">
+        <h3><span class="dot"></span>3 · Half the header is encrypted</h3>
+        <p>In the modes Discord uses, only the fixed header and a four byte preamble are in the clear. Counting the rest as header makes every single packet fail to open.</p>
+      </div>
+      <div class="panel card">
+        <h3><span class="dot"></span>4 · Qt does not mix</h3>
+        <p>Two people's audio written to one output is queued, not blended, which is heard as chopped and rushed speech. Each speaker gets a queue, and a 20 ms tick sums them into one frame, with Opus filling in packets that never arrived.</p>
+      </div>
+    </div>
+
+    <p class="lede" style="margin:26px 0 0">If a call is ever silent again, the log prints a tally every five seconds, plus a named reason for every frame thrown away. That line exists because reading the log found in one run what five rounds of theorising could not.</p>
+  </div>
+</section>
+
+<section id="privacy">
+  <div class="wrap">
+    <h2>What it never sends</h2>
+    <p class="lede">Most of the tracking people worry about is absent — not because a switch turns it off, but because the code to do it was never written. That is worth stating plainly rather than claiming as a feature.</p>
+
+    <dl class="rows">
+      <div class="row"><dt>Analytics events</dt><dd>The official client posts to an endpoint called <code>/science</code> as you click around. Singularity never calls it.</dd></div>
+      <div class="row"><dt>Read receipts</dt><dd>Nothing tells Discord which messages you have looked at, or when.</dd></div>
+      <div class="row"><dt>A real fingerprint</dt><dd>The client details sent on sign-in are fixed numbers written into the source, not your actual Windows version, locale or hardware — and they are identical for everyone running Singularity.</dd></div>
+      <div class="row"><dt>Session correlation</dt><dd>The fields the official client fills with identifiers linking your sessions together are sent empty.</dd></div>
+      <div class="row"><dt>Game detection</dt><dd>Nothing looks at what programs you have open.</dd></div>
+      <div class="row"><dt>Third party images</dt><dd>Pictures come only from Discord's own hosts.</dd></div>
+    </dl>
+
+    <p class="lede" style="margin:26px 0 0">What the <b style="color:var(--text)">Anonymous</b> plugin genuinely does is the part Singularity <i>does</i> send and can stop sending. It strips tracking codes out of links before they leave, and can hide your typing and your status. Because it rewrites what you say, it tests itself against six known cases every time it loads — and if any comes out wrong it refuses to touch messages for the rest of the session and says so. A tracking code getting through is a small harm. A broken link the sender cannot see is a worse one.</p>
+  </div>
+</section>
+
+<section id="plugins">
+  <div class="wrap">
+    <h2>Seven plugins, inside the binary</h2>
+    <p class="lede">There is no plugin folder, so there is nothing on disk for anything else to swap out. Each one has its own settings page.</p>
+
+    <div class="rows">
+      <div class="plugin"><div><strong>Full timestamps</strong><p>Exact date and time on every message.</p></div><span class="state on">On</span></div>
+      <div class="plugin"><div><strong>Message logger</strong><p>Deleted messages stay visible, and edits get tagged.</p></div><span class="state on">On</span></div>
+      <div class="plugin"><div><strong>Quick text</strong><p><code>:shrug:</code> and friends expand as you send.</p></div><span class="state on">On</span></div>
+      <div class="plugin"><div><strong>Anonymous</strong><p>Strips tracking codes out of links you send. Can also hide your typing and your status.</p></div><span class="state on">On</span></div>
+      <div class="plugin"><div><strong>Silent typing</strong><p>Never sends the typing signal.</p></div><span class="state">Off</span></div>
+      <div class="plugin"><div><strong>Presence hints</strong><p>Marks people active when they type or join voice. Off by default, because it works against a choice the other person made.</p></div><span class="state">Off</span></div>
+      <div class="plugin"><div><strong>Nitro watch</strong><p>Spots gift links the instant they are posted, anywhere, and offers a Claim button. It does not claim by itself.</p></div><span class="state">Off</span></div>
+    </div>
+
+    <div class="panel" style="margin-top:22px">
+      <h3 style="margin:0 0 10px;font-weight:500;font-size:17px">Why Nitro watch does not claim by itself</h3>
+      <p style="margin:0;color:var(--dim);font-size:15.5px">Discord does not catch automated accounts by measuring how fast you click. It catches them on the shape of the account: a redeem arriving from a session that never opened the channel, never scrolled, never moved a pointer, and that does it again next week at four in the morning. A random delay hides none of that, because none of it is about timing.</p>
+      <p style="margin:12px 0 0;color:var(--dim);font-size:15.5px">Dead codes are also posted deliberately, to see who bites. A person glances at a suspicious link and moves on. Anything redeeming on its own takes the bait every time, and marks itself doing it. So the part worth automating is the part that is slow for a person: <b style="color:var(--text)">noticing</b>. The press stays yours, which is the part that keeps the account ordinary.</p>
+    </div>
+  </div>
+</section>
+
+<section id="honest">
+  <div class="wrap">
+    <h2>What is not built</h2>
+    <p class="lede">Roughly in the order they are worth doing. This list is here because a page that only lists strengths is a page you cannot trust about anything.</p>
+
+    <div class="panel">
+      <ul class="plain">
+        <li><b>Sending</b> your own camera or screen. Receiving other people's is built; sending is the other half.</li>
+        <li>File upload, and drag and drop.</li>
+        <li>Search.</li>
+        <li>An emoji picker.</li>
+        <li>Member list down the right side of a server.</li>
+        <li>Right click menus on messages, channels and people.</li>
+        <li>Unread marks and mention badges.</li>
+        <li>Threads and forum channels.</li>
+        <li>Avatar decorations, which are fetched but not drawn.</li>
+      </ul>
+    </div>
+
+    <p class="lede" style="margin:26px 0 0">It is also <b style="color:var(--text)">Windows only</b>, and unsigned. Windows will warn that the publisher is unknown, because a code signing certificate costs money every year and this is one person's project.</p>
+  </div>
+</section>
+
+<section id="get">
+  <div class="wrap">
+    <h2>Get it</h2>
+    <p class="lede">One setup program. It installs for you only and never asks for administrator — there is no service, no driver and nothing shared, so there is nothing to elevate for.</p>
+
+    <div class="cta" style="margin-bottom:28px">
+      <a class="btn primary" id="download2" href="https://github.com/CodingIsCoolFr/singularity-updates/releases/latest">Download the latest release</a>
+      <a class="btn ghost" href="https://github.com/CodingIsCoolFr/singularity-updates/releases">All releases</a>
+    </div>
+
+    <dl class="rows">
+      <div class="row"><dt>Updating</dt><dd>The program looks for a newer version a few seconds after it starts, and quietly: an up to date copy says nothing at all. Nothing downloads or installs without being agreed to.</dd></div>
+      <div class="row"><dt>Uninstalling</dt><dd>Asks whether to remove your saved sign-in and settings, and defaults to keeping them. Those live in your profile rather than the install folder, so removing the program does not silently take the account with it.</dd></div>
+      <div class="row"><dt>Where the source is</dt><dd>Private. The installers are published in a separate public repository, because an updater pointed at a private one would need a token shipped inside the program — and anything shipped inside a program can be taken back out of it.</dd></div>
+    </dl>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Singularity · a Discord client in C++ and Qt 6</span>
+    <span class="push"><a href="https://github.com/CodingIsCoolFr/singularity-updates">Releases on GitHub</a></span>
+    <span>Not affiliated with Discord.</span>
+  </div>
+</footer>
+
+<script type="module">
+import { startHole } from './hole.js';
+
+const canvas = document.getElementById('hole');
+if (!startHole(canvas)) {
+    // No WebGL2. The flat background is already the colour the shader clears
+    // to, so rather than leave a dead canvas, show the drawn banner instead.
+    canvas.style.display = 'none';
+    document.getElementById('shade').style.background =
+        'linear-gradient(180deg, rgba(5,7,11,0.45) 0%, rgba(5,7,11,0.92) 70%), url(banner.png) center top / cover no-repeat';
+}
+
+// The version and size are read from the release the updater itself reads, so
+// this page cannot quietly go stale while the program moves on. If GitHub is
+// unreachable or rate limiting, the wording already in the HTML stands.
+(async () => {
+    try {
+        const r = await fetch('https://api.github.com/repos/CodingIsCoolFr/singularity-updates/releases/latest');
+        if (!r.ok) return;
+        const rel = await r.json();
+        const setup = (rel.assets || []).find(a => /-setup\.exe$/i.test(a.name));
+        if (!setup) return;
+
+        const mb = Math.round(setup.size / (1024 * 1024));
+        const version = String(rel.tag_name || '').replace(/^v/, '');
+        const when = new Date(rel.published_at).toLocaleDateString(undefined,
+            { year: 'numeric', month: 'long', day: 'numeric' });
+
+        for (const id of ['download', 'download2']) {
+            const a = document.getElementById(id);
+            if (a) a.href = setup.browser_download_url;
+        }
+        document.getElementById('download').textContent = `Download ${version} for Windows`;
+        document.getElementById('relmeta').innerHTML =
+            `Windows x64 · about ${mb} MB · installs for you only, no administrator prompt<br>Version <b>${version}</b>, published ${when}`;
+    } catch (e) {
+        /* The static text is already correct enough to leave alone. */
+    }
+})();
+</script>
+
+</body>
+</html>
