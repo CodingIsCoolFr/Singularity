@@ -12,7 +12,7 @@
 
 <br>
 
-### [Download Singularity 0.1.0](https://github.com/CodingIsCoolFr/Singularity/releases/latest)
+### [Download Singularity 0.1.1](https://github.com/CodingIsCoolFr/Singularity/releases/latest)
 
 Windows x64 · 54 MB · installs for you only, no administrator prompt
 
@@ -307,6 +307,20 @@ else still builds and calls still carry sound.
 **`third_party/` is not in this repository.** It is about four gigabytes of
 Opus, libsodium, libdave and OpenSSL, all of it fetched or built by the commands
 above. A fresh clone will not build until you run them.
+
+### Or just run this
+
+```powershell
+.\restore.ps1
+```
+
+It does all four, skips anything already in place, and is safe to re-run. Add
+`-SkipDave` to leave out the eight minute one, which is nearly all OpenSSL;
+everything except voice still builds without it.
+
+It exists because the instructions above are four separate sets of steps
+spread through this file, which is fine right up until the folder is lost and
+you find out how many of them you remembered wrong.
 
 ## Layout
 

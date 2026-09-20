@@ -79,24 +79,40 @@ LoginDialog::LoginDialog(RestClient *rest, QWidget *parent)
     shell->setSpacing(0);
     shell->addWidget(m_aurora);
 
-    // The card floats left of centre, so the hole is not hidden behind it.
+    // No card. The form sits on the hole itself.
+    //
+    // A panel with a border is the honest way to guarantee legibility, and it
+    // looked like a dialog pasted over a wallpaper. What replaces it is a
+    // gradient that starts nearly solid at the left edge and reaches zero
+    // before it runs out of widget, so there is no edge anywhere for the eye
+    // to catch: the words sit in the dark part of the picture and the disk
+    // carries on through where they stop.
+    //
+    // This works at all because AuroraWidget renders its overlay into an
+    // image with an alpha channel and composites that over the rendered
+    // frame. A plain child of a GL widget cannot be see-through; one that
+    // goes through setOverlay can.
     auto *centre = new QHBoxLayout(m_aurora);
-    centre->setContentsMargins(56, 40, 56, 40);
+    centre->setContentsMargins(0, 0, 0, 0);
     centre->setSpacing(0);
 
-    auto *card = new QFrame(m_aurora);
-    card->setObjectName(QStringLiteral("LoginCard"));
-    card->setFixedWidth(430);
-    card->setStyleSheet(QStringLiteral("#LoginCard { background-color: %1; border: 1px solid %2; "
-                                       "border-radius: 16px; }")
-                            .arg(QLatin1String(Theme::SurfaceChat), QLatin1String(Theme::Border)));
-    centre->addWidget(card, 0, Qt::AlignVCenter);
+    auto *card = new QWidget(m_aurora);
+    card->setObjectName(QStringLiteral("LoginPanel"));
+    card->setFixedWidth(560);
+    card->setStyleSheet(QStringLiteral(
+        "#LoginPanel { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+        "stop:0 rgba(5, 7, 12, 242), stop:0.55 rgba(5, 7, 12, 214), "
+        "stop:0.86 rgba(5, 7, 12, 96), stop:1 rgba(5, 7, 12, 0)); }"));
+    centre->addWidget(card);
     centre->addStretch(1);
 
     m_aurora->setOverlay(card);
 
+    // The right margin is wide on purpose. It keeps the words clear of the
+    // part of the gradient that has begun to fade, so nothing is ever read
+    // against a half transparent background.
     auto *layout = new QVBoxLayout(card);
-    layout->setContentsMargins(34, 30, 34, 26);
+    layout->setContentsMargins(60, 48, 150, 44);
     layout->setSpacing(14);
 
     auto *title = new QLabel(QStringLiteral("Singularity"), card);
@@ -111,10 +127,12 @@ LoginDialog::LoginDialog(RestClient *rest, QWidget *parent)
                        "discord.com and is never saved."),
         card);
     warning->setWordWrap(true);
-    warning->setStyleSheet(QStringLiteral("color: %1; background-color: %2; border: 1px solid %3; "
-                                          "border-radius: 10px; padding: 10px;")
-                               .arg(QLatin1String(Theme::LightGray), QLatin1String(Theme::SurfaceInput),
-                                    QLatin1String(Theme::Border)));
+    // A rule down the left rather than a box around everything. It marks the
+    // text as a warning without drawing another rectangle on a screen whose
+    // whole point is that it has none.
+    warning->setStyleSheet(QStringLiteral("color: %1; background: transparent; "
+                                          "border-left: 2px solid %2; padding: 2px 0 2px 12px;")
+                               .arg(QLatin1String(Theme::TextMuted), QLatin1String(Theme::Red)));
     layout->addWidget(warning);
 
     m_pages = new QStackedWidget(card);

@@ -25,11 +25,11 @@ int main(int argc, char *argv[])
     QApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("Singularity"));
     app.setOrganizationName(QStringLiteral("Singularity"));
-    app.setApplicationVersion(QStringLiteral("0.1.0"));
+    app.setApplicationVersion(QStringLiteral("0.1.1"));
     app.setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
 
     Theme::applySeed(QColor(AppConfig::instance().value(QStringLiteral("appearance/themeSeed"),
-                                                       QStringLiteral("#6ee7d8")).toString()));
+                                                       QLatin1String(Theme::DefaultSeed)).toString()));
     app.setStyleSheet(Theme::applicationStyleSheet());
 
     // The title bar belongs to Windows, not to Qt, so it has to be coloured

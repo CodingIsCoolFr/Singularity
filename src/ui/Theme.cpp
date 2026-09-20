@@ -46,6 +46,7 @@ QVector3D g_holeDisk(0.18f, 0.72f, 0.70f);
 QVector3D g_holeGrade(0.86f, 1.06f, 1.04f);
 
 const Preset kPresets[] = {
+    {"Monochrome", DefaultSeed},
     {"Singularity", "#6ee7d8"},
     {"Ember", "#eb2e4a"},
     {"Ocean", "#468cbe"},
@@ -184,7 +185,7 @@ protected:
 
 void applySeed(const QColor &seedIn)
 {
-    const QColor seed = seedIn.isValid() ? seedIn : QColor(QStringLiteral("#6ee7d8"));
+    const QColor seed = seedIn.isValid() ? seedIn : QColor(QLatin1String(DefaultSeed));
     g_seed = seed;
 
     float h = 0, s = 0, l = 0, a = 1;

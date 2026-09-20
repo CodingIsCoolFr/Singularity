@@ -45,6 +45,14 @@ extern char TextMuted[8];
 extern char TextFaint[8];
 extern char Deleted[8];
 
+// What the application starts as, before anybody chooses otherwise.
+//
+// A true grey: equal red, green and blue. The seed machinery reads that as
+// achromatic and gives night chrome with a silver disk, which is the black
+// and white the picture on the front page is made of. A coloured default
+// decides for the user on first run, and this one does not.
+constexpr auto DefaultSeed = "#121212";
+
 struct Preset {
     const char *name;
     const char *hex;

@@ -2952,8 +2952,8 @@ void MainWindow::applyAppearance()
     AppConfig &config = AppConfig::instance();
 
     const QColor seed(config.value(QStringLiteral("appearance/themeSeed"),
-                                   QStringLiteral("#6ee7d8")).toString());
-    Theme::applySeed(seed.isValid() ? seed : QColor(QStringLiteral("#6ee7d8")));
+                                   QLatin1String(Theme::DefaultSeed)).toString());
+    Theme::applySeed(seed.isValid() ? seed : QColor(QLatin1String(Theme::DefaultSeed)));
     qApp->setStyleSheet(Theme::applicationStyleSheet());
 
     if (m_messageView) {
