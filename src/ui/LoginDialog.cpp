@@ -42,7 +42,7 @@ QPushButton *makeLinkButton(const QString &text, QWidget *parent)
     button->setStyleSheet(QStringLiteral("QPushButton { background: transparent; border: none; color: %1; "
                                          "text-align: left; padding: 2px 0; } "
                                          "QPushButton:hover { color: %2; }")
-                              .arg(QLatin1String(Theme::Blue), QLatin1String(Theme::Orange)));
+                              .arg(QLatin1String(Theme::Blue), QLatin1String(Theme::Accent)));
     return button;
 }
 
@@ -61,7 +61,7 @@ LoginDialog::LoginDialog(RestClient *rest, QWidget *parent)
 
     auto *title = new QLabel(QStringLiteral("Wisp"), this);
     title->setStyleSheet(QStringLiteral("font-size: 28px; font-weight: 600; color: %1;")
-                             .arg(QLatin1String(Theme::Orange)));
+                             .arg(QLatin1String(Theme::Accent)));
     layout->addWidget(title);
     layout->addWidget(makeHint(QStringLiteral("A small Discord client."), this));
 
@@ -298,7 +298,7 @@ void LoginDialog::setStatus(const QString &text, bool isError)
 {
     m_statusLabel->setText(text);
     m_statusLabel->setStyleSheet(QStringLiteral("color: %1;")
-                                     .arg(QLatin1String(isError ? Theme::Orange : Theme::TextFaint)));
+                                     .arg(QLatin1String(isError ? Theme::Accent : Theme::TextFaint)));
 }
 
 bool LoginDialog::shouldRemember() const

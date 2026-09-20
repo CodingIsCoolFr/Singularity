@@ -365,7 +365,7 @@ QScrollArea { background: transparent; border: none; }
 )")
                       .arg(QLatin1String(Theme::SurfaceInput), QLatin1String(Theme::TextMuted),
                            QLatin1String(Theme::SurfaceHover), QLatin1String(Theme::TextPrimary),
-                           QLatin1String(Theme::SurfaceSidebar), QLatin1String(Theme::Orange),
+                           QLatin1String(Theme::SurfaceSidebar), QLatin1String(Theme::Accent),
                            QLatin1String(Theme::SurfaceChat)));
 
     // Late downloads (avatar, banner, game art) repaint what is on screen.
@@ -1312,6 +1312,6 @@ void ProfileDialog::setNote(const QString &text, bool isError)
     }
     m_noteStatus->setText(text);
     m_noteStatus->setStyleSheet(QStringLiteral("color: %1; font-size: 11px;")
-                                    .arg(QLatin1String(isError ? Theme::Orange : Theme::TextFaint)));
+                                    .arg(QLatin1String(isError ? Theme::Accent : Theme::TextFaint)));
     m_noteStatus->setVisible(true);
 }

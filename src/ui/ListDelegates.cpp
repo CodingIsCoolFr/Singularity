@@ -302,7 +302,7 @@ void GuildRailDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
         shape.addRoundedRect(QRectF(x, y + 3, 22, 13), 2.5, 2.5);
         shape.addRoundedRect(QRectF(x, y, 9, 5), 1.5, 1.5);
 
-        painter->setBrush(QColor(open ? Theme::Orange : Theme::TextMuted));
+        painter->setBrush(QColor(open ? Theme::Accent : Theme::TextMuted));
         painter->drawPath(shape);
 
         painter->restore();
@@ -336,7 +336,7 @@ void GuildRailDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
         if (height > 1.0) {
             const QRectF pill(cell.left() + 2.0, cell.center().y() - height / 2.0, PillWidth, height);
             painter->setPen(Qt::NoPen);
-            painter->setBrush(QColor(Theme::Orange));
+            painter->setBrush(QColor(Theme::Accent));
             painter->drawRoundedRect(pill, PillWidth / 2.0, PillWidth / 2.0);
         }
     }
@@ -709,7 +709,7 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
     if (selectAmount > 0.01) {
         const qreal height = panel.height() * 0.55 * selectAmount;
         const QRectF bar(panel.left() + 1.0, panel.center().y() - height / 2.0, 3.0, height);
-        painter->setBrush(QColor(Theme::Orange));
+        painter->setBrush(QColor(Theme::Accent));
         painter->setPen(Qt::NoPen);
         painter->drawRoundedRect(bar, 1.5, 1.5);
     }

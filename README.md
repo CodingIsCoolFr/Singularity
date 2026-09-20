@@ -4,11 +4,12 @@
 
 <br>
 
-![C++20](https://img.shields.io/badge/C%2B%2B-20-d97757?style=flat-square&labelColor=141413)
-![Qt 6.10](https://img.shields.io/badge/Qt-6.10-d97757?style=flat-square&labelColor=141413)
-![Windows](https://img.shields.io/badge/platform-Windows-d97757?style=flat-square&labelColor=141413)
-![Voice](https://img.shields.io/badge/voice-end--to--end%20encrypted-d97757?style=flat-square&labelColor=141413)
-![Plugins](https://img.shields.io/badge/plugins-compiled%20in-d97757?style=flat-square&labelColor=141413)
+![C++20](https://img.shields.io/badge/C%2B%2B-20-7aa2f7?style=flat-square&labelColor=16171f)
+![Qt 6.10](https://img.shields.io/badge/Qt-6.10-7aa2f7?style=flat-square&labelColor=16171f)
+![Windows](https://img.shields.io/badge/platform-Windows-7aa2f7?style=flat-square&labelColor=16171f)
+![Voice](https://img.shields.io/badge/voice-end--to--end%20encrypted-9ece6a?style=flat-square&labelColor=16171f)
+![Plugins](https://img.shields.io/badge/plugins-compiled%20in-7aa2f7?style=flat-square&labelColor=16171f)
+![Theme](https://img.shields.io/badge/theme-Tokyo%20Night-bb9af7?style=flat-square&labelColor=16171f)
 
 </div>
 
@@ -83,6 +84,32 @@ Looks and behaves like the real client in these ways:
 - Click any name or avatar for the full profile: banner, large avatar with a
   status bubble, badges, About Me, Member Since, Friends Since, coloured role
   pills, connected accounts, your private note, and mutual friends and servers
+
+## The look
+
+**Tokyo Night**, one of the three most used dark themes going, chosen over
+inventing one. Three rules shape it, and all of them are in
+[`src/ui/Theme.h`](src/ui/Theme.h), which is the only file that holds a colour.
+
+| | |
+| --- | --- |
+| **Nothing is pure black** | White text on `#000` bleeds at its edges — halation — and is tiring to read. The deepest surface here is `#13141c`. |
+| **Depth comes from layers** | The rail, the sidebar and the conversation each sit a real step lighter than the one behind, so they read as separate planes without a single border. |
+| **Accents are muted** | A fully saturated colour on a dark ground appears to vibrate. Every accent is pulled back. |
+
+```
+#13141c  rail, the ground              #c0caf5  text
+#16171f  sidebar                       #a9b1d6  secondary text
+#1a1b26  the conversation              #6e769e  timestamps and hints
+#20222f  the composer, lifted          #7aa2f7  selection and links
+#292e42  hover, the only surface       #9ece6a  online, and the speaking ring
+         that moves                    #f7768e  errors and deletions
+```
+
+The title bar is painted too. It belongs to Windows rather than Qt, so it is
+coloured through `DwmSetWindowAttribute` rather than replaced with a hand made
+one — that keeps snap layouts, the system menu and double click to maximise,
+and still leaves no seam across the top.
 
 ## How a call actually works
 

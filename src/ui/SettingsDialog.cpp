@@ -154,7 +154,7 @@ QSlider::handle:horizontal {
                       .arg(QLatin1String(Theme::SurfaceSidebar), QLatin1String(Theme::Border),
                            QLatin1String(Theme::TextMuted), QLatin1String(Theme::SurfaceHover),
                            QLatin1String(Theme::TextPrimary), QLatin1String(Theme::SurfaceInput),
-                           QLatin1String(Theme::Orange)));
+                           QLatin1String(Theme::Accent)));
 }
 
 SettingsDialog::~SettingsDialog()

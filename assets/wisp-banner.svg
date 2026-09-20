@@ -2,31 +2,31 @@
   <title>Wisp</title>
 
   <defs>
-    <linearGradient id="ember" x1="0" y1="0" x2="0.4" y2="1">
-      <stop offset="0" stop-color="#f0a98d"/>
-      <stop offset="0.5" stop-color="#d97757"/>
-      <stop offset="1" stop-color="#a44f33"/>
+    <linearGradient id="beam" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#7dcfff"/>
+      <stop offset="0.5" stop-color="#7aa2f7"/>
+      <stop offset="1" stop-color="#5a6fd0"/>
     </linearGradient>
 
     <linearGradient id="fade" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#d97757" stop-opacity="0.15"/>
-      <stop offset="0.45" stop-color="#d97757" stop-opacity="0.9"/>
-      <stop offset="1" stop-color="#d97757" stop-opacity="0.25"/>
+      <stop offset="0" stop-color="#7aa2f7" stop-opacity="0.15"/>
+      <stop offset="0.45" stop-color="#7aa2f7" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#7aa2f7" stop-opacity="0.25"/>
     </linearGradient>
 
     <radialGradient id="glow" cx="0.76" cy="0.5" r="0.6">
-      <stop offset="0" stop-color="#d97757" stop-opacity="0.22"/>
-      <stop offset="1" stop-color="#d97757" stop-opacity="0"/>
+      <stop offset="0" stop-color="#7aa2f7" stop-opacity="0.2"/>
+      <stop offset="1" stop-color="#7aa2f7" stop-opacity="0"/>
     </radialGradient>
 
     <linearGradient id="smoke" x1="0" y1="1" x2="0.3" y2="0">
-      <stop offset="0" stop-color="#d97757" stop-opacity="0"/>
-      <stop offset="0.5" stop-color="#d97757" stop-opacity="0.5"/>
-      <stop offset="1" stop-color="#f0a98d" stop-opacity="0"/>
+      <stop offset="0" stop-color="#7aa2f7" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="#7aa2f7" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#7dcfff" stop-opacity="0"/>
     </linearGradient>
   </defs>
 
-  <rect width="1280" height="360" fill="#141413"/>
+  <rect width="1280" height="360" fill="#16171f"/>
   <rect width="1280" height="360" fill="url(#glow)"/>
 
   <!-- the wisp itself, a thread of smoke rising behind the wordmark -->
@@ -37,7 +37,7 @@
   </g>
 
   <!-- a voice, drawn the way the client draws one -->
-  <g fill="url(#ember)">
+  <g fill="url(#beam)">
     <rect x="764" y="166" width="7" height="28" rx="3.5" opacity="0.35"/>
     <rect x="780" y="154" width="7" height="52" rx="3.5" opacity="0.45"/>
     <rect x="796" y="140" width="7" height="80" rx="3.5" opacity="0.55"/>
@@ -72,22 +72,22 @@
   <rect x="88" y="104" width="4" height="152" rx="2" fill="url(#fade)"/>
 
   <g font-family="Poppins, 'Segoe UI', system-ui, -apple-system, sans-serif">
-    <text x="124" y="176" font-size="98" font-weight="600" fill="#faf9f5" letter-spacing="-3">Wisp</text>
-    <text x="128" y="222" font-size="24" font-weight="400" fill="#8f8b82" letter-spacing="0.2">A Discord client in C++, built from scratch.</text>
-    <text x="128" y="254" font-size="24" font-weight="400" fill="#8f8b82" letter-spacing="0.2">Plugins compiled in. Voice encrypted end to end.</text>
+    <text x="124" y="176" font-size="98" font-weight="600" fill="#c0caf5" letter-spacing="-3">Wisp</text>
+    <text x="128" y="222" font-size="24" font-weight="400" fill="#6e769e" letter-spacing="0.2">A Discord client in C++, built from scratch.</text>
+    <text x="128" y="254" font-size="24" font-weight="400" fill="#6e769e" letter-spacing="0.2">Plugins compiled in. Voice encrypted end to end.</text>
 
     <g font-size="14" font-weight="500" letter-spacing="0.6">
-      <rect x="128" y="286" width="74" height="30" rx="15" fill="none" stroke="#d97757" stroke-opacity="0.45"/>
-      <text x="165" y="306" fill="#d97757" text-anchor="middle">C++20</text>
+      <rect x="128" y="286" width="74" height="30" rx="15" fill="none" stroke="#7aa2f7" stroke-opacity="0.4"/>
+      <text x="165" y="306" fill="#7aa2f7" text-anchor="middle">C++20</text>
 
-      <rect x="214" y="286" width="64" height="30" rx="15" fill="none" stroke="#d97757" stroke-opacity="0.45"/>
-      <text x="246" y="306" fill="#d97757" text-anchor="middle">Qt 6</text>
+      <rect x="214" y="286" width="64" height="30" rx="15" fill="none" stroke="#7aa2f7" stroke-opacity="0.4"/>
+      <text x="246" y="306" fill="#7aa2f7" text-anchor="middle">Qt 6</text>
 
-      <rect x="290" y="286" width="108" height="30" rx="15" fill="none" stroke="#d97757" stroke-opacity="0.45"/>
-      <text x="344" y="306" fill="#d97757" text-anchor="middle">DAVE E2EE</text>
+      <rect x="290" y="286" width="108" height="30" rx="15" fill="none" stroke="#7aa2f7" stroke-opacity="0.4"/>
+      <text x="344" y="306" fill="#7aa2f7" text-anchor="middle">DAVE E2EE</text>
 
-      <rect x="410" y="286" width="88" height="30" rx="15" fill="none" stroke="#d97757" stroke-opacity="0.45"/>
-      <text x="454" y="306" fill="#d97757" text-anchor="middle">Windows</text>
+      <rect x="410" y="286" width="88" height="30" rx="15" fill="none" stroke="#7aa2f7" stroke-opacity="0.4"/>
+      <text x="454" y="306" fill="#7aa2f7" text-anchor="middle">Windows</text>
     </g>
   </g>
 </svg>

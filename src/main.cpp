@@ -19,6 +19,10 @@ int main(int argc, char *argv[])
     app.setApplicationVersion(QStringLiteral("0.1.0"));
     app.setStyleSheet(Theme::applicationStyleSheet());
 
+    // The title bar belongs to Windows, not to Qt, so it has to be coloured
+    // separately or it sits above the app as a paler strip.
+    Theme::installDarkTitleBars();
+
     // Touch the log first so the file exists even if startup fails early.
     wlog(QStringLiteral("app"), QStringLiteral("Wisp %1 starting").arg(app.applicationVersion()));
 

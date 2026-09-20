@@ -158,7 +158,7 @@ void LevelBar::paintEvent(QPaintEvent *)
     if (m_level > 0.005) {
         // Green once loud enough to count as speaking, orange below it.
         const bool speaking = m_level >= m_threshold;
-        painter.setBrush(QColor(speaking ? Theme::Green : Theme::Orange));
+        painter.setBrush(QColor(speaking ? Theme::Green : Theme::Accent));
 
         QRectF filled = track;
         filled.setWidth(track.width() * m_level);

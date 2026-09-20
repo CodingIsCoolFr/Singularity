@@ -149,7 +149,7 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         if (m_selfStatus) {
             m_selfStatus->setText(QStringLiteral("signed out"));
             m_selfStatus->setStyleSheet(QStringLiteral("color: %1; font-size: 11px;")
-                                            .arg(QLatin1String(Theme::Orange)));
+                                            .arg(QLatin1String(Theme::Accent)));
         }
 
         m_messageView->setHtml(QStringLiteral(
@@ -720,7 +720,7 @@ void MainWindow::onGatewayState(GatewayClient::State state)
     case GatewayClient::State::Connecting:   text = QStringLiteral("connecting"); colour = Theme::Blue; break;
     case GatewayClient::State::Identifying:  text = QStringLiteral("signing in"); colour = Theme::Blue; break;
     case GatewayClient::State::Ready:        text = QStringLiteral("online"); colour = Theme::Green; break;
-    case GatewayClient::State::Reconnecting: text = QStringLiteral("reconnecting"); colour = Theme::Orange; break;
+    case GatewayClient::State::Reconnecting: text = QStringLiteral("reconnecting"); colour = Theme::Accent; break;
     }
 
     m_statusDot->setText(text);

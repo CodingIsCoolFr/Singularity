@@ -128,6 +128,8 @@ target_link_libraries(Wisp PRIVATE
     "${SODIUM_ROOT}/x64/Release/v143/static/libsodium.lib"
     # Crypt32 seals the saved session with the Windows account's own key.
     Crypt32
+    # Dwmapi colours the title bar, which belongs to Windows rather than Qt.
+    Dwmapi
 )
 
 if(WISP_HAVE_DAVE)

@@ -1,6 +1,15 @@
 #include "ui/Theme.h"
 
+#include <QApplication>
+#include <QColor>
+#include <QEvent>
 #include <QHash>
+#include <QWidget>
+
+#ifdef Q_OS_WIN
+#include <dwmapi.h>
+#include <windows.h>
+#endif
 
 namespace Theme {
 
@@ -15,9 +24,11 @@ QString expand(QString sheet)
         {QStringLiteral("@light"), QLatin1String(Light)},
         {QStringLiteral("@midGray"), QLatin1String(MidGray)},
         {QStringLiteral("@lightGray"), QLatin1String(LightGray)},
-        {QStringLiteral("@orange"), QLatin1String(Orange)},
+        {QStringLiteral("@accent"), QLatin1String(Accent)},
         {QStringLiteral("@blue"), QLatin1String(Blue)},
         {QStringLiteral("@green"), QLatin1String(Green)},
+        {QStringLiteral("@yellow"), QLatin1String(Yellow)},
+        {QStringLiteral("@red"), QLatin1String(Red)},
         {QStringLiteral("@rail"), QLatin1String(SurfaceRail)},
         {QStringLiteral("@sidebar"), QLatin1String(SurfaceSidebar)},
         {QStringLiteral("@chat"), QLatin1String(SurfaceChat)},
@@ -41,7 +52,92 @@ QString expand(QString sheet)
     return sheet;
 }
 
+// Catches every window as it is first shown.
+//
+// Doing this centrally means a dialog added later is styled without anyone
+// having to remember, which is the sort of thing that is always remembered for
+// the main window and forgotten for the fifth dialog.
+class TitleBarPainter : public QObject
+{
+public:
+    using QObject::QObject;
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (event->type() == QEvent::Show) {
+            auto *widget = qobject_cast<QWidget *>(watched);
+            if (widget && widget->isWindow())
+                applyDarkTitleBar(widget);
+        }
+        return QObject::eventFilter(watched, event);
+    }
+};
+
 } // namespace
+
+void installDarkTitleBars()
+{
+    static bool installed = false;
+    if (installed || !qApp)
+        return;
+
+    installed = true;
+    qApp->installEventFilter(new TitleBarPainter(qApp));
+}
+
+// Paints the real Windows title bar rather than drawing a replacement.
+//
+// A frameless window with a hand made title bar is the usual way to do this,
+// and it costs you snap layouts, the system menu, the double click to
+// maximise, and correct behaviour on a second monitor. Windows 11 will simply
+// colour its own caption if asked, which keeps all of that and still leaves no
+// seam across the top.
+//
+// Silently does nothing on Windows 10 and older, where the attributes are not
+// recognised. A pale title bar is a blemish, not a fault.
+void applyDarkTitleBar(QWidget *window)
+{
+#ifdef Q_OS_WIN
+    if (!window)
+        return;
+
+    // Forces the frame to exist now. Before this the handle can be null, and
+    // the call would quietly do nothing.
+    window->winId();
+
+    auto handle = reinterpret_cast<HWND>(window->window()->winId());
+    if (!handle)
+        return;
+
+    // Windows wants 0x00BBGGRR, which is the reverse of the usual order.
+    const auto toWindows = [](const char *hex) -> COLORREF {
+        // Braces, not brackets. With brackets this is read as a function
+        // declaration rather than a variable, which is the most vexing parse.
+        const QColor colour{QLatin1String(hex)};
+        return RGB(colour.red(), colour.green(), colour.blue());
+    };
+
+    // 20, 35, 36 and 34 are DWMWA_USE_IMMERSIVE_DARK_MODE, _CAPTION_COLOR,
+    // _TEXT_COLOR and _BORDER_COLOR. Written as numbers because older Windows
+    // SDK headers do not name them all.
+    const BOOL useDarkMode = TRUE;
+    DwmSetWindowAttribute(handle, 20, &useDarkMode, sizeof(useDarkMode));
+
+    const COLORREF caption = toWindows(SurfaceRail);
+    DwmSetWindowAttribute(handle, 35, &caption, sizeof(caption));
+
+    const COLORREF text = toWindows(TextMuted);
+    DwmSetWindowAttribute(handle, 36, &text, sizeof(text));
+
+    // The same colour as the caption, so the window has no outline of its own
+    // and reads as one solid shape.
+    const COLORREF border = toWindows(Border);
+    DwmSetWindowAttribute(handle, 34, &border, sizeof(border));
+#else
+    Q_UNUSED(window)
+#endif
+}
 
 QString applicationStyleSheet()
 {
@@ -111,9 +207,9 @@ QMainWindow, QDialog { background-color: @chat; }
     border-radius: 6px;
 }
 #VoicePanel QPushButton:checked {
-    background-color: @orange;
+    background-color: @accent;
     color: @dark;
-    border-color: @orange;
+    border-color: @accent;
     font-weight: 600;
 }
 
@@ -137,7 +233,7 @@ QTextBrowser {
     border: 1px solid @border;
     border-radius: 10px;
 }
-#ComposerBox:focus-within { border-color: @orange; }
+#ComposerBox:focus-within { border-color: @accent; }
 QTextEdit#MessageInput {
     background-color: transparent;
     border: none;
@@ -163,10 +259,10 @@ QPushButton {
     border-radius: 8px;
     padding: 8px 16px;
 }
-QPushButton:hover   { background-color: @hover; border-color: @orange; }
+QPushButton:hover   { background-color: @hover; border-color: @accent; }
 QPushButton:pressed { background-color: @rail; }
 QPushButton#PrimaryButton {
-    background-color: @orange;
+    background-color: @accent;
     color: @dark;
     border: none;
     font-weight: 600;
@@ -179,9 +275,9 @@ QLineEdit {
     border-radius: 8px;
     padding: 9px 12px;
     color: @text;
-    selection-background-color: @orange;
+    selection-background-color: @accent;
 }
-QLineEdit:focus { border-color: @orange; }
+QLineEdit:focus { border-color: @accent; }
 
 QComboBox {
     background-color: @input;
@@ -215,7 +311,7 @@ QCheckBox::indicator {
     border: 1px solid @midGray;
     background-color: @input;
 }
-QCheckBox::indicator:checked { background-color: @orange; border-color: @orange; }
+QCheckBox::indicator:checked { background-color: @accent; border-color: @accent; }
 
 QScrollBar:vertical {
     background: transparent;
@@ -277,7 +373,7 @@ td.ava { padding-top: 2px; }
     font-weight: 600;
     font-size: 13px;
 }
-.author-self { color: @orange; }
+.author-self { color: @accent; }
 
 /* The name is a link so it can open a profile, but it must not look like a
    web link. */
@@ -346,7 +442,7 @@ table.embed { margin: 6px 0 4px 0; }
 }
 
 .mention {
-    color: @orange;
+    color: @accent;
     font-family: "Poppins", "Segoe UI", sans-serif;
 }
 
