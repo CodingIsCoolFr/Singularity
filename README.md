@@ -4,11 +4,11 @@
 
 <br>
 
-![C++20](https://img.shields.io/badge/C%2B%2B-20-ededed?style=flat-square&labelColor=0a0a0a)
-![Qt 6.10](https://img.shields.io/badge/Qt-6.10-ededed?style=flat-square&labelColor=0a0a0a)
-![Windows](https://img.shields.io/badge/platform-Windows-a3a3a3?style=flat-square&labelColor=0a0a0a)
-![Voice](https://img.shields.io/badge/voice-end--to--end%20encrypted-3ba55c?style=flat-square&labelColor=0a0a0a)
-![Plugins](https://img.shields.io/badge/plugins-compiled%20in-a3a3a3?style=flat-square&labelColor=0a0a0a)
+![C++20](https://img.shields.io/badge/C%2B%2B-20-6ee7d8?style=flat-square&labelColor=07090e)
+![Qt 6.10](https://img.shields.io/badge/Qt-6.10-6ee7d8?style=flat-square&labelColor=07090e)
+![Windows](https://img.shields.io/badge/platform-Windows-8aa4ff?style=flat-square&labelColor=07090e)
+![Voice](https://img.shields.io/badge/voice-end--to--end%20encrypted-3dd68c?style=flat-square&labelColor=07090e)
+![Plugins](https://img.shields.io/badge/plugins-compiled%20in-8aa4ff?style=flat-square&labelColor=07090e)
 
 </div>
 
@@ -19,7 +19,9 @@ view, no plugin folder. The plugins are part of the binary, so there is nothing
 on disk for anything else to swap out.
 
 Calls work: you can talk, you can hear, and the audio is end to end encrypted
-the way Discord now requires.
+the way Discord now requires. Cameras and shared screens are received and
+decoded as well, and the grid of faces above the conversation is where they
+appear.
 
 ## Warning, read this first
 
@@ -86,30 +88,36 @@ Looks and behaves like the real client in these ways:
 
 ## The look
 
-Black and grey, with colour kept back for the few things that carry meaning.
-Three rules shape it, and all of them live in
-[`src/ui/Theme.h`](src/ui/Theme.h), which is the only file holding a colour.
+A drawn black hole, with night ink laid over it.
+
+The window is not a flat colour. `AuroraWidget` renders the hole behind
+everything: a shadow nothing escapes, the photon ring hard against its edge,
+and the disk bending over the top because light from the far side is pulled
+around toward you. Every surface above it is glass, tinted slightly toward the
+accent, never pure black and never pure white.
 
 | | |
 | --- | --- |
-| **No pure black, no pure white** | White text on `#000` bleeds at its edges — halation — and is tiring to read. The darkest surface is `#0a0a0a` and the brightest text is `#ededed`. |
+| **One seed colour** | Pick a colour and the whole application is derived from it at runtime — surfaces, accents, every stylesheet token, and the hole's own disk. No rebuild. Six presets ship: Wisp, Ember, Ocean, Violet, Jade and Gold. |
 | **Depth comes from layers** | The rail, the sidebar and the conversation each sit a real step lighter than the one behind, so they read as separate planes without a single border. |
-| **Colour is information** | The only coloured things left are the status dots and errors, because green, yellow and red are what tell you somebody is online, away or busy. Making those grey would look tidier and say less. |
+| **Colour is information** | The status dots are the one thing the seed never touches. Green, yellow and red have to keep meaning online, away and busy whatever else changes. |
 
 ```
-#0a0a0a  rail, the ground              #ededed  text, and the selected pill
-#101010  sidebar                       #a3a3a3  secondary text
-#161616  the conversation              #6b6b6b  timestamps and hints
-#1e1e1e  the composer, lifted          #8f8f8f  embed edges, passing states
-#2a2a2a  hover, the only surface
-         that moves                    #3ba55c  online, and the speaking ring
-                                       #d9a441  idle
-                                       #e05561  busy, errors, deletions
+#07090e  the ground, and the hole      #eef4fb  text
+#0a0d14  rail                          #9aa6bc  secondary text
+#10151f  sidebar                       #6b768c  timestamps and hints
+#151b28  the conversation              #6ee7d8  the wisp: selection, links
+#1c2433  the composer, lifted          #8aa4ff  moonlight: badges, connecting
+#273044  hover, the only surface
+         that moves                    #3dd68c  online, and the speaking ring
+                                       #e0b35c  idle
+                                       #ff6b7a  busy, errors, deletions
 ```
 
-Every grey above is neutral — equal red, green and blue — so no surface leans
-warm or cool. Links are **underlined** rather than tinted, because in a grey
-scheme a colour on its own cannot mark them apart from the words around them.
+Colours live as live buffers in [`src/ui/Theme.h`](src/ui/Theme.h) rather than
+constants, which is what lets `applySeed()` retint a running application:
+every `QColor(Theme::Accent)` and every `@accent` token reads the new value the
+next time it is drawn.
 
 The title bar is painted too. It belongs to Windows rather than Qt, so it is
 coloured through `DwmSetWindowAttribute` rather than replaced with a hand made
@@ -149,6 +157,38 @@ that never arrived.
 > `sent N, played N`, plus a named reason for every frame thrown away. That line
 > exists because reading the log found in one run what five rounds of theorising
 > could not.
+
+## How video actually works
+
+Cameras and shared screens are two different problems that look like one.
+
+**A camera rides the voice connection.** Sound and pictures share the same
+socket and are told apart by the payload type in each packet. But Discord
+sends none of it unless you ask: the identify carries a `video` field meaning
+*this connection supports video*, which defaults to false, and a client that
+leaves it false is promising never to be sent a picture. Then opcode 15 says
+which streams are wanted and how good they should be, where zero means do not
+send this at all.
+
+**A shared screen does not.** Go Live has its own server, its own websocket and
+its own packets, and the voice connection has to stay up underneath it so you
+remain in the call. Asking for one is opcode 20 on the main gateway with a key
+naming the stream — `guild:<guild>:<channel>:<user>` — and the answer arrives
+as two events, exactly like voice.
+
+**A frame is far too big for one packet**, so H.264 is chopped up on the way
+out: a whole part alone, several bundled together, or one part split across
+many. The last packet of a picture is flagged, which is how we know it is
+finished. Each sender needs their own decoder, because a decoder holds the
+earlier frames that later ones are described as changes from.
+
+**Loss is the part that decides whether it works.** A decoder that misses a
+frame cannot draw anything until a keyframe arrives, and the sender will not
+send one unless asked, so a picture loss indication goes back when a frame
+cannot be rebuilt. Without that the tile simply stays black for ever.
+
+> The log counts packets, finished pictures, and frames spent waiting on a
+> keyframe, per sender. A black tile otherwise cannot say which of those it is.
 
 ## Build
 
@@ -395,5 +435,6 @@ Roughly in the order they are worth doing.
 10. File upload, and drag and drop
 11. Emoji picker
 12. Threads and forum channels
-13. Video and screen share
+13. Sending your own camera or screen. Receiving other people's is built;
+    sending is the other half and is not
 14. Lottie stickers, which are vector animations with no Qt reader

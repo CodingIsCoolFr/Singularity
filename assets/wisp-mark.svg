@@ -2,34 +2,48 @@
   <title>Wisp</title>
 
   <defs>
-    <linearGradient id="markSteel" x1="0.2" y1="1" x2="0.8" y2="0">
-      <stop offset="0" stop-color="#4a4a4a"/>
-      <stop offset="0.5" stop-color="#9c9c9c"/>
-      <stop offset="1" stop-color="#ededed"/>
+    <linearGradient id="mRing" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#6ee7d8" stop-opacity="0.25"/>
+      <stop offset="0.5" stop-color="#eef4fb"/>
+      <stop offset="1" stop-color="#8aa4ff" stop-opacity="0.4"/>
     </linearGradient>
 
-    <linearGradient id="markThread" x1="0" y1="1" x2="0.4" y2="0">
-      <stop offset="0" stop-color="#8f8f8f" stop-opacity="0.2"/>
-      <stop offset="0.45" stop-color="#d4d4d4" stop-opacity="1"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.35"/>
+    <linearGradient id="mDisk" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#6ee7d8" stop-opacity="0.12"/>
+      <stop offset="0.3" stop-color="#9af3e6" stop-opacity="0.85"/>
+      <stop offset="0.55" stop-color="#eef4fb"/>
+      <stop offset="0.8" stop-color="#e0b35c" stop-opacity="0.65"/>
+      <stop offset="1" stop-color="#6ee7d8" stop-opacity="0.12"/>
     </linearGradient>
 
-    <radialGradient id="markGlow" cx="0.5" cy="0.62" r="0.5">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.12"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    <radialGradient id="mHalo" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0.45" stop-color="#6ee7d8" stop-opacity="0.34"/>
+      <stop offset="0.78" stop-color="#6ee7d8" stop-opacity="0.08"/>
+      <stop offset="1" stop-color="#6ee7d8" stop-opacity="0"/>
     </radialGradient>
+
+    <mask id="mBehind">
+      <rect width="256" height="256" fill="white"/>
+      <circle cx="128" cy="128" r="44" fill="black"/>
+    </mask>
   </defs>
 
-  <!-- squircle, the same shape the server rail morphs into -->
-  <rect width="256" height="256" rx="72" fill="#0a0a0a"/>
-  <rect width="256" height="256" rx="72" fill="url(#markGlow)"/>
+  <rect width="256" height="256" rx="60" fill="#07090e"/>
+  <circle cx="128" cy="128" r="112" fill="url(#mHalo)"/>
 
-  <!-- the wisp: one thread of smoke, rising and turning -->
-  <g fill="none" stroke="url(#markThread)" stroke-linecap="round">
-    <path d="M128 212 C 168 166, 96 140, 136 96 C 166 62, 140 48, 158 28" stroke-width="13"/>
-    <path d="M92 214 C 118 180, 78 158, 104 128" stroke-width="7" opacity="0.5"/>
+  <!-- The far side of the disk, bent up over the hole. -->
+  <g mask="url(#mBehind)">
+    <ellipse cx="128" cy="128" rx="92" ry="74" fill="none" stroke="url(#mRing)" stroke-width="5"/>
   </g>
 
-  <!-- the ember at its foot -->
-  <circle cx="128" cy="216" r="11" fill="url(#markSteel)"/>
+  <!-- The shadow. -->
+  <circle cx="128" cy="128" r="45" fill="#000000"/>
+
+  <!-- The photon ring. -->
+  <circle cx="128" cy="128" r="46" fill="none" stroke="url(#mRing)" stroke-width="2.6"/>
+  <circle cx="128" cy="128" r="50" fill="none" stroke="#9af3e6" stroke-width="0.8" opacity="0.45"/>
+
+  <!-- The near side, passing in front. -->
+  <ellipse cx="128" cy="128" rx="112" ry="19" fill="none" stroke="url(#mDisk)" stroke-width="7"/>
+  <ellipse cx="128" cy="128" rx="96" ry="14" fill="none" stroke="url(#mDisk)" stroke-width="3" opacity="0.55"/>
 </svg>

@@ -1,93 +1,111 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-label="Wisp - a Discord client in C++ with Qt 6">
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="400" viewBox="0 0 1280 400" role="img" aria-label="Wisp - a Discord client in C++ with Qt 6">
   <title>Wisp</title>
 
   <defs>
-    <linearGradient id="steel" x1="0" y1="0" x2="0.4" y2="1">
-      <stop offset="0" stop-color="#ededed"/>
-      <stop offset="0.5" stop-color="#9c9c9c"/>
-      <stop offset="1" stop-color="#4a4a4a"/>
+    <!-- The disk: hot and white where it turns toward us, cooling away. -->
+    <linearGradient id="disk" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#6ee7d8" stop-opacity="0.15"/>
+      <stop offset="0.25" stop-color="#9af3e6" stop-opacity="0.85"/>
+      <stop offset="0.5" stop-color="#eef4fb"/>
+      <stop offset="0.75" stop-color="#8aa4ff" stop-opacity="0.8"/>
+      <stop offset="1" stop-color="#6ee7d8" stop-opacity="0.15"/>
     </linearGradient>
 
-    <linearGradient id="fade" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#ededed" stop-opacity="0.1"/>
-      <stop offset="0.45" stop-color="#ededed" stop-opacity="0.85"/>
-      <stop offset="1" stop-color="#ededed" stop-opacity="0.2"/>
+    <linearGradient id="diskWarm" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#e0b35c" stop-opacity="0"/>
+      <stop offset="0.55" stop-color="#e0b35c" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#ff6b7a" stop-opacity="0"/>
     </linearGradient>
 
-    <radialGradient id="glow" cx="0.76" cy="0.5" r="0.6">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.09"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    <!-- Light bending round the back, seen over the top of the hole. -->
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#6ee7d8" stop-opacity="0.2"/>
+      <stop offset="0.5" stop-color="#eef4fb"/>
+      <stop offset="1" stop-color="#8aa4ff" stop-opacity="0.35"/>
+    </linearGradient>
+
+    <radialGradient id="halo" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0.55" stop-color="#6ee7d8" stop-opacity="0.32"/>
+      <stop offset="0.8" stop-color="#6ee7d8" stop-opacity="0.07"/>
+      <stop offset="1" stop-color="#6ee7d8" stop-opacity="0"/>
     </radialGradient>
 
-    <linearGradient id="smoke" x1="0" y1="1" x2="0.3" y2="0">
-      <stop offset="0" stop-color="#ededed" stop-opacity="0"/>
-      <stop offset="0.5" stop-color="#ededed" stop-opacity="0.4"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    <radialGradient id="deep" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0.72" stop-color="#000000"/>
+      <stop offset="0.93" stop-color="#000000"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.35"/>
+    </radialGradient>
+
+    <linearGradient id="rule" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#6ee7d8" stop-opacity="0.1"/>
+      <stop offset="0.45" stop-color="#6ee7d8" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#8aa4ff" stop-opacity="0.25"/>
     </linearGradient>
+
+    <!-- The hole itself hides the far side of the disk. -->
+    <mask id="behind">
+      <rect width="1280" height="400" fill="white"/>
+      <circle cx="940" cy="200" r="86" fill="black"/>
+    </mask>
   </defs>
 
-  <rect width="1280" height="360" fill="#0a0a0a"/>
-  <rect width="1280" height="360" fill="url(#glow)"/>
+  <rect width="1280" height="400" fill="#07090e"/>
 
-  <!-- the wisp itself, a thread of smoke rising behind the wordmark -->
-  <g fill="none" stroke="url(#smoke)" stroke-linecap="round">
-    <path d="M652 340 C 700 268, 618 214, 676 150 C 720 102, 690 66, 724 22" stroke-width="2.5"/>
-    <path d="M700 344 C 752 276, 676 226, 730 166 C 772 120, 744 84, 776 40" stroke-width="1.5" opacity="0.6"/>
-    <path d="M610 346 C 650 286, 586 240, 632 190" stroke-width="1.5" opacity="0.4"/>
+  <!-- A scattering of distant stars, dimmed so they never compete. -->
+  <g fill="#eef4fb">
+    <circle cx="112" cy="58" r="1.1" opacity="0.5"/>
+    <circle cx="286" cy="332" r="0.9" opacity="0.35"/>
+    <circle cx="604" cy="76" r="1.3" opacity="0.45"/>
+    <circle cx="512" cy="288" r="0.9" opacity="0.3"/>
+    <circle cx="762" cy="46" r="1" opacity="0.4"/>
+    <circle cx="1188" cy="112" r="1.2" opacity="0.5"/>
+    <circle cx="1104" cy="336" r="0.9" opacity="0.35"/>
+    <circle cx="1232" cy="242" r="1" opacity="0.3"/>
+    <circle cx="846" cy="358" r="0.9" opacity="0.28"/>
+    <circle cx="668" cy="196" r="0.8" opacity="0.25"/>
   </g>
 
-  <!-- a voice, drawn the way the client draws one -->
-  <g fill="url(#steel)">
-    <rect x="764" y="166" width="7" height="28" rx="3.5" opacity="0.3"/>
-    <rect x="780" y="154" width="7" height="52" rx="3.5" opacity="0.4"/>
-    <rect x="796" y="140" width="7" height="80" rx="3.5" opacity="0.5"/>
-    <rect x="812" y="158" width="7" height="44" rx="3.5" opacity="0.45"/>
-    <rect x="828" y="122" width="7" height="116" rx="3.5" opacity="0.65"/>
-    <rect x="844" y="94" width="7" height="172" rx="3.5" opacity="0.8"/>
-    <rect x="860" y="128" width="7" height="104" rx="3.5" opacity="0.65"/>
-    <rect x="876" y="146" width="7" height="68" rx="3.5" opacity="0.55"/>
-    <rect x="892" y="110" width="7" height="140" rx="3.5" opacity="0.75"/>
-    <rect x="908" y="70" width="7" height="220" rx="3.5" opacity="0.95"/>
-    <rect x="924" y="116" width="7" height="128" rx="3.5" opacity="0.8"/>
-    <rect x="940" y="150" width="7" height="60" rx="3.5" opacity="0.55"/>
-    <rect x="956" y="162" width="7" height="36" rx="3.5" opacity="0.4"/>
-    <rect x="972" y="134" width="7" height="92" rx="3.5" opacity="0.6"/>
-    <rect x="988" y="88" width="7" height="184" rx="3.5" opacity="0.85"/>
-    <rect x="1004" y="52" width="7" height="256" rx="3.5"/>
-    <rect x="1020" y="106" width="7" height="148" rx="3.5" opacity="0.8"/>
-    <rect x="1036" y="140" width="7" height="80" rx="3.5" opacity="0.55"/>
-    <rect x="1052" y="156" width="7" height="48" rx="3.5" opacity="0.45"/>
-    <rect x="1068" y="124" width="7" height="112" rx="3.5" opacity="0.65"/>
-    <rect x="1084" y="80" width="7" height="200" rx="3.5" opacity="0.8"/>
-    <rect x="1100" y="112" width="7" height="136" rx="3.5" opacity="0.65"/>
-    <rect x="1116" y="144" width="7" height="72" rx="3.5" opacity="0.5"/>
-    <rect x="1132" y="160" width="7" height="40" rx="3.5" opacity="0.4"/>
-    <rect x="1148" y="136" width="7" height="88" rx="3.5" opacity="0.45"/>
-    <rect x="1164" y="152" width="7" height="56" rx="3.5" opacity="0.35"/>
-    <rect x="1180" y="164" width="7" height="32" rx="3.5" opacity="0.26"/>
-    <rect x="1196" y="170" width="7" height="20" rx="3.5" opacity="0.2"/>
+  <g transform="translate(940 200)">
+    <circle r="190" fill="url(#halo)"/>
   </g>
 
-  <!-- accent rule -->
-  <rect x="88" y="104" width="4" height="152" rx="2" fill="url(#fade)"/>
+  <!-- The far side of the disk, arcing over the top, cut off by the hole. -->
+  <g mask="url(#behind)">
+    <ellipse cx="940" cy="200" rx="188" ry="150" fill="none" stroke="url(#ring)" stroke-width="7"/>
+    <ellipse cx="940" cy="200" rx="188" ry="150" fill="none" stroke="url(#diskWarm)" stroke-width="16" opacity="0.5"/>
+  </g>
+
+  <!-- The shadow. Nothing comes back out of it. -->
+  <circle cx="940" cy="200" r="88" fill="url(#deep)"/>
+
+  <!-- The photon ring, hard against the edge. -->
+  <circle cx="940" cy="200" r="90" fill="none" stroke="url(#ring)" stroke-width="3.5"/>
+  <circle cx="940" cy="200" r="96" fill="none" stroke="#9af3e6" stroke-width="1" opacity="0.4"/>
+
+  <!-- The near side of the disk, passing in front. -->
+  <ellipse cx="940" cy="200" rx="238" ry="36" fill="none" stroke="url(#disk)" stroke-width="11"/>
+  <ellipse cx="940" cy="200" rx="238" ry="36" fill="none" stroke="url(#diskWarm)" stroke-width="24" opacity="0.45"/>
+  <ellipse cx="940" cy="200" rx="196" ry="26" fill="none" stroke="url(#disk)" stroke-width="4" opacity="0.6"/>
+
+  <rect x="96" y="120" width="4" height="160" rx="2" fill="url(#rule)"/>
 
   <g font-family="Poppins, 'Segoe UI', system-ui, -apple-system, sans-serif">
-    <text x="124" y="176" font-size="98" font-weight="600" fill="#ededed" letter-spacing="-3">Wisp</text>
-    <text x="128" y="222" font-size="24" font-weight="400" fill="#6b6b6b" letter-spacing="0.2">A Discord client in C++, built from scratch.</text>
-    <text x="128" y="254" font-size="24" font-weight="400" fill="#6b6b6b" letter-spacing="0.2">Plugins compiled in. Voice encrypted end to end.</text>
+    <text x="132" y="196" font-size="104" font-weight="600" fill="#eef4fb" letter-spacing="-3">Wisp</text>
+    <text x="136" y="244" font-size="24" fill="#6b768c">A Discord client in C++, built from scratch.</text>
+    <text x="136" y="276" font-size="24" fill="#6b768c">Voice encrypted end to end. Plugins compiled in.</text>
 
     <g font-size="14" font-weight="500" letter-spacing="0.6">
-      <rect x="128" y="286" width="74" height="30" rx="15" fill="none" stroke="#8f8f8f" stroke-opacity="0.5"/>
-      <text x="165" y="306" fill="#a3a3a3" text-anchor="middle">C++20</text>
+      <rect x="136" y="308" width="74" height="30" rx="15" fill="none" stroke="#6ee7d8" stroke-opacity="0.4"/>
+      <text x="173" y="328" fill="#6ee7d8" text-anchor="middle">C++20</text>
 
-      <rect x="214" y="286" width="64" height="30" rx="15" fill="none" stroke="#8f8f8f" stroke-opacity="0.5"/>
-      <text x="246" y="306" fill="#a3a3a3" text-anchor="middle">Qt 6</text>
+      <rect x="222" y="308" width="64" height="30" rx="15" fill="none" stroke="#6ee7d8" stroke-opacity="0.4"/>
+      <text x="254" y="328" fill="#6ee7d8" text-anchor="middle">Qt 6</text>
 
-      <rect x="290" y="286" width="108" height="30" rx="15" fill="none" stroke="#8f8f8f" stroke-opacity="0.5"/>
-      <text x="344" y="306" fill="#a3a3a3" text-anchor="middle">DAVE E2EE</text>
+      <rect x="298" y="308" width="108" height="30" rx="15" fill="none" stroke="#6ee7d8" stroke-opacity="0.4"/>
+      <text x="352" y="328" fill="#6ee7d8" text-anchor="middle">DAVE E2EE</text>
 
-      <rect x="410" y="286" width="88" height="30" rx="15" fill="none" stroke="#8f8f8f" stroke-opacity="0.5"/>
-      <text x="454" y="306" fill="#a3a3a3" text-anchor="middle">Windows</text>
+      <rect x="418" y="308" width="88" height="30" rx="15" fill="none" stroke="#6ee7d8" stroke-opacity="0.4"/>
+      <text x="462" y="328" fill="#6ee7d8" text-anchor="middle">Windows</text>
     </g>
   </g>
 </svg>
