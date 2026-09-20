@@ -4,34 +4,173 @@
 #include "ui/Theme.h"
 
 #include <QCheckBox>
-#include <QFormLayout>
 #include <QLabel>
-#include <QSlider>
+#include <QMouseEvent>
+#include <QPainter>
 #include <QVBoxLayout>
 #include <QWidget>
 
 #include <cmath>
+#include <functional>
 
 namespace {
 
 constexpr double Pi = 3.14159265358979323846;
 
-QSlider *makeSlider(int low, int high, int value, QWidget *parent)
-{
-    auto *slider = new QSlider(Qt::Horizontal, parent);
-    slider->setRange(low, high);
-    slider->setValue(value);
-    return slider;
-}
-
 QLabel *hint(const QString &text, QWidget *parent)
 {
     auto *label = new QLabel(text, parent);
     label->setWordWrap(true);
-    label->setStyleSheet(QStringLiteral("color: %1; font-size: 11px;")
+    label->setStyleSheet(QStringLiteral("color: %1; font-size: 11px; line-height: 150%;")
                              .arg(QLatin1String(Theme::TextFaint)));
     return label;
 }
+
+// Where your voice sits, as something you move rather than a number.
+//
+// A slider labelled "pan" tells you nothing about what you will hear. Two ears
+// with a dot between them tells you immediately, and the ears fill in as the
+// dot passes so the effect is visible before anyone has to join a call to
+// check it.
+class StereoPad : public QWidget
+{
+public:
+    explicit StereoPad(int pan, QWidget *parent = nullptr)
+        : QWidget(parent)
+        , m_pan(qBound(-100, pan, 100))
+    {
+        setFixedHeight(120);
+        setCursor(Qt::PointingHandCursor);
+        setToolTip(QStringLiteral("Drag to move your voice. Double click to centre it."));
+    }
+
+    int pan() const { return m_pan; }
+    std::function<void(int)> onMoved;
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+
+        const QRectF area = rect().adjusted(0.5, 0.5, -0.5, -0.5);
+
+        painter.setPen(QPen(QColor(Theme::Border), 1));
+        painter.setBrush(QColor(Theme::SurfaceChat));
+        painter.drawRoundedRect(area, 12, 12);
+
+        const double centreY = area.center().y();
+        const double left = area.left() + 52;
+        const double right = area.right() - 52;
+        const double position = left + (m_pan + 100) / 200.0 * (right - left);
+
+        // How much of your voice reaches each side, the same quarter circle
+        // the sound itself uses, so the picture cannot disagree with the ears.
+        const double share = (m_pan + 100) / 200.0;
+        const double leftShare = std::cos(share * Pi / 2.0);
+        const double rightShare = std::sin(share * Pi / 2.0);
+
+        drawEar(painter, QPointF(area.left() + 28, centreY), leftShare, QStringLiteral("L"));
+        drawEar(painter, QPointF(area.right() - 28, centreY), rightShare, QStringLiteral("R"));
+
+        // The track the voice slides along.
+        // Braces, not brackets, or this reads as a function declaration.
+        QPen track{QColor(Theme::SurfaceHover)};
+        track.setWidthF(3);
+        track.setCapStyle(Qt::RoundCap);
+        painter.setPen(track);
+        painter.drawLine(QPointF(left, centreY), QPointF(right, centreY));
+
+        // The middle, marked so centre is findable by feel.
+        painter.setPen(QPen(QColor(Theme::TextFaint), 1, Qt::DotLine));
+        painter.drawLine(QPointF(area.center().x(), centreY - 16),
+                         QPointF(area.center().x(), centreY + 16));
+
+        // You.
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(Theme::Accent));
+        painter.drawEllipse(QPointF(position, centreY), 11, 11);
+
+        painter.setPen(QColor(Theme::Dark));
+        QFont face = font();
+        face.setPixelSize(10);
+        face.setWeight(QFont::Bold);
+        painter.setFont(face);
+        painter.drawText(QRectF(position - 11, centreY - 11, 22, 22), Qt::AlignCenter,
+                         QStringLiteral("You"));
+
+        // What it means, in words, under the track.
+        painter.setPen(QColor(Theme::TextMuted));
+        QFont caption = font();
+        caption.setPixelSize(11);
+        painter.setFont(caption);
+        painter.drawText(QRectF(area.left(), centreY + 26, area.width(), 20),
+                         Qt::AlignCenter, describe());
+    }
+
+    void mousePressEvent(QMouseEvent *event) override { moveTo(event->position().x()); }
+    void mouseMoveEvent(QMouseEvent *event) override { moveTo(event->position().x()); }
+    void mouseDoubleClickEvent(QMouseEvent *) override { apply(0); }
+
+private:
+    QString describe() const
+    {
+        if (m_pan == 0)
+            return QStringLiteral("Both ears");
+        if (m_pan <= -95)
+            return QStringLiteral("Left ear only");
+        if (m_pan >= 95)
+            return QStringLiteral("Right ear only");
+        return QStringLiteral("Mostly %1").arg(m_pan < 0 ? QStringLiteral("left")
+                                                         : QStringLiteral("right"));
+    }
+
+    void drawEar(QPainter &painter, const QPointF &centre, double share, const QString &letter) const
+    {
+        // The ring fills as more of your voice arrives on that side.
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(QColor(Theme::SurfaceHover), 2));
+        painter.drawEllipse(centre, 17, 17);
+
+        QPen filled{QColor(Theme::Accent)};
+        filled.setWidthF(2.5);
+        filled.setCapStyle(Qt::RoundCap);
+        painter.setPen(filled);
+        painter.drawArc(QRectF(centre.x() - 17, centre.y() - 17, 34, 34), 90 * 16,
+                        -static_cast<int>(share * 360 * 16));
+
+        painter.setPen(QColor(share > 0.25 ? Theme::TextPrimary : Theme::TextFaint));
+        QFont mark = painter.font();
+        mark.setPixelSize(12);
+        mark.setWeight(QFont::DemiBold);
+        painter.setFont(mark);
+        painter.drawText(QRectF(centre.x() - 17, centre.y() - 17, 34, 34), Qt::AlignCenter, letter);
+    }
+
+    void moveTo(double x)
+    {
+        const double left = rect().left() + 52;
+        const double right = rect().right() - 52;
+        if (right <= left)
+            return;
+
+        const double share = qBound(0.0, (x - left) / (right - left), 1.0);
+        apply(static_cast<int>(std::lround(share * 200.0)) - 100);
+    }
+
+    void apply(int pan)
+    {
+        const int wanted = qBound(-100, pan, 100);
+        if (wanted == m_pan)
+            return;
+        m_pan = wanted;
+        update();
+        if (onMoved)
+            onMoved(m_pan);
+    }
+
+    int m_pan = 0;
+};
 
 } // namespace
 
@@ -283,92 +422,47 @@ QWidget *MicShaperPlugin::createSettingsWidget(QWidget *parent)
         reloadSettings();
     };
 
-    // ---- placing -------------------------------------------------------
-    auto *pan = makeSlider(-100, 100, m_pan, page);
-    auto *panLabel = new QLabel(page);
+    layout->setSpacing(14);
 
-    const auto describePan = [panLabel](int value) {
-        if (value == 0)
-            panLabel->setText(QStringLiteral("Centre, both ears"));
-        else if (value <= -99)
-            panLabel->setText(QStringLiteral("Hard left, left ear only"));
-        else if (value >= 99)
-            panLabel->setText(QStringLiteral("Hard right, right ear only"));
-        else
-            panLabel->setText(QStringLiteral("%1% to the %2")
-                                  .arg(std::abs(value))
-                                  .arg(value < 0 ? QStringLiteral("left") : QStringLiteral("right")));
-    };
-    describePan(m_pan);
-    panLabel->setStyleSheet(QStringLiteral("color: %1; font-size: 11px;")
-                                .arg(QLatin1String(Theme::TextMuted)));
+    // ---- where your voice sits -----------------------------------------
+    //
+    // One thing to drag, and it shows what it does. Eleven controls were the
+    // honest way to describe the chain and the wrong way to offer it.
+    auto *heading = new QLabel(QStringLiteral("Where your voice sits"), page);
+    heading->setStyleSheet(QStringLiteral("color: %1; font-size: 13px; font-weight: 600;")
+                               .arg(QLatin1String(Theme::TextPrimary)));
+    layout->addWidget(heading);
 
-    auto *placing = new QFormLayout;
-    placing->addRow(QStringLiteral("Where you sit"), pan);
-    layout->addLayout(placing);
-    layout->addWidget(panLabel);
+    auto *pad = new StereoPad(m_pan, page);
+    pad->onMoved = [save](int value) { save("pan", value); };
+    layout->addWidget(pad);
+
     layout->addWidget(hint(QStringLiteral(
-        "The official client cannot do this. It folds your microphone down to one channel before "
-        "sending, so there is no left or right left to place. Wisp sends two, which is what lets "
-        "your voice actually arrive in one ear."), page));
+        "Drag to move. Double click to put yourself back in the middle.\n\n"
+        "The official client cannot do this at all: it folds your microphone down to one channel "
+        "before sending, so there is no left or right left to place. Wisp sends two, which is what "
+        "lets your voice actually arrive in one ear."), page));
 
-    auto *mono = new QCheckBox(QStringLiteral("Force mono first"), page);
-    mono->setChecked(m_forceMono);
-    layout->addWidget(mono);
+    // ---- the one switch ------------------------------------------------
+    auto *cleanUp = new QCheckBox(QStringLiteral("Clean up my voice"), page);
+    cleanUp->setChecked(m_highPassOn || m_gateOn || m_compressorOn);
+    layout->addWidget(cleanUp);
+
     layout->addWidget(hint(QStringLiteral(
-        "For a microphone that only fills one channel, which otherwise sounds like it is already "
-        "stuck in one ear."), page));
-
-    // ---- cleanup -------------------------------------------------------
-    auto *highPass = new QCheckBox(QStringLiteral("Cut low rumble"), page);
-    highPass->setChecked(m_highPassOn);
-    layout->addWidget(highPass);
-
-    auto *cutoff = makeSlider(40, 200, m_highPassHz, page);
-    auto *cutoffForm = new QFormLayout;
-    cutoffForm->addRow(QStringLiteral("Cut below"), cutoff);
-    layout->addLayout(cutoffForm);
-    layout->addWidget(hint(QStringLiteral(
-        "Removes desk thumps, footsteps and fan hum. None of it carries speech, and all of it "
-        "makes the gate and the compressor misbehave, so it goes first."), page));
-
-    auto *gate = new QCheckBox(QStringLiteral("Silence the gaps"), page);
-    gate->setChecked(m_gateOn);
-    layout->addWidget(gate);
-
-    auto *gateLevel = makeSlider(0, 100, settingValue(QStringLiteral("gateLevel"), 12).toInt(), page);
-    auto *gateForm = new QFormLayout;
-    gateForm->addRow(QStringLiteral("Opens above"), gateLevel);
-    layout->addLayout(gateForm);
-    layout->addWidget(hint(QStringLiteral(
-        "Keeps your microphone shut between sentences. It stays open for a moment after you stop, "
-        "so the ends of words are not chopped off."), page));
-
-    auto *compressor = new QCheckBox(QStringLiteral("Even out my volume"), page);
-    compressor->setChecked(m_compressorOn);
-    layout->addWidget(compressor);
-
-    auto *makeup = makeSlider(50, 300, static_cast<int>(m_makeup * 100), page);
-    auto *makeupForm = new QFormLayout;
-    makeupForm->addRow(QStringLiteral("Then boost by"), makeup);
-    layout->addLayout(makeupForm);
-    layout->addWidget(hint(QStringLiteral(
-        "Holds the loud parts down so the quiet parts can come up, which is why radio voices sound "
-        "even whether the speaker leans in or sits back. The boost puts back what it took."), page));
+        "Cuts rumble from desks and fans, keeps the microphone shut between sentences, and evens "
+        "out how loud you are so leaning back does not make you disappear. Set the way a broadcast "
+        "desk would be, so there is nothing to tune."), page));
 
     layout->addStretch(1);
 
-    QObject::connect(pan, &QSlider::valueChanged, page, [save, describePan](int value) {
-        describePan(value);
-        save("pan", value);
+    QObject::connect(cleanUp, &QCheckBox::toggled, page, [save](bool on) {
+        // One switch, three stages. They are useless apart: a gate with no
+        // rumble filter opens on a desk thump, and a compressor with no gate
+        // spends its time lifting room noise to speaking level.
+        save("highPassOn", on);
+        save("gateOn", on);
+        save("compressorOn", on);
     });
-    QObject::connect(mono, &QCheckBox::toggled, page, [save](bool on) { save("forceMono", on); });
-    QObject::connect(highPass, &QCheckBox::toggled, page, [save](bool on) { save("highPassOn", on); });
-    QObject::connect(cutoff, &QSlider::valueChanged, page, [save](int value) { save("highPassHz", value); });
-    QObject::connect(gate, &QCheckBox::toggled, page, [save](bool on) { save("gateOn", on); });
-    QObject::connect(gateLevel, &QSlider::valueChanged, page, [save](int value) { save("gateLevel", value); });
-    QObject::connect(compressor, &QCheckBox::toggled, page, [save](bool on) { save("compressorOn", on); });
-    QObject::connect(makeup, &QSlider::valueChanged, page, [save](int value) { save("makeup", value); });
 
     return page;
 }

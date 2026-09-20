@@ -285,6 +285,53 @@ QComboBox {
     border-radius: 8px;
     padding: 6px 10px;
 }
+
+/* Sliders. Without these Windows paints its own, in the system accent, which
+   is how a blue bar ended up in the middle of a grey window. */
+QSlider::groove:horizontal {
+    height: 4px;
+    background: @input;
+    border-radius: 2px;
+}
+QSlider::sub-page:horizontal {
+    background: @muted;
+    border-radius: 2px;
+}
+QSlider::handle:horizontal {
+    width: 14px;
+    height: 14px;
+    margin: -5px 0;
+    border-radius: 7px;
+    background: @accent;
+}
+QSlider::handle:horizontal:hover { background: @text; }
+QSlider::groove:vertical {
+    width: 4px;
+    background: @input;
+    border-radius: 2px;
+}
+QSlider::handle:vertical {
+    width: 14px;
+    height: 14px;
+    margin: 0 -5px;
+    border-radius: 7px;
+    background: @accent;
+}
+
+/* Check boxes, for the same reason. */
+QCheckBox { spacing: 8px; }
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid @border;
+    border-radius: 5px;
+    background: @input;
+}
+QCheckBox::indicator:hover { border-color: @muted; }
+QCheckBox::indicator:checked {
+    background: @accent;
+    border-color: @accent;
+}
 QComboBox QAbstractItemView {
     background-color: @sidebar;
     border: 1px solid @border;
