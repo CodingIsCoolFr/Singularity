@@ -452,6 +452,17 @@ void VoiceConnection::sendIdentify()
              .arg(m_guildId, m_userId, m_sessionId)
              .arg(m_token.size()));
 
+    // The layers we are willing to be sent. Naming a full quality one and a
+    // half quality one lets the server drop us to the smaller picture when the
+    // connection cannot carry the larger, rather than sending nothing.
+    QJsonArray streams;
+    streams.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("video")},
+                               {QStringLiteral("rid"), QStringLiteral("100")},
+                               {QStringLiteral("quality"), 100}});
+    streams.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("video")},
+                               {QStringLiteral("rid"), QStringLiteral("50")},
+                               {QStringLiteral("quality"), 50}});
+
     sendJson(QJsonObject{
         {QStringLiteral("op"), OpIdentify},
         {QStringLiteral("d"),
@@ -460,7 +471,15 @@ void VoiceConnection::sendIdentify()
              {QStringLiteral("user_id"), m_userId},
              {QStringLiteral("session_id"), m_sessionId},
              {QStringLiteral("token"), m_token},
-             {QStringLiteral("video"), false},
+
+             // "Whether this connection supports video", and it defaults to
+             // false. Sending false is a promise never to be sent a picture,
+             // which is what we were doing: every camera stayed blank because
+             // we had said at sign-in that we could not handle one. It does
+             // not mean we intend to send video, only that we understand it.
+             {QStringLiteral("video"), true},
+             {QStringLiteral("streams"), streams},
+
              {QStringLiteral("max_dave_protocol_version"), maxDaveProtocolVersion()},
          }},
     });
@@ -829,8 +848,14 @@ void VoiceConnection::handleSessionDescription(const QJsonObject &data)
     setState(State::Connected);
     startAudio();
 
-    // Say what we send, then ask for what we want. Without the second of
-    // these the server sends no video at all, and every camera stays blank.
+    // Three things, in this order, before anything will be sent to us.
+    //
+    // Discord is explicit that a connection has to announce itself before it
+    // may send or receive: at least one speaking payload before any data at
+    // all, and at least one video payload before any video. We only ever sent
+    // a speaking payload when somebody actually talked, so a listener who sat
+    // quietly, or who joined muted, had never announced anything.
+    sendSpeaking(false);
     sendVideoState();
     sendVideoWants();
 }

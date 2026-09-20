@@ -940,6 +940,25 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
     if (eventType == QLatin1String("VOICE_STATE_UPDATE")) {
         m_store->setVoiceState(data);
 
+        // Says out loud who the main gateway thinks has a camera or a screen
+        // running in the call we are in.
+        //
+        // Without this, "I cannot see anybody's camera" and "nobody had one
+        // on" look identical from the log, and they need completely different
+        // fixes. This is the line that tells them apart.
+        if (!m_voiceChannelId.isEmpty()
+            && data.value(QStringLiteral("channel_id")).toString() == m_voiceChannelId) {
+            const bool video = data.value(QStringLiteral("self_video")).toBool();
+            const bool stream = data.value(QStringLiteral("self_stream")).toBool();
+            if (video || stream) {
+                const QString who = data.value(QStringLiteral("user_id")).toString();
+                wlog(QStringLiteral("video"),
+                     QStringLiteral("the gateway says %1 has %2 running in this call")
+                         .arg(m_store->userName(who).isEmpty() ? who : m_store->userName(who),
+                              stream ? QStringLiteral("a shared screen") : QStringLiteral("a camera")));
+            }
+        }
+
         // While a join is still outstanding, write down anyone arriving in the
         // channel we are aiming for. If our own name appears here but the
         // branch below stays quiet, the fault is in matching our own id, not
@@ -2385,6 +2404,29 @@ void MainWindow::updateVoicePanel()
 
     if (!connected)
         return;
+
+    // People already sending video when we arrived never produce a fresh
+    // event, so the ones we would otherwise miss are listed here instead.
+    int sending = 0;
+    const QStringList already = m_store->voiceMembers(m_voiceChannelId);
+    for (const QString &memberId : already) {
+        const VoiceStateInfo state = m_store->voiceState(memberId);
+        if (!state.video && !state.streaming)
+            continue;
+
+        ++sending;
+        const QString name = m_store->userName(memberId);
+        wlog(QStringLiteral("video"),
+             QStringLiteral("already running when we joined: %1 has %2")
+                 .arg(name.isEmpty() ? memberId : name,
+                      state.streaming ? QStringLiteral("a shared screen")
+                                      : QStringLiteral("a camera")));
+    }
+
+    if (sending == 0) {
+        wlog(QStringLiteral("video"),
+             QStringLiteral("nobody in this call has a camera or a screen running"));
+    }
 
     const ChannelInfo channel = m_store->channel(m_voiceChannelId);
     const GuildInfo guild = m_store->guild(channel.guildId);
