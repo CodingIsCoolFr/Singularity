@@ -2299,6 +2299,7 @@ void MainWindow::openChannel(const QString &channelId)
     m_renderFirst = 0;
     m_windowAtTail = true;
     m_growCooldown.invalidate();
+    m_scrolledSinceLoad = false;
 
     if (channelId.isEmpty()) {
         m_channelTitle->setText(QStringLiteral("Pick a channel"));
@@ -3499,6 +3500,7 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         case QEvent::KeyPress:
         case QEvent::TouchBegin:
             m_readerMoved = true;
+            m_scrolledSinceLoad = true;
             break;
         default:
             break;
@@ -3822,36 +3824,51 @@ void MainWindow::reachedTop()
     const bool canDrawMore = m_renderedCount < held && m_renderWindow < MaxRenderedMessages;
     const bool canSlideBack = m_renderFirst > 0;
 
+    // Nothing happens without a fresh push on the wheel.
+    //
+    // This is the guard that was missing twice. Reaching the top is a
+    // position, and a position stays true for as long as nobody moves - so
+    // anything triggered by it will trigger again on the next scroll event,
+    // and again, whether or not the person did anything. Asking instead
+    // whether they have scrolled since the last time makes it an action, and
+    // an action happens once.
+    if (!m_scrolledSinceLoad)
+        return;
+    m_scrolledSinceLoad = false;
+    m_growCooldown.restart();
+
     if (!canDrawMore && !canSlideBack) {
         loadOlderMessages();
         return;
     }
 
-    // Keep the reader's place: the document is about to grow above them.
     QScrollBar *bar = m_messageView->verticalScrollBar();
-    m_pendingScrollAnchor = bar->maximum() - bar->value();
-    m_growCooldown.restart();
 
     if (canDrawMore) {
+        // The window is getting bigger and the end of it stays put, so the
+        // reader's distance from the bottom is what stays meaningful.
+        m_pendingScrollAnchor = bar->maximum() - bar->value();
         m_renderWindow = qMin(MaxRenderedMessages, m_renderedCount + RenderWindowStep);
-    } else {
-        // At full size already, so the far edge comes with us.
-        m_windowAtTail = false;
-        m_renderFirst = qMax(0, m_renderFirst - RenderWindowStep);
+        renderChannel();
+        return;
     }
 
+    // At full size, so the window slides: messages arrive at the top and the
+    // same number leave at the bottom.
+    //
+    // Measuring from the bottom is wrong here, because the bottom moved too -
+    // the document is about the same height as before, so that measurement
+    // put the reader back at the very top. Which is the condition that brought
+    // them here. A step of messages was added above them, so that is where
+    // they now are, a step into a window of MaxRenderedMessages.
+    m_windowAtTail = false;
+    m_renderFirst = qMax(0, m_renderFirst - RenderWindowStep);
+    m_pendingScrollAnchor = -1;
     renderChannel();
 
-    // Land clear of the top.
-    //
-    // Without this the reader is put back within a few pixels of the top,
-    // which is the condition that brought them here - so it happened again on
-    // the very next scroll event, whether or not anybody scrolled.
-    if (bar->value() < 160 && bar->maximum() > 160) {
-        m_autoScrolling = true;
-        bar->setValue(160);
-        m_autoScrolling = false;
-    }
+    m_autoScrolling = true;
+    bar->setValue(bar->maximum() * RenderWindowStep / MaxRenderedMessages);
+    m_autoScrolling = false;
 }
 
 void MainWindow::loadOlderMessages()
@@ -3881,12 +3898,19 @@ void MainWindow::loadOlderMessages()
 
             const int added = m_store->prependHistory(channelId, messages);
 
-            // The messages that just arrived are older than everything held,
-            // so the window goes to the very start to show them. It does not
-            // get bigger - that is what ran away in 0.5.3.
+            // The window moves back over the messages that just arrived, but
+            // not all the way to the oldest of them.
+            //
+            // Going to the very start looked right and was the second
+            // runaway: it put the reader at the top of the document, which is
+            // what asks for more, so another fifty were fetched, and another -
+            // four hundred messages in under two seconds. Stopping one step
+            // short leaves a step of new messages above them, which is both
+            // what they were reaching for and far enough from the top that
+            // the next fetch waits until they scroll again.
             if (added > 0 && channelId == m_currentChannelId) {
                 m_windowAtTail = false;
-                m_renderFirst = 0;
+                m_renderFirst = qMax(0, added - RenderWindowStep);
             }
 
             if (added == 0) {

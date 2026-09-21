@@ -128,6 +128,11 @@ private:
     // Stops one scroll from widening the window several times over.
     QElapsedTimer m_growCooldown;
 
+    // Whether the person has touched the wheel since the last time more was
+    // drawn or fetched. Reaching the top is a position and stays true; this
+    // makes it an action, which happens once.
+    bool m_scrolledSinceLoad = false;
+
     // Writes what the program is holding on to into the log.
     void reportMemory();
     QString messageHtml(const MessageInfo &message, bool grouped);
