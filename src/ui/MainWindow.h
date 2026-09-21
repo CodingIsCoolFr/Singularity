@@ -144,6 +144,7 @@ private:
     QLabel *m_selfAvatar = nullptr;
     QLabel *m_selfName = nullptr;
     QLabel *m_selfStatus = nullptr;
+    class MemberListPanel *m_members = nullptr;
     QStackedWidget *m_chatStack = nullptr;
     QWidget *m_chatPage = nullptr;
     FriendsPage *m_friends = nullptr;

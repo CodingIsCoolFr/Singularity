@@ -13,7 +13,7 @@
 
 <br>
 
-### [Download Singularity 0.2.2](https://github.com/CodingIsCoolFr/singularity-updates/releases/latest)
+### [Download Singularity 0.3.0](https://github.com/CodingIsCoolFr/singularity-updates/releases/latest)
 
 Windows x64 · 54 MB · installs for you only, no administrator prompt
 
@@ -545,7 +545,6 @@ Roughly in the order they are worth doing.
 2. Reactions, and replies
 3. Edit and delete your own messages from the UI
 4. Unread marks and mention badges
-5. Member list down the right side
 6. Right click menus on messages, channels and people
 7. Avatar decorations, which are fetched but not drawn
 8. The profile "Recent activity" feed, which needs an endpoint we have not

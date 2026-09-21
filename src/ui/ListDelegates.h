@@ -30,6 +30,11 @@ constexpr int Video = Qt::UserRole + 8;
 constexpr int VoiceMuted = Qt::UserRole + 9;
 constexpr int VoiceDeafened = Qt::UserRole + 10;
 constexpr int Elapsed = Qt::UserRole + 11;
+
+// Member list only: the colour a role gives a name, and whether a row is one
+// of the headings rather than a person.
+constexpr int NameColour = Qt::UserRole + 12;
+constexpr int Heading = Qt::UserRole + 13;
 } // namespace SingularityRoles
 
 // Shared easing used by both delegates below.
@@ -104,6 +109,26 @@ private:
 
     mutable QHash<int, qreal> m_hover;
     mutable QHash<int, qreal> m_select;
+};
+
+// One row of a server's member list on the right.
+//
+// Two shapes in one delegate, because they are one list: a heading carrying a
+// role name and a count, and a person carrying a picture, a name in their role
+// colour, and whatever they are doing. Keeping them in one list rather than in
+// a tree is what lets Discord's own ordering be used unchanged.
+class MemberDelegate : public AnimatedDelegate
+{
+    Q_OBJECT
+
+public:
+    using AnimatedDelegate::AnimatedDelegate;
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override;
+    QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override;
+
+private:
+    mutable QHash<int, qreal> m_hover;
 };
 
 // The channel list.

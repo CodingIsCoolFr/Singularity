@@ -119,6 +119,33 @@ struct ChannelGroup
     QList<ChannelInfo> channels;
 };
 
+// One line of a server's member list: either a heading, or a person.
+struct MemberRow
+{
+    bool heading = false;
+
+    // For a heading: the role id, or "online" / "offline". Discord sends the
+    // role id rather than its name, so the name is looked up against the
+    // guild's roles when it is drawn.
+    QString groupId;
+    int groupCount = 0;
+
+    // For a person.
+    QString userId;
+    QString nickname;     // server nickname, may be empty
+    QString colourRoleId; // the role that decides their colour, may be empty
+};
+
+struct MemberList
+{
+    QList<MemberRow> rows;
+
+    // Discord's own totals, which are not the same as the number of rows:
+    // only the first hundred rows are ever asked for.
+    int onlineCount = 0;
+    int memberCount = 0;
+};
+
 struct GuildInfo
 {
     QString id;
@@ -238,6 +265,15 @@ public:
     // without it everyone in a server looks offline.
     void ingestMemberListUpdate(const QJsonObject &payload);
 
+    // The member list itself, in Discord's own order.
+    //
+    // Kept as one flat list with the headings in it rather than as a map of
+    // role to people, because the order is Discord's answer and not something
+    // to be recomputed: it already knows which roles are hoisted, how they
+    // rank, and who is offline. Sorting it again here would disagree with the
+    // official client for no benefit.
+    MemberList memberList(const QString &guildId) const;
+
     QList<GuildInfo> guilds() const;
     GuildInfo guild(const QString &guildId) const;
     ChannelInfo channel(const QString &channelId) const;
@@ -328,11 +364,13 @@ signals:
     void messageChanged(const QString &channelId, const QString &messageId);
     void userChanged(const QString &userId);
     void voiceStatesChanged();
+    void memberListChanged(const QString &guildId);
 
 private:
     void ingestGuild(const QJsonObject &rawGuild);
     void ingestChannel(const QJsonObject &rawChannel, const QString &guildId);
 
+    QHash<QString, MemberList> m_memberLists;
     QHash<QString, GuildInfo> m_guilds;
     QList<QString> m_guildOrder;
     QHash<QString, ChannelInfo> m_channels;

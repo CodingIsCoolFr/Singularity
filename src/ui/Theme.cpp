@@ -406,16 +406,35 @@ QDialog { background-color: @chat; }
 #AppMenu::item:selected { background-color: @hover; color: @text; }
 
 /* Opaque islands. Translucent children of QOpenGLWidget paint black on Windows. */
-#GuildRail, #Sidebar, #ChatColumn {
+#GuildRail, #Sidebar, #ChatColumn, #MemberPanel {
     background-color: @chat;
     border: 1px solid @accent38;
     border-radius: 18px;
 }
 #GuildRail QListWidget,
-#Sidebar QListWidget {
+#Sidebar QListWidget,
+#MemberPanel QListWidget {
     background-color: transparent;
     border: none;
     outline: none;
+}
+
+/* The people down the right. */
+#MemberToggle {
+    background: transparent;
+    border: none;
+    color: @muted;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-align: left;
+    padding: 14px 14px 8px 14px;
+}
+#MemberToggle:hover { color: @text; }
+
+#MemberCounts {
+    font-size: 11.5px;
+    color: @muted;
 }
 
 #SidebarHeader {

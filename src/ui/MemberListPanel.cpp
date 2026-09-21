@@ -1,0 +1,237 @@
+#include "ui/MemberListPanel.h"
+
+#include "core/AppConfig.h"
+#include "core/MessageStore.h"
+#include "ui/ListDelegates.h"
+#include "ui/MediaCache.h"
+#include "ui/Theme.h"
+
+#include <QLabel>
+#include <QListWidget>
+#include <QPushButton>
+#include <QScrollBar>
+#include <QVBoxLayout>
+
+namespace {
+
+constexpr int PanelWidth = 232;
+constexpr int StripWidth = 30;
+
+// What somebody is doing, in one line.
+//
+// A custom status is kept back and only used when nothing else is running,
+// which is the order the official client uses: what you are playing says more
+// than what you typed about yourself last week.
+QString doingNow(const MessageStore &store, const QString &userId)
+{
+    const PresenceInfo presence = store.presence(userId);
+
+    QString custom;
+    for (const ActivityInfo &activity : presence.activities) {
+        if (activity.isCustomStatus()) {
+            custom = activity.emoji.isEmpty()
+                ? activity.state
+                : QStringLiteral("%1 %2").arg(activity.emoji, activity.state).trimmed();
+            continue;
+        }
+        if (activity.type == 2 && !activity.details.isEmpty())
+            return activity.details;
+        if (!activity.name.isEmpty())
+            return activity.name;
+    }
+
+    return custom;
+}
+
+// Discord's own names for the two groups that are not roles.
+QString headingName(const QString &groupId, const GuildInfo &guild, int count)
+{
+    if (groupId == QLatin1String("online"))
+        return QStringLiteral("Online — %1").arg(count);
+    if (groupId == QLatin1String("offline"))
+        return QStringLiteral("Offline — %1").arg(count);
+
+    const RoleInfo role = guild.roles.value(groupId);
+    const QString name = role.name.isEmpty() ? QStringLiteral("Members") : role.name;
+    return QStringLiteral("%1 — %2").arg(name).arg(count);
+}
+
+} // namespace
+
+MemberListPanel::MemberListPanel(MessageStore *store, QWidget *parent)
+    : QWidget(parent)
+    , m_store(store)
+{
+    setObjectName(QStringLiteral("MemberPanel"));
+    setAttribute(Qt::WA_StyledBackground, true);
+
+    auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+
+    // The header stays visible when the rest is folded away, so there is
+    // always something to click to bring it back.
+    auto *header = new QWidget(this);
+    header->setObjectName(QStringLiteral("MemberHeader"));
+    header->setFixedHeight(40);
+
+    auto *headerLayout = new QVBoxLayout(header);
+    headerLayout->setContentsMargins(0, 0, 0, 0);
+    headerLayout->setSpacing(0);
+
+    m_toggle = new QPushButton(header);
+    m_toggle->setObjectName(QStringLiteral("MemberToggle"));
+    m_toggle->setCursor(Qt::PointingHandCursor);
+    m_toggle->setFlat(true);
+    connect(m_toggle, &QPushButton::clicked, this, [this]() { setCollapsed(!m_collapsed); });
+    headerLayout->addWidget(m_toggle);
+
+    layout->addWidget(header);
+
+    m_body = new QWidget(this);
+    auto *bodyLayout = new QVBoxLayout(m_body);
+    bodyLayout->setContentsMargins(0, 0, 0, 6);
+    bodyLayout->setSpacing(0);
+
+    // Two totals, and they are not the same question. How many people are
+    // here right now is what you look at before speaking; how many there are
+    // altogether is what the server is. Discord shows both and so does this.
+    m_counts = new QLabel(m_body);
+    m_counts->setObjectName(QStringLiteral("MemberCounts"));
+    m_counts->setContentsMargins(14, 2, 14, 8);
+    bodyLayout->addWidget(m_counts);
+
+    m_list = new QListWidget(m_body);
+    m_list->setObjectName(QStringLiteral("MemberList"));
+    m_list->setFrameShape(QFrame::NoFrame);
+    m_list->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_list->setSelectionMode(QAbstractItemView::NoSelection);
+    m_list->setUniformItemSizes(false);
+    m_list->setMouseTracking(true);
+    m_list->setItemDelegate(new MemberDelegate(m_list, m_list));
+    bodyLayout->addWidget(m_list, 1);
+
+    connect(m_list, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
+        if (!item || item->data(SingularityRoles::Heading).toBool())
+            return;
+        const QString userId = item->data(SingularityRoles::Id).toString();
+        if (!userId.isEmpty())
+            emit profileRequested(userId);
+    });
+
+    layout->addWidget(m_body, 1);
+
+    connect(m_store, &MessageStore::memberListChanged, this, [this](const QString &guildId) {
+        if (guildId == m_guildId)
+            rebuild();
+    });
+
+    // Pictures arrive later than the list does, so a face that was a grey
+    // circle when the row was built has to be put in when it turns up.
+    connect(&MediaCache::instance(), &MediaCache::ready, this, [this](const QUrl &url) {
+        if (url.path().startsWith(QLatin1String("/avatars/"))
+            || url.path().startsWith(QLatin1String("/embed/avatars/"))) {
+            rebuild();
+        }
+    });
+
+    setCollapsed(AppConfig::instance()
+                     .value(QStringLiteral("appearance/memberListCollapsed"), false)
+                     .toBool());
+}
+
+void MemberListPanel::setGuild(const QString &guildId)
+{
+    if (m_guildId == guildId)
+        return;
+
+    m_guildId = guildId;
+
+    // A direct message has no members to list, so the whole panel goes rather
+    // than standing there empty.
+    setVisible(!guildId.isEmpty());
+    rebuild();
+}
+
+void MemberListPanel::setCollapsed(bool collapsed)
+{
+    m_collapsed = collapsed;
+    m_body->setVisible(!collapsed);
+    setFixedWidth(collapsed ? StripWidth : PanelWidth);
+
+    m_toggle->setText(collapsed ? QStringLiteral("‹") : QStringLiteral("Members  ›"));
+    m_toggle->setToolTip(collapsed ? QStringLiteral("Show the member list")
+                                   : QStringLiteral("Hide the member list"));
+
+    AppConfig::instance().setValue(QStringLiteral("appearance/memberListCollapsed"), collapsed);
+    emit collapsedChanged(collapsed);
+}
+
+void MemberListPanel::refresh()
+{
+    rebuild();
+}
+
+void MemberListPanel::rebuild()
+{
+    if (m_guildId.isEmpty() || m_collapsed) {
+        // Nothing is drawn while folded away. The list is rebuilt when it
+        // comes back, so there is no point keeping it up to date in the dark.
+        return;
+    }
+
+    const MemberList list = m_store->memberList(m_guildId);
+    const GuildInfo guild = m_store->guild(m_guildId);
+
+    m_counts->setText(
+        QStringLiteral("<span style='color:%1'>●</span> %2 online "
+                       "<span style='color:%3'>· %4 members</span>")
+            .arg(QLatin1String(Theme::Green))
+            .arg(list.onlineCount)
+            .arg(QLatin1String(Theme::TextFaint))
+            .arg(list.memberCount));
+
+    // Keeping the scroll position. This rebuilds whenever anyone's status
+    // changes, and a list that jumps back to the top every few seconds is
+    // unusable.
+    const int scroll = m_list->verticalScrollBar() ? m_list->verticalScrollBar()->value() : 0;
+
+    m_list->setUpdatesEnabled(false);
+    m_list->clear();
+
+    for (const MemberRow &row : list.rows) {
+        auto *item = new QListWidgetItem(m_list);
+
+        if (row.heading) {
+            item->setData(SingularityRoles::Heading, true);
+            item->setText(headingName(row.groupId, guild, row.groupCount));
+            item->setFlags(Qt::NoItemFlags);
+            continue;
+        }
+
+        const UserInfo info = m_store->user(row.userId);
+        const QString name = row.nickname.isEmpty() ? info.displayName() : row.nickname;
+
+        item->setData(SingularityRoles::Id, row.userId);
+        item->setText(name);
+        item->setData(SingularityRoles::Status, m_store->presenceBubble(row.userId));
+
+        // What they are doing, under the name.
+        item->setData(SingularityRoles::Subtitle, doingNow(*m_store, row.userId));
+
+        // The colour their top role gives them. Zero means the role sets no
+        // colour, which is different from black.
+        const RoleInfo role = guild.roles.value(row.colourRoleId);
+        if (role.hasColour())
+            item->setData(SingularityRoles::NameColour, QColor(QRgb(role.colour)));
+
+        const QUrl url = MediaCache::avatarUrl(row.userId, info.avatarHash, 64);
+        const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
+        item->setIcon(picture.isNull() ? QIcon(MediaCache::initialsAvatar(name, 32))
+                                       : QIcon(MediaCache::circular(picture, 32)));
+    }
+
+    m_list->setUpdatesEnabled(true);
+    if (m_list->verticalScrollBar())
+        m_list->verticalScrollBar()->setValue(scroll);
+}

@@ -407,21 +407,44 @@ void MessageStore::ingestReadySupplemental(const QJsonObject &payload)
 
 void MessageStore::ingestMemberListUpdate(const QJsonObject &payload)
 {
+    const QString guildId = payload.value(QStringLiteral("guild_id")).toString();
+    if (guildId.isEmpty())
+        return;
+
     int learned = 0;
+    MemberList &list = m_memberLists[guildId];
+
+    // These two are the server's own totals and are not the number of rows:
+    // only the first hundred rows are ever asked for, so a large server sends
+    // a hundred people and a member count in the thousands.
+    if (payload.contains(QStringLiteral("online_count")))
+        list.onlineCount = payload.value(QStringLiteral("online_count")).toInt();
+    if (payload.contains(QStringLiteral("member_count")))
+        list.memberCount = payload.value(QStringLiteral("member_count")).toInt();
 
     // The payload is a list of edits to a list. Each edit carries items that
     // are either a group heading or a member, and a member brings a user and
     // their status with it.
-    const auto readItem = [this, &learned](const QJsonValue &value) {
+    const auto readItem = [this, &learned](const QJsonValue &value) -> MemberRow {
         const QJsonObject item = value.toObject();
+
+        const QJsonObject group = item.value(QStringLiteral("group")).toObject();
+        if (!group.isEmpty()) {
+            MemberRow row;
+            row.heading = true;
+            row.groupId = group.value(QStringLiteral("id")).toString();
+            row.groupCount = group.value(QStringLiteral("count")).toInt();
+            return row;
+        }
+
         const QJsonObject member = item.value(QStringLiteral("member")).toObject();
         if (member.isEmpty())
-            return;   // a group heading such as "Online" or a role name
+            return {};
 
         const QJsonObject user = member.value(QStringLiteral("user")).toObject();
         const QString userId = user.value(QStringLiteral("id")).toString();
         if (userId.isEmpty())
-            return;
+            return {};
 
         rememberUser(user);
 
@@ -430,26 +453,83 @@ void MessageStore::ingestMemberListUpdate(const QJsonObject &payload)
             setPresence(userId, presence);
             ++learned;
         }
+
+        MemberRow row;
+        row.userId = userId;
+        row.nickname = member.value(QStringLiteral("nick")).toString();
+
+        // Which role decides their colour is not sent, only the roles they
+        // hold. Discord's rule is the highest-ranked role that sets one, and
+        // the ranking lives on the guild - so the ids are kept and the answer
+        // worked out when it is drawn, where the guild is to hand.
+        const QJsonArray roles = member.value(QStringLiteral("roles")).toArray();
+        if (!roles.isEmpty())
+            row.colourRoleId = roles.first().toString();
+
+        return row;
     };
 
     const QJsonArray ops = payload.value(QStringLiteral("ops")).toArray();
     for (const QJsonValue &opValue : ops) {
         const QJsonObject op = opValue.toObject();
+        const QString kind = op.value(QStringLiteral("op")).toString();
 
-        // SYNC brings a whole range, INSERT and UPDATE bring a single row.
-        const QJsonArray items = op.value(QStringLiteral("items")).toArray();
-        for (const QJsonValue &item : items)
-            readItem(item);
+        if (kind == QLatin1String("SYNC")) {
+            // A whole range at once. Only one range is ever asked for, so
+            // this is the list.
+            const QJsonArray items = op.value(QStringLiteral("items")).toArray();
+            QList<MemberRow> rows;
+            rows.reserve(items.size());
+            for (const QJsonValue &item : items) {
+                const MemberRow row = readItem(item);
+                if (row.heading || !row.userId.isEmpty())
+                    rows.append(row);
+            }
+            list.rows = rows;
+            continue;
+        }
 
-        if (op.contains(QStringLiteral("item")))
-            readItem(op.value(QStringLiteral("item")));
+        // The single-row edits. Discord numbers them against the list as it
+        // believes we hold it, so an index past the end is not an error - it
+        // means our copy is short, and appending is the closest honest answer.
+        const int index = op.value(QStringLiteral("index")).toInt(-1);
+
+        if (kind == QLatin1String("DELETE")) {
+            if (index >= 0 && index < list.rows.size())
+                list.rows.removeAt(index);
+            continue;
+        }
+
+        if (kind == QLatin1String("INSERT") || kind == QLatin1String("UPDATE")) {
+            const MemberRow row = readItem(op.value(QStringLiteral("item")));
+            if (!row.heading && row.userId.isEmpty())
+                continue;
+
+            if (kind == QLatin1String("UPDATE") && index >= 0 && index < list.rows.size())
+                list.rows[index] = row;
+            else if (index >= 0 && index <= list.rows.size())
+                list.rows.insert(index, row);
+            else
+                list.rows.append(row);
+        }
     }
 
     if (learned > 0) {
-        wlog(QStringLiteral("store"), QStringLiteral("member list: learned %1 statuses in guild %2")
-                                          .arg(learned)
-                                          .arg(payload.value(QStringLiteral("guild_id")).toString()));
+        wlog(QStringLiteral("store"),
+             QStringLiteral("member list: %1 rows, %2 of %3 online, learned %4 statuses in guild %5")
+                 .arg(list.rows.size())
+                 .arg(list.onlineCount)
+                 .arg(list.memberCount)
+                 .arg(learned)
+                 .arg(guildId));
     }
+
+    emit memberListChanged(guildId);
+}
+
+MemberList MessageStore::memberList(const QString &guildId) const
+{
+    return m_memberLists.value(guildId);
 }
 
 void MessageStore::ingestGuild(const QJsonObject &rawGuild)

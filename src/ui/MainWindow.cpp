@@ -9,6 +9,7 @@
 #include "ui/ImageViewer.h"
 #include "ui/AuroraWidget.h"
 #include "core/ScreenShare.h"
+#include "ui/MemberListPanel.h"
 #include "ui/ShareDialog.h"
 #include "ui/UpdateFlow.h"
 
@@ -782,6 +783,15 @@ void MainWindow::buildUi()
     chatLayout->addWidget(m_chatSplitter);
 
     rootLayout->addWidget(chatCard, 1);
+
+    // The people, down the right. Outside the chat card rather than inside it
+    // so it keeps its own background and full height, the way the sidebar on
+    // the left does.
+    m_members = new MemberListPanel(m_store, m_aurora);
+    connect(m_members, &MemberListPanel::profileRequested, this,
+            [this](const QString &userId) { showProfile(userId, QCursor::pos()); });
+    rootLayout->addWidget(m_members);
+
     shell->addLayout(rootLayout, 1);
 
     auto *statusChip = new QWidget(m_aurora);
@@ -1874,6 +1884,11 @@ void MainWindow::onGuildSelected(int row)
     }
 
     m_currentGuildId = item->data(IdRole).toString();
+
+    // A direct message has no members to list, and setGuild hides the panel
+    // for that case rather than leaving an empty column standing there.
+    if (m_members)
+        m_members->setGuild(m_currentGuildId);
 
     if (!m_currentGuildId.isEmpty()) {
         // Discord only sends member statuses when asked for a specific

@@ -410,6 +410,103 @@ FriendDelegate::Button FriendDelegate::buttonAt(const QRect &row, const QPoint &
     return Button::None;
 }
 
+// ---------------------------------------------------------------------------
+// Member list
+// ---------------------------------------------------------------------------
+
+namespace {
+constexpr int MemberAvatar = 32;
+}
+
+QSize MemberDelegate::sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const
+{
+    Q_UNUSED(option)
+
+    // A heading gets room above it as well as below, which is what separates
+    // one group from the next without drawing a line between them.
+    if (index.data(SingularityRoles::Heading).toBool())
+        return QSize(0, index.row() == 0 ? 26 : 34);
+
+    return QSize(0, 42);
+}
+
+void MemberDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option,
+                           const QModelIndex &index) const
+{
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, true);
+    painter->setRenderHint(QPainter::SmoothPixmapTransform, true);
+
+    const QRect cell = option.rect;
+
+    if (index.data(SingularityRoles::Heading).toBool()) {
+        QFont font = option.font;
+        font.setPixelSize(11);
+        font.setWeight(QFont::Bold);
+        font.setLetterSpacing(QFont::AbsoluteSpacing, 0.6);
+        painter->setFont(font);
+        painter->setPen(QColor(Theme::TextFaint));
+        painter->drawText(QRect(cell.left() + 14, cell.bottom() - 18, cell.width() - 24, 16),
+                          Qt::AlignLeft | Qt::AlignVCenter,
+                          index.data(Qt::DisplayRole).toString().toUpper());
+        painter->restore();
+        return;
+    }
+
+    const qreal hoverAmount = progress(m_hover, index.row(), option.state & QStyle::State_MouseOver);
+
+    if (hoverAmount > 0.01) {
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(withAlpha(Theme::SurfaceHover, hoverAmount * 0.9));
+        painter->drawRoundedRect(QRectF(cell).adjusted(6, 2, -6, -2), 7, 7);
+    }
+
+    const QRect avatarRect(cell.left() + 14, cell.center().y() - MemberAvatar / 2,
+                           MemberAvatar, MemberAvatar);
+    const QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
+    if (!icon.isNull())
+        icon.paint(painter, avatarRect, Qt::AlignCenter);
+
+    drawStatusBubble(painter, avatarRect, index.data(SingularityRoles::Status).toString(),
+                     QColor(Theme::SurfaceSidebar));
+
+    const QString subtitle = index.data(SingularityRoles::Subtitle).toString();
+    const int textLeft = avatarRect.right() + 10;
+    const int textWidth = qMax(30, cell.right() - textLeft - 12);
+
+    QFont nameFont = option.font;
+    nameFont.setPixelSize(13.5);
+    nameFont.setWeight(QFont::DemiBold);
+    painter->setFont(nameFont);
+
+    // A role colour when they have one, ordinary text when they do not. This
+    // is the one place in the client where a colour is not the theme's to
+    // choose: it is the server's, and people recognise each other by it.
+    const QVariant colour = index.data(SingularityRoles::NameColour);
+    painter->setPen(colour.isValid() && colour.value<QColor>().isValid()
+                        ? colour.value<QColor>()
+                        : QColor(Theme::TextMuted));
+
+    const QString name = index.data(Qt::DisplayRole).toString();
+    const QRect nameBox = subtitle.isEmpty()
+        ? QRect(textLeft, cell.top(), textWidth, cell.height())
+        : QRect(textLeft, cell.top() + 5, textWidth, 17);
+    painter->drawText(nameBox, Qt::AlignLeft | Qt::AlignVCenter,
+                      painter->fontMetrics().elidedText(name, Qt::ElideRight, textWidth));
+
+    if (!subtitle.isEmpty()) {
+        QFont small = option.font;
+        small.setPixelSize(11);
+        painter->setFont(small);
+        painter->setPen(QColor(Theme::TextFaint));
+        painter->drawText(QRect(textLeft, cell.top() + 21, textWidth, 15),
+                          Qt::AlignLeft | Qt::AlignVCenter,
+                          painter->fontMetrics().elidedText(subtitle, Qt::ElideRight, textWidth));
+    }
+
+    painter->restore();
+}
+
 void FriendDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option,
                            const QModelIndex &index) const
 {
