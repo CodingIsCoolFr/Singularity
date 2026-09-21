@@ -2501,8 +2501,17 @@ void MainWindow::pumpPrefetch()
     m_prefetchInFlight = true;
     m_prefetchCurrent = channelId;
 
-    const int limit =
+    // Half of what an opened channel asks for.
+    //
+    // A guess does not need to be as complete as a real request. The window
+    // opens showing forty messages, so fifty covers the opening and the first
+    // scroll, and the rest can be fetched if somebody actually goes looking.
+    // Every message in the reply is parsed on this thread, and doing that for
+    // a hundred of them across twenty five channels nobody opened is work
+    // taken from the window while somebody is using it.
+    const int configured =
         AppConfig::instance().value(QStringLiteral("appearance/historyLimit"), HistoryLimit).toInt();
+    const int limit = qMin(configured, 50);
 
     m_rest->fetchMessages(
         channelId, limit,
@@ -2654,15 +2663,26 @@ void MainWindow::renderChannel()
 
     const qint64 laidOutMs = clock.elapsed() - builtMs;
 
-    // Only when it was slow enough to be felt. A line every time a reaction
-    // arrives would bury the one that matters.
-    if (builtMs + laidOutMs > 40) {
+    // Threshold lowered from forty, which was hiding the answer.
+    //
+    // Forty made sense while a redraw cost sixty to two hundred milliseconds.
+    // Now that most are under it, a log full of nothing says only that the
+    // worst case improved - not what the ordinary case costs, which is what a
+    // person actually feels while using the thing. One frame is sixteen
+    // milliseconds, so anything over twelve is worth seeing.
+    const int pictures = m_messageView->takePicturesPrepared();
+    const qint64 pictureMs = m_messageView->takePictureWorkMs();
+
+    if (builtMs + laidOutMs > 12) {
         wlog(QStringLiteral("ui"),
-             QStringLiteral("drew %1 of %2 messages: %3 ms building, %4 ms laying out")
+             QStringLiteral("drew %1 of %2 messages: %3 ms building, %4 ms laying out "
+                            "(%5 of that on %6 pictures)")
                  .arg(messages.size())
                  .arg(all.size())
                  .arg(builtMs)
-                 .arg(laidOutMs));
+                 .arg(laidOutMs)
+                 .arg(pictureMs)
+                 .arg(pictures));
     }
 
     m_renderedCount = messages.size();

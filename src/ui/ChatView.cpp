@@ -5,6 +5,7 @@
 
 #include <QPalette>
 #include <QScrollBar>
+#include <QElapsedTimer>
 #include <QTextDocument>
 #include <QTimer>
 
@@ -121,6 +122,20 @@ bool ChatView::isAllowedImageHost(const QUrl &url)
     return MediaCache::isAllowedHost(url);
 }
 
+qint64 ChatView::takePictureWorkMs()
+{
+    const qint64 ms = m_pictureWorkNs / 1000000;
+    m_pictureWorkNs = 0;
+    return ms;
+}
+
+int ChatView::takePicturesPrepared()
+{
+    const int count = m_picturesPrepared;
+    m_picturesPrepared = 0;
+    return count;
+}
+
 void ChatView::setAnimationsEnabled(bool enabled)
 {
     if (m_animationsEnabled == enabled)
@@ -208,7 +223,12 @@ QPixmap ChatView::prepare(const QUrl &url) const
     if (done != m_prepared.constEnd())
         return done.value();
 
+    QElapsedTimer clock;
+    clock.start();
     const QPixmap ready = scaleForDocument(url, MediaCache::instance().image(url));
+    m_pictureWorkNs += clock.nsecsElapsed();
+    ++m_picturesPrepared;
+
     if (!ready.isNull()) {
         // Counted in bytes, because pixmaps are not all the same size: an
         // avatar is 40 across and a picture in a message is up to 340 by 280,

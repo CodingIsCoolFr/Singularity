@@ -30,6 +30,15 @@ public:
 
     static bool isAllowedImageHost(const QUrl &url);
 
+    // How much of the last layout went on shrinking and rounding pictures,
+    // and how many had to be done from scratch. Reading it clears it.
+    //
+    // Forty messages took 57 ms to lay out where a hundred plain ones take 14,
+    // so the cost is not per message, and guessing which part it is has been
+    // wrong twice already.
+    qint64 takePictureWorkMs();
+    int takePicturesPrepared();
+
 protected:
     QVariant loadResource(int type, const QUrl &name) override;
 
@@ -57,6 +66,9 @@ private:
     // markup - was most of the wait when a channel opened.
     mutable QHash<QString, QPixmap> m_prepared;
     mutable qint64 m_preparedBytes = 0;
+
+    mutable qint64 m_pictureWorkNs = 0;
+    mutable int m_picturesPrepared = 0;
 
     // Pictures that landed since the last redraw. They are handled in one
     // batch, because each one arriving on its own used to lay the whole

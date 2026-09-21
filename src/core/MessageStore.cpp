@@ -3,6 +3,8 @@
 #include "core/AppConfig.h"
 #include "core/Logger.h"
 
+#include <QElapsedTimer>
+
 #include <algorithm>
 
 MessageStore::MessageStore(QObject *parent)
@@ -927,6 +929,15 @@ MessageInfo MessageStore::parseMessage(const QJsonObject &raw)
 
 void MessageStore::setHistory(const QString &channelId, const QJsonArray &rawMessages)
 {
+    // Timed, because this runs on the thread that draws the window.
+    //
+    // Fetching ahead means this happens for channels nobody opened - twenty
+    // five of them in the first half minute of one session - and every one of
+    // those is time the window is not responding. If that is expensive it has
+    // to be visible, not inferred.
+    QElapsedTimer clock;
+    clock.start();
+
     QList<MessageInfo> list;
     list.reserve(rawMessages.size());
     // Discord returns newest first. The view wants oldest first.
@@ -943,6 +954,13 @@ void MessageStore::setHistory(const QString &channelId, const QJsonArray &rawMes
     m_historyLoaded.insert(channelId, true);
     m_historyOrder.removeOne(channelId);
     m_historyOrder.append(channelId);
+
+    const qint64 parsedMs = clock.elapsed();
+    if (parsedMs > 8) {
+        wlog(QStringLiteral("store"),
+             QStringLiteral("parsed %1 messages in %2 ms").arg(list.size()).arg(parsedMs));
+    }
+
     emit channelHistoryChanged(channelId);
 }
 
