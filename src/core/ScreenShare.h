@@ -82,6 +82,7 @@ private:
 
     int m_fps = 30;
     bool m_running = false;
+    bool m_saidFirst = false;
     int m_encodeFailures = 0;
 };
 

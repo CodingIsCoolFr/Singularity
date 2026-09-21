@@ -25,6 +25,22 @@ constexpr qint64 PreviewEveryMs = 500;
 ScreenShareWorker::ScreenShareWorker(QObject *parent)
     : QObject(parent)
 {
+    // The timer has to belong to this object, and that is not a tidiness
+    // point - it is the whole reason screen sharing never sent a single
+    // packet.
+    //
+    // This object is built on the main thread and then moved to its own.
+    // moveToThread carries an object's *children* with it, and a plain member
+    // is not a child, so the timer stayed behind. Qt refuses to start a timer
+    // from a thread it does not live on: it prints a warning and does
+    // nothing. Every other sign was healthy - the encoder opened, the capture
+    // opened, the connection was up - because the one thing that never
+    // happened was the tick that does the work.
+    //
+    // Making it a child costs nothing and is safe: a member is destroyed
+    // before the QObject base runs, so it removes itself from the child list
+    // before anything tries to delete it a second time.
+    m_timer.setParent(this);
     m_timer.setTimerType(Qt::PreciseTimer);
     connect(&m_timer, &QTimer::timeout, this, &ScreenShareWorker::tick);
 }
@@ -72,6 +88,7 @@ void ScreenShareWorker::begin(const QString &monitorId, int width, int height, i
     m_running = true;
     m_encodeFailures = 0;
     m_lastSentMs = 0;
+    m_saidFirst = false;
     m_since.start();
 
     emit started(m_encoder.width(), m_encoder.height(), m_encoder.name(), m_encoder.isHardware());
@@ -176,6 +193,20 @@ void ScreenShareWorker::tick()
     if (units.isEmpty())
         return;
 
+    // Said once, the first time a picture actually leaves here.
+    //
+    // Everything up to this point could be healthy while nothing was being
+    // produced at all, which is exactly what happened: the encoder and the
+    // capture both reported themselves ready and the timer driving them had
+    // never ticked. One line closes that gap.
+    if (!m_saidFirst) {
+        m_saidFirst = true;
+        wlog(QStringLiteral("share"),
+             QStringLiteral("first picture encoded: %1 pieces, %2")
+                 .arg(units.size())
+                 .arg(keyframe ? QStringLiteral("keyframe") : QStringLiteral("not a keyframe")));
+    }
+
     m_lastSentMs = now;
     emit picture(units, keyframe);
 }
@@ -187,6 +218,12 @@ void ScreenShareWorker::tick()
 ScreenShare::ScreenShare(QObject *parent)
     : QObject(parent)
 {
+    // Pictures cross a thread boundary, and a queued signal carrying a type
+    // Qt has not been told about is dropped with a warning rather than
+    // delivered. Registering it costs nothing and removes one more way for
+    // this to fail without saying so.
+    qRegisterMetaType<QList<QByteArray>>("QList<QByteArray>");
+
     m_worker = new ScreenShareWorker;
     m_worker->moveToThread(&m_thread);
 
