@@ -97,6 +97,9 @@ private:
     // Redraws one message in place. False means it could not be done safely
     // and the whole channel has to be drawn again.
     bool replaceMessageInView(const QString &messageId);
+
+    // Writes what the program is holding on to into the log.
+    void reportMemory();
     QString messageHtml(const MessageInfo &message, bool grouped);
     QString renderContent(const QString &raw) const;
     QString stickersHtml(const MessageInfo &message) const;
@@ -319,6 +322,7 @@ private:
     QStringList m_prefetchQueue;
     QSet<QString> m_prefetchAsked;
     QTimer m_prefetchTimer;
+    QTimer m_memoryTimer;
 
     // Which channel is being fetched ahead right now. Clicking that same
     // channel must wait for the request already on its way rather than

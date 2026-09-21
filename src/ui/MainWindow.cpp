@@ -59,6 +59,12 @@
 #include <QStatusBar>
 #include <QTextCursor>
 #include <QTextDocument>
+
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <psapi.h>
+#endif
+
 #include <QTextEdit>
 #include <QTextFrame>
 #include <QUrl>
@@ -970,6 +976,15 @@ QWidget *MainWindow::buildSidebar(QWidget *parent)
     m_prefetchTimer.setSingleShot(true);
     m_prefetchTimer.setInterval(220);
     connect(&m_prefetchTimer, &QTimer::timeout, this, &MainWindow::pumpPrefetch);
+
+    // What the program is holding, written down every minute.
+    //
+    // Memory was the one thing the log never said anything about, so the only
+    // evidence was a number in the task manager with nothing to attribute it
+    // to. Now the log names what is holding it.
+    m_memoryTimer.setInterval(60000);
+    connect(&m_memoryTimer, &QTimer::timeout, this, &MainWindow::reportMemory);
+    m_memoryTimer.start();
 
     connect(m_channelDelegate, &ChannelDelegate::joinVoiceRequested, this, &MainWindow::joinVoice);
     connect(m_channelDelegate, &ChannelDelegate::leaveVoiceRequested, this,
@@ -2253,6 +2268,11 @@ void MainWindow::openChannel(const QString &channelId)
     m_hasLastRendered = false;
     setTypingHint(QString());
 
+    // Let go of channels nobody has been near for a while. Fetching ahead
+    // fills the store with channels that were never opened, and without this
+    // every one of them stayed for the rest of the session.
+    m_store->trimHistories(channelId);
+
     // Anything the last channel had in flight belongs to the last channel.
     //
     // A history fetch that has not come back yet carries an anchor saying
@@ -2524,6 +2544,23 @@ void MainWindow::pumpPrefetch()
             // ordinary case in a large server.
             m_prefetchTimer.start();
         });
+}
+
+void MainWindow::reportMemory()
+{
+    // The working set is what the task manager shows, so the log and the task
+    // manager can be compared directly.
+    qint64 workingSetMb = 0;
+#ifdef Q_OS_WIN
+    PROCESS_MEMORY_COUNTERS counters{};
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters)))
+        workingSetMb = qint64(counters.WorkingSetSize) / (1024 * 1024);
+#endif
+
+    wlog(QStringLiteral("mem"),
+         QStringLiteral("%1 MB in use; media: %2; store: %3")
+             .arg(workingSetMb)
+             .arg(MediaCache::instance().summary(), m_store->memorySummary()));
 }
 
 void MainWindow::scheduleRender()

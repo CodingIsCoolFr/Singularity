@@ -56,6 +56,7 @@ private:
     // each time. A hundred messages is a hundred of those, and that - not the
     // markup - was most of the wait when a channel opened.
     mutable QHash<QString, QPixmap> m_prepared;
+    mutable qint64 m_preparedBytes = 0;
 
     // Pictures that landed since the last redraw. They are handled in one
     // batch, because each one arriving on its own used to lay the whole

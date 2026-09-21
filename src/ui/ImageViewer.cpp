@@ -291,7 +291,10 @@ void ImageViewer::showImage(const QUrl &url)
     m_nameLabel->setText(name.isEmpty() ? url.toString() : name);
 
     // Asking starts the download if it is not already here.
-    const QImage still = MediaCache::instance().image(url);
+    //
+    // Full quality, decoded for this window only. The message list is shown a
+    // shrunk copy, because that is all it draws.
+    const QImage still = MediaCache::instance().fullImage(url);
     m_canvas->setImage(still, MediaCache::instance().animationData(url));
     updateZoomLabel();
 
@@ -318,7 +321,8 @@ void ImageViewer::updateZoomLabel()
 void ImageViewer::saveAs()
 {
     const QByteArray animation = MediaCache::instance().animationData(m_url);
-    const QImage still = MediaCache::instance().image(m_url);
+    // Saving hands over what arrived, not the copy made for the message list.
+    const QImage still = MediaCache::instance().fullImage(m_url);
     if (animation.isEmpty() && still.isNull())
         return;
 

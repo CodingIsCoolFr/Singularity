@@ -26,7 +26,17 @@ public:
 
     // Empty while the download is still running. This is the first frame only,
     // which is all a still picture needs.
+    //
+    // Large pictures come back shrunk to something the message column can
+    // actually show. The message list draws them at 340 across; keeping a
+    // phone photo at full size costs eight megabytes to display a thumbnail,
+    // and two hundred and fifty of those is where 2.7 GB came from.
     QImage image(const QUrl &url);
+
+    // Full quality, for the viewer that opens when a picture is clicked.
+    // Decoded on demand from the bytes exactly as they arrived, so nothing is
+    // held at full size while it is only being shown as a thumbnail.
+    QImage fullImage(const QUrl &url);
 
     // The bytes exactly as they arrived, kept for anything that moves so the
     // caller can hand them to QMovie. Empty for still pictures.
@@ -34,6 +44,10 @@ public:
 
     bool has(const QUrl &url) const;
     static bool isAllowedHost(const QUrl &url);
+
+    // One line for the log, so what the cache is holding is a fact rather
+    // than something to be worked out from a task manager.
+    QString summary() const;
 
     // Picture helpers.
     static QPixmap circular(const QImage &source, int size);
@@ -60,9 +74,16 @@ private:
     QNetworkAccessManager m_network;
     void touch(const QString &key);
     void evictIfNeeded();
+    void forget(const QString &key);
 
     QHash<QString, QImage> m_images;
-    QHash<QString, QByteArray> m_animations;
+
+    // The bytes exactly as they arrived, for anything that moves and for
+    // anything that had to be shrunk. Compressed, so a photo sits here at a
+    // few hundred kilobytes rather than the eight megabytes it decodes to.
+    QHash<QString, QByteArray> m_originals;
+    QSet<QString> m_animated;
+
     QSet<QString> m_inFlight;
     QSet<QString> m_failed;
 
@@ -70,4 +91,14 @@ private:
     // pictures instead of wiping every one, which used to make avatars all
     // over the window fall back to grey circles at once.
     QList<QString> m_order;
+
+    // Counted in bytes, not in pictures.
+    //
+    // The limit used to be a number of pictures, and it exempted avatars and
+    // emoji entirely. Both were wrong. A picture is not a unit of memory - two
+    // hundred and fifty of them is thirty megabytes or three gigabytes
+    // depending on what somebody posted - and an exemption with no ceiling is
+    // not a cache, it is a leak with a polite name.
+    qint64 m_imageBytes = 0;
+    qint64 m_originalBytes = 0;
 };

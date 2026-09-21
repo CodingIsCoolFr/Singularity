@@ -41,6 +41,13 @@ ChatView::ChatView(QWidget *parent)
 {
     setOpenExternalLinks(true);
     setFrameShape(QFrame::NoFrame);
+
+    // Nobody can type in here, so nobody can undo anything either - but Qt
+    // does not know that, and it was keeping a record of every change so it
+    // could be undone. Every channel opened, every reaction, every picture
+    // that landed, all of it held for the life of the window. There is nothing
+    // to undo, so there is nothing to keep.
+    document()->setUndoRedoEnabled(false);
     viewport()->setAutoFillBackground(false);
     QPalette pal = palette();
     pal.setColor(QPalette::Base, Qt::transparent);
@@ -66,7 +73,12 @@ ChatView::ChatView(QWidget *parent)
             return;
 
         // The old pixmap, if any, was drawn from nothing.
-        m_prepared.remove(key);
+        // Whatever was prepared before was made from nothing.
+        const auto stale = m_prepared.constFind(key);
+        if (stale != m_prepared.constEnd()) {
+            m_preparedBytes -= qint64(stale.value().width()) * stale.value().height() * 4;
+            m_prepared.erase(stale);
+        }
         m_arrived.insert(key);
 
         if (!m_arrivalTimer.isActive())
@@ -132,6 +144,7 @@ void ChatView::clearImageCache()
     m_wanted.clear();
     m_frameSize.clear();
     m_prepared.clear();
+    m_preparedBytes = 0;
     m_arrived.clear();
     m_arrivalTimer.stop();
     qDeleteAll(m_animations);
@@ -197,11 +210,17 @@ QPixmap ChatView::prepare(const QUrl &url) const
 
     const QPixmap ready = scaleForDocument(url, MediaCache::instance().image(url));
     if (!ready.isNull()) {
-        // Flat ceiling. A long session through many channels would otherwise
-        // hold every picture ever shown.
-        if (m_prepared.size() > 600)
-            m_prepared.clear();
+        // Counted in bytes, because pixmaps are not all the same size: an
+        // avatar is 40 across and a picture in a message is up to 340 by 280,
+        // which is fifty times the memory. A count would have meant either
+        // room for almost no pictures or room for far too much.
+        m_preparedBytes += qint64(ready.width()) * ready.height() * 4;
         m_prepared.insert(key, ready);
+
+        if (m_preparedBytes > 24 * 1024 * 1024) {
+            m_prepared.clear();
+            m_preparedBytes = 0;
+        }
     }
     return ready;
 }

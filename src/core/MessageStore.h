@@ -288,6 +288,17 @@ public:
     QList<MessageInfo> messages(const QString &channelId) const;
     bool hasHistory(const QString &channelId) const;
 
+    // One line for the log: how much conversation is being held on to.
+    QString memorySummary() const;
+
+    // Drop the history of channels nobody has looked at for a while.
+    //
+    // Every channel opened, and every channel fetched ahead of a click, left
+    // its messages here for the rest of the session. Fetching ahead made that
+    // worse on purpose - six channels per server, whether or not any of them
+    // were ever opened - so the store had to learn to let go.
+    void trimHistories(const QString &keepChannelId);
+
     // Used for CHANNEL_CREATE, so a chat opened from a profile card shows up.
     void ingestChannelObject(const QJsonObject &rawChannel);
 
@@ -381,6 +392,9 @@ private:
     QList<QString> m_directOrder;
     QHash<QString, QList<MessageInfo>> m_messages;
     QHash<QString, bool> m_historyLoaded;
+
+    // Channel ids, least recently touched first.
+    QList<QString> m_historyOrder;
     QHash<QString, UserInfo> m_users;
     QHash<QString, PresenceInfo> m_presences;
     QHash<QString, QDateTime> m_lastSeenActive;

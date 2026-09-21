@@ -941,6 +941,8 @@ void MessageStore::setHistory(const QString &channelId, const QJsonArray &rawMes
 
     m_messages.insert(channelId, list);
     m_historyLoaded.insert(channelId, true);
+    m_historyOrder.removeOne(channelId);
+    m_historyOrder.append(channelId);
     emit channelHistoryChanged(channelId);
 }
 
@@ -1119,6 +1121,44 @@ void MessageStore::updateMessage(const QJsonObject &rawMessage)
         item.edited = true;
         emit messageChanged(channelId, messageId);
         return;
+    }
+}
+
+QString MessageStore::memorySummary() const
+{
+    int messages = 0;
+    for (auto it = m_messages.constBegin(); it != m_messages.constEnd(); ++it)
+        messages += it.value().size();
+
+    return QStringLiteral("%1 channels holding %2 messages, %3 users known")
+        .arg(m_messages.size())
+        .arg(messages)
+        .arg(m_users.size());
+}
+
+void MessageStore::trimHistories(const QString &keepChannelId)
+{
+    // Enough for every channel somebody is actually moving between, and for
+    // everything fetched ahead in the server they are in. Well past that, a
+    // channel nobody has opened in a long while can be fetched again in the
+    // third of a second it took the first time.
+    constexpr int KeepChannels = 24;
+
+    while (m_messages.size() > KeepChannels && !m_historyOrder.isEmpty()) {
+        const QString oldest = m_historyOrder.constFirst();
+        m_historyOrder.removeFirst();
+
+        // Never the one on screen.
+        if (oldest == keepChannelId) {
+            m_historyOrder.append(oldest);
+            // Everything else was already tried; stop rather than spin.
+            if (m_historyOrder.size() <= 1)
+                break;
+            continue;
+        }
+
+        m_messages.remove(oldest);
+        m_historyLoaded.remove(oldest);
     }
 }
 

@@ -21,8 +21,23 @@ const QStringList kAllowedSuffixes{
     QStringLiteral(".discordapp.net"),
 };
 
-// Counts only large pictures. Avatars, icons and emoji are never evicted.
-constexpr int MaxCachedImages = 250;
+// What the cache is allowed to hold, in bytes.
+//
+// Decoded pictures are what memory is actually spent on: width times height
+// times four, whatever the file on disk weighed. A 4K screenshot is 33 MB the
+// moment it is decoded, and the old limit of "250 pictures" let two hundred
+// and fifty of those sit in memory at once.
+constexpr qint64 MaxImageBytes = 96 * 1024 * 1024;
+constexpr qint64 MaxOriginalBytes = 48 * 1024 * 1024;
+
+// Nothing kept for drawing is larger than this on its long edge.
+//
+// The message column shows pictures at 340 across, and the member list and
+// message list show avatars at 40. Storing more than this and then shrinking
+// it on every repaint is paying twice for something nobody sees. The full
+// quality version is still available to the viewer, decoded from the original
+// bytes when a picture is actually opened.
+constexpr int StoreLongEdge = 640;
 
 // The circle drawn behind someone's initials when they have no picture.
 //
@@ -64,7 +79,35 @@ bool MediaCache::has(const QUrl &url) const
 
 QByteArray MediaCache::animationData(const QUrl &url) const
 {
-    return m_animations.value(url.toString());
+    const QString key = url.toString();
+    if (!m_animated.contains(key))
+        return {};
+    return m_originals.value(key);
+}
+
+QImage MediaCache::fullImage(const QUrl &url)
+{
+    const QString key = url.toString();
+
+    // Decoded here and handed straight to the caller, never stored. The viewer
+    // holds it for as long as it is open and it goes when the window closes.
+    const auto original = m_originals.constFind(key);
+    if (original != m_originals.constEnd()) {
+        QImage picture;
+        if (picture.loadFromData(original.value()))
+            return picture;
+    }
+
+    return image(url);
+}
+
+QString MediaCache::summary() const
+{
+    return QStringLiteral("%1 pictures using %2 MB, %3 originals using %4 MB")
+        .arg(m_images.size())
+        .arg(m_imageBytes / (1024 * 1024))
+        .arg(m_originals.size())
+        .arg(m_originalBytes / (1024 * 1024));
 }
 
 void MediaCache::touch(const QString &key)
@@ -73,34 +116,49 @@ void MediaCache::touch(const QString &key)
     m_order.append(key);
 }
 
+void MediaCache::forget(const QString &key)
+{
+    const auto picture = m_images.constFind(key);
+    if (picture != m_images.constEnd()) {
+        m_imageBytes -= picture.value().sizeInBytes();
+        m_images.erase(picture);
+    }
+
+    const auto original = m_originals.constFind(key);
+    if (original != m_originals.constEnd()) {
+        m_originalBytes -= original.value().size();
+        m_originals.erase(original);
+    }
+
+    m_animated.remove(key);
+}
+
 void MediaCache::evictIfNeeded()
 {
-    // Avatars and server icons are tiny and are on screen constantly, so they
-    // are kept out of the count. Only the big pictures are worth dropping.
-    const auto isSmall = [](const QString &key) {
-        return key.contains(QLatin1String("/avatars/")) || key.contains(QLatin1String("/icons/"))
-            || key.contains(QLatin1String("/embed/avatars/")) || key.contains(QLatin1String("/emojis/"));
-    };
-
-    int large = 0;
-    for (auto it = m_images.constBegin(); it != m_images.constEnd(); ++it) {
-        if (!isSmall(it.key()))
-            ++large;
-    }
-    if (large <= MaxCachedImages)
-        return;
-
-    // Drop the least recently used large pictures until back under the limit.
-    for (int i = 0; i < m_order.size() && large > MaxCachedImages;) {
+    // Oldest first, and nothing is exempt.
+    //
+    // Avatars and emoji used to be exempt on the grounds that they are small
+    // and always on screen. They are small, but a large server has thousands
+    // of distinct faces, and an exemption with no ceiling means the cache only
+    // ever grows. The budget is large enough that faces on screen are not
+    // going anywhere; it is the pictures nobody has looked at for a while that
+    // go first, which is what least recently used means.
+    int i = 0;
+    while (i < m_order.size() && (m_imageBytes > MaxImageBytes || m_originalBytes > MaxOriginalBytes)) {
         const QString key = m_order.at(i);
-        if (isSmall(key) || !m_images.contains(key)) {
-            ++i;
+
+        // Leave the most recent alone. Dropping what is on screen right now
+        // would only make it be fetched again immediately.
+        if (m_order.size() - i <= 64)
+            break;
+
+        if (!m_images.contains(key) && !m_originals.contains(key)) {
+            m_order.removeAt(i);
             continue;
         }
-        m_images.remove(key);
-        m_animations.remove(key);
+
+        forget(key);
         m_order.removeAt(i);
-        --large;
     }
 }
 
@@ -212,20 +270,46 @@ void MediaCache::fetch(const QUrl &url)
             return;
         }
 
-        m_images.insert(key, picture);
-        touch(key);
-        evictIfNeeded();
-
-        // Keep the raw bytes only for things that move. Everything else would
-        // just double the memory for no gain.
+        bool moves = false;
         {
             QBuffer buffer;
             buffer.setData(payload);
             buffer.open(QIODevice::ReadOnly);
             QImageReader reader(&buffer);
-            if (reader.supportsAnimation() && reader.imageCount() > 1)
-                m_animations.insert(key, payload);
+            moves = reader.supportsAnimation() && reader.imageCount() > 1;
         }
+
+        // Shrunk here, once, rather than at full size for ever.
+        //
+        // The old code stored whatever arrived. A photo from a phone is
+        // 4032 by 3024, which is 48 MB of memory to draw a thumbnail 340
+        // across, and it was kept at that size for the rest of the session.
+        const int longEdge = qMax(picture.width(), picture.height());
+        const bool shrank = longEdge > StoreLongEdge;
+        if (shrank) {
+            picture = longEdge == picture.width()
+                ? picture.scaledToWidth(StoreLongEdge, Qt::SmoothTransformation)
+                : picture.scaledToHeight(StoreLongEdge, Qt::SmoothTransformation);
+        }
+
+        forget(key);
+
+        m_images.insert(key, picture);
+        m_imageBytes += picture.sizeInBytes();
+
+        // The bytes as they arrived are kept for two reasons: anything that
+        // moves needs them to play, and anything that was shrunk needs them so
+        // the viewer can still open it at full quality. They are compressed,
+        // so this is a fraction of what holding the decoded picture cost.
+        if (moves || shrank) {
+            m_originals.insert(key, payload);
+            m_originalBytes += payload.size();
+            if (moves)
+                m_animated.insert(key);
+        }
+
+        touch(key);
+        evictIfNeeded();
 
         emit ready(url);
     });
