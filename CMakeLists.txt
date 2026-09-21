@@ -107,6 +107,8 @@ qt_add_executable(Singularity WIN32
     src/ui/RailLayout.cpp
     src/ui/ProfileDialog.h
     src/ui/ProfileDialog.cpp
+    src/ui/ShareDialog.h
+    src/ui/ShareDialog.cpp
     src/ui/MainWindow.h
     src/ui/MainWindow.cpp
 )

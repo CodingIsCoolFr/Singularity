@@ -83,6 +83,20 @@ public:
     void watchStream(const QString &streamKey);
     void stopWatchingStream(const QString &streamKey);
 
+    // Going live ourselves.
+    //
+    // The mirror of watchStream: it asks Discord to make a stream rather than
+    // to join one, and the answer comes back as the same two events. The key
+    // Discord then uses is the one naming us, so from that point on the code
+    // that handles somebody else's stream handles ours as well.
+    void startStream(const QString &guildId, const QString &channelId);
+    void stopStream(const QString &streamKey);
+
+    // Tells Discord nobody can see anything at the moment - a full screen
+    // program took the display, or the window being shared was minimised.
+    // Viewers are shown "paused" rather than a frozen picture.
+    void setStreamPaused(const QString &streamKey, bool paused);
+
     static QString streamKeyFor(const QString &guildId, const QString &channelId,
                                 const QString &userId);
 

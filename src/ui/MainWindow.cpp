@@ -8,6 +8,8 @@
 #include "ui/FriendsPage.h"
 #include "ui/ImageViewer.h"
 #include "ui/AuroraWidget.h"
+#include "core/ScreenShare.h"
+#include "ui/ShareDialog.h"
 #include "ui/UpdateFlow.h"
 
 #include <QProcess>
@@ -328,6 +330,72 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     connect(m_streamVoice, &VoiceConnection::failed, this, [this](const QString &reason) {
         wlog(QStringLiteral("stream"), QStringLiteral("stream connection failed: %1").arg(reason));
         flashStatus(QStringLiteral("Could not watch that stream: %1").arg(reason), 6000);
+    });
+
+    // The third connection, which carries our own shared screen out.
+    //
+    // Viewer-only for the same reason the watching one is: the microphone is
+    // already being carried by the call underneath, and opening a second one
+    // here would send everything twice.
+    m_shareVoice = new VoiceConnection(this);
+    m_shareVoice->setViewerOnly(true);
+
+    m_share = new ScreenShare(this);
+
+    // Capture and encoding run on their own thread and hand finished pictures
+    // back here, where the keys and the socket are.
+    connect(m_share, &ScreenShare::picture, this,
+            [this](const QList<QByteArray> &units, bool) {
+                if (m_shareVoice)
+                    m_shareVoice->sendPicture(units);
+            });
+
+    connect(m_share, &ScreenShare::started, this,
+            [this](int width, int height, const QString &encoder, bool hardware) {
+                wlog(QStringLiteral("share"),
+                     QStringLiteral("encoding with %1 (%2)")
+                         .arg(encoder, hardware ? QStringLiteral("hardware")
+                                                : QStringLiteral("software")));
+                if (m_shareVoice)
+                    m_shareVoice->startSendingVideo(width, height);
+
+                flashStatus(QStringLiteral("You are live — %1x%2, %3")
+                                .arg(width)
+                                .arg(height)
+                                .arg(hardware ? QStringLiteral("hardware encoded")
+                                              : QStringLiteral("software encoded")),
+                            5000);
+                updateVoicePanel();
+            });
+
+    connect(m_share, &ScreenShare::failed, this, [this](const QString &reason) {
+        wlog(QStringLiteral("share"), QStringLiteral("share failed: %1").arg(reason));
+        flashStatus(reason, 7000);
+        stopScreenShare();
+    });
+
+    // A viewer that cannot draw anything asks, and the request arrives on the
+    // socket rather than through any UI.
+    connect(m_shareVoice, &VoiceConnection::keyframeWanted, this, [this]() {
+        if (m_share)
+            m_share->requestKeyframe();
+    });
+
+    // The capture cannot start until there is somewhere to send it.
+    connect(m_shareVoice, &VoiceConnection::stateChanged, this,
+            [this](VoiceConnection::State state) {
+                if (state != VoiceConnection::State::Connected || m_myStreamKey.isEmpty())
+                    return;
+                if (m_share && !m_share->isRunning()) {
+                    m_share->start(m_shareMonitorId, m_shareWidth, m_shareHeight, m_shareFps,
+                                   m_shareBitrate);
+                }
+            });
+
+    connect(m_shareVoice, &VoiceConnection::failed, this, [this](const QString &reason) {
+        wlog(QStringLiteral("share"), QStringLiteral("share connection failed: %1").arg(reason));
+        flashStatus(QStringLiteral("Could not start your screen share: %1").arg(reason), 6000);
+        stopScreenShare();
     });
 
     connect(m_voice, &VoiceConnection::videoAvailable, this,
@@ -928,6 +996,13 @@ QWidget *MainWindow::buildVoicePanel(QWidget *parent)
     });
     buttons->addWidget(m_deafenButton);
 
+    m_shareButton = new QPushButton(QStringLiteral("Share screen"), panel);
+    m_shareButton->setMinimumWidth(92);
+    m_shareButton->setFixedHeight(26);
+    m_shareButton->setToolTip(QStringLiteral("Show your screen to everyone in this call"));
+    connect(m_shareButton, &QPushButton::clicked, this, &MainWindow::startScreenShare);
+    buttons->addWidget(m_shareButton);
+
     auto *leave = new QPushButton(QStringLiteral("Leave"), panel);
     leave->setMinimumWidth(56);
     leave->setFixedHeight(26);
@@ -1323,8 +1398,21 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
     }
 
     if (eventType == QLatin1String("STREAM_CREATE")) {
+        const QString key = data.value(QStringLiteral("stream_key")).toString();
+
+        // The same event answers both "let me watch that" and "let me go
+        // live". Which one it is depends on whose key it carries.
+        if (!m_myStreamKey.isEmpty() && key == m_myStreamKey) {
+            m_myStreamServerId = data.value(QStringLiteral("rtc_server_id")).toString();
+            m_myStreamChannelId = data.value(QStringLiteral("rtc_channel_id")).toString();
+            wlog(QStringLiteral("share"),
+                 QStringLiteral("our stream was accepted, server %1").arg(m_myStreamServerId));
+            tryBeginBroadcast();
+            return;
+        }
+
         // Names the stream and the server that will carry it.
-        if (data.value(QStringLiteral("stream_key")).toString() != m_streamKey)
+        if (key != m_streamKey)
             return;
 
         m_streamServerId = data.value(QStringLiteral("rtc_server_id")).toString();
@@ -1337,8 +1425,19 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
     }
 
     if (eventType == QLatin1String("STREAM_SERVER_UPDATE")) {
+        const QString key = data.value(QStringLiteral("stream_key")).toString();
+
+        if (!m_myStreamKey.isEmpty() && key == m_myStreamKey) {
+            m_myStreamToken = data.value(QStringLiteral("token")).toString();
+            m_myStreamEndpoint = data.value(QStringLiteral("endpoint")).toString();
+            wlog(QStringLiteral("share"),
+                 QStringLiteral("our stream server: %1").arg(m_myStreamEndpoint));
+            tryBeginBroadcast();
+            return;
+        }
+
         // The other half: where that server is, and the password for it.
-        if (data.value(QStringLiteral("stream_key")).toString() != m_streamKey)
+        if (key != m_streamKey)
             return;
 
         m_streamToken = data.value(QStringLiteral("token")).toString();
@@ -1349,7 +1448,16 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
     }
 
     if (eventType == QLatin1String("STREAM_DELETE")) {
-        if (data.value(QStringLiteral("stream_key")).toString() == m_streamKey) {
+        const QString goneKey = data.value(QStringLiteral("stream_key")).toString();
+
+        // Discord ended ours - the call emptied, or it was stopped elsewhere.
+        if (!m_myStreamKey.isEmpty() && goneKey == m_myStreamKey) {
+            wlog(QStringLiteral("share"), QStringLiteral("Discord ended our stream"));
+            stopScreenShare();
+            return;
+        }
+
+        if (goneKey == m_streamKey) {
             const QString reason = data.value(QStringLiteral("reason")).toString();
             wlog(QStringLiteral("stream"),
                  QStringLiteral("the stream ended%1")
@@ -2701,6 +2809,110 @@ void MainWindow::stopWatchingStream()
     updateVoicePanel();
 }
 
+// ---------------------------------------------------------------------------
+// Sharing our own screen
+// ---------------------------------------------------------------------------
+
+void MainWindow::startScreenShare()
+{
+    if (m_voiceChannelId.isEmpty()) {
+        flashStatus(QStringLiteral("Join a voice channel first."), 4000);
+        return;
+    }
+
+    if (!m_myStreamKey.isEmpty()) {
+        stopScreenShare();
+        return;
+    }
+
+    ShareDialog dialog(this);
+    if (!dialog.hasScreens()) {
+        QMessageBox::warning(this, QStringLiteral("Nothing to share"),
+                             QStringLiteral("Windows reported no screen that can be captured."));
+        return;
+    }
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    m_shareMonitorId = dialog.monitorId();
+    m_shareWidth = dialog.width();
+    m_shareHeight = dialog.height();
+    m_shareFps = dialog.frameRate();
+    m_shareBitrate = dialog.bitrate();
+
+    if (m_shareMonitorId.isEmpty())
+        return;
+
+    // The key Discord will use for our stream is the one naming us, and it is
+    // predictable, so the events can be matched the moment they arrive.
+    m_myStreamKey = GatewayClient::streamKeyFor(m_voiceGuildId, m_voiceChannelId, m_selfUserId);
+    m_myStreamServerId.clear();
+    m_myStreamChannelId.clear();
+    m_myStreamToken.clear();
+    m_myStreamEndpoint.clear();
+
+    flashStatus(QStringLiteral("Starting your screen share..."), 5000);
+    m_gateway->startStream(m_voiceGuildId, m_voiceChannelId);
+    updateVoicePanel();
+}
+
+void MainWindow::stopScreenShare()
+{
+    if (m_myStreamKey.isEmpty())
+        return;
+
+    if (m_share)
+        m_share->stop();
+    if (m_shareVoice) {
+        m_shareVoice->stopSendingVideo();
+        m_shareVoice->disconnectFromVoice();
+    }
+
+    m_gateway->stopStream(m_myStreamKey);
+
+    m_myStreamKey.clear();
+    m_myStreamServerId.clear();
+    m_myStreamChannelId.clear();
+    m_myStreamToken.clear();
+    m_myStreamEndpoint.clear();
+
+    flashStatus(QStringLiteral("Your screen share ended."), 3000);
+    updateVoicePanel();
+}
+
+// Both halves arrive separately and in no fixed order, exactly as they do for
+// watching. This runs on each and acts once everything is in hand.
+void MainWindow::tryBeginBroadcast()
+{
+    if (m_myStreamServerId.isEmpty() || m_myStreamToken.isEmpty() || m_myStreamEndpoint.isEmpty())
+        return;
+
+    const QString sessionId = m_gateway->sessionId();
+    if (sessionId.isEmpty())
+        return;
+
+    // Same rule as the viewer path: a Go Live stream's key group is the
+    // media-session id, which is one less than the stream's rtc server id.
+    quint64 daveGroupId = 0;
+    const quint64 serverId = m_myStreamServerId.toULongLong();
+    if (serverId > 0)
+        daveGroupId = serverId - 1;
+
+    const QString channelId =
+        m_myStreamChannelId.isEmpty() ? m_voiceChannelId : m_myStreamChannelId;
+
+    wlog(QStringLiteral("share"),
+         QStringLiteral("opening our stream server %1 (group %2)")
+             .arg(m_myStreamEndpoint)
+             .arg(daveGroupId));
+
+    m_shareVoice->connectToVoice(m_myStreamServerId, channelId, m_selfUserId, sessionId,
+                                 m_myStreamToken, m_myStreamEndpoint, daveGroupId);
+
+    m_myStreamToken.clear();
+    m_myStreamEndpoint.clear();
+}
+
 // Both halves of a stream's details arrive as separate events, in no fixed
 // order, exactly like a voice connection. This runs on each and only acts once
 // everything is in hand.
@@ -2845,6 +3057,11 @@ void MainWindow::leaveVoice()
     if (guildId.isEmpty())
         guildId = m_store->channel(m_voiceChannelId).guildId;
 
+    // Before anything else. A share outlives the call it belonged to if it is
+    // not ended explicitly: Discord keeps the stream, and the people left
+    // behind watch a picture that has stopped arriving.
+    stopScreenShare();
+
     m_voiceRetryTimer.stop();
     m_voiceRetries = 0;
     m_rejoinVoiceAfterGateway = false;
@@ -2945,6 +3162,18 @@ void MainWindow::updateVoicePanel()
     // stays up while you wander off into another conversation.
     if (m_callView)
         m_callView->setChannel(m_voiceChannelId);
+
+    // The one button does both jobs, because starting and stopping a share
+    // are the same thought and a second button would sit disabled most of the
+    // time. It says which one it will do.
+    if (m_shareButton) {
+        const bool live = !m_myStreamKey.isEmpty();
+        m_shareButton->setText(live ? QStringLiteral("Stop sharing")
+                                    : QStringLiteral("Share screen"));
+        m_shareButton->setToolTip(live
+                                      ? QStringLiteral("Stop showing your screen")
+                                      : QStringLiteral("Show your screen to everyone in this call"));
+    }
 
     const bool watching = connected && !m_watchingUserId.isEmpty();
     if (m_streamControls)

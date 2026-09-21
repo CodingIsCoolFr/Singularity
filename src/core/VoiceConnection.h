@@ -92,6 +92,22 @@ public:
     void setOutputDevice(const QByteArray &deviceId) { m_outputDeviceId = deviceId; }
     void setSensitivity(int percent) { m_sensitivity = percent; }
 
+    // Sending a picture of our own.
+    //
+    // Used on the second connection that a Go Live stream runs over. Calling
+    // this tells the server we have pictures to send and what size they are;
+    // after it, every call to sendPicture() puts one on the wire.
+    void startSendingVideo(int width, int height);
+    void stopSendingVideo();
+    bool isSendingVideo() const { return m_sendingVideo; }
+
+    // One complete picture, already split into NAL units by the encoder.
+    //
+    // Chopping it into packets, sealing each one for the other people, and
+    // wrapping that for the transport all happen here, because this is the
+    // only object that holds the keys and the socket.
+    void sendPicture(const QList<QByteArray> &units);
+
     // Handed each slice of microphone sound just before it is encoded, so a
     // plugin can change how you sound to other people.
     //
@@ -112,6 +128,11 @@ signals:
 
     // Somebody turned their camera or screen on, or off.
     void videoAvailable(const QString &userId, bool available);
+
+    // A viewer told us it cannot draw anything from what we have sent. The
+    // encoder has to produce a keyframe; everything before it describes
+    // changes from a picture that viewer never saw.
+    void keyframeWanted();
 
 private slots:
     void onSocketConnected();
@@ -204,6 +225,14 @@ private:
     // actually produce a picture, rather than waiting for the next one.
     void sendPictureLossIndication(quint32 mediaSsrc);
 
+    // The other direction: somebody asked us for one.
+    void handleIncomingRtcp(const QByteArray &packet);
+
+    // One NAL unit, as one packet or as several. RFC 6184 calls the split
+    // form FU-A.
+    void packetiseNalUnit(const QByteArray &nal, bool lastOfPicture);
+    void sendVideoPacket(const QByteArray &payload, bool endOfPicture);
+
     // Picks the highest-quality layer we were offered and asks only for that.
     void refreshVideoWants();
 
@@ -223,6 +252,22 @@ private:
     quint64 m_daveGroupId = 0;
     quint8 m_videoPayloadType = 101;
     quint8 m_rtxPayloadType = 102;
+
+    // Our own outgoing picture.
+    //
+    // Video runs on its own synchronisation source with its own sequence
+    // numbering, because it is a separate stream from the sound even though
+    // both go down the same socket.
+    quint32 m_videoSsrc = 0;
+    quint32 m_rtxSsrc = 0;
+    quint16 m_videoSequence = 0;
+    quint32 m_videoTimestamp = 0;
+    bool m_sendingVideo = false;
+    int m_sendWidth = 0;
+    int m_sendHeight = 0;
+    int m_statVideoSent = 0;
+    int m_statVideoSealFailed = 0;
+    qint64 m_lastKeyframeRequestMs = 0;
 
     void playDecoded(quint32 ssrc, const QByteArray &frame);
 

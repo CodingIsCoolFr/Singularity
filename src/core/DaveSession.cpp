@@ -329,26 +329,28 @@ bool DaveSession::applyKeys(const QString &selfUserId, const QSet<QString> &othe
 #endif
 }
 
-QByteArray DaveSession::encrypt(const QByteArray &opusFrame, quint32 ssrc)
+QByteArray DaveSession::encrypt(const QByteArray &frame, quint32 ssrc, bool video)
 {
 #ifdef SINGULARITY_HAVE_DAVE
-    if (!m_encryptor || opusFrame.isEmpty())
+    if (!m_encryptor || frame.isEmpty())
         return {};
 
     auto *encryptor = static_cast<DAVEEncryptorHandle>(m_encryptor);
     if (!daveEncryptorHasKeyRatchet(encryptor))
         return {};
 
+    const DAVEMediaType media = video ? DAVE_MEDIA_TYPE_VIDEO : DAVE_MEDIA_TYPE_AUDIO;
+
     const size_t room = daveEncryptorGetMaxCiphertextByteSize(
-        encryptor, DAVE_MEDIA_TYPE_AUDIO, static_cast<size_t>(opusFrame.size()));
+        encryptor, media, static_cast<size_t>(frame.size()));
 
     QByteArray out(static_cast<int>(room), '\0');
     size_t written = 0;
 
     const DAVEEncryptorResultCode code =
-        daveEncryptorEncrypt(encryptor, DAVE_MEDIA_TYPE_AUDIO, ssrc,
-                             reinterpret_cast<const uint8_t *>(opusFrame.constData()),
-                             static_cast<size_t>(opusFrame.size()),
+        daveEncryptorEncrypt(encryptor, media, ssrc,
+                             reinterpret_cast<const uint8_t *>(frame.constData()),
+                             static_cast<size_t>(frame.size()),
                              reinterpret_cast<uint8_t *>(out.data()), room, &written);
 
     if (code != DAVE_ENCRYPTOR_RESULT_CODE_SUCCESS || written == 0)
@@ -357,7 +359,7 @@ QByteArray DaveSession::encrypt(const QByteArray &opusFrame, quint32 ssrc)
     out.resize(static_cast<int>(written));
     return out;
 #else
-    Q_UNUSED(opusFrame) Q_UNUSED(ssrc)
+    Q_UNUSED(frame) Q_UNUSED(ssrc) Q_UNUSED(video)
     return {};
 #endif
 }

@@ -55,9 +55,15 @@ public:
     // Hands the current keys to the encryptor and decryptors.
     bool applyKeys(const QString &selfUserId, const QSet<QString> &otherUserIds);
 
-    // Wraps one outgoing Opus frame. Returns empty on failure, which the
-    // caller should treat as "do not send this frame".
-    QByteArray encrypt(const QByteArray &opusFrame, quint32 ssrc);
+    // Wraps one outgoing frame. Returns empty on failure, which the caller
+    // should treat as "do not send this one".
+    //
+    // `video` must say which kind it is, and not as a formality: the library
+    // keeps a separate counter for each, and it leaves different parts of the
+    // frame in the clear because a decoder has to read a little of an H.264
+    // packet before it can know what to do with the rest. Sealing a picture as
+    // though it were sound produces something the far end refuses.
+    QByteArray encrypt(const QByteArray &frame, quint32 ssrc, bool video = false);
 
     // Unwraps one incoming frame for a given person.
     //

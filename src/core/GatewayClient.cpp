@@ -27,8 +27,10 @@ constexpr int OpGuildSubscribe = 14;
 
 // Go Live. Watching somebody's shared screen is a request on this socket, and
 // the answer is a whole second voice server to connect to.
+constexpr int OpStreamCreate = 18;
 constexpr int OpStreamDelete = 19;
 constexpr int OpStreamWatch = 20;
+constexpr int OpStreamSetPaused = 22;
 
 // Capability bitfield the desktop client sends. It tells Discord which
 // optimised payload shapes this client understands.
@@ -622,6 +624,64 @@ void GatewayClient::stopWatchingStream(const QString &streamKey)
     sendJson(QJsonObject{
         {QStringLiteral("op"), OpStreamDelete},
         {QStringLiteral("d"), QJsonObject{{QStringLiteral("stream_key"), streamKey}}},
+    });
+}
+
+void GatewayClient::startStream(const QString &guildId, const QString &channelId)
+{
+    if (channelId.isEmpty())
+        return;
+
+    wlog(QStringLiteral("stream"),
+         QStringLiteral("going live in channel %1").arg(channelId));
+
+    // "guild" and "call" are the two kinds of stream, and they are told apart
+    // by whether a server is involved - the same distinction the stream key
+    // makes. A private call has no guild_id at all rather than an empty one.
+    QJsonObject data{
+        {QStringLiteral("type"), guildId.isEmpty() ? QStringLiteral("call")
+                                                   : QStringLiteral("guild")},
+        {QStringLiteral("channel_id"), channelId},
+
+        // Which region to put the stream server in. Discord picks a sensible
+        // one when this is absent, and picking badly ourselves would add a
+        // detour to every packet.
+        {QStringLiteral("preferred_region"), QJsonValue::Null},
+    };
+    if (!guildId.isEmpty())
+        data.insert(QStringLiteral("guild_id"), guildId);
+
+    sendJson(QJsonObject{
+        {QStringLiteral("op"), OpStreamCreate},
+        {QStringLiteral("d"), data},
+    });
+}
+
+void GatewayClient::stopStream(const QString &streamKey)
+{
+    if (streamKey.isEmpty())
+        return;
+
+    wlog(QStringLiteral("stream"), QStringLiteral("ending our stream %1").arg(streamKey));
+
+    // The same opcode that stops watching somebody else's. Which one it means
+    // is decided by whose key it carries.
+    sendJson(QJsonObject{
+        {QStringLiteral("op"), OpStreamDelete},
+        {QStringLiteral("d"), QJsonObject{{QStringLiteral("stream_key"), streamKey}}},
+    });
+}
+
+void GatewayClient::setStreamPaused(const QString &streamKey, bool paused)
+{
+    if (streamKey.isEmpty())
+        return;
+
+    sendJson(QJsonObject{
+        {QStringLiteral("op"), OpStreamSetPaused},
+        {QStringLiteral("d"),
+         QJsonObject{{QStringLiteral("stream_key"), streamKey},
+                     {QStringLiteral("paused"), paused}}},
     });
 }
 

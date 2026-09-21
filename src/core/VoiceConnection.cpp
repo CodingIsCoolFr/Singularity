@@ -126,6 +126,41 @@ QByteArray buildRtpHeader(quint16 sequence, quint32 timestamp, quint32 ssrc)
     return header;
 }
 
+// The same header, for a picture.
+//
+// Two things differ from sound. The payload type says H.264 rather than Opus,
+// and the marker bit is set on the last packet of each picture - which is the
+// only way the far end can know a picture is complete, because one picture is
+// almost always several packets.
+QByteArray buildVideoRtpHeader(quint16 sequence, quint32 timestamp, quint32 ssrc, bool marker)
+{
+    QByteArray header = buildRtpHeader(sequence, timestamp, ssrc);
+    auto *bytes = reinterpret_cast<quint8 *>(header.data());
+
+    bytes[1] = static_cast<quint8>(VideoPayloadType);
+    if (marker)
+        bytes[1] |= 0x80;
+
+    return header;
+}
+
+// How big one video packet's payload may be.
+//
+// The path to Discord is an ordinary internet one, so the whole datagram has
+// to fit in about 1200 bytes to survive without being fragmented - and an IP
+// fragment lost in transit takes the whole packet with it, which for video
+// means a visible tear rather than a hiccup.
+//
+// What is left for actual picture data is that, less the RTP header, less
+// what the transport encryption adds, less what the end-to-end layer adds on
+// top of that, less the two byte fragmentation header. The number is
+// deliberately conservative: a packet a little smaller than it could be costs
+// a fraction of a percent, and one a little too large is dropped.
+constexpr int MaxVideoPayload = 1100;
+
+// The 90 kHz clock every H.264 stream is timed on.
+constexpr quint32 VideoClockRate = 90000;
+
 // How much of a packet is left in the clear, and how much of what follows is
 // extension rather than sound.
 //
@@ -1428,6 +1463,16 @@ void VoiceConnection::reportAudioStats()
                     .arg(m_statVideoDaveFailed)
                     .arg(m_statVideoUnknownSsrc);
 
+    // Our own share, counted for the same reason as everything else here: a
+    // viewer seeing nothing needs this line to say whether we sent anything.
+    if (m_statVideoSent > 0 || m_statVideoSealFailed > 0) {
+        line += QStringLiteral(", sent %1 video packets").arg(m_statVideoSent);
+        if (m_statVideoSealFailed > 0)
+            line += QStringLiteral(" (%1 unsealed, no group key)").arg(m_statVideoSealFailed);
+        m_statVideoSent = 0;
+        m_statVideoSealFailed = 0;
+    }
+
     wlog(QStringLiteral("voice"), line);
 
     // Pictures, counted the same way and for the same reason: a black tile
@@ -1487,8 +1532,12 @@ void VoiceConnection::onUdpReadyRead()
         const quint8 payloadType = packet.size() > 1
             ? static_cast<quint8>(packet[1]) & 0x7F
             : 0;
-        if (payloadType >= 200 && payloadType <= 207)
+        if (payloadType >= 200 && payloadType <= 207) {
+            // Not media, but not nothing: this is where a viewer says it
+            // cannot draw anything from what we have sent.
+            handleIncomingRtcp(packet);
             continue;
+        }
         if (payloadType == m_rtxPayloadType)
             continue;
 
@@ -1969,16 +2018,182 @@ void VoiceConnection::playDecoded(quint32 ssrc, const QByteArray &frame)
 // else. It is also how a client says it understands video at all.
 void VoiceConnection::sendVideoState()
 {
+    QJsonArray streams;
+    if (m_sendingVideo) {
+        // One layer, at full quality. Discord's own client offers several
+        // sizes so the server can drop viewers on poor connections to a
+        // smaller one; doing that means running the encoder several times
+        // over, and one good picture is a better first version than three
+        // mediocre ones.
+        streams.append(QJsonObject{
+            {QStringLiteral("type"), QStringLiteral("video")},
+            {QStringLiteral("rid"), QStringLiteral("100")},
+            {QStringLiteral("ssrc"), static_cast<qint64>(m_videoSsrc)},
+            {QStringLiteral("active"), true},
+            {QStringLiteral("quality"), 100},
+            {QStringLiteral("rtx_ssrc"), static_cast<qint64>(m_rtxSsrc)},
+            {QStringLiteral("max_bitrate"), 2500000},
+            {QStringLiteral("max_framerate"), 30},
+            {QStringLiteral("max_resolution"),
+             QJsonObject{{QStringLiteral("type"), QStringLiteral("fixed")},
+                         {QStringLiteral("width"), m_sendWidth},
+                         {QStringLiteral("height"), m_sendHeight}}},
+        });
+    }
+
     sendJson(QJsonObject{
         {QStringLiteral("op"), OpVideo},
         {QStringLiteral("d"),
          QJsonObject{
              {QStringLiteral("audio_ssrc"), static_cast<qint64>(m_ssrc)},
-             {QStringLiteral("video_ssrc"), 0},   // zero means we send no pictures
-             {QStringLiteral("rtx_ssrc"), 0},
-             {QStringLiteral("streams"), QJsonArray{}},
+             // Zero means we send no pictures, which is true of every
+             // connection except the one carrying a share.
+             {QStringLiteral("video_ssrc"), static_cast<qint64>(m_videoSsrc)},
+             {QStringLiteral("rtx_ssrc"), static_cast<qint64>(m_rtxSsrc)},
+             {QStringLiteral("streams"), streams},
          }},
     });
+}
+
+// ---------------------------------------------------------------------------
+// Sending a picture
+// ---------------------------------------------------------------------------
+
+void VoiceConnection::startSendingVideo(int width, int height)
+{
+    if (m_ssrc == 0) {
+        wlog(QStringLiteral("share"),
+             QStringLiteral("asked to send video before the server gave us an ssrc"));
+        return;
+    }
+
+    // Discord numbers the three streams of one connection consecutively from
+    // the audio one. The retransmission stream is named even though nothing
+    // is retransmitted yet, because the server expects the set.
+    m_videoSsrc = m_ssrc + 1;
+    m_rtxSsrc = m_ssrc + 2;
+
+    m_sendWidth = width;
+    m_sendHeight = height;
+    m_videoSequence = 0;
+    m_videoTimestamp = 0;
+    m_sendingVideo = true;
+
+    wlog(QStringLiteral("share"),
+         QStringLiteral("sending video: %1x%2, ssrc %3").arg(width).arg(height).arg(m_videoSsrc));
+
+    sendVideoState();
+
+    // Announce it the way a camera is announced. Without this the other
+    // clients are told a stream exists but never that it started.
+    sendSpeaking(m_speaking);
+}
+
+void VoiceConnection::stopSendingVideo()
+{
+    if (!m_sendingVideo)
+        return;
+
+    m_sendingVideo = false;
+    m_videoSsrc = 0;
+    m_rtxSsrc = 0;
+    m_sendWidth = m_sendHeight = 0;
+
+    wlog(QStringLiteral("share"), QStringLiteral("stopped sending video"));
+
+    // Says the stream is gone. Skipping this leaves a tile that never fills.
+    sendVideoState();
+}
+
+void VoiceConnection::sendPicture(const QList<QByteArray> &units)
+{
+    if (!m_sendingVideo || units.isEmpty() || m_secretKey.isEmpty())
+        return;
+
+    // Every packet of one picture carries the same timestamp; that is how the
+    // far end knows which packets belong together. It only advances between
+    // pictures.
+    //
+    // Stepped by the clock rather than by a frame counter, because the
+    // capture rate is whatever the screen actually managed - a still screen
+    // produces nothing at all for a while - and a receiver timing playback
+    // off these needs them to mean elapsed time.
+    m_videoTimestamp = quint32(QDateTime::currentMSecsSinceEpoch() * VideoClockRate / 1000);
+
+    for (int i = 0; i < units.size(); ++i)
+        packetiseNalUnit(units.at(i), i == units.size() - 1);
+}
+
+void VoiceConnection::packetiseNalUnit(const QByteArray &nal, bool lastOfPicture)
+{
+    if (nal.isEmpty())
+        return;
+
+    if (nal.size() <= MaxVideoPayload) {
+        // Small enough to travel whole. The NAL's own first byte is the
+        // payload's first byte; there is no wrapper.
+        sendVideoPacket(nal, lastOfPicture);
+        return;
+    }
+
+    // Too big, so it is split. Each piece carries two bytes in front of it:
+    // one repeating the original NAL's type and importance, and one saying
+    // whether this is the first piece, the last, or neither. The far end
+    // glues them back together by those flags.
+    const quint8 header = quint8(nal.at(0));
+    const quint8 nalType = header & 0x1F;
+    const quint8 nalRefIdc = header & 0x60;
+
+    const char *body = nal.constData() + 1;
+    int remaining = nal.size() - 1;
+    bool first = true;
+
+    while (remaining > 0) {
+        const int take = qMin(remaining, MaxVideoPayload - 2);
+        const bool last = take == remaining;
+
+        QByteArray packet;
+        packet.reserve(take + 2);
+        packet.append(char(nalRefIdc | 28));   // 28 is "this is a fragment"
+        packet.append(char((first ? 0x80 : 0) | (last ? 0x40 : 0) | nalType));
+        packet.append(body, take);
+
+        // Only the very last piece of the very last unit ends the picture.
+        sendVideoPacket(packet, lastOfPicture && last);
+
+        body += take;
+        remaining -= take;
+        first = false;
+    }
+}
+
+void VoiceConnection::sendVideoPacket(const QByteArray &payload, bool endOfPicture)
+{
+    QByteArray sealed = payload;
+
+    // Sealed for the other people first, exactly as sound is, so Discord's
+    // servers carry something they cannot read. The flag matters: the library
+    // keeps separate counters for pictures and sound, and leaves different
+    // parts in the clear, because a decoder must read a little of an H.264
+    // packet before it knows what the rest is.
+    if (m_daveVersion > 0) {
+        sealed = m_dave->encrypt(payload, m_videoSsrc, true);
+        if (sealed.isEmpty()) {
+            ++m_statVideoSealFailed;
+            return;
+        }
+    }
+
+    ++m_videoSequence;
+    const QByteArray header =
+        buildVideoRtpHeader(m_videoSequence, m_videoTimestamp, m_videoSsrc, endOfPicture);
+
+    const QByteArray packet = encryptFrame(header, sealed);
+    if (packet.isEmpty())
+        return;
+
+    m_udp.writeDatagram(packet, QHostAddress(m_serverAddress), m_serverPort);
+    ++m_statVideoSent;
 }
 
 // Asks for other people's video.
@@ -2068,6 +2283,71 @@ void VoiceConnection::sendPictureLossIndication(quint32 mediaSsrc)
         return;
 
     m_udp.writeDatagram(packet, QHostAddress(m_serverAddress), m_serverPort);
+}
+
+// The other end of sendPictureLossIndication: somebody is asking us.
+//
+// A viewer who joins halfway through has been sent nothing but descriptions of
+// changes from pictures it never saw, so it has nothing to draw and says so.
+// Without this the person watching stares at a black tile until the encoder
+// happens to produce a keyframe on its own, which is up to two seconds.
+void VoiceConnection::handleIncomingRtcp(const QByteArray &packet)
+{
+    if (!m_sendingVideo || m_secretKey.isEmpty())
+        return;
+
+    constexpr int RtcpHeaderSize = 8;
+    if (packet.size() < RtcpHeaderSize + crypto_aead_xchacha20poly1305_ietf_ABYTES + NonceTailSize)
+        return;
+
+    const quint8 type = static_cast<quint8>(packet[1]);
+    const quint8 format = static_cast<quint8>(packet[0]) & 0x1F;
+
+    // 206 is payload-specific feedback. Format 1 is "I have lost the picture",
+    // format 4 is "send a full picture now". Both mean the same thing to us.
+    // 205 is transport feedback, which is mostly requests to resend a
+    // particular packet; we do not keep old packets to resend, and a keyframe
+    // fixes the same problem more bluntly.
+    if (type != 206 || (format != 1 && format != 4))
+        return;
+
+    // The body is encrypted, and the ssrc being complained about is in it.
+    unsigned char nonce[crypto_aead_xchacha20poly1305_ietf_NPUBBYTES];
+    std::memset(nonce, 0, sizeof(nonce));
+    std::memcpy(nonce, packet.constData() + packet.size() - NonceTailSize, NonceTailSize);
+
+    const int cipherLength = packet.size() - RtcpHeaderSize - NonceTailSize;
+    QByteArray body(cipherLength, '\0');
+    unsigned long long plainLength = 0;
+
+    const int result = crypto_aead_xchacha20poly1305_ietf_decrypt(
+        reinterpret_cast<unsigned char *>(body.data()), &plainLength, nullptr,
+        reinterpret_cast<const unsigned char *>(packet.constData() + RtcpHeaderSize), cipherLength,
+        reinterpret_cast<const unsigned char *>(packet.constData()), RtcpHeaderSize, nonce,
+        reinterpret_cast<const unsigned char *>(m_secretKey.constData()));
+
+    if (result != 0 || plainLength < 8)
+        return;
+
+    body.resize(static_cast<int>(plainLength));
+    const auto *bytes = reinterpret_cast<const quint8 *>(body.constData());
+
+    // Bytes 0-3 are whoever is asking; 4-7 are the stream they mean.
+    const quint32 target = (quint32(bytes[4]) << 24) | (quint32(bytes[5]) << 16)
+        | (quint32(bytes[6]) << 8) | quint32(bytes[7]);
+
+    if (target != m_videoSsrc)
+        return;
+
+    // Several viewers joining at once ask separately, and a keyframe is the
+    // most expensive thing the encoder makes. One answers all of them.
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (now - m_lastKeyframeRequestMs < 500)
+        return;
+    m_lastKeyframeRequestMs = now;
+
+    wlog(QStringLiteral("share"), QStringLiteral("a viewer asked for a keyframe"));
+    emit keyframeWanted();
 }
 
 void VoiceConnection::sendSpeaking(bool speaking)

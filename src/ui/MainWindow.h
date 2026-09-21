@@ -196,6 +196,33 @@ private:
     void stopWatchingStream();
     void tryStartStream();
 
+    // Sharing our own screen.
+    //
+    // A third voice connection, on the same reasoning as the viewer one: Go
+    // Live has its own server and the call underneath has to stay up. This one
+    // sends pictures and opens no microphone, because the microphone is
+    // already being carried by the call.
+    void startScreenShare();
+    void stopScreenShare();
+    void tryBeginBroadcast();
+
+    class ScreenShare *m_share = nullptr;
+    VoiceConnection *m_shareVoice = nullptr;
+    QPushButton *m_shareButton = nullptr;
+
+    QString m_myStreamKey;
+    QString m_myStreamServerId;
+    QString m_myStreamChannelId;
+    QString m_myStreamToken;
+    QString m_myStreamEndpoint;
+
+    // What the picker chose, held until the server answers.
+    QString m_shareMonitorId;
+    int m_shareWidth = 0;
+    int m_shareHeight = 0;
+    int m_shareFps = 30;
+    int m_shareBitrate = 0;
+
     VoiceConnection *m_streamVoice = nullptr;
     QString m_watchingUserId;
     QString m_streamKey;
