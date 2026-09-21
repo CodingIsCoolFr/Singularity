@@ -101,10 +101,19 @@ Updater *updater()
                          box.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
                          box.setDefaultButton(QMessageBox::Yes);
 
-                         box.setText(QStringLiteral("Singularity %1 is available. You have %2.\n\n"
-                                                    "Download it now? It is about %3 MB.")
-                                         .arg(version, QApplication::applicationVersion())
-                                         .arg(bytes / (1024 * 1024)));
+                         // One question, and it says everything that will
+                         // happen. Asking again after the download - which is
+                         // what this used to do - meant walking away from a
+                         // progress bar and coming back to a dialog that had
+                         // been waiting, and then to an installer with pages
+                         // to click through. None of that is a decision. The
+                         // decision is here.
+                         box.setText(
+                             QStringLiteral("Singularity %1 is available. You have %2.\n\n"
+                                            "Update now? About %3 MB. Singularity will close, "
+                                            "update itself and start again.")
+                                 .arg(version, QApplication::applicationVersion())
+                                 .arg(bytes / (1024 * 1024)));
 
                          // Release notes are written in Markdown, so they were
                          // being shown with their asterisks and hashes still in
@@ -122,7 +131,7 @@ Updater *updater()
                          }
 
                          g_progress = new QProgressDialog(
-                             QStringLiteral("Downloading Singularity %1...").arg(version),
+                             QStringLiteral("Updating to Singularity %1...").arg(version),
                              QString(), 0, 0, g_owner);
                          g_progress->setWindowTitle(QStringLiteral("Update"));
                          g_progress->setAttribute(Qt::WA_DeleteOnClose);
@@ -136,17 +145,31 @@ Updater *updater()
         if (g_progress)
             g_progress->close();
 
-        const auto answer = QMessageBox::question(
-            g_owner, QStringLiteral("Ready to install"),
-            QStringLiteral("The update has been downloaded. Singularity will close while it "
-                           "installs, and the installer will offer to start it again.\n\n"
-                           "Install now?"));
-        if (answer != QMessageBox::Yes)
-            return;
+        // Silent, because the decision was already made and an installer with
+        // a welcome page and a destination page is not offering anything left
+        // to choose. /SILENT still shows a progress window, which /VERYSILENT
+        // does not - and a program that vanishes for several seconds with
+        // nothing on screen looks like it crashed.
+        const QStringList switches{
+            QStringLiteral("/SILENT"),
+            QStringLiteral("/SUPPRESSMSGBOXES"),
+            QStringLiteral("/NORESTART"),
+
+            // Let Windows close this copy properly rather than the installer
+            // failing on a locked file. Qt writes settings on the way out, so
+            // being closed is meaningfully different from being killed.
+            QStringLiteral("/CLOSEAPPLICATIONS"),
+
+            // The installer starts Singularity again itself, from its [Run]
+            // section. Letting Windows restart it as well would leave two.
+            QStringLiteral("/NORESTARTAPPLICATIONS"),
+        };
+
+        wlog(QStringLiteral("update"), QStringLiteral("installing silently from %1").arg(path));
 
         // Started before closing, because once this process is gone there is
         // nothing left to start anything.
-        if (!QProcess::startDetached(path, {})) {
+        if (!QProcess::startDetached(path, switches)) {
             QMessageBox::warning(g_owner, QStringLiteral("Could not start the installer"),
                                  QStringLiteral("It was downloaded to:\n%1").arg(path));
             return;

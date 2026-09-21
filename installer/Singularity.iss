@@ -12,7 +12,7 @@
 ;     iscc installer\Singularity.iss
 
 #define AppName       "Singularity"
-#define AppVersion    "0.1.8"
+#define AppVersion    "0.1.9"
 #define AppPublisher  "Singularity"
 #define AppExe        "Singularity.exe"
 
@@ -48,6 +48,15 @@ WizardSizePercent=110
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 
+; Let Windows close the running copy rather than failing on a locked file.
+;
+; The program updates itself, so the usual case is that Singularity is running
+; when this starts - it is the thing that downloaded and launched this. The
+; Restart Manager closes it properly, which matters: killing it would lose
+; settings that Qt writes on the way out.
+CloseApplications=yes
+RestartApplications=no
+
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
@@ -64,7 +73,12 @@ Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
 [Run]
+; Two entries for one job, because the two ways of getting here want opposite
+; things. Someone who ran this by hand gets a tick box they can clear. An
+; update installing itself has nobody watching, and leaving the program shut
+; after it updated would look exactly like a crash.
 Filename: "{app}\{#AppExe}"; Description: "Start {#AppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#AppExe}"; Flags: nowait; Check: InstalledSilently
 
 [UninstallDelete]
 ; Qt writes a cache beside the program on first run. Left behind it would
@@ -73,6 +87,13 @@ Filename: "{app}\{#AppExe}"; Description: "Start {#AppName}"; Flags: nowait post
 Type: filesandordirs; Name: "{app}\.qt"
 
 [Code]
+// True when nobody is driving this - which means the program updated itself
+// and is waiting to be started again.
+function InstalledSilently: Boolean;
+begin
+  Result := WizardSilent;
+end;
+
 // The settings and the sealed token live in the user's roaming profile, not
 // in the install folder, so an uninstall leaves them alone unless asked. That
 // is the behaviour people expect: removing a program should not silently take

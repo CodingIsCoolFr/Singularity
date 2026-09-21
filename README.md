@@ -13,7 +13,7 @@
 
 <br>
 
-### [Download Singularity 0.1.8](https://github.com/CodingIsCoolFr/singularity-updates/releases/latest)
+### [Download Singularity 0.1.9](https://github.com/CodingIsCoolFr/singularity-updates/releases/latest)
 
 Windows x64 · 54 MB · installs for you only, no administrator prompt
 
@@ -271,8 +271,19 @@ with it.
 
 The program checks for a newer version a few seconds after it starts, and
 quietly: an up to date copy says nothing at all. `Singularity → Check for
-updates...` asks and reports either way. Nothing downloads or installs without
-being agreed to.
+updates...` asks and reports either way.
+
+**One question, then it does the whole thing.** Agreeing downloads the update,
+installs it silently and starts Singularity again. There is no second dialog
+after the download and no installer to click through, because by then there is
+nothing left to decide — the decision was the first question, and it says so.
+
+The install runs with `/CLOSEAPPLICATIONS` so Windows closes the running copy
+properly rather than the installer failing on a locked file. Being closed is
+meaningfully different from being killed here: Qt writes settings on the way
+out. `/SILENT` rather than `/VERYSILENT`, so there is a progress window — a
+program that disappears for several seconds with nothing on screen looks like
+it crashed.
 
 It reads **[singularity-updates](https://github.com/CodingIsCoolFr/singularity-updates)**,
 a public repository carrying the installers and no source, rather than this
