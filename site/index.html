@@ -26,6 +26,7 @@
     <div class="links">
       <a href="#what" class="hideable">What it does</a>
       <a href="#look" class="hideable">The look</a>
+      <a href="#speed" class="hideable">Speed</a>
       <a href="#voice" class="hideable">Calls</a>
       <a href="#privacy" class="hideable">Privacy</a>
       <a href="#missing">Limits</a>
@@ -114,6 +115,12 @@
       </div>
 
       <div class="panel card">
+        <h3><span class="dot"></span>Everyone</h3>
+        <p>The member list down the right, grouped the way Discord groups it, with role colours and what people are playing. It folds away, and the header carries both totals — how many are here now, and how many there are at all.</p>
+        <p>Set your own status from your name at the bottom: online, idle, do not disturb, invisible. It is remembered between runs.</p>
+      </div>
+
+      <div class="panel card">
         <h3><span class="dot"></span>Everything else</h3>
         <p>Email and password sign-in with second factor. Server folders you can drag and rename. A Friends page with Online, All, Pending and Blocked.</p>
         <p>Full profile windows with banners, badges, coloured role pills, notes, and mutual friends and servers.</p>
@@ -127,6 +134,8 @@
     <p class="kicker">One colour decides everything</p>
     <h2>The look</h2>
     <p class="lede">Pick a seed colour and the whole application is derived from it <b>while it is running</b> — surfaces, accents, every stylesheet token, and the accretion disk of the hole itself. No restart, no theme files. Try it: these retint this page and the background behind it, using the same rule the program uses.</p>
+
+    <p class="lede">Or put your own picture behind everything instead — an animated GIF, a WebP, a still image. There is a dim slider, and it is not decoration: every panel in the client is glass, so a bright picture makes the conversation hard to read.</p>
 
     <div class="seeds" id="seeds" role="group" aria-label="Theme seed"></div>
 
@@ -196,6 +205,33 @@
     </div>
 
     <p class="lede" style="margin:24px 0 0">A detail worth the trouble: the spiral's phase is stored as a cosine and a sine rather than as an angle. An angle wraps from +&pi; to &minus;&pi;, and smoothing across that seam would average two nearly identical directions into a wrong one and draw a hard line across the disk.</p>
+  </div>
+</section>
+
+<section id="speed">
+  <div class="wrap rise">
+    <p class="kicker">Measured, not guessed</p>
+    <h2>Why opening a channel is instant</h2>
+    <p class="lede">It was not, for a while. Three attempts went into making the drawing faster before anybody timed it, and the timing ended the argument in one line.</p>
+
+    <div class="grid">
+      <div class="panel card">
+        <h3><span class="num">0</span>Building the markup</h3>
+        <p>Zero milliseconds for a hundred messages. Never the problem, and three fixes were aimed at it.</p>
+      </div>
+      <div class="panel card">
+        <h3><span class="num">67</span>Laying it out</h3>
+        <p>A blink. Noticeable only next to nothing at all.</p>
+      </div>
+      <div class="panel card">
+        <h3><span class="num">517</span>Waiting for Discord</h3>
+        <p>A single message took 372 ms in the same session, so most of it is round trip whatever you ask for. No client makes that faster — the official one waits exactly as long.</p>
+      </div>
+    </div>
+
+    <p class="lede" style="margin:24px 0 0">So it is not made faster, it is moved. Opening a server begins fetching its first few channels, and <b>moving the pointer across a channel's name begins fetching that one</b>. Between noticing a channel and clicking it there is a fifth of a second to a whole second of human time, and the round trip fits inside it.</p>
+
+    <p class="lede" style="margin:16px 0 0">Guessing ahead must never get in the way of the real thing, so it runs one request at a time, stops while a channel somebody actually opened is loading, takes six channels per server rather than forty, and gives up entirely the first time Discord says it is being asked too often.</p>
   </div>
 </section>
 
@@ -300,6 +336,8 @@
     <p class="kicker">One setup program</p>
     <h2>Get it</h2>
     <p class="lede">It installs for you only and never asks for administrator. There is no service, no driver and nothing shared, so there is nothing to elevate for — and a small program asking for rights it does not need is how it starts looking untrustworthy.</p>
+
+    <p class="lede">There is no wizard either. Every page one would have shown asks something already decided by running it — where to put it, whether to continue, whether to start it afterwards. What you get is one dark window with the hole turning in it, and then the program.</p>
 
     <div class="cta" style="margin-bottom:26px">
       <a class="btn primary" id="download2" href="https://github.com/CodingIsCoolFr/singularity-updates/releases/latest">Download the latest release</a>
