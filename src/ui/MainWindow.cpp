@@ -36,6 +36,7 @@
 #include <QFrame>
 #include <QInputDialog>
 #include <QMouseEvent>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
@@ -967,12 +968,21 @@ QWidget *MainWindow::buildVoicePanel(QWidget *parent)
 
     layout->addLayout(text);
 
-    auto *buttons = new QHBoxLayout;
+    // Two rows of two, not one row of four.
+    //
+    // Four buttons across a sidebar this narrow cannot fit. Each carried a
+    // minimum width, and when the minimums add up to more than there is, Qt
+    // stops shrinking and they simply overlap - "Share screen" was printed on
+    // top of "Leave". A grid gives each one an equal share of whatever width
+    // there is, so a narrower sidebar makes them smaller rather than broken.
+    auto *buttons = new QGridLayout;
     buttons->setContentsMargins(0, 0, 0, 0);
-    buttons->setSpacing(6);
+    buttons->setHorizontalSpacing(6);
+    buttons->setVerticalSpacing(6);
+    buttons->setColumnStretch(0, 1);
+    buttons->setColumnStretch(1, 1);
 
     m_muteButton = new QPushButton(QStringLiteral("Mute"), panel);
-    m_muteButton->setMinimumWidth(56);
     m_muteButton->setFixedHeight(26);
     m_muteButton->setCheckable(true);
     m_muteButton->setToolTip(QStringLiteral("Stop sending your voice"));
@@ -982,10 +992,9 @@ QWidget *MainWindow::buildVoicePanel(QWidget *parent)
         // Tell the server too, so other people see the crossed out microphone.
         m_gateway->joinVoice(m_voiceGuildId, m_voiceChannelId, on, m_deafenButton->isChecked());
     });
-    buttons->addWidget(m_muteButton);
+    buttons->addWidget(m_muteButton, 0, 0);
 
     m_deafenButton = new QPushButton(QStringLiteral("Deafen"), panel);
-    m_deafenButton->setMinimumWidth(62);
     m_deafenButton->setFixedHeight(26);
     m_deafenButton->setCheckable(true);
     m_deafenButton->setToolTip(QStringLiteral("Stop hearing everyone"));
@@ -994,22 +1003,22 @@ QWidget *MainWindow::buildVoicePanel(QWidget *parent)
         m_deafenButton->setText(on ? QStringLiteral("Deaf") : QStringLiteral("Deafen"));
         m_gateway->joinVoice(m_voiceGuildId, m_voiceChannelId, m_muteButton->isChecked(), on);
     });
-    buttons->addWidget(m_deafenButton);
+    buttons->addWidget(m_deafenButton, 0, 1);
 
-    m_shareButton = new QPushButton(QStringLiteral("Share screen"), panel);
-    m_shareButton->setMinimumWidth(92);
+    m_shareButton = new QPushButton(QStringLiteral("Share"), panel);
     m_shareButton->setFixedHeight(26);
     m_shareButton->setToolTip(QStringLiteral("Show your screen to everyone in this call"));
     connect(m_shareButton, &QPushButton::clicked, this, &MainWindow::startScreenShare);
-    buttons->addWidget(m_shareButton);
+    buttons->addWidget(m_shareButton, 1, 0);
 
     auto *leave = new QPushButton(QStringLiteral("Leave"), panel);
-    leave->setMinimumWidth(56);
     leave->setFixedHeight(26);
+    leave->setToolTip(QStringLiteral("Leave the call"));
     connect(leave, &QPushButton::clicked, this, &MainWindow::leaveVoice);
-    buttons->addWidget(leave);
+    buttons->addWidget(leave, 1, 1);
 
-    buttons->addStretch(1);
+    // No trailing stretch: the columns already share the width between them,
+    // which is what stops them overlapping.
     layout->addLayout(buttons);
 
     AppConfig &config = AppConfig::instance();
@@ -3217,8 +3226,9 @@ void MainWindow::updateVoicePanel()
     // time. It says which one it will do.
     if (m_shareButton) {
         const bool live = !m_myStreamKey.isEmpty();
-        m_shareButton->setText(live ? QStringLiteral("Stop sharing")
-                                    : QStringLiteral("Share screen"));
+        // Short, because this sits in half a sidebar. The tooltip carries the
+        // full sentence.
+        m_shareButton->setText(live ? QStringLiteral("Stop") : QStringLiteral("Share"));
         m_shareButton->setToolTip(live
                                       ? QStringLiteral("Stop showing your screen")
                                       : QStringLiteral("Show your screen to everyone in this call"));
@@ -3227,8 +3237,9 @@ void MainWindow::updateVoicePanel()
     const bool watching = connected && !m_watchingUserId.isEmpty();
     if (m_streamControls)
         m_streamControls->setVisible(watching);
+    // A second row of buttons needs its height, or the panel clips them.
     if (m_voicePanel && connected)
-        m_voicePanel->setFixedHeight(watching ? 186 : 132);
+        m_voicePanel->setFixedHeight(watching ? 218 : 164);
 
     if (!connected)
         return;
