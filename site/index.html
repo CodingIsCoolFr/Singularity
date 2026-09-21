@@ -220,8 +220,8 @@
         <p>Zero milliseconds for a hundred messages. Never the problem, and three fixes were aimed at it.</p>
       </div>
       <div class="panel card">
-        <h3><span class="num">67</span>Laying it out</h3>
-        <p>A blink. Noticeable only next to nothing at all.</p>
+        <h3><span class="num">14</span>Laying out the text</h3>
+        <p>A hundred messages of plain markup, measured in the text engine on its own. Never the problem either.</p>
       </div>
       <div class="panel card">
         <h3><span class="num">517</span>Waiting for Discord</h3>
@@ -229,9 +229,28 @@
       </div>
     </div>
 
-    <p class="lede" style="margin:24px 0 0">So it is not made faster, it is moved. Opening a server begins fetching its first few channels, and <b>moving the pointer across a channel's name begins fetching that one</b>. Between noticing a channel and clicking it there is a fifth of a second to a whole second of human time, and the round trip fits inside it.</p>
+    <p class="lede" style="margin:24px 0 0">So the wait is not made shorter, it is moved. Opening a server begins fetching its first few channels, and <b>moving the pointer across a channel's name begins fetching that one</b>. Between noticing a channel and clicking it there is a fifth of a second to a whole second of human time, and the round trip fits inside it.</p>
 
     <p class="lede" style="margin:16px 0 0">Guessing ahead must never get in the way of the real thing, so it runs one request at a time, stops while a channel somebody actually opened is loading, takes six channels per server rather than forty, and gives up entirely the first time Discord says it is being asked too often.</p>
+
+    <p class="kicker" style="margin:40px 0 0">The stutter that was left</p>
+    <h2 style="margin:8px 0 0">It was never the messages</h2>
+    <p class="lede">With the network moved out of the way a stutter remained, and it matched nothing in the log: the whole conversation being laid out again, several times a second, with no request in front of it. The client was spending 67 to 91 ms where the text engine alone spends 14. The difference was the pictures, and three separate things were paying for them over and over.</p>
+
+    <div class="grid">
+      <div class="panel card">
+        <h3><span class="num">15×</span>A second, for one emoji</h3>
+        <p>Handing an animation its next frame marked the page dirty from the first character to the last, which lays out <b>every message in the channel</b> — fifteen times a second, for as long as one animated emoji was on screen. Nothing had moved: every frame is drawn at the size the first one settled on. So it paints now, and does not lay out.</p>
+      </div>
+      <div class="panel card">
+        <h3><span class="num">100</span>Layouts to fill in avatars</h3>
+        <p>A picture arriving does change the height of the page, so that one needs a real layout. It was being done once per picture. They share one pass now.</p>
+      </div>
+      <div class="panel card">
+        <h3><span class="num">1</span>Message per reaction</h3>
+        <p>Each message is written as one table, and the text engine turns each table into a frame it can find by position — so the right one is cut out and replaced where it sits. A reaction used to rebuild all hundred. If anything does not add up it falls back to the full redraw rather than leave a half edited conversation on screen.</p>
+      </div>
+    </div>
   </div>
 </section>
 
