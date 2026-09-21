@@ -140,7 +140,9 @@ QString expand(const QString &sheet)
         {QStringLiteral("@border"), QLatin1String(Border)},
         {QStringLiteral("@deleted"), QLatin1String(Deleted)},
         {QStringLiteral("@glass"), rgbaOf(chat, 255)},
-        {QStringLiteral("@glass150"), rgbaOf(chat, 150)},
+        // Enough to read a name over wherever the hole happens to be bright,
+        // little enough that it still reads as glass rather than a panel.
+        {QStringLiteral("@glass150"), rgbaOf(chat, 178)},
         {QStringLiteral("@accent22"), rgbaOf(accent, 22)},
         {QStringLiteral("@accent28"), rgbaOf(accent, 28)},
         {QStringLiteral("@accent38"), rgbaOf(accent, 38)},

@@ -110,6 +110,23 @@ MemberListPanel::MemberListPanel(MessageStore *store, QWidget *parent)
     m_list->setUniformItemSizes(false);
     m_list->setMouseTracking(true);
     m_list->setItemDelegate(new MemberDelegate(m_list, m_list));
+
+    // Let the panel's own glass show through the list.
+    //
+    // A stylesheet alone does not do this, which is why the panel went clear
+    // and the names stayed on a grey slab: a scrolling view does not paint
+    // its own background, its viewport does, and the viewport fills itself
+    // from the palette's Base colour before any rule here is consulted. Both
+    // have to be told.
+    m_list->viewport()->setAutoFillBackground(false);
+    m_list->setAutoFillBackground(false);
+
+    QPalette clear = m_list->palette();
+    clear.setColor(QPalette::Base, Qt::transparent);
+    clear.setColor(QPalette::Window, Qt::transparent);
+    m_list->setPalette(clear);
+    m_list->viewport()->setPalette(clear);
+
     bodyLayout->addWidget(m_list, 1);
 
     connect(m_list, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {

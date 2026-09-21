@@ -2207,6 +2207,15 @@ void MainWindow::openChannel(const QString &channelId)
     m_hasLastRendered = false;
     setTypingHint(QString());
 
+    // Anything the last channel had in flight belongs to the last channel.
+    //
+    // A history fetch that has not come back yet carries an anchor saying
+    // "keep this many pixels above the bottom", and applying that to a
+    // different conversation puts the reader somewhere arbitrary in it.
+    m_pendingScrollAnchor = -1;
+    m_loadingOlder = false;
+    m_stickToBottom = true;
+
     if (channelId.isEmpty()) {
         m_channelTitle->setText(QStringLiteral("Pick a channel"));
         m_channelTopic->setVisible(false);
@@ -2315,7 +2324,22 @@ void MainWindow::renderChannel()
     m_lastRendered = previous;
     m_hasLastRendered = havePrevious;
 
+    // Painting is held off until the position has been decided, so the reader
+    // never sees the conversation at the wrong place for a frame.
+    m_messageView->setUpdatesEnabled(false);
     m_messageView->setHtml(html);
+
+    // The cursor goes to the end, and this is not housekeeping.
+    //
+    // Setting the text leaves the cursor at position zero, and the view then
+    // scrolls to wherever the cursor is - which is the top, undoing the jump
+    // to the bottom a moment after it was made. That is the other half of why
+    // opening a channel landed at the very top; the first half was a fetch
+    // that should never have started.
+    QTextCursor end(m_messageView->document());
+    end.movePosition(QTextCursor::End);
+    m_messageView->setTextCursor(end);
+
     m_renderedChannelId = m_currentChannelId;
 
     // Older messages were just put on top, so the whole conversation slid
@@ -2323,8 +2347,11 @@ void MainWindow::renderChannel()
     // much was added; measuring from the bottom keeps the same words under
     // the same part of the screen.
     if (m_pendingScrollAnchor >= 0) {
+        m_autoScrolling = true;
         bar->setValue(qMax(0, bar->maximum() - m_pendingScrollAnchor));
+        m_autoScrolling = false;
         m_pendingScrollAnchor = -1;
+        m_messageView->setUpdatesEnabled(true);
         return;
     }
 
@@ -2345,8 +2372,12 @@ void MainWindow::renderChannel()
         scrollToBottom();
     } else {
         m_stickToBottom = false;
+        m_autoScrolling = true;
         bar->setValue(qMin(previousPosition, bar->maximum()));
+        m_autoScrolling = false;
     }
+
+    m_messageView->setUpdatesEnabled(true);
 }
 
 void MainWindow::scrollToBottom()
