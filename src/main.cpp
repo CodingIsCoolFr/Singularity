@@ -1,4 +1,4 @@
-#include "core/AppConfig.h"
+﻿#include "core/AppConfig.h"
 #include "core/GatewayClient.h"
 #include "core/Logger.h"
 #include "core/MessageStore.h"
@@ -27,7 +27,7 @@ int main(int argc, char *argv[])
     QApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("Singularity"));
     app.setOrganizationName(QStringLiteral("Singularity"));
-    app.setApplicationVersion(QStringLiteral("0.4.2"));
+    app.setApplicationVersion(QStringLiteral("0.4.3"));
     app.setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
 
     Theme::applySeed(QColor(AppConfig::instance().value(QStringLiteral("appearance/themeSeed"),

@@ -283,6 +283,10 @@ private:
     bool m_stickToBottom = true;
     bool m_autoScrolling = false;
 
+    // Whether the reader has actually touched this channel's scroll yet. A
+    // document growing on its own must never be mistaken for them doing it.
+    bool m_readerMoved = false;
+
     // Redraws, collapsed. Opening a channel draws at once; everything that
     // merely changes what is already on screen waits a moment in case more is
     // coming, because in a busy server it always is.

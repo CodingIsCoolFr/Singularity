@@ -104,6 +104,38 @@ void MediaCache::evictIfNeeded()
     }
 }
 
+namespace {
+
+// Whether this address is worth fetching as a picture at all.
+//
+// Judged on the extension, before anything is downloaded. Discord serves
+// video and audio attachments from the same host as images, and a video
+// arrives with a perfectly good 200 - it simply is not a picture, which is
+// only discovered after the whole file is on the wire.
+bool looksLikeAPicture(const QUrl &url)
+{
+    const QString path = url.path().toLower();
+
+    // Avatars, icons, banners and emoji have no extension at all. They are
+    // always pictures.
+    const int dot = path.lastIndexOf(QLatin1Char('.'));
+    if (dot < 0 || dot < path.lastIndexOf(QLatin1Char('/')))
+        return true;
+
+    const QString suffix = path.mid(dot + 1);
+
+    static const QSet<QString> pictures = {
+        QStringLiteral("png"),  QStringLiteral("jpg"),  QStringLiteral("jpeg"),
+        QStringLiteral("gif"),  QStringLiteral("webp"), QStringLiteral("bmp"),
+        QStringLiteral("apng"), QStringLiteral("avif"), QStringLiteral("jfif"),
+        QStringLiteral("ico"),  QStringLiteral("tif"),  QStringLiteral("tiff"),
+    };
+
+    return pictures.contains(suffix);
+}
+
+} // namespace
+
 QImage MediaCache::image(const QUrl &url)
 {
     const QString key = url.toString();
@@ -118,6 +150,14 @@ QImage MediaCache::image(const QUrl &url)
     // start a download on every repaint.
     if (m_failed.contains(key) || m_inFlight.contains(key) || !isAllowedHost(url))
         return {};
+
+    // Films are not pictures, and fetching ten megabytes to find that out is
+    // a poor way to learn it. A channel with a few videos in it was pulling
+    // them down again and again for nothing.
+    if (!looksLikeAPicture(url)) {
+        m_failed.insert(key);
+        return {};
+    }
 
     fetch(url);
     return {};
@@ -142,10 +182,24 @@ void MediaCache::fetch(const QUrl &url)
 
         QImage picture;
         if (reply->error() != QNetworkReply::NoError || !picture.loadFromData(payload)) {
-            // Only give up for good when the picture genuinely is not there.
+            // Only give up for good when trying again could not possibly help.
+            //
             // A rate limit or a dropped connection deserves another try later,
-            // otherwise one bad moment leaves a grey circle forever.
-            const bool permanent = status == 403 || status == 404 || status == 410;
+            // otherwise one bad moment leaves a grey circle forever. But a
+            // file that arrived whole and simply is not a picture will never
+            // become one, and that case was being treated as temporary.
+            //
+            // The cost of that was not small. Every repaint asked again, the
+            // request succeeded again, the decode failed again, and with half
+            // a dozen videos in a channel the client spent the rest of the
+            // session downloading the same few megabytes over and over, many
+            // times a second. That is what made everything feel slow.
+            const bool arrivedWhole = reply->error() == QNetworkReply::NoError
+                && status >= 200 && status < 300 && !payload.isEmpty();
+
+            const bool permanent = arrivedWhole || status == 403 || status == 404
+                || status == 410 || status == 400 || status == 401;
+
             if (permanent)
                 m_failed.insert(key);
 

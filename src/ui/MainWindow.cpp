@@ -562,9 +562,15 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     connect(m_messageView->verticalScrollBar(), &QScrollBar::valueChanged, this, [this](int value) {
         QScrollBar *bar = m_messageView->verticalScrollBar();
 
-        // The reader taking the wheel. Our own moves are flagged so they do
-        // not count as that.
-        if (!m_autoScrolling)
+        // The reader taking the wheel, and only the reader.
+        //
+        // Position alone is not enough to tell "they scrolled up" from "the
+        // document grew underneath them". Pictures arriving, a late embed,
+        // the layout settling - all of those move the bar without anybody
+        // touching it, and any one of them could cancel the follow and leave
+        // the channel parked half way up. So it is cancelled only after a
+        // wheel, a drag or a key, which are the only ways a person does it.
+        if (!m_autoScrolling && m_readerMoved)
             m_stickToBottom = value >= bar->maximum() - 8;
 
         // Reaching the top to read older messages, and only that.
@@ -581,6 +587,11 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         if (!m_stickToBottom && value <= 120 && bar->maximum() > 0)
             loadOlderMessages();
     });
+
+    // What counts as the reader moving: a wheel, a drag of the bar, or the
+    // keys that scroll. Nothing the program or the layout does reaches here.
+    m_messageView->viewport()->installEventFilter(this);
+    m_messageView->verticalScrollBar()->installEventFilter(this);
 
     // The document finishing its measuring, which happens in pieces and long
     // after the text was set: first the text, then each picture as it arrives.
@@ -2215,6 +2226,7 @@ void MainWindow::openChannel(const QString &channelId)
     m_pendingScrollAnchor = -1;
     m_loadingOlder = false;
     m_stickToBottom = true;
+    m_readerMoved = false;
 
     if (channelId.isEmpty()) {
         m_channelTitle->setText(QStringLiteral("Pick a channel"));
@@ -3013,6 +3025,23 @@ Qt::CursorShape MainWindow::cursorForEdges(Qt::Edges edges)
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 {
+    // A person scrolling the conversation, told apart from the document
+    // moving on its own. Watched, never swallowed.
+    if (m_messageView
+        && (watched == m_messageView->viewport()
+            || watched == m_messageView->verticalScrollBar())) {
+        switch (event->type()) {
+        case QEvent::Wheel:
+        case QEvent::MouseButtonPress:
+        case QEvent::KeyPress:
+        case QEvent::TouchBegin:
+            m_readerMoved = true;
+            break;
+        default:
+            break;
+        }
+    }
+
     // Dragging and resizing the window without a frame.
     //
     // The black hole covers every pixel, so it is what the mouse lands on
