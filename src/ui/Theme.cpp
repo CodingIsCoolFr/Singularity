@@ -140,6 +140,7 @@ QString expand(const QString &sheet)
         {QStringLiteral("@border"), QLatin1String(Border)},
         {QStringLiteral("@deleted"), QLatin1String(Deleted)},
         {QStringLiteral("@glass"), rgbaOf(chat, 255)},
+        {QStringLiteral("@glass150"), rgbaOf(chat, 150)},
         {QStringLiteral("@accent22"), rgbaOf(accent, 22)},
         {QStringLiteral("@accent28"), rgbaOf(accent, 28)},
         {QStringLiteral("@accent38"), rgbaOf(accent, 38)},
@@ -406,9 +407,21 @@ QDialog { background-color: @chat; }
 #AppMenu::item:selected { background-color: @hover; color: @text; }
 
 /* Opaque islands. Translucent children of QOpenGLWidget paint black on Windows. */
-#GuildRail, #Sidebar, #ChatColumn, #MemberPanel {
+#GuildRail, #Sidebar, #ChatColumn {
     background-color: @chat;
     border: 1px solid @accent38;
+    border-radius: 18px;
+}
+
+/* The member list is glass rather than a panel.
+
+   Filled solid it read as a grey slab bolted to the side - the one part of
+   the window that looked like somebody else's client. It carries short lines
+   with a lot of space between them, so unlike the conversation it can afford
+   to let the hole through and still be easy to read. */
+#MemberPanel {
+    background-color: @glass150;
+    border: 1px solid @accent22;
     border-radius: 18px;
 }
 #GuildRail QListWidget,
@@ -420,6 +433,9 @@ QDialog { background-color: @chat; }
 }
 
 /* The people down the right. */
+#MemberHeader, #MemberPanel QWidget {
+    background: transparent;
+}
 #MemberToggle {
     background: transparent;
     border: none;

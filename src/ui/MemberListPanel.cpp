@@ -235,7 +235,11 @@ void MemberListPanel::rebuild()
 
         if (row.heading) {
             item->setData(SingularityRoles::Heading, true);
-            item->setText(headingName(row.groupId, guild, row.groupCount));
+
+            // The count off the separate list, falling back to whatever the
+            // heading itself carried - which is usually nothing.
+            const int count = list.groupCounts.value(row.groupId, row.groupCount);
+            item->setText(headingName(row.groupId, guild, count));
             item->setFlags(Qt::NoItemFlags);
             continue;
         }

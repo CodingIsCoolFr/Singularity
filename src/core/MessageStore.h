@@ -140,6 +140,10 @@ struct MemberList
 {
     QList<MemberRow> rows;
 
+    // How many people each group holds, by group id. Sent alongside the rows
+    // rather than on them.
+    QHash<QString, int> groupCounts;
+
     // Discord's own totals, which are not the same as the number of rows:
     // only the first hundred rows are ever asked for.
     int onlineCount = 0;

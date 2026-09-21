@@ -422,6 +422,24 @@ void MessageStore::ingestMemberListUpdate(const QJsonObject &payload)
     if (payload.contains(QStringLiteral("member_count")))
         list.memberCount = payload.value(QStringLiteral("member_count")).toInt();
 
+    // How many are in each group, which arrives beside the rows rather than
+    // on them.
+    //
+    // The headings inside the list carry an id and, often, nothing else -
+    // which is why every one of them read "— 0". The real counts are in this
+    // separate list, and they are kept by id so a heading can be labelled
+    // whenever it is drawn.
+    const QJsonArray groups = payload.value(QStringLiteral("groups")).toArray();
+    if (!groups.isEmpty()) {
+        list.groupCounts.clear();
+        for (const QJsonValue &value : groups) {
+            const QJsonObject group = value.toObject();
+            const QString id = group.value(QStringLiteral("id")).toString();
+            if (!id.isEmpty())
+                list.groupCounts.insert(id, group.value(QStringLiteral("count")).toInt());
+        }
+    }
+
     // The payload is a list of edits to a list. Each edit carries items that
     // are either a group heading or a member, and a member brings a user and
     // their status with it.

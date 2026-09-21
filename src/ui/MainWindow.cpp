@@ -567,7 +567,18 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         if (!m_autoScrolling)
             m_stickToBottom = value >= bar->maximum() - 8;
 
-        if (value <= 120 && bar->maximum() > 0)
+        // Reaching the top to read older messages, and only that.
+        //
+        // The test used to be the position alone, and setting the text of a
+        // channel resets the position to zero - so opening any channel looked
+        // exactly like somebody scrolling up for history. It fetched fifty
+        // more messages, laid the whole conversation out a second time, and
+        // landed the reader at the very top of it. That was both the jump and
+        // the lag on switching channels, from one line.
+        //
+        // Somebody pinned to the newest message is not reading history, so
+        // that alone rules it out.
+        if (!m_stickToBottom && value <= 120 && bar->maximum() > 0)
             loadOlderMessages();
     });
 
