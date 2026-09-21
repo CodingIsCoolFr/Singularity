@@ -2602,6 +2602,67 @@ void MainWindow::reportMemory()
              .arg(workingSetMb)
              .arg(privateMb)
              .arg(MediaCache::instance().summary(), m_store->memorySummary()));
+
+#ifdef Q_OS_WIN
+    // What the address space is actually made of.
+    //
+    // Media and messages come to sixty megabytes and the process is at five
+    // hundred and eighty, so the rest is something nobody has counted. Adding
+    // another cache counter would only be another guess; walking the address
+    // space says what kind of memory it is, which narrows it to a cause.
+    //
+    //   heap     - memory this program asked for. Ours to fix.
+    //   mapped   - shared with the graphics driver and the like. Usually not.
+    //   code     - the program and its libraries. Fixed, and large here
+    //              because of FFmpeg and Qt.
+    //
+    // A single huge block is a buffer somebody forgot. Many small ones are a
+    // cache, or a leak of small objects.
+    qint64 heapMb = 0;
+    qint64 mappedMb = 0;
+    qint64 codeMb = 0;
+    qint64 biggestMb = 0;
+    int bigBlocks = 0;
+
+    MEMORY_BASIC_INFORMATION region{};
+    for (const char *address = nullptr;
+         VirtualQuery(address, &region, sizeof(region)) == sizeof(region);) {
+        if (region.State == MEM_COMMIT) {
+            const qint64 mb = qint64(region.RegionSize) / (1024 * 1024);
+            switch (region.Type) {
+            case MEM_PRIVATE:
+                heapMb += mb;
+                if (mb >= 8) {
+                    ++bigBlocks;
+                    biggestMb = qMax(biggestMb, mb);
+                }
+                break;
+            case MEM_MAPPED:
+                mappedMb += mb;
+                break;
+            case MEM_IMAGE:
+                codeMb += mb;
+                break;
+            default:
+                break;
+            }
+        }
+
+        const char *next = static_cast<const char *>(region.BaseAddress) + region.RegionSize;
+        if (next <= address)
+            break;
+        address = next;
+    }
+
+    wlog(QStringLiteral("mem"),
+         QStringLiteral("  made of: %1 MB heap, %2 MB mapped, %3 MB code; "
+                        "%4 blocks of 8 MB or more, biggest %5 MB")
+             .arg(heapMb)
+             .arg(mappedMb)
+             .arg(codeMb)
+             .arg(bigBlocks)
+             .arg(biggestMb));
+#endif
 }
 
 void MainWindow::scheduleRender()
