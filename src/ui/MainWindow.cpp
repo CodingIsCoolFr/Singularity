@@ -298,8 +298,13 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     // to a second, and each one is a full re-layout of a hundred messages -
     // which is the stutter you feel while reading. Collapsing a burst into one
     // redraw costs a few milliseconds of delay nobody can see.
+    // Raised from fifty. A busy server sends edits, deletions and reactions
+    // in bursts, and fifty milliseconds was short enough that a burst still
+    // became two or three full redraws - which the log shows as pairs of
+    // identical lines eighty milliseconds apart. A person cannot see the
+    // difference between this and instant; they can see the redraws.
     m_renderTimer.setSingleShot(true);
-    m_renderTimer.setInterval(50);
+    m_renderTimer.setInterval(120);
     connect(&m_renderTimer, &QTimer::timeout, this, &MainWindow::renderChannel);
 
     connect(m_plugins, &PluginHost::repaintRequested, this, [this]() { scheduleRender(); });
@@ -2288,7 +2293,8 @@ void MainWindow::openChannel(const QString &channelId)
     // A history fetch that has not come back yet carries an anchor saying
     // "keep this many pixels above the bottom", and applying that to a
     // different conversation puts the reader somewhere arbitrary in it.
-    m_pendingScrollAnchor = -1;
+    m_anchorMessageId.clear();
+    m_renderedIds.clear();
     m_loadingOlder = false;
     m_stickToBottom = true;
     m_readerMoved = false;
@@ -2688,6 +2694,14 @@ void MainWindow::renderChannel()
     const int previousPosition = bar->value();
     const bool sameChannel = (m_renderedChannelId == m_currentChannelId);
 
+    // Somebody reading part way up a channel keeps their place, whatever the
+    // reason for this redraw - a reaction, an edit, a message deleted above
+    // them, a picture that finally arrived. Every one of those changes the
+    // height of the document, which is why restoring a pixel position put
+    // them somewhere else.
+    if (sameChannel && !wasAtBottom && m_anchorMessageId.isEmpty())
+        captureScrollAnchor();
+
     const QList<MessageInfo> all = m_store->messages(m_currentChannelId);
     if (all.isEmpty()) {
         m_messageView->setHtml(QStringLiteral("<p class=\"system\">No messages here yet.</p>"));
@@ -2725,11 +2739,17 @@ void MainWindow::renderChannel()
     QString html;
     html.reserve(messages.size() * 400);
 
+    // The ids of what is drawn, in the order drawn. This is what lets a frame
+    // in the document be named: the nth frame is this message.
+    QStringList drawnIds;
+    drawnIds.reserve(messages.size());
+
     MessageInfo previous;
     bool havePrevious = false;
     for (const MessageInfo &message : messages) {
         const bool grouped = havePrevious && shouldGroup(previous, message);
         html += messageHtml(message, grouped);
+        drawnIds.append(message.id);
         previous = message;
         havePrevious = true;
     }
@@ -2781,17 +2801,18 @@ void MainWindow::renderChannel()
 
     m_renderedCount = messages.size();
     m_renderFirst = first;
+    m_renderedIds = drawnIds;
     m_renderedChannelId = m_currentChannelId;
 
-    // Older messages were just put on top, so the whole conversation slid
-    // down. Restoring the old number would jump the reader back up by however
-    // much was added; measuring from the bottom keeps the same words under
-    // the same part of the screen.
-    if (m_pendingScrollAnchor >= 0) {
-        m_autoScrolling = true;
-        bar->setValue(qMax(0, bar->maximum() - m_pendingScrollAnchor));
-        m_autoScrolling = false;
-        m_pendingScrollAnchor = -1;
+    // The message that was under the top edge goes back under the top edge.
+    //
+    // This replaces three separate pieces of pixel arithmetic, each of which
+    // was right about one case and wrong about the others: measuring from the
+    // bottom was correct when messages arrived above, wrong when the window
+    // slid and the bottom moved too, and wrong again when a picture arrived
+    // and changed the height of something in between.
+    if (restoreScrollAnchor()) {
+        m_stickToBottom = false;
         m_messageView->setUpdatesEnabled(true);
         return;
     }
@@ -2819,6 +2840,68 @@ void MainWindow::renderChannel()
     }
 
     m_messageView->setUpdatesEnabled(true);
+}
+
+// Remember which message is at the top of the view, and where.
+//
+// Every jump in this client has come from keeping the reader's place as a
+// number of pixels. Pixels are the wrong unit: the document changes height
+// when messages are added above, removed below, edited, or when a picture
+// finally arrives - and a pixel count means something different after any of
+// those. Measuring from the bottom instead of the top only moved the problem
+// to whichever end happened to change.
+//
+// A message does not have that problem. The one under the top edge of the
+// view is the one somebody is reading, and putting it back where it was is
+// the whole job, whatever happened to the document around it.
+void MainWindow::captureScrollAnchor()
+{
+    m_anchorMessageId.clear();
+    m_anchorOffset = 0;
+
+    if (m_renderedIds.isEmpty() || m_renderedChannelId != m_currentChannelId)
+        return;
+
+    QTextDocument *document = m_messageView->document();
+    const QList<QTextFrame *> rows = document->rootFrame()->childFrames();
+    if (rows.size() != m_renderedIds.size())
+        return;
+
+    const int value = m_messageView->verticalScrollBar()->value();
+
+    for (int i = 0; i < rows.size(); ++i) {
+        const QRectF box = document->documentLayout()->frameBoundingRect(rows.at(i));
+        if (box.bottom() <= value)
+            continue;
+
+        m_anchorMessageId = m_renderedIds.at(i);
+        m_anchorOffset = qRound(box.top()) - value;
+        return;
+    }
+}
+
+bool MainWindow::restoreScrollAnchor()
+{
+    if (m_anchorMessageId.isEmpty())
+        return false;
+
+    const int index = m_renderedIds.indexOf(m_anchorMessageId);
+    m_anchorMessageId.clear();
+    if (index < 0)
+        return false;
+
+    QTextDocument *document = m_messageView->document();
+    const QList<QTextFrame *> rows = document->rootFrame()->childFrames();
+    if (index >= rows.size())
+        return false;
+
+    const QRectF box = document->documentLayout()->frameBoundingRect(rows.at(index));
+
+    QScrollBar *bar = m_messageView->verticalScrollBar();
+    m_autoScrolling = true;
+    bar->setValue(qBound(0, qRound(box.top()) - m_anchorOffset, bar->maximum()));
+    m_autoScrolling = false;
+    return true;
 }
 
 void MainWindow::scrollToBottom()
@@ -2936,6 +3019,7 @@ void MainWindow::appendMessageToView(const MessageInfo &message, bool grouped)
     // One more message is on screen than a moment ago, and the drawn window
     // has to say so or the next redraw would leave it out.
     ++m_renderedCount;
+    m_renderedIds.append(message.id);
     m_renderWindow = qMin(MaxRenderedMessages, m_renderWindow + 1);
 
     if (wasAtBottom) {
@@ -3898,38 +3982,25 @@ void MainWindow::reachedTop()
     m_scrolledSinceLoad = false;
     m_growCooldown.restart();
 
+    // Whatever happens next, the reader stays looking at the message they are
+    // looking at. Nothing below computes a position any more.
+    captureScrollAnchor();
+
     if (!canDrawMore && !canSlideBack) {
         loadOlderMessages();
         return;
     }
 
-    QScrollBar *bar = m_messageView->verticalScrollBar();
-
     if (canDrawMore) {
-        // The window is getting bigger and the end of it stays put, so the
-        // reader's distance from the bottom is what stays meaningful.
-        m_pendingScrollAnchor = bar->maximum() - bar->value();
         m_renderWindow = qMin(MaxRenderedMessages, m_renderedCount + RenderWindowStep);
-        renderChannel();
-        return;
+    } else {
+        // At full size, so the window slides: messages arrive at the top and
+        // the same number leave at the bottom.
+        m_windowAtTail = false;
+        m_renderFirst = qMax(0, m_renderFirst - RenderWindowStep);
     }
 
-    // At full size, so the window slides: messages arrive at the top and the
-    // same number leave at the bottom.
-    //
-    // Measuring from the bottom is wrong here, because the bottom moved too -
-    // the document is about the same height as before, so that measurement
-    // put the reader back at the very top. Which is the condition that brought
-    // them here. A step of messages was added above them, so that is where
-    // they now are, a step into a window of MaxRenderedMessages.
-    m_windowAtTail = false;
-    m_renderFirst = qMax(0, m_renderFirst - RenderWindowStep);
-    m_pendingScrollAnchor = -1;
     renderChannel();
-
-    m_autoScrolling = true;
-    bar->setValue(bar->maximum() * RenderWindowStep / MaxRenderedMessages);
-    m_autoScrolling = false;
 }
 
 void MainWindow::loadOlderMessages()
@@ -3946,11 +4017,11 @@ void MainWindow::loadOlderMessages()
     m_loadingOlder = true;
     const QString channelId = m_currentChannelId;
 
-    // Where the view is now, measured from the bottom. The document is about
-    // to grow above this point, so the number that stays meaningful is the
-    // distance to the end, not the distance from the start.
-    QScrollBar *bar = m_messageView->verticalScrollBar();
-    m_pendingScrollAnchor = bar->maximum() - bar->value();
+    // Which message the reader is on, so the fifty that are about to arrive
+    // above it do not move them. Captured now rather than when the reply
+    // lands, because by then the view may have moved on.
+    if (m_anchorMessageId.isEmpty())
+        captureScrollAnchor();
 
     m_rest->fetchMessages(
         channelId, 50,
@@ -3984,7 +4055,7 @@ void MainWindow::loadOlderMessages()
         },
         [this, channelId](const RestClient::Error &error) {
             m_loadingOlder = false;
-            m_pendingScrollAnchor = -1;
+            m_anchorMessageId.clear();
             wlog(QStringLiteral("rest"), QStringLiteral("older messages failed for %1: HTTP %2")
                                              .arg(channelId)
                                              .arg(error.httpStatus));

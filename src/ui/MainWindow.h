@@ -135,6 +135,11 @@ private:
 
     // Writes what the program is holding on to into the log.
     void reportMemory();
+
+    // Keeping the reader's place across a redraw, by message rather than by
+    // pixel count.
+    void captureScrollAnchor();
+    bool restoreScrollAnchor();
     QString messageHtml(const MessageInfo &message, bool grouped);
     QString renderContent(const QString &raw) const;
     QString stickersHtml(const MessageInfo &message) const;
@@ -290,7 +295,14 @@ private:
     void loadOlderMessages();
     bool m_loadingOlder = false;
     QSet<QString> m_fullyLoaded;
-    int m_pendingScrollAnchor = -1;
+    // The reader's place, kept as a message rather than a pixel count. See
+    // captureScrollAnchor for why the pixel count never worked.
+    QString m_anchorMessageId;
+    int m_anchorOffset = 0;
+
+    // The ids of the messages currently drawn, in order, so the nth frame of
+    // the document can be named.
+    QStringList m_renderedIds;
     QString m_pendingVoiceToken;
     QString m_pendingVoiceEndpoint;
     QSet<QString> m_speakingUsers;
