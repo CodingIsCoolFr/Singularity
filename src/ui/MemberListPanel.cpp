@@ -15,7 +15,7 @@
 namespace {
 
 constexpr int PanelWidth = 232;
-constexpr int StripWidth = 30;
+constexpr int StripWidth = 34;
 
 // What somebody is doing, in one line.
 //
@@ -71,7 +71,8 @@ MemberListPanel::MemberListPanel(MessageStore *store, QWidget *parent)
 
     // The header stays visible when the rest is folded away, so there is
     // always something to click to bring it back.
-    auto *header = new QWidget(this);
+    m_header = new QWidget(this);
+    QWidget *header = m_header;
     header->setObjectName(QStringLiteral("MemberHeader"));
     header->setFixedHeight(40);
 
@@ -142,14 +143,19 @@ MemberListPanel::MemberListPanel(MessageStore *store, QWidget *parent)
 
 void MemberListPanel::setGuild(const QString &guildId)
 {
+    // A direct message and the friends page have no members to list, so the
+    // whole panel goes rather than standing there empty.
+    //
+    // Set before the early return below, not after. Skipping out when the id
+    // had not changed also skipped this, and since both the starting id and
+    // the id of "no server" are empty, the panel was never hidden at startup
+    // - it sat there beside the friends list with nothing in it.
+    setVisible(!guildId.isEmpty());
+
     if (m_guildId == guildId)
         return;
 
     m_guildId = guildId;
-
-    // A direct message has no members to list, so the whole panel goes rather
-    // than standing there empty.
-    setVisible(!guildId.isEmpty());
     rebuild();
 }
 
@@ -159,11 +165,36 @@ void MemberListPanel::setCollapsed(bool collapsed)
     m_body->setVisible(!collapsed);
     setFixedWidth(collapsed ? StripWidth : PanelWidth);
 
+    // Folded, the whole strip is the button.
+    //
+    // It used to be a forty pixel tall header with fourteen pixels of padding
+    // inside a thirty pixel wide strip, so the arrow that brings it back was
+    // clipped out of existence - there was no way to reopen it at all. Now the
+    // button fills the strip top to bottom, and the padding that positions the
+    // word "Members" is dropped when there is no word.
+    m_header->setFixedHeight(collapsed ? QWIDGETSIZE_MAX : 40);
+    m_header->setMinimumHeight(collapsed ? 0 : 40);
+
+    m_toggle->setStyleSheet(
+        collapsed
+            ? QStringLiteral("QPushButton { background: transparent; border: none; padding: 0; "
+                             "color: %1; font-size: 16px; }"
+                             "QPushButton:hover { background: %2; color: %3; }")
+                  .arg(QLatin1String(Theme::TextMuted), QLatin1String(Theme::SurfaceHover),
+                       QLatin1String(Theme::TextPrimary))
+            : QString());
+
     m_toggle->setText(collapsed ? QStringLiteral("‹") : QStringLiteral("Members  ›"));
     m_toggle->setToolTip(collapsed ? QStringLiteral("Show the member list")
                                    : QStringLiteral("Hide the member list"));
 
     AppConfig::instance().setValue(QStringLiteral("appearance/memberListCollapsed"), collapsed);
+
+    // Nothing is kept up to date while folded, so opening it has to build the
+    // list rather than reveal a stale one.
+    if (!collapsed)
+        rebuild();
+
     emit collapsedChanged(collapsed);
 }
 

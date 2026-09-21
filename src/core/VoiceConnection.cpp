@@ -1531,7 +1531,17 @@ void VoiceConnection::onSendTick()
 void VoiceConnection::reportAudioStats()
 {
     const int lost = m_statSealFailed + m_statOpenFailed + m_statNoOwner + m_statUndecryptable;
-    if (m_statSent == 0 && m_statPlayed == 0 && lost == 0)
+
+    // Pictures we sent count as something happening.
+    //
+    // They did not, and that is why a broken share left no trace: the
+    // connection carrying a Go Live stream opens no microphone and plays no
+    // sound, so every one of the counts below stayed at zero and this
+    // returned without printing. The one line that would have said what was
+    // happening was suppressed by the one case it was needed for.
+    const int video = m_statVideoSent + m_statVideoSealFailed;
+
+    if (m_statSent == 0 && m_statPlayed == 0 && lost == 0 && video == 0)
         return;
 
     QString line = QStringLiteral("sent %1, played %2").arg(m_statSent).arg(m_statPlayed);
@@ -1551,10 +1561,15 @@ void VoiceConnection::reportAudioStats()
 
     // Our own share, counted for the same reason as everything else here: a
     // viewer seeing nothing needs this line to say whether we sent anything.
-    if (m_statVideoSent > 0 || m_statVideoSealFailed > 0) {
-        line += QStringLiteral(", sent %1 video packets").arg(m_statVideoSent);
+    if (m_sendingVideo || m_statVideoSent > 0 || m_statVideoSealFailed > 0) {
+        line += QStringLiteral(", sent %1 video packets on ssrc %2")
+                    .arg(m_statVideoSent)
+                    .arg(m_videoSsrc);
         if (m_statVideoSealFailed > 0)
-            line += QStringLiteral(" (%1 unsealed, no group key)").arg(m_statVideoSealFailed);
+            line += QStringLiteral(" (%1 refused by the encryption layer, no group key yet)")
+                        .arg(m_statVideoSealFailed);
+        if (m_daveVersion > 0)
+            line += QStringLiteral(" [end-to-end v%1]").arg(m_daveVersion);
         m_statVideoSent = 0;
         m_statVideoSealFailed = 0;
     }

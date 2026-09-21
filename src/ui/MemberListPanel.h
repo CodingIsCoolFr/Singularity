@@ -47,6 +47,7 @@ private:
     QString m_guildId;
     bool m_collapsed = false;
 
+    QWidget *m_header = nullptr;
     QWidget *m_body = nullptr;
     QLabel *m_counts = nullptr;
     QPushButton *m_toggle = nullptr;
