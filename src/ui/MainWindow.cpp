@@ -2253,9 +2253,26 @@ void MainWindow::openChannel(const QString &channelId)
     m_messageView->setHtml(QStringLiteral("<p class=\"system\">Loading messages...</p>"));
     const int limit =
         AppConfig::instance().value(QStringLiteral("appearance/historyLimit"), HistoryLimit).toInt();
+
+    // How long Discord took to hand the messages over.
+    //
+    // A channel opened for the first time has to fetch, and a channel opened
+    // again does not - which is exactly the difference somebody describes as
+    // "it lags the first time". Whether that wait is the network or this
+    // client's own drawing cannot be told apart by watching, so it is timed.
+    auto started = std::make_shared<QElapsedTimer>();
+    started->start();
+
     m_rest->fetchMessages(
         channelId, limit,
-        [this, channelId](const QJsonArray &messages) { m_store->setHistory(channelId, messages); },
+        [this, channelId, started](const QJsonArray &messages) {
+            wlog(QStringLiteral("rest"),
+                 QStringLiteral("history for %1 arrived in %2 ms (%3 messages)")
+                     .arg(channelId)
+                     .arg(started->elapsed())
+                     .arg(messages.size()));
+            m_store->setHistory(channelId, messages);
+        },
         [this, channelId](const RestClient::Error &error) {
             wlog(QStringLiteral("rest"), QStringLiteral("history failed for %1: HTTP %2 %3")
                                              .arg(channelId).arg(error.httpStatus).arg(error.message));
@@ -2321,6 +2338,13 @@ void MainWindow::renderChannel()
         return;
     }
 
+    // Timed, in two halves, because they are fixed in completely different
+    // ways and there is no telling them apart by feel. Building the markup is
+    // our own code; laying it out is the text engine, and the only lever
+    // there is how much is handed to it.
+    QElapsedTimer clock;
+    clock.start();
+
     QString html;
     html.reserve(messages.size() * 400);
 
@@ -2332,6 +2356,8 @@ void MainWindow::renderChannel()
         previous = message;
         havePrevious = true;
     }
+
+    const qint64 builtMs = clock.elapsed();
 
     m_lastRendered = previous;
     m_hasLastRendered = havePrevious;
@@ -2351,6 +2377,18 @@ void MainWindow::renderChannel()
     QTextCursor end(m_messageView->document());
     end.movePosition(QTextCursor::End);
     m_messageView->setTextCursor(end);
+
+    const qint64 laidOutMs = clock.elapsed() - builtMs;
+
+    // Only when it was slow enough to be felt. A line every time a reaction
+    // arrives would bury the one that matters.
+    if (builtMs + laidOutMs > 40) {
+        wlog(QStringLiteral("ui"),
+             QStringLiteral("drew %1 messages: %2 ms building, %3 ms laying out")
+                 .arg(messages.size())
+                 .arg(builtMs)
+                 .arg(laidOutMs));
+    }
 
     m_renderedChannelId = m_currentChannelId;
 
