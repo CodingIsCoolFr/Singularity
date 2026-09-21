@@ -107,10 +107,26 @@ private:
     // would actually use.
     static constexpr int RenderWindowStep = 40;
 
+    // The ceiling the window stops growing at.
+    //
+    // 0.5.3 had no ceiling and one session reached three hundred and fifty
+    // messages drawn, at 301 ms a redraw. Past this the window slides instead:
+    // messages appear at the top and leave at the bottom, so a redraw costs
+    // the same however far back somebody reads.
+    static constexpr int MaxRenderedMessages = 120;
+
     // What is drawn, against what is held. They differ because a channel opens
     // showing only its newest messages.
     int m_renderWindow = RenderWindowStep;
     int m_renderedCount = 0;
+
+    // Where the window sits. It follows the newest message until somebody
+    // reads far enough back that it has to let go of the end.
+    int m_renderFirst = 0;
+    bool m_windowAtTail = true;
+
+    // Stops one scroll from widening the window several times over.
+    QElapsedTimer m_growCooldown;
 
     // Writes what the program is holding on to into the log.
     void reportMemory();

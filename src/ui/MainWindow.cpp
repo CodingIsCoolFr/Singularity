@@ -599,6 +599,16 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         //
         // Somebody pinned to the newest message is not reading history, so
         // that alone rules it out.
+        // Back at the bottom, so the window follows the newest message again.
+        // Without this, reading a long way back would leave everything said
+        // since then off the end of what is drawn.
+        if (!m_windowAtTail && value >= bar->maximum() - 8 && bar->maximum() > 0) {
+            m_windowAtTail = true;
+            m_stickToBottom = true;
+            scheduleRender();
+            return;
+        }
+
         if (!m_stickToBottom && value <= 120 && bar->maximum() > 0)
             reachedTop();
     });
@@ -2286,6 +2296,9 @@ void MainWindow::openChannel(const QString &channelId)
     // A new channel starts showing only its newest messages again.
     m_renderWindow = RenderWindowStep;
     m_renderedCount = 0;
+    m_renderFirst = 0;
+    m_windowAtTail = true;
+    m_growCooldown.invalidate();
 
     if (channelId.isEmpty()) {
         m_channelTitle->setText(QStringLiteral("Pick a channel"));
@@ -2608,18 +2621,23 @@ void MainWindow::renderChannel()
         return;
     }
 
-    // Only the newest handful is drawn.
+    // A window onto the conversation, which slides rather than grows.
     //
-    // This is the part the official client does that this one did not. Layout
-    // cost is per message, and a hundred of them was being laid out to show
-    // the ten or fifteen that fit on screen - every channel opened, every time.
-    // The rest is drawn when somebody scrolls up far enough to want it, which
-    // costs nothing until they do.
+    // 0.5.3 drew only the newest forty, which worked, and then grew that
+    // window every time somebody reached the top - with no ceiling. One
+    // session went 40, 90, 150, 200, 250, 300, 350, and the redraw that had
+    // come down to 22 ms was back up to 301. A window with no far edge is not
+    // a window.
     //
-    // Everything above still exists in the store; this is about what the text
-    // engine is asked to measure, not about what has been fetched.
-    const int take = qMin(m_renderWindow, int(all.size()));
-    const QList<MessageInfo> messages = all.mid(all.size() - take);
+    // So there are two numbers: how many to draw, which stops at
+    // MaxRenderedMessages, and where to start, which moves back when somebody
+    // reads further up. Past the ceiling the window slides: messages appear at
+    // the top and leave at the bottom, and the cost of a redraw stops growing.
+    const int held = int(all.size());
+    const int take = qMin(qMin(m_renderWindow, MaxRenderedMessages), held);
+    const int first = m_windowAtTail ? held - take : qBound(0, m_renderFirst, held - take);
+
+    const QList<MessageInfo> messages = all.mid(first, take);
 
     // Timed, in two halves, because they are fixed in completely different
     // ways and there is no telling them apart by feel. Building the markup is
@@ -2686,6 +2704,7 @@ void MainWindow::renderChannel()
     }
 
     m_renderedCount = messages.size();
+    m_renderFirst = first;
     m_renderedChannelId = m_currentChannelId;
 
     // Older messages were just put on top, so the whole conversation slid
@@ -2777,13 +2796,12 @@ bool MainWindow::replaceMessageInView(const QString &messageId)
     if (rows.size() != m_renderedCount)
         return false;
 
-    // A message above the drawn window is not on screen, so there is nothing
-    // to redraw and nothing to rebuild either.
-    const int firstDrawn = messages.size() - m_renderedCount;
-    if (index < firstDrawn)
+    // A message outside the drawn window is not on screen, so there is
+    // nothing to redraw and nothing to rebuild either.
+    if (index < m_renderFirst || index >= m_renderFirst + m_renderedCount)
         return true;
 
-    QTextFrame *frame = rows.at(index - firstDrawn);
+    QTextFrame *frame = rows.at(index - m_renderFirst);
     const int from = frame->firstPosition() - 1;
     const int to = frame->lastPosition() + 1;
     if (from < 0 || to > document->characterCount())
@@ -2825,6 +2843,13 @@ bool MainWindow::replaceMessageInView(const QString &messageId)
 
 void MainWindow::appendMessageToView(const MessageInfo &message, bool grouped)
 {
+    // Somebody reading back through history is not looking at the newest
+    // message, and the window is not showing it. Adding it to the bottom of
+    // what they are reading would put it in the wrong place; it appears when
+    // they come back down, which is when the window returns to the end.
+    if (!m_windowAtTail)
+        return;
+
     QScrollBar *bar = m_messageView->verticalScrollBar();
     const bool wasAtBottom = bar->value() >= bar->maximum() - 40;
 
@@ -2835,7 +2860,7 @@ void MainWindow::appendMessageToView(const MessageInfo &message, bool grouped)
     // One more message is on screen than a moment ago, and the drawn window
     // has to say so or the next redraw would leave it out.
     ++m_renderedCount;
-    ++m_renderWindow;
+    m_renderWindow = qMin(MaxRenderedMessages, m_renderWindow + 1);
 
     if (wasAtBottom) {
         m_stickToBottom = true;
@@ -3768,18 +3793,51 @@ void MainWindow::reachedTop()
     if (m_currentChannelId.isEmpty())
         return;
 
-    const int held = m_store->messages(m_currentChannelId).size();
-    if (m_renderedCount < held) {
-        // Keep the reader's place: the document is about to grow above them.
-        QScrollBar *bar = m_messageView->verticalScrollBar();
-        m_pendingScrollAnchor = bar->maximum() - bar->value();
+    // A hard stop on doing this twice for one scroll.
+    //
+    // This is what ran away. Growing the window is instant, unlike a fetch,
+    // so there was no request in flight to act as a guard - and the anchor
+    // that keeps the reader's place puts them near the top again by design,
+    // which fires this, which grows it again. Seven times in twenty seconds,
+    // each redraw costing more than the last.
+    if (m_growCooldown.isValid() && m_growCooldown.elapsed() < 400)
+        return;
 
-        m_renderWindow = m_renderedCount + RenderWindowStep;
-        renderChannel();
+    const int held = m_store->messages(m_currentChannelId).size();
+
+    const bool canDrawMore = m_renderedCount < held && m_renderWindow < MaxRenderedMessages;
+    const bool canSlideBack = m_renderFirst > 0;
+
+    if (!canDrawMore && !canSlideBack) {
+        loadOlderMessages();
         return;
     }
 
-    loadOlderMessages();
+    // Keep the reader's place: the document is about to grow above them.
+    QScrollBar *bar = m_messageView->verticalScrollBar();
+    m_pendingScrollAnchor = bar->maximum() - bar->value();
+    m_growCooldown.restart();
+
+    if (canDrawMore) {
+        m_renderWindow = qMin(MaxRenderedMessages, m_renderedCount + RenderWindowStep);
+    } else {
+        // At full size already, so the far edge comes with us.
+        m_windowAtTail = false;
+        m_renderFirst = qMax(0, m_renderFirst - RenderWindowStep);
+    }
+
+    renderChannel();
+
+    // Land clear of the top.
+    //
+    // Without this the reader is put back within a few pixels of the top,
+    // which is the condition that brought them here - so it happened again on
+    // the very next scroll event, whether or not anybody scrolled.
+    if (bar->value() < 160 && bar->maximum() > 160) {
+        m_autoScrolling = true;
+        bar->setValue(160);
+        m_autoScrolling = false;
+    }
 }
 
 void MainWindow::loadOlderMessages()
@@ -3809,10 +3867,13 @@ void MainWindow::loadOlderMessages()
 
             const int added = m_store->prependHistory(channelId, messages);
 
-            // Messages that arrive above the ones on screen have to be inside
-            // the drawn window, or they would be fetched and then not shown.
-            if (added > 0 && channelId == m_currentChannelId)
-                m_renderWindow = m_renderedCount + added;
+            // The messages that just arrived are older than everything held,
+            // so the window goes to the very start to show them. It does not
+            // get bigger - that is what ran away in 0.5.3.
+            if (added > 0 && channelId == m_currentChannelId) {
+                m_windowAtTail = false;
+                m_renderFirst = 0;
+            }
 
             if (added == 0) {
                 m_fullyLoaded.insert(channelId);
