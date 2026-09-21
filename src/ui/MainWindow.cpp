@@ -1385,14 +1385,63 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
                 ? QString()
                 : data.value(QStringLiteral("session_id")).toString();
 
+            const QString wasIn = m_voiceChannelId;
+
             if (nowIn != m_voiceChannelId) {
                 m_voiceChannelId = nowIn;
                 updateVoicePanel();
             }
-            if (nowIn.isEmpty())
+
+            if (nowIn.isEmpty()) {
                 m_voice->disconnectFromVoice();
-            else
+                return;
+            }
+
+            // Discord has put us somewhere. Make the actual connection agree
+            // with that, however we got there.
+            //
+            // This is what a "Join to Create" channel needs. You join the
+            // lobby, a bot makes a channel and moves you, and the move is not
+            // something this client asked for: the voice server details we
+            // were given belong to the channel we are no longer in, and they
+            // were used up connecting to it. The old code called
+            // tryStartVoice() here, which found nothing left to use and
+            // returned quietly - so the connection stayed pointed at a channel
+            // we had left, Discord tore it down, and it looked like being
+            // kicked straight back out.
+            //
+            // Being moved by a moderator is the same shape, and so is the
+            // version where Discord sends the move as a leave followed by a
+            // join rather than as one event.
+            const bool alreadyThere = m_voice->state() == VoiceConnection::State::Connected
+                && m_voice->channelId() == nowIn;
+            if (alreadyThere)
+                return;
+
+            // A join we started is still being answered; its own events are on
+            // the way and asking again would only duplicate it.
+            if (m_voiceWatchdog.isActive() || !m_pendingVoiceToken.isEmpty()) {
                 tryStartVoice();
+                return;
+            }
+
+            // Nothing in flight and nothing to use, so ask for this channel
+            // from the beginning. Discord answers with a fresh voice server.
+            wlog(QStringLiteral("voice"),
+                 QStringLiteral("we were moved %1-> %2; asking for that channel's voice server")
+                     .arg(wasIn.isEmpty() ? QString() : QStringLiteral("from %1 ").arg(wasIn),
+                          nowIn));
+
+            m_voice->disconnectFromVoice();
+            m_pendingVoiceToken.clear();
+            m_pendingVoiceEndpoint.clear();
+
+            AppConfig &config = AppConfig::instance();
+            m_gateway->joinVoice(m_voiceGuildId, nowIn,
+                                 config.value(QStringLiteral("voice/joinMuted"), false).toBool(),
+                                 config.value(QStringLiteral("voice/joinDeafened"), false).toBool(),
+                                 true);
+            m_voiceWatchdog.start(10000);
         }
         return;
     }
