@@ -270,6 +270,13 @@
         <p>You cannot type in the message view. Qt did not know that, and kept every channel opened, every reaction and every picture that landed so it could be undone. Fetching ahead had the same shape of problem: six channels a server, none of them ever released. Twenty four are kept now.</p>
       </div>
     </div>
+
+    <p class="lede" style="margin:24px 0 0">It settled at <b>528 MB</b>, and the picture cache did what a cache is supposed to do: it filled to 95 MB, reached its ceiling, and fell back to 59 MB on its own rather than growing for ever.</p>
+
+    <p class="kicker" style="margin:40px 0 0">The last of it</p>
+    <h2 style="margin:8px 0 0">Forty, not a hundred</h2>
+    <p class="lede">With memory written down every minute, the log gave up the last piece. Building the markup for a hundred messages is <b>1 ms</b>. Laying them out is 42 to 197 — and that cost is paid per message. A hundred were being measured to show the ten or fifteen that fit on a screen, on every channel opened, every time.</p>
+    <p class="lede" style="margin:16px 0 0">A channel now draws its newest forty. Scrolling to the top draws forty more, instantly and with no request at all, because those messages were already here and simply were not drawn. Only when everything held is on screen is there anything to ask Discord for. Nothing about what gets fetched changed — this is about what the text engine is asked to measure.</p>
   </div>
 </section>
 
