@@ -1180,6 +1180,19 @@ void VoiceConnection::sendSelectProtocol(const QString &address, quint16 port)
     // Without this list the server assumes we cannot decode video, and either
     // sends nothing or sends a codec we never open. H.264 on 101 is the
     // fallback every official client still understands.
+    //
+    // `encode` said false here, on every connection, including the one
+    // carrying a screen share. Discord's own documentation is unambiguous
+    // about what that means: "setting encode: false means I cannot send video
+    // in this format". The server picks a client's send codec from the ones
+    // that client says it can encode, so saying false for the only video
+    // codec offered leaves it with nothing to pick - the stream is created,
+    // the viewer is told it exists, and no path is ever set up to carry it.
+    //
+    // That is a viewer sitting on a loading screen for ever while this end
+    // looks perfectly healthy, which is exactly what happened. Everything
+    // downstream of it - the ssrc, the packets, the encoder - was right, and
+    // none of it could matter.
     QJsonArray codecs;
     codecs.append(QJsonObject{
         {QStringLiteral("name"), QStringLiteral("opus")},
@@ -1193,9 +1206,14 @@ void VoiceConnection::sendSelectProtocol(const QString &address, quint16 port)
         {QStringLiteral("priority"), 1000},
         {QStringLiteral("payload_type"), static_cast<int>(m_videoPayloadType)},
         {QStringLiteral("rtx_payload_type"), static_cast<int>(m_rtxPayloadType)},
-        {QStringLiteral("encode"), false},
+        {QStringLiteral("encode"), true},
         {QStringLiteral("decode"), true},
     });
+
+    wlog(QStringLiteral("voice"),
+         QStringLiteral("offering H264 on %1 (rtx %2), encode and decode")
+             .arg(m_videoPayloadType)
+             .arg(m_rtxPayloadType));
 
     QJsonArray experiments;
     for (const QString &name : m_experiments)
