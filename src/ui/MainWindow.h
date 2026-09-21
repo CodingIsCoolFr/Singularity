@@ -93,6 +93,10 @@ private:
     void openChannel(const QString &channelId);
     void renderChannel();
     void appendMessageToView(const MessageInfo &message, bool grouped);
+
+    // Redraws one message in place. False means it could not be done safely
+    // and the whole channel has to be drawn again.
+    bool replaceMessageInView(const QString &messageId);
     QString messageHtml(const MessageInfo &message, bool grouped);
     QString renderContent(const QString &raw) const;
     QString stickersHtml(const MessageInfo &message) const;

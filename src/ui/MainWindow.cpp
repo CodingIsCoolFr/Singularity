@@ -57,7 +57,10 @@
 #include <QShowEvent>
 #include <QSizePolicy>
 #include <QStatusBar>
+#include <QTextCursor>
+#include <QTextDocument>
 #include <QTextEdit>
+#include <QTextFrame>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QWindow>
@@ -302,10 +305,16 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         if (channelId == m_currentChannelId)
             scheduleRender();
     });
-    connect(m_store, &MessageStore::messageChanged, this, [this](const QString &channelId, const QString &) {
-        if (channelId == m_currentChannelId)
-            scheduleRender();
-    });
+    connect(m_store, &MessageStore::messageChanged, this,
+            [this](const QString &channelId, const QString &messageId) {
+                if (channelId != m_currentChannelId)
+                    return;
+                // A reaction or an edit touches one message. Rebuilding the
+                // whole conversation for it is what made a busy channel feel
+                // heavy, so try to redraw just that one first.
+                if (!replaceMessageInView(messageId))
+                    scheduleRender();
+            });
 
     // A green ring appears round whoever is talking.
     connect(m_voice, &VoiceConnection::speakingChanged, this,
@@ -2481,6 +2490,14 @@ void MainWindow::pumpPrefetch()
             if (!m_store->hasHistory(channelId))
                 m_store->setHistory(channelId, messages);
 
+            // Logged, because until now the log showed only the channels that
+            // were fetched after a click - which made fetching ahead look like
+            // it was doing nothing whenever it was in fact working.
+            wlog(QStringLiteral("ui"),
+                 QStringLiteral("fetched ahead: %1 (%2 messages)")
+                     .arg(channelId)
+                     .arg(messages.size()));
+
             m_prefetchTimer.start();
         },
         [this, channelId](const RestClient::Error &error) {
@@ -2642,6 +2659,84 @@ void MainWindow::scrollToBottom()
     m_autoScrolling = true;
     bar->setValue(bar->maximum());
     m_autoScrolling = false;
+}
+
+// Redraw a single message where it sits.
+//
+// Every message is written as one <table>, and Qt turns each table into a
+// frame of the document. So the frames under the root frame line up one for
+// one with the messages on screen, in the same order, and a frame knows its
+// own first and last position however much text has been added above it.
+//
+// That makes an exact swap possible: select the frame, delete it, insert the
+// new markup in its place. Only the blocks that changed are laid out again.
+//
+// Returns false whenever anything does not add up, and the caller then falls
+// back to the full redraw. Nothing here is allowed to leave a half edited
+// document on screen.
+bool MainWindow::replaceMessageInView(const QString &messageId)
+{
+    if (m_currentChannelId.isEmpty() || m_renderedChannelId != m_currentChannelId)
+        return false;
+
+    const QList<MessageInfo> messages = m_store->messages(m_currentChannelId);
+    int index = -1;
+    for (int i = 0; i < messages.size(); ++i) {
+        if (messages.at(i).id == messageId) {
+            index = i;
+            break;
+        }
+    }
+    if (index < 0)
+        return false;
+
+    QTextDocument *document = m_messageView->document();
+    const QList<QTextFrame *> rows = document->rootFrame()->childFrames();
+
+    // The one to one mapping is the whole basis of this. If it does not hold -
+    // a system line, an empty channel, a redraw that has not happened yet -
+    // there is no way to know which frame is which, so do not guess.
+    if (rows.size() != messages.size())
+        return false;
+
+    QTextFrame *frame = rows.at(index);
+    const int from = frame->firstPosition() - 1;
+    const int to = frame->lastPosition() + 1;
+    if (from < 0 || to > document->characterCount())
+        return false;
+
+    const bool grouped = index > 0 && shouldGroup(messages.at(index - 1), messages.at(index));
+
+    QScrollBar *bar = m_messageView->verticalScrollBar();
+    const bool wasAtBottom = m_stickToBottom || bar->value() >= bar->maximum() - 8;
+    const int previousPosition = bar->value();
+
+    m_messageView->setUpdatesEnabled(false);
+
+    QTextCursor cursor(document);
+    cursor.beginEditBlock();
+    cursor.setPosition(from);
+    cursor.setPosition(to, QTextCursor::KeepAnchor);
+    cursor.removeSelectedText();
+    cursor.insertHtml(messageHtml(messages.at(index), grouped));
+    cursor.endEditBlock();
+
+    if (wasAtBottom) {
+        m_stickToBottom = true;
+        scrollToBottom();
+    } else {
+        m_autoScrolling = true;
+        bar->setValue(qMin(previousPosition, bar->maximum()));
+        m_autoScrolling = false;
+    }
+
+    m_messageView->setUpdatesEnabled(true);
+
+    // The last message may have been the one rewritten, so the record of it
+    // that grouping uses has to follow.
+    m_lastRendered = messages.last();
+    m_hasLastRendered = true;
+    return true;
 }
 
 void MainWindow::appendMessageToView(const MessageInfo &message, bool grouped)

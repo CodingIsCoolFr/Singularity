@@ -8,6 +8,8 @@
 #include <QTextDocument>
 #include <QTimer>
 
+#include <utility>
+
 namespace {
 
 // Discord draws avatars at 40 and caps picture previews at roughly this box.
@@ -49,16 +51,55 @@ ChatView::ChatView(QWidget *parent)
     m_animationTimer.setInterval(AnimationFrameMs);
     connect(&m_animationTimer, &QTimer::timeout, this, &ChatView::pumpAnimations);
 
-    // When a download lands, hand it to the document and lay out again so it
-    // appears without rebuilding the whole view.
+    // Pictures that land are collected and dealt with together.
+    //
+    // A picture appearing changes the height of the page, so the conversation
+    // really does have to be laid out again. Doing that once per picture meant
+    // a hundred full re-layouts while a channel filled in. They now share one.
+    m_arrivalTimer.setSingleShot(true);
+    m_arrivalTimer.setInterval(90);
+    connect(&m_arrivalTimer, &QTimer::timeout, this, &ChatView::flushArrivals);
+
     connect(&MediaCache::instance(), &MediaCache::ready, this, [this](const QUrl &url) {
-        if (!m_wanted.contains(url.toString()))
+        const QString key = url.toString();
+        if (!m_wanted.contains(key))
             return;
+
+        // The old pixmap, if any, was drawn from nothing.
+        m_prepared.remove(key);
+        m_arrived.insert(key);
+
+        if (!m_arrivalTimer.isActive())
+            m_arrivalTimer.start();
+    });
+}
+
+void ChatView::flushArrivals()
+{
+    if (m_arrived.isEmpty())
+        return;
+
+    for (const QString &key : std::as_const(m_arrived)) {
+        const QUrl url(key);
         adoptAnimation(url);
         document()->addResource(QTextDocument::ImageResource, url, prepare(url));
-        document()->markContentsDirty(0, document()->characterCount());
-        viewport()->update();
-    });
+    }
+    m_arrived.clear();
+
+    QScrollBar *bar = verticalScrollBar();
+    const bool wasAtBottom = bar->value() >= bar->maximum() - 4;
+    const int position = bar->value();
+
+    document()->markContentsDirty(0, document()->characterCount());
+
+    // Pictures appearing above where you are reading push the text down. Being
+    // at the bottom means staying at the bottom.
+    if (wasAtBottom)
+        bar->setValue(bar->maximum());
+    else if (bar->value() != position)
+        bar->setValue(position);
+
+    viewport()->update();
 }
 
 ChatView::~ChatView() = default;
@@ -90,6 +131,9 @@ void ChatView::clearImageCache()
 {
     m_wanted.clear();
     m_frameSize.clear();
+    m_prepared.clear();
+    m_arrived.clear();
+    m_arrivalTimer.stop();
     qDeleteAll(m_animations);
     m_animations.clear();
     m_animationTimer.stop();
@@ -139,14 +183,27 @@ QPixmap ChatView::prepare(const QUrl &url) const
 {
     const QString key = url.toString();
 
-    // A moving picture draws its current frame instead of the still one.
+    // A moving picture draws its current frame instead of the still one, and
+    // is never cached - the whole point is that it changes.
     if (AnimatedImage *animation = m_animations.value(key)) {
         const QImage frame = animation->currentFrame();
         if (!frame.isNull())
             return scaleForDocument(url, frame);
     }
 
-    return scaleForDocument(url, MediaCache::instance().image(url));
+    const auto done = m_prepared.constFind(key);
+    if (done != m_prepared.constEnd())
+        return done.value();
+
+    const QPixmap ready = scaleForDocument(url, MediaCache::instance().image(url));
+    if (!ready.isNull()) {
+        // Flat ceiling. A long session through many channels would otherwise
+        // hold every picture ever shown.
+        if (m_prepared.size() > 600)
+            m_prepared.clear();
+        m_prepared.insert(key, ready);
+    }
+    return ready;
 }
 
 void ChatView::adoptAnimation(const QUrl &url)
@@ -205,19 +262,17 @@ void ChatView::pumpAnimations()
     if (!changed)
         return;
 
-    // Laying the page out again can shift where you were reading, so put the
-    // scroll back exactly where it was.
-    QScrollBar *bar = verticalScrollBar();
-    const bool wasAtBottom = bar->value() >= bar->maximum() - 4;
-    const int position = bar->value();
-
-    document()->markContentsDirty(0, document()->characterCount());
-
-    if (wasAtBottom)
-        bar->setValue(bar->maximum());
-    else if (bar->value() != position)
-        bar->setValue(position);
-
+    // Repaint only. No layout.
+    //
+    // This used to mark the whole document dirty, which laid the entire
+    // conversation out again - fifteen times a second, for as long as a single
+    // animated emoji was on screen. In a server that uses them that is every
+    // second of every channel, and it was the worst of the stutter.
+    //
+    // Nothing about the page has actually moved: every frame is drawn at the
+    // size the first frame settled on, which m_frameSize exists to guarantee.
+    // Only the pixels differ, and painting picks those up straight from the
+    // document's resources.
     viewport()->update();
 }
 

@@ -40,12 +40,29 @@ private:
     QPixmap scaleForDocument(const QUrl &url, const QImage &source) const;
     QSize boxFor(const QUrl &url) const;
 
+    void flushArrivals();
+
     QSet<QString> m_wanted;
     QHash<QString, AnimatedImage *> m_animations;
 
     // The size each picture settled on, so later frames never change the page
     // height and make the view jump.
     mutable QHash<QString, QSize> m_frameSize;
+
+    // Pictures already shrunk, rounded and turned into pixmaps.
+    //
+    // The text engine asks for every picture again on every layout pass, and
+    // answering meant a smooth rescale and, for avatars, a fresh circular mask
+    // each time. A hundred messages is a hundred of those, and that - not the
+    // markup - was most of the wait when a channel opened.
+    mutable QHash<QString, QPixmap> m_prepared;
+
+    // Pictures that landed since the last redraw. They are handled in one
+    // batch, because each one arriving on its own used to lay the whole
+    // conversation out again.
+    QSet<QString> m_arrived;
+    QTimer m_arrivalTimer;
+
     QTimer m_animationTimer;
     bool m_animationsEnabled = true;
 };
