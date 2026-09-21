@@ -336,8 +336,38 @@ QByteArray DaveSession::encrypt(const QByteArray &frame, quint32 ssrc, bool vide
         return {};
 
     auto *encryptor = static_cast<DAVEEncryptorHandle>(m_encryptor);
-    if (!daveEncryptorHasKeyRatchet(encryptor))
-        return {};
+
+    // No group key yet, so send in the clear rather than not at all.
+    //
+    // This used to return empty, which the caller correctly reads as "do not
+    // send this". The trouble is when that happens: a key group of one person
+    // never forms. Discord runs no membership transition until somebody else
+    // arrives, so until then there is no ratchet and every frame was thrown
+    // away - a microphone that produced nothing, and a screen share where
+    // three thousand packets in a row were refused before anyone had even
+    // clicked Watch.
+    //
+    // Passthrough is the library's own answer to this and is what the mode
+    // exists for: it is also how frames keep flowing across a transition,
+    // when the old key is gone and the new one has not arrived. Receivers
+    // expect it.
+    //
+    // It does mean those frames are not end-to-end encrypted, and that is
+    // worth being plain about rather than hiding: while you are the only
+    // member of the group there is nobody to encrypt *to*, and Discord's
+    // servers can see the media. The moment a second person joins, the group
+    // forms and everything after it is sealed.
+    const bool ready = daveEncryptorHasKeyRatchet(encryptor);
+    const bool passing = daveEncryptorIsPassthroughMode(encryptor);
+
+    if (!ready && !passing) {
+        daveEncryptorSetPassthroughMode(encryptor, true);
+        wlog(QStringLiteral("dave"),
+             QStringLiteral("no group key yet, sending in the clear until one forms"));
+    } else if (ready && passing) {
+        daveEncryptorSetPassthroughMode(encryptor, false);
+        wlog(QStringLiteral("dave"), QStringLiteral("group key in hand, sealing from now on"));
+    }
 
     const DAVEMediaType media = video ? DAVE_MEDIA_TYPE_VIDEO : DAVE_MEDIA_TYPE_AUDIO;
 

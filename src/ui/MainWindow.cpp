@@ -9,6 +9,7 @@
 #include "ui/ImageViewer.h"
 #include "ui/AuroraWidget.h"
 #include "core/ScreenShare.h"
+#include "ui/LoadingOverlay.h"
 #include "ui/MemberListPanel.h"
 #include "ui/ShareDialog.h"
 #include "ui/UpdateFlow.h"
@@ -37,6 +38,7 @@
 #include <QFrame>
 #include <QInputDialog>
 #include <QMouseEvent>
+#include <QAbstractTextDocumentLayout>
 #include <QFileInfo>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -280,18 +282,29 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
             "\"giving up\".</p>"));
     });
 
-    connect(m_plugins, &PluginHost::repaintRequested, this, [this]() { renderChannel(); });
+    // Redrawing is expensive and arrives in bursts.
+    //
+    // Every edit, every reaction, every late embed rebuilds the whole
+    // conversation and lays it out again. In a busy server those land several
+    // to a second, and each one is a full re-layout of a hundred messages -
+    // which is the stutter you feel while reading. Collapsing a burst into one
+    // redraw costs a few milliseconds of delay nobody can see.
+    m_renderTimer.setSingleShot(true);
+    m_renderTimer.setInterval(50);
+    connect(&m_renderTimer, &QTimer::timeout, this, &MainWindow::renderChannel);
+
+    connect(m_plugins, &PluginHost::repaintRequested, this, [this]() { scheduleRender(); });
     connect(m_plugins, &PluginHost::pluginLogged, this, [this](const QString &id, const QString &line) {
         flashStatus(QStringLiteral("[%1] %2").arg(id, line), 5000);
     });
 
     connect(m_store, &MessageStore::channelHistoryChanged, this, [this](const QString &channelId) {
         if (channelId == m_currentChannelId)
-            renderChannel();
+            scheduleRender();
     });
     connect(m_store, &MessageStore::messageChanged, this, [this](const QString &channelId, const QString &) {
         if (channelId == m_currentChannelId)
-            renderChannel();
+            scheduleRender();
     });
 
     // A green ring appears round whoever is talking.
@@ -547,9 +560,26 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     // way by the time the reader gets there and the scroll does not stop dead
     // while they wait.
     connect(m_messageView->verticalScrollBar(), &QScrollBar::valueChanged, this, [this](int value) {
-        if (value <= 120 && m_messageView->verticalScrollBar()->maximum() > 0)
+        QScrollBar *bar = m_messageView->verticalScrollBar();
+
+        // The reader taking the wheel. Our own moves are flagged so they do
+        // not count as that.
+        if (!m_autoScrolling)
+            m_stickToBottom = value >= bar->maximum() - 8;
+
+        if (value <= 120 && bar->maximum() > 0)
             loadOlderMessages();
     });
+
+    // The document finishing its measuring, which happens in pieces and long
+    // after the text was set: first the text, then each picture as it arrives.
+    // Every one of those makes the document taller, and while we are meant to
+    // be at the newest message that means going there again.
+    connect(m_messageView->document()->documentLayout(),
+            &QAbstractTextDocumentLayout::documentSizeChanged, this, [this](const QSizeF &) {
+                if (m_stickToBottom)
+                    scrollToBottom();
+            });
 
     // Hands each slice of microphone sound to the plugins on its way out.
     //
@@ -1200,6 +1230,17 @@ void MainWindow::buildMenu()
 
 void MainWindow::startSession(const QString &token)
 {
+    // In front of everything until the window has something worth showing.
+    //
+    // Signing in returns in a moment, but the client is not ready then: forty
+    // servers, their channels, a couple of thousand voice states and a
+    // hundred presences arrive over the following second and a half, and each
+    // one redraws part of the window. Watching that is watching the furniture
+    // being carried in.
+    m_loading = new LoadingOverlay(this);
+    m_loading->show();
+    m_loading->raise();
+
     m_gateway->start(token);
     flashStatus(QStringLiteral("Connecting..."));
 }
@@ -1258,6 +1299,9 @@ void MainWindow::onGatewayReady(const QJsonObject &payload)
     const QString wasInGuild = m_currentGuildId;
     const QString wasInChannel = m_currentChannelId;
 
+    if (m_loading)
+        m_loading->setStep(QStringLiteral("Sorting your servers..."));
+
     m_store->ingestReady(payload);
     populateGuildRail();
 
@@ -1281,6 +1325,13 @@ void MainWindow::onGatewayReady(const QJsonObject &payload)
                 selectChannelEverywhere(wasInChannel);
             break;
         }
+    }
+
+    // The window is furnished. The overlay waits a moment longer on its own
+    // if it has only just appeared, then fades.
+    if (m_loading) {
+        m_loading->finish();
+        m_loading = nullptr;
     }
 
     wlog(QStringLiteral("ui"), QStringLiteral("rail built: %1 servers, %2 direct chats")
@@ -2207,8 +2258,17 @@ bool MainWindow::shouldGroup(const MessageInfo &previous, const MessageInfo &cur
     return previous.timestamp.secsTo(current.timestamp) < minutes * 60;
 }
 
+void MainWindow::scheduleRender()
+{
+    if (!m_renderTimer.isActive())
+        m_renderTimer.start();
+}
+
 void MainWindow::renderChannel()
 {
+    // A redraw that has just happened cancels one that was waiting.
+    m_renderTimer.stop();
+
     if (m_currentChannelId.isEmpty())
         return;
 
@@ -2258,10 +2318,36 @@ void MainWindow::renderChannel()
     }
 
     // A freshly opened channel always starts at the newest message.
-    if (!sameChannel || wasAtBottom)
-        bar->setValue(bar->maximum());
-    else
+    //
+    // Asking for the bottom once is not enough, and that is why opening a
+    // channel landed half way up it. A rich text document is laid out lazily:
+    // the moment after the html is set, the scroll bar's maximum describes
+    // only the part that has been measured so far, and it keeps growing as
+    // the rest is measured and as pictures arrive and take up room. Scrolling
+    // to the bottom of a document that is still growing leaves you in the
+    // middle of the finished one.
+    //
+    // So the intent is remembered instead, and the bottom is followed until
+    // the reader takes over.
+    if (!sameChannel || wasAtBottom) {
+        m_stickToBottom = true;
+        scrollToBottom();
+    } else {
+        m_stickToBottom = false;
         bar->setValue(qMin(previousPosition, bar->maximum()));
+    }
+}
+
+void MainWindow::scrollToBottom()
+{
+    QScrollBar *bar = m_messageView->verticalScrollBar();
+
+    // Guarded, because moving the bar raises valueChanged, and the handler
+    // that notices the reader scrolling away would otherwise read our own
+    // move as theirs and immediately stop following.
+    m_autoScrolling = true;
+    bar->setValue(bar->maximum());
+    m_autoScrolling = false;
 }
 
 void MainWindow::appendMessageToView(const MessageInfo &message, bool grouped)
@@ -2273,8 +2359,10 @@ void MainWindow::appendMessageToView(const MessageInfo &message, bool grouped)
     cursor.movePosition(QTextCursor::End);
     cursor.insertHtml(messageHtml(message, grouped));
 
-    if (wasAtBottom)
-        bar->setValue(bar->maximum());
+    if (wasAtBottom) {
+        m_stickToBottom = true;
+        scrollToBottom();
+    }
 }
 
 QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)

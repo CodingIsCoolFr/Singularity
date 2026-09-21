@@ -144,6 +144,10 @@ private:
     QLabel *m_selfAvatar = nullptr;
     QLabel *m_selfName = nullptr;
     QLabel *m_selfStatus = nullptr;
+    // Stands in front of the window while it fills itself in, so the client is
+    // not watched assembling itself.
+    class LoadingOverlay *m_loading = nullptr;
+
     class MemberListPanel *m_members = nullptr;
     QStackedWidget *m_chatStack = nullptr;
     QWidget *m_chatPage = nullptr;
@@ -268,6 +272,22 @@ private:
     QString m_selfUserId;
     QString m_selfAvatarHash;
     QString m_selfDisplayName;
+
+    // Following the newest message.
+    //
+    // A rich text document is measured lazily, so the bottom is not where it
+    // appears to be at the moment the text is set. This says "keep going to
+    // the bottom as the document settles", and is cleared the moment the
+    // reader scrolls away themselves.
+    void scrollToBottom();
+    bool m_stickToBottom = true;
+    bool m_autoScrolling = false;
+
+    // Redraws, collapsed. Opening a channel draws at once; everything that
+    // merely changes what is already on screen waits a moment in case more is
+    // coming, because in a busy server it always is.
+    void scheduleRender();
+    QTimer m_renderTimer;
 
     MessageInfo m_lastRendered;
     bool m_hasLastRendered = false;
