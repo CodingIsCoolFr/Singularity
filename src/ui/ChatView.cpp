@@ -237,7 +237,7 @@ QPixmap ChatView::prepare(const QUrl &url) const
         m_preparedBytes += qint64(ready.width()) * ready.height() * 4;
         m_prepared.insert(key, ready);
 
-        if (m_preparedBytes > 24 * 1024 * 1024) {
+        if (m_preparedBytes > 12 * 1024 * 1024) {
             m_prepared.clear();
             m_preparedBytes = 0;
         }

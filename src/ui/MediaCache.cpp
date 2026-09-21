@@ -27,8 +27,12 @@ const QStringList kAllowedSuffixes{
 // times four, whatever the file on disk weighed. A 4K screenshot is 33 MB the
 // moment it is decoded, and the old limit of "250 pictures" let two hundred
 // and fifty of those sit in memory at once.
-constexpr qint64 MaxImageBytes = 96 * 1024 * 1024;
-constexpr qint64 MaxOriginalBytes = 48 * 1024 * 1024;
+// Both were set once, generously, and never checked against what is on
+// screen. The window draws pictures at 340 across and avatars at 40, and a
+// channel shows forty messages - so ninety six megabytes of decoded picture
+// was room for far more than anybody is ever looking at.
+constexpr qint64 MaxImageBytes = 40 * 1024 * 1024;
+constexpr qint64 MaxOriginalBytes = 16 * 1024 * 1024;
 
 // Nothing kept for drawing is larger than this on its long edge.
 //
@@ -37,7 +41,10 @@ constexpr qint64 MaxOriginalBytes = 48 * 1024 * 1024;
 // it on every repaint is paying twice for something nobody sees. The full
 // quality version is still available to the viewer, decoded from the original
 // bytes when a picture is actually opened.
-constexpr int StoreLongEdge = 640;
+// 640 was a guess. The box a picture is drawn in is 340 by 280, so 420 still
+// leaves room for a window scaled up a little, and costs 57 per cent less
+// memory per picture than 640 did.
+constexpr int StoreLongEdge = 420;
 
 // The circle drawn behind someone's initials when they have no picture.
 //

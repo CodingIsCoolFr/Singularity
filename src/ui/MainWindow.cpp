@@ -2577,15 +2577,29 @@ void MainWindow::reportMemory()
     // The working set is what the task manager shows, so the log and the task
     // manager can be compared directly.
     qint64 workingSetMb = 0;
+    qint64 privateMb = 0;
 #ifdef Q_OS_WIN
-    PROCESS_MEMORY_COUNTERS counters{};
-    if (GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters)))
+    // Two numbers, because they answer different questions.
+    //
+    // The working set is what the task manager shows, and it includes pages
+    // the graphics driver has mapped into the process for the window - which
+    // the program never allocated and cannot free. Private bytes is what this
+    // program actually asked for. If the two are far apart, the difference is
+    // the graphics card, and no amount of caching less will move it.
+    PROCESS_MEMORY_COUNTERS_EX counters{};
+    counters.cb = sizeof(counters);
+    if (GetProcessMemoryInfo(GetCurrentProcess(),
+                             reinterpret_cast<PROCESS_MEMORY_COUNTERS *>(&counters),
+                             sizeof(counters))) {
         workingSetMb = qint64(counters.WorkingSetSize) / (1024 * 1024);
+        privateMb = qint64(counters.PrivateUsage) / (1024 * 1024);
+    }
 #endif
 
     wlog(QStringLiteral("mem"),
-         QStringLiteral("%1 MB in use; media: %2; store: %3")
+         QStringLiteral("%1 MB in use (%2 MB ours); media: %3; store: %4")
              .arg(workingSetMb)
+             .arg(privateMb)
              .arg(MediaCache::instance().summary(), m_store->memorySummary()));
 }
 
@@ -4264,8 +4278,24 @@ void MainWindow::showEvent(QShowEvent *event)
 void MainWindow::changeEvent(QEvent *event)
 {
     QMainWindow::changeEvent(event);
-    if (event->type() == QEvent::WindowStateChange && m_captionMax)
+    if (event->type() != QEvent::WindowStateChange)
+        return;
+
+    if (m_captionMax)
         m_captionMax->setText(isMaximized() ? QStringLiteral("❐") : QStringLiteral("□"));
+
+#ifdef Q_OS_WIN
+    // Minimised means nobody is looking, so give the pages back.
+    //
+    // Freed memory is not returned to Windows by itself - the heap keeps it
+    // for next time, which is the right thing while the window is in use and
+    // the wrong thing while it sits in the task bar. This asks Windows to trim
+    // the working set to what is actually needed; anything still wanted comes
+    // back when the window does. It is why the official client shrinks when
+    // you minimise it, and why this one did not.
+    if (isMinimized())
+        SetProcessWorkingSetSize(GetCurrentProcess(), SIZE_T(-1), SIZE_T(-1));
+#endif
 }
 
 #ifdef Q_OS_WIN
