@@ -2250,7 +2250,7 @@ void MainWindow::openChannel(const QString &channelId)
         return;
     }
 
-    m_messageView->setHtml(QStringLiteral("<p class=\"system\">Loading messages...</p>"));
+    m_messageView->setHtml(loadingSkeletonHtml());
     const int limit =
         AppConfig::instance().value(QStringLiteral("appearance/historyLimit"), HistoryLimit).toInt();
 
@@ -2305,6 +2305,65 @@ bool MainWindow::shouldGroup(const MessageInfo &previous, const MessageInfo &cur
         return false;
 
     return previous.timestamp.secsTo(current.timestamp) < minutes * 60;
+}
+
+// The shape of a conversation, before there is one.
+//
+// Opening a channel for the first time waits on Discord, and that wait was
+// measured rather than guessed at: about 350 milliseconds of round trip
+// whatever is asked for, plus a little for the messages themselves. No change
+// to this client makes that faster - the request has to go to Discord and
+// come back.
+//
+// What can change is what the half second looks like. A line of text saying
+// "Loading messages..." reads as nothing happening; the shape of messages
+// waiting to be filled in reads as something arriving. It is the same wait.
+//
+// Deliberately plain grey with no animation. Anything that moves here would
+// be drawn by the same text engine that is about to lay out a hundred
+// messages, and would be competing with the thing it is apologising for.
+QString MainWindow::loadingSkeletonHtml()
+{
+    // Widths vary so it reads as speech rather than as a form. Fixed pixels
+    // rather than percentages: the text engine treats a percentage inside a
+    // nested table as a suggestion, and a bar that ignores it looks like a
+    // fault rather than a placeholder.
+    static const int nameWidths[] = {84, 62, 96, 70, 58, 88, 66, 92};
+    static const int lineWidths[] = {320, 190, 410, 240, 150, 300, 360, 210};
+
+    const QString block = QLatin1String(Theme::SurfaceInput);
+    const QString faint = QLatin1String(Theme::SurfaceChat);
+
+    QString html;
+    html.reserve(4000);
+
+    for (int i = 0; i < 8; ++i) {
+        html += QStringLiteral(
+                    "<table width=\"100%%\" cellspacing=\"0\" cellpadding=\"0\">"
+                    "<tr>"
+                    "<td width=\"52\" valign=\"top\">"
+                    "<table cellspacing=\"0\" cellpadding=\"0\"><tr>"
+                    "<td width=\"34\" height=\"34\" bgcolor=\"%1\"></td>"
+                    "</tr></table>"
+                    "</td>"
+                    "<td valign=\"top\">"
+                    "<table cellspacing=\"0\" cellpadding=\"0\"><tr>"
+                    "<td width=\"%2\" height=\"11\" bgcolor=\"%3\"></td>"
+                    "</tr></table>"
+                    "<table cellspacing=\"0\" cellpadding=\"0\"><tr>"
+                    "<td width=\"%4\" height=\"10\" bgcolor=\"%5\"></td>"
+                    "</tr></table>"
+                    "</td>"
+                    "</tr></table>"
+                    "<p style=\"line-height:6px\">&nbsp;</p>")
+                    .arg(block)
+                    .arg(nameWidths[i])
+                    .arg(block)
+                    .arg(lineWidths[i])
+                    .arg(faint);
+    }
+
+    return html;
 }
 
 void MainWindow::scheduleRender()

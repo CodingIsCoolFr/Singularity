@@ -293,6 +293,9 @@ private:
     void scheduleRender();
     QTimer m_renderTimer;
 
+    // What a channel shows while it waits for Discord.
+    static QString loadingSkeletonHtml();
+
     MessageInfo m_lastRendered;
     bool m_hasLastRendered = false;
 
