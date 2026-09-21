@@ -600,7 +600,7 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         // Somebody pinned to the newest message is not reading history, so
         // that alone rules it out.
         if (!m_stickToBottom && value <= 120 && bar->maximum() > 0)
-            loadOlderMessages();
+            reachedTop();
     });
 
     // What counts as the reader moving: a wheel, a drag of the bar, or the
@@ -2283,6 +2283,10 @@ void MainWindow::openChannel(const QString &channelId)
     m_stickToBottom = true;
     m_readerMoved = false;
 
+    // A new channel starts showing only its newest messages again.
+    m_renderWindow = RenderWindowStep;
+    m_renderedCount = 0;
+
     if (channelId.isEmpty()) {
         m_channelTitle->setText(QStringLiteral("Pick a channel"));
         m_channelTopic->setVisible(false);
@@ -2586,13 +2590,27 @@ void MainWindow::renderChannel()
     const int previousPosition = bar->value();
     const bool sameChannel = (m_renderedChannelId == m_currentChannelId);
 
-    const QList<MessageInfo> messages = m_store->messages(m_currentChannelId);
-    if (messages.isEmpty()) {
+    const QList<MessageInfo> all = m_store->messages(m_currentChannelId);
+    if (all.isEmpty()) {
         m_messageView->setHtml(QStringLiteral("<p class=\"system\">No messages here yet.</p>"));
         m_hasLastRendered = false;
+        m_renderedCount = 0;
         m_renderedChannelId = m_currentChannelId;
         return;
     }
+
+    // Only the newest handful is drawn.
+    //
+    // This is the part the official client does that this one did not. Layout
+    // cost is per message, and a hundred of them was being laid out to show
+    // the ten or fifteen that fit on screen - every channel opened, every time.
+    // The rest is drawn when somebody scrolls up far enough to want it, which
+    // costs nothing until they do.
+    //
+    // Everything above still exists in the store; this is about what the text
+    // engine is asked to measure, not about what has been fetched.
+    const int take = qMin(m_renderWindow, int(all.size()));
+    const QList<MessageInfo> messages = all.mid(all.size() - take);
 
     // Timed, in two halves, because they are fixed in completely different
     // ways and there is no telling them apart by feel. Building the markup is
@@ -2640,12 +2658,14 @@ void MainWindow::renderChannel()
     // arrives would bury the one that matters.
     if (builtMs + laidOutMs > 40) {
         wlog(QStringLiteral("ui"),
-             QStringLiteral("drew %1 messages: %2 ms building, %3 ms laying out")
+             QStringLiteral("drew %1 of %2 messages: %3 ms building, %4 ms laying out")
                  .arg(messages.size())
+                 .arg(all.size())
                  .arg(builtMs)
                  .arg(laidOutMs));
     }
 
+    m_renderedCount = messages.size();
     m_renderedChannelId = m_currentChannelId;
 
     // Older messages were just put on top, so the whole conversation slid
@@ -2730,13 +2750,20 @@ bool MainWindow::replaceMessageInView(const QString &messageId)
     QTextDocument *document = m_messageView->document();
     const QList<QTextFrame *> rows = document->rootFrame()->childFrames();
 
-    // The one to one mapping is the whole basis of this. If it does not hold -
+    // The frames match the messages that were drawn, which is the newest
+    // m_renderedCount of them, not all the ones held. If that does not hold -
     // a system line, an empty channel, a redraw that has not happened yet -
     // there is no way to know which frame is which, so do not guess.
-    if (rows.size() != messages.size())
+    if (rows.size() != m_renderedCount)
         return false;
 
-    QTextFrame *frame = rows.at(index);
+    // A message above the drawn window is not on screen, so there is nothing
+    // to redraw and nothing to rebuild either.
+    const int firstDrawn = messages.size() - m_renderedCount;
+    if (index < firstDrawn)
+        return true;
+
+    QTextFrame *frame = rows.at(index - firstDrawn);
     const int from = frame->firstPosition() - 1;
     const int to = frame->lastPosition() + 1;
     if (from < 0 || to > document->characterCount())
@@ -2784,6 +2811,11 @@ void MainWindow::appendMessageToView(const MessageInfo &message, bool grouped)
     QTextCursor cursor(m_messageView->document());
     cursor.movePosition(QTextCursor::End);
     cursor.insertHtml(messageHtml(message, grouped));
+
+    // One more message is on screen than a moment ago, and the drawn window
+    // has to say so or the next redraw would leave it out.
+    ++m_renderedCount;
+    ++m_renderWindow;
 
     if (wasAtBottom) {
         m_stickToBottom = true;
@@ -3703,6 +3735,33 @@ void MainWindow::tryStartStream()
     m_streamEndpoint.clear();
 }
 
+// Somebody has scrolled to the top and wants what is above.
+//
+// There are two different things that can mean, and telling them apart is the
+// point of this. Usually the messages are already here and simply were not
+// drawn, because a channel opens showing only the newest handful - so the
+// answer is to draw more, which is instant and needs no network at all. Only
+// when everything held for this channel is already on screen is there
+// anything to ask Discord for.
+void MainWindow::reachedTop()
+{
+    if (m_currentChannelId.isEmpty())
+        return;
+
+    const int held = m_store->messages(m_currentChannelId).size();
+    if (m_renderedCount < held) {
+        // Keep the reader's place: the document is about to grow above them.
+        QScrollBar *bar = m_messageView->verticalScrollBar();
+        m_pendingScrollAnchor = bar->maximum() - bar->value();
+
+        m_renderWindow = m_renderedCount + RenderWindowStep;
+        renderChannel();
+        return;
+    }
+
+    loadOlderMessages();
+}
+
 void MainWindow::loadOlderMessages()
 {
     if (m_loadingOlder || m_currentChannelId.isEmpty())
@@ -3729,6 +3788,12 @@ void MainWindow::loadOlderMessages()
             m_loadingOlder = false;
 
             const int added = m_store->prependHistory(channelId, messages);
+
+            // Messages that arrive above the ones on screen have to be inside
+            // the drawn window, or they would be fetched and then not shown.
+            if (added > 0 && channelId == m_currentChannelId)
+                m_renderWindow = m_renderedCount + added;
+
             if (added == 0) {
                 m_fullyLoaded.insert(channelId);
                 if (channelId == m_currentChannelId) {

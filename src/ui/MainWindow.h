@@ -98,6 +98,20 @@ private:
     // and the whole channel has to be drawn again.
     bool replaceMessageInView(const QString &messageId);
 
+    // Somebody scrolled to the top: draw more of what is already here, or ask
+    // Discord for more when there is nothing left undrawn.
+    void reachedTop();
+
+    // How many messages a channel opens with, and how many more each scroll to
+    // the top adds. Forty is several screens' worth on any window somebody
+    // would actually use.
+    static constexpr int RenderWindowStep = 40;
+
+    // What is drawn, against what is held. They differ because a channel opens
+    // showing only its newest messages.
+    int m_renderWindow = RenderWindowStep;
+    int m_renderedCount = 0;
+
     // Writes what the program is holding on to into the log.
     void reportMemory();
     QString messageHtml(const MessageInfo &message, bool grouped);
