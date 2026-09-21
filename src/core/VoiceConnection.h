@@ -162,6 +162,13 @@ private:
     void handleSessionDescription(const QJsonObject &data);
     void handleSpeaking(const QJsonObject &data);
 
+    // The green ring, driven by sound rather than by announcements.
+    void noteSpeaking(quint32 ssrc);
+    void sweepSpeaking();
+
+    QSet<QString> m_speakingNow;
+    QHash<QString, qint64> m_lastHeardMs;
+
     // End-to-end encryption. Discord requires it on every call since March
     // 2026, so a client that cannot do this cannot join one at all.
     void sendBinary(int opcode, const QByteArray &payload);
@@ -258,6 +265,11 @@ private:
     // Video runs on its own synchronisation source with its own sequence
     // numbering, because it is a separate stream from the sound even though
     // both go down the same socket.
+    // What the server set aside for our pictures, out of its own READY. Zero
+    // until it says, and guessing instead is what made a share invisible.
+    quint32 m_assignedVideoSsrc = 0;
+    quint32 m_assignedRtxSsrc = 0;
+
     quint32 m_videoSsrc = 0;
     quint32 m_rtxSsrc = 0;
     quint16 m_videoSequence = 0;

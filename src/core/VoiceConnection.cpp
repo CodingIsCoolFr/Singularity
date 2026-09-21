@@ -951,6 +951,39 @@ void VoiceConnection::handleReady(const QJsonObject &data)
     for (const QJsonValue &value : experiments)
         m_experiments.append(value.toString());
 
+    // The synchronisation sources the server has set aside for our pictures.
+    //
+    // We used to invent these, on the reasonable-looking guess that Discord
+    // numbers them consecutively from the audio one. It does, usually - and
+    // "usually" is why a share went out and nobody saw it: packets arriving
+    // on a source the server did not allocate are simply dropped, silently,
+    // because from its side they belong to nobody.
+    //
+    // The identify asked for two layers, so the answer describes both. The
+    // full quality one is the only one we send.
+    m_assignedVideoSsrc = 0;
+    m_assignedRtxSsrc = 0;
+
+    const QJsonArray streams = data.value(QStringLiteral("streams")).toArray();
+    for (const QJsonValue &value : streams) {
+        const QJsonObject stream = value.toObject();
+        if (stream.value(QStringLiteral("rid")).toString() != QLatin1String("100"))
+            continue;
+
+        m_assignedVideoSsrc = static_cast<quint32>(stream.value(QStringLiteral("ssrc")).toDouble());
+        m_assignedRtxSsrc =
+            static_cast<quint32>(stream.value(QStringLiteral("rtx_ssrc")).toDouble());
+        break;
+    }
+
+    if (!streams.isEmpty()) {
+        wlog(QStringLiteral("voice"),
+             QStringLiteral("the server gave us video ssrc %1 (rtx %2) across %3 layers")
+                 .arg(m_assignedVideoSsrc)
+                 .arg(m_assignedRtxSsrc)
+                 .arg(streams.size()));
+    }
+
     wlog(QStringLiteral("voice"), QStringLiteral("ready: ssrc=%1 server=%2:%3 modes=[%4]")
                                       .arg(m_ssrc)
                                       .arg(m_serverAddress)
@@ -1026,8 +1059,61 @@ void VoiceConnection::handleSpeaking(const QJsonObject &data)
     if (!userId.isEmpty() && ssrc != 0)
         m_ssrcToUser.insert(ssrc, userId);
 
-    if (!userId.isEmpty() && userId != m_userId)
-        emit speakingChanged(userId, flags != 0);
+    if (userId.isEmpty() || userId == m_userId)
+        return;
+
+    // A "stopped" is believed at once. A "started" only lights the ring; what
+    // keeps it lit is sound actually arriving, so somebody who announces
+    // themselves and then says nothing does not glow indefinitely.
+    if (flags == 0) {
+        if (m_speakingNow.remove(userId))
+            emit speakingChanged(userId, false);
+        m_lastHeardMs.remove(userId);
+        return;
+    }
+
+    if (!m_speakingNow.contains(userId)) {
+        m_speakingNow.insert(userId);
+        emit speakingChanged(userId, true);
+    }
+    m_lastHeardMs.insert(userId, QDateTime::currentMSecsSinceEpoch());
+}
+
+void VoiceConnection::noteSpeaking(quint32 ssrc)
+{
+    const QString userId = m_ssrcToUser.value(ssrc);
+    if (userId.isEmpty() || userId == m_userId)
+        return;
+
+    m_lastHeardMs.insert(userId, QDateTime::currentMSecsSinceEpoch());
+
+    if (!m_speakingNow.contains(userId)) {
+        m_speakingNow.insert(userId);
+        emit speakingChanged(userId, true);
+    }
+}
+
+void VoiceConnection::sweepSpeaking()
+{
+    if (m_speakingNow.isEmpty())
+        return;
+
+    // Long enough to ride over the gaps between packets on a poor connection,
+    // short enough that the ring goes out when somebody stops rather than a
+    // beat later.
+    constexpr qint64 QuietForMs = 400;
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+
+    const QStringList talking = m_speakingNow.values();
+    for (const QString &userId : talking) {
+        if (now - m_lastHeardMs.value(userId, 0) < QuietForMs)
+            continue;
+
+        m_speakingNow.remove(userId);
+        m_lastHeardMs.remove(userId);
+        emit speakingChanged(userId, false);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1938,6 +2024,7 @@ QByteArray VoiceConnection::mixWaitingStreams()
 //     it would have been, so a late packet is a soft blur instead of a click.
 void VoiceConnection::onPlayTick()
 {
+    sweepSpeaking();
     catchUpQueues();
 
     if (m_audioHost) {
@@ -1965,6 +2052,18 @@ void VoiceConnection::onPlayTick()
 
 void VoiceConnection::playDecoded(quint32 ssrc, const QByteArray &frame)
 {
+    // Somebody's ring goes on because sound is arriving from them, and off
+    // when it stops.
+    //
+    // Opcode 5 is what used to drive this on its own, and it is not enough:
+    // Discord sends it when somebody starts, and the matching "stopped" does
+    // not always arrive - a client that crashes, drops out, or is moved never
+    // sends one at all. The ring then stayed lit for the rest of the call.
+    //
+    // Sound itself cannot lie about this. A client that stops talking stops
+    // sending, so silence is the signal.
+    noteSpeaking(ssrc);
+
     IncomingStream *stream = streamFor(ssrc);
     if (!stream)
         return;
@@ -2067,11 +2166,20 @@ void VoiceConnection::startSendingVideo(int width, int height)
         return;
     }
 
-    // Discord numbers the three streams of one connection consecutively from
-    // the audio one. The retransmission stream is named even though nothing
-    // is retransmitted yet, because the server expects the set.
-    m_videoSsrc = m_ssrc + 1;
-    m_rtxSsrc = m_ssrc + 2;
+    // Whatever the server set aside for us, and only if it did not, the guess
+    // that it numbers them consecutively from the audio one. Sending on a
+    // source the server never allocated is not refused, it is ignored - which
+    // is how a share can look perfectly healthy from this end and be invisible
+    // from every other.
+    if (m_assignedVideoSsrc != 0) {
+        m_videoSsrc = m_assignedVideoSsrc;
+        m_rtxSsrc = m_assignedRtxSsrc != 0 ? m_assignedRtxSsrc : m_assignedVideoSsrc + 1;
+    } else {
+        wlog(QStringLiteral("share"),
+             QStringLiteral("the server named no video ssrc, falling back to audio+1"));
+        m_videoSsrc = m_ssrc + 1;
+        m_rtxSsrc = m_ssrc + 2;
+    }
 
     m_sendWidth = width;
     m_sendHeight = height;
