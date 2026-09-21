@@ -271,12 +271,18 @@
       </div>
     </div>
 
-    <p class="lede" style="margin:24px 0 0">It settled at <b>528 MB</b>, and the picture cache did what a cache is supposed to do: it filled to 95 MB, reached its ceiling, and fell back to 59 MB on its own rather than growing for ever.</p>
+    <p class="lede" style="margin:24px 0 0">It settled at <b>347 MB</b>, measured twice a minute apart, with the heap moving by one megabyte between readings — not a leak — and the largest single block at 31 MB, so not a forgotten buffer either. Most of what was left after the cache work turned out not to be a cache at all: it was four hundred messages held in one channel and the conversation being rebuilt several times a second, which are the two bugs below.</p>
 
     <p class="kicker" style="margin:40px 0 0">The last of it</p>
     <h2 style="margin:8px 0 0">Forty, not a hundred</h2>
     <p class="lede">With memory written down every minute, the log gave up the last piece. Building the markup for a hundred messages is <b>1 ms</b>. Laying them out is 42 to 197 — and that cost is paid per message. A hundred were being measured to show the ten or fifteen that fit on a screen, on every channel opened, every time.</p>
     <p class="lede" style="margin:16px 0 0">A channel now draws its newest forty. Scrolling to the top draws forty more, instantly and with no request at all, because those messages were already here and simply were not drawn. Only when everything held is on screen is there anything to ask Discord for. Nothing about what gets fetched changed — this is about what the text engine is asked to measure.</p>
+
+    <p class="kicker" style="margin:40px 0 0">Three bugs, one mistake</p>
+    <h2 style="margin:8px 0 0">A window needs a far edge, and a place needs a name</h2>
+    <p class="lede">Drawing forty worked and then grew without a ceiling: 40, 90, 150, 200, 250, 300, 350 messages in twenty seconds, and a redraw that had come down to 22 ms was back at 301. Capping it moved the runaway one level down — <b>four hundred messages pulled from Discord in 1.7 seconds</b>, the conversation rebuilt under the reader every eighty milliseconds.</p>
+    <p class="lede" style="margin:16px 0 0">Both are the same mistake. Reaching the top is a <b>position</b>, and a position stays true while nobody moves — so anything hung off it fires again on the next scroll event whether or not the person did anything. It is an action now, and an action happens once.</p>
+    <p class="lede" style="margin:16px 0 0">The third was keeping the reader's place as <b>a number of pixels</b>. The document changes height when messages arrive above, when the window drops messages below, when an edit lands, when a picture loads — so a pixel count means something different after any of those, and three separate pieces of arithmetic each got one case right and the rest wrong. The message under the top edge is the one being read; putting <i>that</i> back is the whole job. One piece of code now, none of it arithmetic on pixels, and tested on its own: park the view on a message, insert fifty above it, and the same message returns to the top edge to the pixel.</p>
   </div>
 </section>
 
