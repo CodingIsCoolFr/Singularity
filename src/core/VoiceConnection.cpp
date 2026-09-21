@@ -128,20 +128,118 @@ QByteArray buildRtpHeader(quint16 sequence, quint32 timestamp, quint32 ssrc)
 
 // The same header, for a picture.
 //
-// Two things differ from sound. The payload type says H.264 rather than Opus,
-// and the marker bit is set on the last packet of each picture - which is the
-// only way the far end can know a picture is complete, because one picture is
-// almost always several packets.
+// Three things differ from sound. The payload type says H.264 rather than
+// Opus, the marker bit is set on the last packet of each picture, which is
+// the only way the far end can know a picture is complete, because one picture
+// is almost always several packets, and the extension bit is set, because a
+// picture packet carries a short header extension the far end reads before the
+// picture itself.
 QByteArray buildVideoRtpHeader(quint16 sequence, quint32 timestamp, quint32 ssrc, bool marker)
 {
     QByteArray header = buildRtpHeader(sequence, timestamp, ssrc);
     auto *bytes = reinterpret_cast<quint8 *>(header.data());
 
+    bytes[0] = 0x90;   // version 2, extension present
     bytes[1] = static_cast<quint8>(VideoPayloadType);
     if (marker)
         bytes[1] |= 0x80;
 
     return header;
+}
+
+// What rides in front of a picture, in the one-byte extension form Discord
+// uses on UDP. The four-byte preamble (the 0xBEDE marker and the length)
+// stays in the clear with the RTP header. These elements do not: they are
+// sealed with the picture and the far end steps over them after opening the
+// packet.
+//
+//   5  a transport sequence, two bytes, counted per packet
+//   6  how long the receiver may wait before drawing. Discord expects this
+//      on every picture packet. Zero and zero means "do not hold it".
+//   7  whether this is a camera or a screen. One means a screen. A client
+//      that only has this byte to go on will otherwise not show the share.
+//   11 which quality layer, the text "100", the only layer we send, and the
+//      same name used when the stream was offered
+//
+// Thirteen bytes of elements, padded with zeros out to four 32-bit words,
+// which is what the length in the preamble counts.
+QByteArray videoExtensionBody(quint16 sequence, bool screen)
+{
+    QByteArray body;
+    body.reserve(16);
+
+    body.append(static_cast<char>(0x51));   // id 5, two bytes
+    body.append(static_cast<char>(sequence >> 8));
+    body.append(static_cast<char>(sequence & 0xFF));
+
+    body.append(static_cast<char>(0x62));   // id 6, three bytes, min 0 max 0
+    body.append(static_cast<char>(0));
+    body.append(static_cast<char>(0));
+    body.append(static_cast<char>(0));
+
+    body.append(static_cast<char>(0x70));   // id 7, one byte
+    body.append(static_cast<char>(screen ? 1 : 0));
+
+    body.append(static_cast<char>(0xB2));   // id 11, three bytes
+    body.append('1');
+    body.append('0');
+    body.append('0');
+
+    body.append(static_cast<char>(0));      // pad to 16 bytes, four words
+    body.append(static_cast<char>(0));
+    body.append(static_cast<char>(0));
+
+    return body;
+}
+
+QByteArray videoExtensionPreamble()
+{
+    QByteArray preamble(4, '\0');
+    auto *bytes = reinterpret_cast<quint8 *>(preamble.data());
+    bytes[0] = 0xBE;
+    bytes[1] = 0xDE;
+    bytes[2] = 0;
+    bytes[3] = 4;   // four 32-bit words
+    return preamble;
+}
+
+// One sealed picture comes back as Annex B: a start code, a piece, a start
+// code, a piece, and the group seal hanging off the end of the last piece
+// with no start code of its own. RTP wants each piece without its start code,
+// and the seal has to stay on the last piece or the far end never finds it.
+QList<QByteArray> splitAnnexB(const QByteArray &frame)
+{
+    const auto *bytes = reinterpret_cast<const quint8 *>(frame.constData());
+    const int size = frame.size();
+
+    QList<int> codeAt;
+    QList<int> payloadAt;
+    for (int i = 0; i + 2 < size; ++i) {
+        if (bytes[i] != 0 || bytes[i + 1] != 0 || bytes[i + 2] != 1)
+            continue;
+
+        int start = i;
+        if (i > 0 && bytes[i - 1] == 0)
+            start = i - 1;
+        codeAt.append(start);
+        payloadAt.append(i + 3);
+        i += 2;
+    }
+
+    QList<QByteArray> units;
+    if (payloadAt.isEmpty()) {
+        if (!frame.isEmpty())
+            units.append(frame);
+        return units;
+    }
+
+    for (int i = 0; i < payloadAt.size(); ++i) {
+        const int from = payloadAt.at(i);
+        const int to = (i + 1 < codeAt.size()) ? codeAt.at(i + 1) : size;
+        if (from < to)
+            units.append(frame.mid(from, to - from));
+    }
+    return units;
 }
 
 // How big one video packet's payload may be.
@@ -1181,18 +1279,10 @@ void VoiceConnection::sendSelectProtocol(const QString &address, quint16 port)
     // sends nothing or sends a codec we never open. H.264 on 101 is the
     // fallback every official client still understands.
     //
-    // `encode` said false here, on every connection, including the one
-    // carrying a screen share. Discord's own documentation is unambiguous
-    // about what that means: "setting encode: false means I cannot send video
-    // in this format". The server picks a client's send codec from the ones
-    // that client says it can encode, so saying false for the only video
-    // codec offered leaves it with nothing to pick - the stream is created,
-    // the viewer is told it exists, and no path is ever set up to carry it.
-    //
-    // That is a viewer sitting on a loading screen for ever while this end
-    // looks perfectly healthy, which is exactly what happened. Everything
-    // downstream of it - the ssrc, the packets, the encoder - was right, and
-    // none of it could matter.
+    // `encode` false means this client cannot send video in that format, and
+    // the server will not build a path for a codec we said we cannot send.
+    // True is necessary. It is not sufficient: the picture still has to be
+    // sealed as one frame and only then split, which sendPicture does.
     QJsonArray codecs;
     codecs.append(QJsonObject{
         {QStringLiteral("name"), QStringLiteral("opus")},
@@ -2251,6 +2341,60 @@ void VoiceConnection::sendPicture(const QList<QByteArray> &units)
     if (!m_sendingVideo || units.isEmpty() || m_secretKey.isEmpty())
         return;
 
+    // One picture, in the form the encryption library scans: a four-byte
+    // start code in front of every piece. The encoder hands the pieces over
+    // with those already removed, because that is what a packet wants, and
+    // they have to be put back before the picture is sealed.
+    QByteArray picture;
+    const char startCode[4] = {0, 0, 0, 1};
+    for (const QByteArray &nal : units) {
+        if (nal.isEmpty())
+            continue;
+        picture.append(startCode, 4);
+        picture.append(nal);
+    }
+    if (picture.isEmpty())
+        return;
+
+    // Seal the whole picture, then split it. The other way round is what left
+    // every viewer on a loading screen.
+    //
+    // A receiver glues the packets back into one picture and only then opens
+    // the seal. Sealing each packet on its own means the glued picture is a
+    // row of seals, and nothing in it is a picture. The library also has to
+    // be told the stream is H.264, or it seals the bytes a packetiser must
+    // still be able to read, the piece type and where the piece starts, and
+    // the far end cannot find the pieces.
+    if (m_daveVersion > 0) {
+        m_dave->useH264(m_videoSsrc);
+        const QByteArray sealed = m_dave->encrypt(picture, m_videoSsrc, true);
+        if (sealed.isEmpty()) {
+            ++m_statVideoSealFailed;
+            if (m_statVideoSealFailed == 1 || (m_statVideoSealFailed % 30) == 0) {
+                wlog(QStringLiteral("share"),
+                     QStringLiteral("could not seal a picture (%1 so far)")
+                         .arg(m_statVideoSealFailed));
+            }
+            return;
+        }
+        picture = sealed;
+    }
+
+    const QList<QByteArray> pieces = splitAnnexB(picture);
+    if (pieces.isEmpty())
+        return;
+
+    if (m_statVideoSent == 0) {
+        const bool marked = picture.size() >= 2
+            && static_cast<quint8>(picture.at(picture.size() - 2)) == 0xFA
+            && static_cast<quint8>(picture.at(picture.size() - 1)) == 0xFA;
+        wlog(QStringLiteral("share"),
+             QStringLiteral("first picture: %1 bytes, %2 pieces, group seal %3")
+                 .arg(picture.size())
+                 .arg(pieces.size())
+                 .arg(marked ? QStringLiteral("present") : QStringLiteral("not yet")));
+    }
+
     // Every packet of one picture carries the same timestamp; that is how the
     // far end knows which packets belong together. It only advances between
     // pictures.
@@ -2261,8 +2405,8 @@ void VoiceConnection::sendPicture(const QList<QByteArray> &units)
     // off these needs them to mean elapsed time.
     m_videoTimestamp = quint32(QDateTime::currentMSecsSinceEpoch() * VideoClockRate / 1000);
 
-    for (int i = 0; i < units.size(); ++i)
-        packetiseNalUnit(units.at(i), i == units.size() - 1);
+    for (int i = 0; i < pieces.size(); ++i)
+        packetiseNalUnit(pieces.at(i), i == pieces.size() - 1);
 }
 
 void VoiceConnection::packetiseNalUnit(const QByteArray &nal, bool lastOfPicture)
@@ -2310,26 +2454,22 @@ void VoiceConnection::packetiseNalUnit(const QByteArray &nal, bool lastOfPicture
 
 void VoiceConnection::sendVideoPacket(const QByteArray &payload, bool endOfPicture)
 {
-    QByteArray sealed = payload;
-
-    // Sealed for the other people first, exactly as sound is, so Discord's
-    // servers carry something they cannot read. The flag matters: the library
-    // keeps separate counters for pictures and sound, and leaves different
-    // parts in the clear, because a decoder must read a little of an H.264
-    // packet before it knows what the rest is.
-    if (m_daveVersion > 0) {
-        sealed = m_dave->encrypt(payload, m_videoSsrc, true);
-        if (sealed.isEmpty()) {
-            ++m_statVideoSealFailed;
-            return;
-        }
-    }
-
+    // The picture was sealed already, as one frame, in sendPicture. What is
+    // left here is the transport seal, which Discord's servers can undo and
+    // the other people cannot. Doing the group seal here, on one packet, is
+    // what made a share load forever: the viewer reassembled the packets and
+    // then had nothing it could open.
     ++m_videoSequence;
     const QByteArray header =
         buildVideoRtpHeader(m_videoSequence, m_videoTimestamp, m_videoSsrc, endOfPicture);
 
-    const QByteArray packet = encryptFrame(header, sealed);
+    QByteArray clear = header;
+    clear.append(videoExtensionPreamble());
+
+    QByteArray body = videoExtensionBody(m_videoSequence, m_viewerOnly);
+    body.append(payload);
+
+    const QByteArray packet = encryptFrame(clear, body);
     if (packet.isEmpty())
         return;
 

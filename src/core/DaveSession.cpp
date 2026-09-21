@@ -329,6 +329,19 @@ bool DaveSession::applyKeys(const QString &selfUserId, const QSet<QString> &othe
 #endif
 }
 
+void DaveSession::useH264(quint32 ssrc)
+{
+#ifdef SINGULARITY_HAVE_DAVE
+    if (!m_encryptor || ssrc == 0)
+        return;
+
+    daveEncryptorAssignSsrcToCodec(static_cast<DAVEEncryptorHandle>(m_encryptor), ssrc,
+                                   DAVE_CODEC_H264);
+#else
+    Q_UNUSED(ssrc)
+#endif
+}
+
 QByteArray DaveSession::encrypt(const QByteArray &frame, quint32 ssrc, bool video)
 {
 #ifdef SINGULARITY_HAVE_DAVE
