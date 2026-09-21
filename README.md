@@ -13,7 +13,7 @@
 
 <br>
 
-### [Download Singularity 0.1.6](https://github.com/CodingIsCoolFr/singularity-updates/releases/latest)
+### [Download Singularity 0.1.7](https://github.com/CodingIsCoolFr/singularity-updates/releases/latest)
 
 Windows x64 · 54 MB · installs for you only, no administrator prompt
 
@@ -200,6 +200,26 @@ cannot be rebuilt. Without that the tile simply stays black for ever.
 
 > The log counts packets, finished pictures, and frames spent waiting on a
 > keyframe, per sender. A black tile otherwise cannot say which of those it is.
+
+## Sharing your own screen
+
+**Share screen** in the call panel. It asks which screen and how good, then
+goes live on a third connection of its own.
+
+| | |
+| --- | --- |
+| **Captured through Desktop Duplication** | The API the Windows compositor already feeds. Asking Qt for a screenshot copies the whole desktop through the CPU every frame; `BitBlt` misses hardware overlays, so video players and many games come out black. Duplication also reports when *nothing moved*, so a still screen costs nothing. |
+| **Encoded by whatever this machine has** | NVIDIA, AMD, Intel or Windows' own, in that order, falling back to OpenH264. Hardware first is not about frame rate: software 1080p costs a core, on the same machine already running whatever is being shared. The FFmpeg here is the LGPL build, so there is no x264 — that is GPL and linking it would impose the GPL on all of this. |
+| **Shaped for a conversation** | No B-frames, no look-ahead, one reference. A B-frame is described partly by a picture that has not been sent yet, so the encoder must hold frames back. Free in a file, delay in a call. |
+| **Keyframes on request** | A viewer who joins mid-stream has been sent only descriptions of changes from pictures it never saw, so it says so over RTCP and gets a fresh one. Several viewers arriving together are answered once. |
+
+Capture and encoding share one thread, and it is not the main one. They have to
+be together — a 4K frame is thirty three megabytes, and passing one between
+threads sixty times a second costs more than the encoding — and off the main
+thread, or every frame shows up as a stutter in the window.
+
+**Sound from the screen is not shared**, only your microphone. The picker says
+so rather than leaving it to be found out.
 
 ## Build
 
@@ -523,6 +543,8 @@ Roughly in the order they are worth doing.
 10. File upload, and drag and drop
 11. Emoji picker
 12. Threads and forum channels
-13. Sending your own camera or screen. Receiving other people's is built;
-    sending is the other half and is not
+13. Sending your own **camera**. Sharing your screen is built; a webcam is the
+    same pipeline pointed at a different source and is not
+14. Sharing a single **window** rather than a whole screen, and sharing the
+    sound coming out of it
 14. Lottie stickers, which are vector animations with no Qt reader
