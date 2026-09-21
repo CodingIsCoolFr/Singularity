@@ -77,6 +77,12 @@ qt_add_executable(Singularity WIN32
     src/ui/CallView.cpp
     src/core/VideoDecoder.h
     src/core/VideoDecoder.cpp
+    src/core/VideoEncoder.h
+    src/core/VideoEncoder.cpp
+    src/core/ScreenCapture.h
+    src/core/ScreenCapture.cpp
+    src/core/ScreenShare.h
+    src/core/ScreenShare.cpp
     src/core/Updater.h
     src/core/Updater.cpp
     src/ui/UpdateFlow.h
@@ -179,6 +185,11 @@ target_link_libraries(Singularity PRIVATE
     Crypt32
     # Dwmapi colours the title bar, which belongs to Windows rather than Qt.
     Dwmapi
+    # Desktop Duplication, for sharing a screen. This is the API the Windows
+    # compositor already feeds, so a still desktop costs nothing and hardware
+    # overlays - video players, most games - are actually in the picture.
+    d3d11
+    dxgi
 )
 
 # ---------------------------------------------------------------------------
