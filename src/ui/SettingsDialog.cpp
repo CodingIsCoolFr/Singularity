@@ -15,8 +15,15 @@
 #include <QColorDialog>
 #include <QComboBox>
 #include <QDesktopServices>
+#include <QDir>
+#include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QMessageBox>
+#include <QMovie>
+#include <QRadioButton>
+#include <QStandardPaths>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -35,7 +42,10 @@ namespace {
 QLabel *pageTitle(const QString &text, QWidget *parent)
 {
     auto *label = new QLabel(text, parent);
-    label->setStyleSheet(QStringLiteral("font-size: 19px; font-weight: 700; color: %1;")
+    // Light rather than bold, and larger. A heading earns its place by size
+    // and the space around it; making it heavy as well shouts.
+    label->setStyleSheet(QStringLiteral("font-size: 26px; font-weight: 300; color: %1; "
+                                        "letter-spacing: -0.5px; margin-bottom: 4px;")
                              .arg(QLatin1String(Theme::TextPrimary)));
     return label;
 }
@@ -43,9 +53,9 @@ QLabel *pageTitle(const QString &text, QWidget *parent)
 QLabel *groupTitle(const QString &text, QWidget *parent)
 {
     auto *label = new QLabel(text, parent);
-    label->setStyleSheet(QStringLiteral("color: %1; font-size: 11px; font-weight: 700; "
-                                        "letter-spacing: 0.6px; margin-top: 10px;")
-                             .arg(QLatin1String(Theme::TextMuted)));
+    label->setStyleSheet(QStringLiteral("color: %1; font-size: 10.5px; font-weight: 700; "
+                                        "letter-spacing: 1.2px; margin-top: 18px;")
+                             .arg(QLatin1String(Theme::Accent)));
     return label;
 }
 
@@ -64,6 +74,37 @@ QSlider *makeSlider(int minimum, int maximum, int value, QWidget *parent)
     slider->setRange(minimum, maximum);
     slider->setValue(value);
     return slider;
+}
+
+// Puts a chosen picture somewhere it will survive.
+//
+// Remembering the path it was picked from is the obvious thing and is wrong:
+// a wallpaper chosen out of a downloads folder is one tidy-up away from
+// vanishing, and the background would revert with nothing on screen saying
+// why. A copy in the program's own folder is a few megabytes and never moves.
+QString copyBackgroundFile(const QString &source)
+{
+    const QString folder =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+        + QStringLiteral("/backgrounds");
+
+    QDir().mkpath(folder);
+
+    const QFileInfo info(source);
+    const QString target = folder + QStringLiteral("/background.") + info.suffix().toLower();
+
+    // Only one is kept. Someone changing their mind five times should not
+    // leave five files behind that nothing will ever delete.
+    const QDir directory(folder);
+    const QStringList old = directory.entryList(QStringList{QStringLiteral("background.*")},
+                                                QDir::Files);
+    for (const QString &name : old)
+        QFile::remove(directory.filePath(name));
+
+    if (!QFile::copy(source, target))
+        return {};
+
+    return target;
 }
 
 } // namespace
@@ -591,23 +632,189 @@ QWidget *SettingsDialog::buildAppearancePage()
                                           "opened from now on."),
                            page));
 
+    // -----------------------------------------------------------------
+    // Background
+    // -----------------------------------------------------------------
+
+    layout->addWidget(groupTitle(QStringLiteral("BACKGROUND"), page));
+    layout->addWidget(hint(QStringLiteral("The black hole is drawn live. A picture of your own can "
+                                          "take its place — an animated GIF or WebP, or a still image."),
+                           page));
+
+    auto *bgRow = new QWidget(page);
+    auto *bgLayout = new QHBoxLayout(bgRow);
+    bgLayout->setContentsMargins(0, 6, 0, 6);
+    bgLayout->setSpacing(10);
+
+    auto *useHole = new QRadioButton(QStringLiteral("Black hole"), bgRow);
+    auto *usePicture = new QRadioButton(QStringLiteral("My picture"), bgRow);
+    bgLayout->addWidget(useHole);
+    bgLayout->addWidget(usePicture);
+    bgLayout->addStretch(1);
+    layout->addWidget(bgRow);
+
+    // The chosen picture, shown small. A path on its own tells you almost
+    // nothing; the point of a wallpaper is what it looks like.
+    auto *preview = new QLabel(page);
+    preview->setFixedSize(220, 124);
+    preview->setAlignment(Qt::AlignCenter);
+    preview->setStyleSheet(QStringLiteral("background: %1; border: 1px solid %2; border-radius: 8px; color: %3;")
+                               .arg(QLatin1String(Theme::SurfaceInput), QLatin1String(Theme::Border),
+                                    QLatin1String(Theme::TextFaint)));
+
+    auto *fileRow = new QWidget(page);
+    auto *fileLayout = new QHBoxLayout(fileRow);
+    fileLayout->setContentsMargins(0, 0, 0, 0);
+    fileLayout->setSpacing(10);
+    fileLayout->addWidget(preview);
+
+    auto *fileButtons = new QVBoxLayout;
+    fileButtons->setSpacing(6);
+
+    auto *chooseFile = new QPushButton(QStringLiteral("Choose a picture…"), fileRow);
+    auto *clearFile = new QPushButton(QStringLiteral("Remove"), fileRow);
+    fileButtons->addWidget(chooseFile);
+    fileButtons->addWidget(clearFile);
+
+    auto *dimLabel = new QLabel(QStringLiteral("Dim"), fileRow);
+    dimLabel->setStyleSheet(QStringLiteral("color: %1; font-size: 11px; margin-top: 6px;")
+                                .arg(QLatin1String(Theme::TextMuted)));
+    fileButtons->addWidget(dimLabel);
+
+    auto *dim = makeSlider(0, 90, config.value(QStringLiteral("appearance/backgroundDim"), 45).toInt(),
+                           fileRow);
+    dim->setFixedWidth(150);
+    fileButtons->addWidget(dim);
+    fileButtons->addStretch(1);
+
+    fileLayout->addLayout(fileButtons);
+    fileLayout->addStretch(1);
+    layout->addWidget(fileRow);
+
+    layout->addWidget(hint(QStringLiteral("Dimming is not decoration. Every panel above the background "
+                                          "is translucent glass, so a bright picture makes the "
+                                          "conversation hard to read."),
+                           page));
+
+    // Drawn here rather than in several places, because the preview, the
+    // radio buttons and the two file buttons all have to agree at once.
+    auto refreshBackground = [this, preview, useHole, usePicture, chooseFile, clearFile, dim]() {
+        AppConfig &config = AppConfig::instance();
+        const QString path = config.value(QStringLiteral("appearance/backgroundPath")).toString();
+        const bool picture =
+            config.value(QStringLiteral("appearance/backgroundMode")).toString()
+            == QLatin1String("picture");
+
+        useHole->setChecked(!picture);
+        usePicture->setChecked(picture);
+        usePicture->setEnabled(!path.isEmpty());
+        clearFile->setEnabled(!path.isEmpty());
+        dim->setEnabled(picture);
+
+        if (path.isEmpty() || !QFileInfo::exists(path)) {
+            preview->setPixmap(QPixmap());
+            preview->setText(QStringLiteral("No picture chosen"));
+            return;
+        }
+
+        // Only the first frame of an animation, which is all a thumbnail
+        // needs and avoids a second decoder running behind the settings.
+        QImage first(path);
+        if (first.isNull()) {
+            QMovie probe(path);
+            probe.jumpToFrame(0);
+            first = probe.currentImage();
+        }
+
+        if (first.isNull()) {
+            preview->setPixmap(QPixmap());
+            preview->setText(QStringLiteral("Could not read that file"));
+            return;
+        }
+
+        preview->setText(QString());
+        preview->setPixmap(QPixmap::fromImage(
+            first.scaled(preview->size(), Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation)
+                .copy(QRect(QPoint(0, 0), preview->size()))));
+    };
+
+    connect(useHole, &QRadioButton::toggled, this, [this, refreshBackground](bool on) {
+        if (!on)
+            return;
+        AppConfig::instance().setValue(QStringLiteral("appearance/backgroundMode"),
+                                       QStringLiteral("hole"));
+        refreshBackground();
+        emit appearanceChanged();
+    });
+
+    connect(usePicture, &QRadioButton::toggled, this, [this, refreshBackground](bool on) {
+        if (!on)
+            return;
+        AppConfig::instance().setValue(QStringLiteral("appearance/backgroundMode"),
+                                       QStringLiteral("picture"));
+        refreshBackground();
+        emit appearanceChanged();
+    });
+
+    connect(chooseFile, &QPushButton::clicked, this, [this, refreshBackground]() {
+        const QString picked = QFileDialog::getOpenFileName(
+            this, QStringLiteral("Choose a background"), QString(),
+            QStringLiteral("Pictures (*.gif *.webp *.png *.jpg *.jpeg *.bmp)"));
+        if (picked.isEmpty())
+            return;
+
+        // Copied into the program's own folder rather than remembered by
+        // path. A wallpaper chosen out of a downloads folder is one tidy-up
+        // away from vanishing, and the background would quietly revert with
+        // no way to tell why.
+        const QString stored = copyBackgroundFile(picked);
+        if (stored.isEmpty()) {
+            QMessageBox::warning(this, QStringLiteral("Could not use that picture"),
+                                 QStringLiteral("It could not be copied into Singularity's folder."));
+            return;
+        }
+
+        AppConfig &config = AppConfig::instance();
+        config.setValue(QStringLiteral("appearance/backgroundPath"), stored);
+        config.setValue(QStringLiteral("appearance/backgroundMode"), QStringLiteral("picture"));
+        refreshBackground();
+        emit appearanceChanged();
+    });
+
+    connect(clearFile, &QPushButton::clicked, this, [this, refreshBackground]() {
+        AppConfig &config = AppConfig::instance();
+        config.setValue(QStringLiteral("appearance/backgroundPath"), QString());
+        config.setValue(QStringLiteral("appearance/backgroundMode"), QStringLiteral("hole"));
+        refreshBackground();
+        emit appearanceChanged();
+    });
+
+    connect(dim, &QSlider::valueChanged, this, [this](int value) {
+        AppConfig::instance().setValue(QStringLiteral("appearance/backgroundDim"), value);
+        emit appearanceChanged();
+    });
+
+    refreshBackground();
+
+    auto *playSky = new QCheckBox(QStringLiteral("Animate the background"), page);
+    playSky->setChecked(config.value(QStringLiteral("appearance/animatedBackground"), true).toBool());
+    playSky->setToolTip(QStringLiteral("Turning this off freezes the black hole, and stops an "
+                                       "animated picture playing."));
+    connect(playSky, &QCheckBox::toggled, this, [this](bool on) {
+        AppConfig::instance().setValue(QStringLiteral("appearance/animatedBackground"), on);
+        emit appearanceChanged();
+    });
+    layout->addWidget(playSky);
+
     layout->addWidget(groupTitle(QStringLiteral("PICTURES"), page));
 
-    auto *playGifs = new QCheckBox(QStringLiteral("Play animated pictures"), page);
+    auto *playGifs = new QCheckBox(QStringLiteral("Play animated pictures in messages"), page);
     playGifs->setChecked(config.value(QStringLiteral("appearance/playAnimations"), true).toBool());
     connect(playGifs, &QCheckBox::toggled, this, [this](bool on) {
         AppConfig::instance().setValue(QStringLiteral("appearance/playAnimations"), on);
         emit appearanceChanged();
     });
     layout->addWidget(playGifs);
-
-    auto *playSky = new QCheckBox(QStringLiteral("Spin the black hole"), page);
-    playSky->setChecked(config.value(QStringLiteral("appearance/animatedBackground"), true).toBool());
-    connect(playSky, &QCheckBox::toggled, this, [this](bool on) {
-        AppConfig::instance().setValue(QStringLiteral("appearance/animatedBackground"), on);
-        emit appearanceChanged();
-    });
-    layout->addWidget(playSky);
 
     layout->addStretch(1);
     return page;

@@ -36,8 +36,10 @@
 #include <QFrame>
 #include <QInputDialog>
 #include <QMouseEvent>
+#include <QFileInfo>
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QPainter>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QListWidget>
@@ -350,6 +352,13 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
                 if (m_shareVoice)
                     m_shareVoice->sendPicture(units);
             });
+
+    // Our own tile, filled from our own capture. Nothing comes back off the
+    // network for a stream we are the one sending.
+    connect(m_share, &ScreenShare::preview, this, [this](const QImage &frame) {
+        if (m_callView && !m_selfUserId.isEmpty())
+            m_callView->setFrame(m_selfUserId, frame, CallView::Surface::Share);
+    });
 
     connect(m_share, &ScreenShare::started, this,
             [this](int width, int height, const QString &encoder, bool hardware) {
@@ -799,6 +808,7 @@ void MainWindow::buildUi()
     m_aurora->setHoleColors(Theme::holeAccent(), Theme::holeDisk(), Theme::holeGrade());
     m_aurora->setRunning(
         AppConfig::instance().value(QStringLiteral("appearance/animatedBackground"), true).toBool());
+    applyBackgroundSettings();
 }
 
 QWidget *MainWindow::buildGuildRail(QWidget *parent)
@@ -1240,6 +1250,16 @@ void MainWindow::onGatewayReady(const QJsonObject &payload)
 
     m_store->ingestReady(payload);
     populateGuildRail();
+
+    // The status you last chose, carried across restarts. Discord remembers
+    // this for its own client; nothing in the sign-in carries it back to us,
+    // so it is kept here.
+    const QString saved = AppConfig::instance()
+                              .value(QStringLiteral("presence/status"), QStringLiteral("online"))
+                              .toString();
+    if (saved != QLatin1String("online"))
+        m_gateway->setPresenceStatus(saved);
+
     updateUserPanel();
 
     if (!wasInGuild.isEmpty()) {
@@ -2548,10 +2568,114 @@ QString MainWindow::renderContent(const QString &raw) const
     return text;
 }
 
+// The four things Discord lets you claim to be, and your profile under them.
+//
+// The dots are drawn rather than written, because the colours are the one part
+// of this client the theme never touches: green, yellow and red have to keep
+// meaning online, away and busy whatever colour everything else becomes.
+void MainWindow::showStatusMenu()
+{
+    if (m_selfUserId.isEmpty())
+        return;
+
+    struct Choice {
+        const char *id;
+        const char *label;
+        const char *colour;
+        const char *note;
+    };
+
+    static const Choice kChoices[] = {
+        {"online", "Online", Theme::Green, ""},
+        {"idle", "Idle", Theme::Yellow, ""},
+        {"dnd", "Do Not Disturb", Theme::Red, "You will not be pinged"},
+        {"invisible", "Invisible", Theme::TextFaint,
+         "You will look offline to everyone, but Discord still knows you are here"},
+    };
+
+    const QString current = m_gateway->presenceStatus();
+
+    QMenu menu(this);
+    menu.setAttribute(Qt::WA_TranslucentBackground, false);
+
+    for (const Choice &choice : kChoices) {
+        const QString id = QString::fromLatin1(choice.id);
+
+        // A small filled circle in the right colour, painted here rather than
+        // shipped as five more image files.
+        QPixmap dot(12, 12);
+        dot.fill(Qt::transparent);
+        {
+            QPainter painter(&dot);
+            painter.setRenderHint(QPainter::Antialiasing, true);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(QLatin1String(choice.colour)));
+            painter.drawEllipse(1, 1, 10, 10);
+        }
+
+        QAction *action = menu.addAction(QIcon(dot), QString::fromLatin1(choice.label));
+        action->setCheckable(true);
+        action->setChecked(current == id);
+
+        const QString note = QString::fromLatin1(choice.note);
+        if (!note.isEmpty())
+            action->setToolTip(note);
+
+        connect(action, &QAction::triggered, this, [this, id]() { setPresenceStatus(id); });
+    }
+
+    menu.addSeparator();
+    QAction *profile = menu.addAction(QStringLiteral("View profile"));
+    connect(profile, &QAction::triggered, this, [this]() {
+        const QPoint corner = m_userPanel->mapToGlobal(QPoint(m_userPanel->width() + 6, -200));
+        showProfile(m_selfUserId, corner);
+    });
+
+    // Opened upwards from the panel, which sits at the very bottom of the
+    // sidebar: a menu dropped downwards from there would be off the screen.
+    const QPoint at = m_userPanel->mapToGlobal(QPoint(8, 0));
+    menu.exec(QPoint(at.x(), at.y() - menu.sizeHint().height() - 4));
+}
+
+void MainWindow::setPresenceStatus(const QString &status)
+{
+    m_gateway->setPresenceStatus(status);
+    AppConfig::instance().setValue(QStringLiteral("presence/status"), status);
+
+    wlog(QStringLiteral("ui"), QStringLiteral("status set to %1").arg(status));
+    updateUserPanel();
+}
+
 void MainWindow::updateUserPanel()
 {
     if (!m_selfName)
         return;
+
+    // What you chose, not what the connection is doing. Those are different
+    // questions and were previously answered by the same line: somebody who
+    // had set themselves invisible still read "online" here, which is the one
+    // place it matters that it says otherwise.
+    if (m_selfStatus && m_gateway->state() == GatewayClient::State::Ready) {
+        const QString status = m_gateway->presenceStatus();
+        QString label = status;
+        QString colour = Theme::Green;
+
+        if (status == QLatin1String("idle")) {
+            label = QStringLiteral("idle");
+            colour = Theme::Yellow;
+        } else if (status == QLatin1String("dnd")) {
+            label = QStringLiteral("do not disturb");
+            colour = Theme::Red;
+        } else if (status == QLatin1String("invisible")) {
+            label = QStringLiteral("invisible");
+            colour = Theme::TextFaint;
+        } else {
+            label = QStringLiteral("online");
+        }
+
+        m_selfStatus->setText(label);
+        m_selfStatus->setStyleSheet(QStringLiteral("color: %1; font-size: 11px;").arg(colour));
+    }
 
     m_selfName->setText(m_selfDisplayName.isEmpty() ? QStringLiteral("Signed in") : m_selfDisplayName);
 
@@ -2774,12 +2898,11 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
             m_aurora->unsetCursor();
     }
 
-    // Clicking your own panel opens your own profile card.
+    // Clicking your own panel offers your status, and your profile under it.
     if (watched == m_userPanel && event->type() == QEvent::MouseButtonRelease) {
         auto *mouseEvent = static_cast<QMouseEvent *>(event);
         if (mouseEvent->button() == Qt::LeftButton && !m_selfUserId.isEmpty()) {
-            const QPoint corner = m_userPanel->mapToGlobal(QPoint(m_userPanel->width() + 6, -200));
-            showProfile(m_selfUserId, corner);
+            showStatusMenu();
             return true;
         }
     }
@@ -2867,6 +2990,33 @@ void MainWindow::stopWatchingStream()
     updateVoicePanel();
 }
 
+void MainWindow::applyBackgroundSettings()
+{
+    if (!m_aurora)
+        return;
+
+    AppConfig &config = AppConfig::instance();
+
+    const QString path = config.value(QStringLiteral("appearance/backgroundPath")).toString();
+    const int dim = config.value(QStringLiteral("appearance/backgroundDim"), 45).toInt();
+    const bool wantsPicture =
+        config.value(QStringLiteral("appearance/backgroundMode")).toString()
+            == QLatin1String("picture");
+
+    // A picture that has been deleted or moved since it was chosen falls back
+    // to the hole rather than to black, so a missing file looks like the
+    // program's own design instead of a fault.
+    const bool usable = wantsPicture && !path.isEmpty() && QFileInfo::exists(path);
+    if (wantsPicture && !usable && !path.isEmpty()) {
+        wlog(QStringLiteral("theme"),
+             QStringLiteral("the chosen background is no longer there: %1").arg(path));
+    }
+
+    m_aurora->setBackgroundPicture(usable ? path : QString(), dim);
+    m_aurora->setBackgroundMode(usable ? AuroraWidget::Background::Picture
+                                       : AuroraWidget::Background::Hole);
+}
+
 // ---------------------------------------------------------------------------
 // Sharing our own screen
 // ---------------------------------------------------------------------------
@@ -2921,6 +3071,8 @@ void MainWindow::stopScreenShare()
 
     if (m_share)
         m_share->stop();
+    if (m_callView && !m_selfUserId.isEmpty())
+        m_callView->dropFrames(m_selfUserId, CallView::Surface::Share);
     if (m_shareVoice) {
         m_shareVoice->stopSendingVideo();
         m_shareVoice->disconnectFromVoice();
@@ -3377,6 +3529,7 @@ void MainWindow::applyAppearance()
         m_aurora->setHoleColors(Theme::holeAccent(), Theme::holeDisk(), Theme::holeGrade());
         m_aurora->setRunning(
             config.value(QStringLiteral("appearance/animatedBackground"), true).toBool());
+        applyBackgroundSettings();
         m_aurora->update();
     }
 

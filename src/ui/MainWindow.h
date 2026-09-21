@@ -202,6 +202,15 @@ private:
     // Live has its own server and the call underneath has to stay up. This one
     // sends pictures and opens no microphone, because the microphone is
     // already being carried by the call.
+    // Reads the background out of settings and puts it on the window: the
+    // drawn hole, or a picture of your own.
+    void applyBackgroundSettings();
+
+    // Online, idle, do not disturb, invisible - from your own panel at the
+    // bottom of the sidebar, which is where people look for it.
+    void showStatusMenu();
+    void setPresenceStatus(const QString &status);
+
     void startScreenShare();
     void stopScreenShare();
     void tryBeginBroadcast();

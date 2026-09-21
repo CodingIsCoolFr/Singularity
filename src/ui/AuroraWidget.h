@@ -9,21 +9,44 @@
 #include <QTimer>
 #include <QVector3D>
 
+class QMovie;
 class QOpenGLShaderProgram;
+class QOpenGLTexture;
 
-// Full-window black hole. The rest of the UI is painted on top of this as
-// translucent glass, so the accretion disk shows in the gaps.
+// Whatever is behind the whole window. The rest of the UI is painted on top of
+// this as translucent glass, so the background shows through the gaps.
+//
+// Two kinds. The drawn black hole, which is a shader, and a picture of your
+// own, which may be animated. They share this one widget rather than being two
+// widgets that take turns, because everything else in the window is composited
+// onto whatever this draws - the overlay machinery below only knows how to do
+// that once.
 class AuroraWidget : public QOpenGLWidget, protected QOpenGLFunctions_3_3_Core
 {
     Q_OBJECT
 
 public:
+    enum class Background {
+        Hole,      // the drawn one
+        Picture,   // one of yours
+    };
+
     explicit AuroraWidget(QWidget *parent = nullptr);
     ~AuroraWidget() override;
 
     void setOverlay(QWidget *overlay);
     void setRunning(bool on);
     void setHoleColors(const QVector3D &accent, const QVector3D &disk, const QVector3D &grade);
+
+    // A picture instead of the hole.
+    //
+    // `path` may be an animated GIF or WebP, or a still image. `dimPercent`
+    // darkens it, which is not decoration: a bright picture behind the
+    // conversation makes the text unreadable, and somebody who has just chosen
+    // a photograph they like will blame the client rather than the photograph.
+    void setBackgroundPicture(const QString &path, int dimPercent);
+    void setBackgroundMode(Background mode);
+    Background backgroundMode() const { return m_background; }
 
 protected:
     void initializeGL() override;
@@ -37,10 +60,28 @@ private:
     void paintOverlay();
     void updateOverlayFbo();
     bool compileProgram();
+    bool compilePictureProgram();
     void destroyGl();
     QWidget *pickOverlay(const QPoint &pos) const;
 
+    void loadPicture();
+    void uploadFrame(const QImage &frame);
+
     QOpenGLShaderProgram *m_program = nullptr;
+    QOpenGLShaderProgram *m_pictureProgram = nullptr;
+
+    Background m_background = Background::Hole;
+    QString m_picturePath;
+    int m_pictureDim = 45;
+
+    // The animation, when there is one. A still picture leaves this null and
+    // the texture simply never changes.
+    QMovie *m_movie = nullptr;
+    GLuint m_pictureTex = 0;
+    QSize m_pictureSize;
+    bool m_pictureDirty = false;
+    QImage m_pendingFrame;
+
     GLuint m_vao = 0;
     GLuint m_vbo = 0;
     int m_uResolution = -1;

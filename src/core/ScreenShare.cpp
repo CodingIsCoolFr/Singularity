@@ -12,6 +12,10 @@ constexpr qint64 StillResendMs = 1500;
 // two across that boundary can be the wrong size.
 constexpr int MaxEncodeFailures = 30;
 
+// How often your own tile is refreshed. Twice a second is enough to tell you
+// the right screen is going out, which is all it is for.
+constexpr qint64 PreviewEveryMs = 500;
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -153,6 +157,22 @@ void ScreenShareWorker::tick()
     }
 
     m_encodeFailures = 0;
+
+    // Your own tile, a couple of times a second.
+    //
+    // Taken from the same pixels the encoder just read, so it costs a shrink
+    // and nothing else. Done after the encode rather than before it, because
+    // the encode is the job and this is the courtesy.
+    if (now - m_lastPreviewMs >= PreviewEveryMs) {
+        m_lastPreviewMs = now;
+
+        // Wraps the mapped pixels without copying; scaled() then makes the
+        // copy that is safe to send across the thread boundary.
+        const QImage whole(pixels, m_capture.width(), m_capture.height(), stride,
+                           QImage::Format_ARGB32);
+        emit preview(whole.scaled(QSize(480, 270), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    }
+
     if (units.isEmpty())
         return;
 
@@ -173,6 +193,7 @@ ScreenShare::ScreenShare(QObject *parent)
     connect(&m_thread, &QThread::finished, m_worker, &QObject::deleteLater);
 
     connect(m_worker, &ScreenShareWorker::picture, this, &ScreenShare::picture);
+    connect(m_worker, &ScreenShareWorker::preview, this, &ScreenShare::preview);
     connect(m_worker, &ScreenShareWorker::started, this,
             [this](int w, int h, const QString &encoder, bool hardware) {
                 m_running = true;

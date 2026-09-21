@@ -5,6 +5,8 @@
 
 #include <QByteArray>
 #include <QElapsedTimer>
+#include <QImage>
+#include <QSize>
 #include <QList>
 #include <QObject>
 #include <QString>
@@ -45,6 +47,18 @@ signals:
     // One complete picture, already split into the pieces RTP wants.
     void picture(const QList<QByteArray> &units, bool keyframe);
 
+    // A small copy of what is being sent, for your own tile.
+    //
+    // Your own pictures leave over the network and nothing comes back, so
+    // without this the person sharing is the only one in the call who cannot
+    // see the share - their own tile sits on "waiting for the screen" for as
+    // long as it runs, which looks exactly like a share that is not working.
+    //
+    // Sent a couple of times a second and shrunk first. A thumbnail does not
+    // need thirty frames, and the full sized picture is already busy being
+    // encoded.
+    void preview(const QImage &frame);
+
     void started(int width, int height, const QString &encoder, bool hardware);
     void stopped();
     void failed(const QString &reason);
@@ -64,6 +78,7 @@ private:
     // wait for the screen to change before seeing anything at all, so the
     // same unchanged picture is sent again as a keyframe now and then.
     qint64 m_lastSentMs = 0;
+    qint64 m_lastPreviewMs = 0;
 
     int m_fps = 30;
     bool m_running = false;
@@ -88,6 +103,7 @@ public:
 
 signals:
     void picture(const QList<QByteArray> &units, bool keyframe);
+    void preview(const QImage &frame);
     void started(int width, int height, const QString &encoder, bool hardware);
     void stopped();
     void failed(const QString &reason);

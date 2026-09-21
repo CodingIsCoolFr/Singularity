@@ -1,5 +1,6 @@
 #include "plugin/builtin/AnonymousPlugin.h"
 
+#include "core/AppConfig.h"
 #include "core/GatewayClient.h"
 #include "core/Logger.h"
 #include "ui/Theme.h"
@@ -169,8 +170,15 @@ void AnonymousPlugin::onUnload()
 {
     // Switching the plugin off must put the status back, or turning it off
     // would leave you invisible with nothing left on screen to explain why.
-    if (context() && context()->gateway())
-        context()->gateway()->setPresenceStatus(QStringLiteral("online"));
+    //
+    // Back to what you chose, not to "online". Hard-coding online here meant
+    // this quietly cancelled a Do Not Disturb you had set yourself.
+    if (context() && context()->gateway()) {
+        context()->gateway()->setPresenceStatus(
+            AppConfig::instance()
+                .value(QStringLiteral("presence/status"), QStringLiteral("online"))
+                .toString());
+    }
 
     Plugin::onUnload();
 }
@@ -197,8 +205,11 @@ void AnonymousPlugin::applyPresence()
     if (!context() || !context()->gateway())
         return;
 
-    context()->gateway()->setPresenceStatus(appearOffline() ? QStringLiteral("invisible")
-                                                            : QStringLiteral("online"));
+    context()->gateway()->setPresenceStatus(
+        appearOffline() ? QStringLiteral("invisible")
+                        : AppConfig::instance()
+                              .value(QStringLiteral("presence/status"), QStringLiteral("online"))
+                              .toString());
 }
 
 QString AnonymousPlugin::cleanLinks(const QString &text, int *removedCount)

@@ -1,6 +1,10 @@
 #include "AuroraWidget.h"
 
+#include "core/Logger.h"
+
 #include <QDebug>
+#include <QFileInfo>
+#include <QMovie>
 #include <QOpenGLShaderProgram>
 #include <QPainter>
 #include <QResizeEvent>
@@ -169,6 +173,57 @@ void main()
 }
 )";
 
+// Your own picture, fitted and dimmed.
+//
+// Fitted by covering rather than stretching. A wallpaper squashed to the
+// window's shape looks wrong in a way people notice immediately even when they
+// cannot say why, so the picture keeps its proportions and the overflow is
+// cropped - which is what every operating system does with a wallpaper.
+//
+// The dimming and the vignette are not decoration. Every surface above this is
+// translucent glass, and a bright or busy picture behind the conversation
+// makes the text unreadable. Somebody who has just chosen a photograph they
+// like will blame the client rather than the photograph, so the default is
+// dark enough to read over and the slider lets them go brighter deliberately.
+constexpr const char *kPictureFragment = R"(#version 330 core
+uniform sampler2D uTex;
+uniform vec2  uResolution;
+uniform vec2  uTexSize;
+uniform float uDim;
+out vec4 fragColor;
+
+void main()
+{
+    vec2 uv = gl_FragCoord.xy / uResolution;
+
+    // Images arrive with their first row at the top; OpenGL counts from the
+    // bottom. Without this the wallpaper is upside down.
+    uv.y = 1.0 - uv.y;
+
+    float screenAspect = uResolution.x / uResolution.y;
+    float imageAspect = uTexSize.x / max(uTexSize.y, 1.0);
+
+    if (imageAspect > screenAspect) {
+        // Wider than the window, so crop the sides.
+        float s = screenAspect / imageAspect;
+        uv.x = (uv.x - 0.5) * s + 0.5;
+    } else {
+        // Taller, so crop top and bottom.
+        float s = imageAspect / screenAspect;
+        uv.y = (uv.y - 0.5) * s + 0.5;
+    }
+
+    vec3 col = texture(uTex, uv).rgb;
+    col *= (1.0 - uDim);
+
+    vec2 q = gl_FragCoord.xy / uResolution;
+    float vig = pow(16.0 * q.x * q.y * (1.0 - q.x) * (1.0 - q.y), 0.30);
+    col *= mix(0.45, 1.0, vig);
+
+    fragColor = vec4(col, 1.0);
+}
+)";
+
 } // namespace
 
 AuroraWidget::AuroraWidget(QWidget *parent)
@@ -237,6 +292,125 @@ void AuroraWidget::setRunning(bool on)
     update();
 }
 
+void AuroraWidget::setBackgroundMode(Background mode)
+{
+    if (m_background == mode)
+        return;
+    m_background = mode;
+
+    // The animation only runs while it is the thing being shown. A GIF
+    // decoding in the background of a black hole is work nobody asked for.
+    if (m_movie) {
+        if (mode == Background::Picture)
+            m_movie->start();
+        else
+            m_movie->stop();
+    }
+
+    update();
+}
+
+void AuroraWidget::setBackgroundPicture(const QString &path, int dimPercent)
+{
+    m_pictureDim = qBound(0, dimPercent, 95);
+
+    if (path == m_picturePath) {
+        update();
+        return;
+    }
+
+    m_picturePath = path;
+
+    delete m_movie;
+    m_movie = nullptr;
+    m_pictureSize = QSize();
+
+    if (!m_picturePath.isEmpty())
+        loadPicture();
+
+    update();
+}
+
+void AuroraWidget::loadPicture()
+{
+    // QMovie reads animated formats one frame at a time rather than holding
+    // every frame in memory at once, which matters: a long GIF decoded whole
+    // is hundreds of megabytes. A still image is simply a movie with one
+    // frame, so there is only one path here rather than two.
+    m_movie = new QMovie(m_picturePath, QByteArray(), this);
+    if (!m_movie->isValid()) {
+        wlog(QStringLiteral("theme"),
+             QStringLiteral("could not read the background picture: %1").arg(m_picturePath));
+        delete m_movie;
+        m_movie = nullptr;
+        return;
+    }
+
+    // Decoded frames are thrown away after being handed over, so a long
+    // animation costs the same as a short one.
+    m_movie->setCacheMode(QMovie::CacheNone);
+
+    connect(m_movie, &QMovie::frameChanged, this, [this](int) {
+        if (!m_movie || m_background != Background::Picture)
+            return;
+        m_pendingFrame = m_movie->currentImage();
+        m_pictureDirty = true;
+        update();
+    });
+
+    m_movie->jumpToFrame(0);
+    m_pendingFrame = m_movie->currentImage();
+    m_pictureDirty = !m_pendingFrame.isNull();
+
+    if (m_background == Background::Picture)
+        m_movie->start();
+
+    wlog(QStringLiteral("theme"),
+         QStringLiteral("background picture %1 (%2 frames, %3x%4)")
+             .arg(QFileInfo(m_picturePath).fileName())
+             .arg(m_movie->frameCount())
+             .arg(m_pendingFrame.width())
+             .arg(m_pendingFrame.height()));
+}
+
+void AuroraWidget::uploadFrame(const QImage &frame)
+{
+    if (frame.isNull())
+        return;
+
+    const QImage rgba = frame.convertToFormat(QImage::Format_RGBA8888);
+
+    if (m_pictureTex == 0) {
+        glGenTextures(1, &m_pictureTex);
+        glBindTexture(GL_TEXTURE_2D, m_pictureTex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    } else {
+        glBindTexture(GL_TEXTURE_2D, m_pictureTex);
+    }
+
+    // Rows of a QImage are padded to four bytes. RGBA8888 is already a
+    // multiple of four per pixel so this is always one, but saying so costs
+    // nothing and stops a future format change tearing the picture diagonally.
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, rgba.bytesPerLine() / 4);
+
+    // Reallocating only when the size changes. An animation's frames are all
+    // the same size, so the usual case is a straight overwrite.
+    if (m_pictureSize != rgba.size()) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, rgba.width(), rgba.height(), 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, rgba.constBits());
+        m_pictureSize = rgba.size();
+    } else {
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, rgba.width(), rgba.height(), GL_RGBA,
+                        GL_UNSIGNED_BYTE, rgba.constBits());
+    }
+
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+}
+
 void AuroraWidget::setHoleColors(const QVector3D &accent, const QVector3D &disk, const QVector3D &grade)
 {
     m_accentTarget = accent;
@@ -264,6 +438,7 @@ void AuroraWidget::initializeGL()
     glClearColor(0.01f, 0.01f, 0.02f, 1.0f);
 
     compileProgram();
+    compilePictureProgram();
 
     glGenVertexArrays(1, &m_vao);
     glBindVertexArray(m_vao);
@@ -303,6 +478,38 @@ void AuroraWidget::paintGL()
         const qint64 now = m_clock.elapsed();
         m_time += float(now - m_lastMs) * 0.001f;
         m_lastMs = now;
+    }
+
+    // A picture of your own, when there is one to show.
+    //
+    // Falling back to the hole rather than to black: a background that failed
+    // to load should look like the program's own design, not like a fault.
+    if (m_background == Background::Picture && m_pictureProgram
+        && m_pictureProgram->isLinked()) {
+
+        if (m_pictureDirty) {
+            uploadFrame(m_pendingFrame);
+            m_pendingFrame = QImage();
+            m_pictureDirty = false;
+        }
+
+        if (m_pictureTex != 0 && m_pictureSize.isValid()) {
+            m_pictureProgram->bind();
+            m_pictureProgram->setUniformValue("uResolution", QVector2D(float(w), float(h)));
+            m_pictureProgram->setUniformValue(
+                "uTexSize", QVector2D(float(m_pictureSize.width()), float(m_pictureSize.height())));
+            m_pictureProgram->setUniformValue("uDim", float(m_pictureDim) / 100.0f);
+            m_pictureProgram->setUniformValue("uTex", 0);
+
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, m_pictureTex);
+
+            glBindVertexArray(m_vao);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glBindVertexArray(0);
+            m_pictureProgram->release();
+            return;
+        }
     }
 
     if (m_program && m_program->isLinked()) {
@@ -407,8 +614,32 @@ bool AuroraWidget::compileProgram()
     return true;
 }
 
+bool AuroraWidget::compilePictureProgram()
+{
+    delete m_pictureProgram;
+    m_pictureProgram = new QOpenGLShaderProgram(this);
+
+    if (!m_pictureProgram->addShaderFromSourceCode(QOpenGLShader::Vertex, kVertex)
+        || !m_pictureProgram->addShaderFromSourceCode(QOpenGLShader::Fragment, kPictureFragment)
+        || !m_pictureProgram->link()) {
+        qWarning() << "aurora picture" << m_pictureProgram->log();
+        delete m_pictureProgram;
+        m_pictureProgram = nullptr;
+        return false;
+    }
+    return true;
+}
+
 void AuroraWidget::destroyGl()
 {
+    delete m_pictureProgram;
+    m_pictureProgram = nullptr;
+    if (m_pictureTex) {
+        glDeleteTextures(1, &m_pictureTex);
+        m_pictureTex = 0;
+    }
+    m_pictureSize = QSize();
+
     delete m_program;
     m_program = nullptr;
     if (m_vbo)
