@@ -940,6 +940,28 @@ QWidget *MainWindow::buildSidebar(QWidget *parent)
     m_channelList->setItemDelegate(m_channelDelegate);
     layout->addWidget(m_channelList, 1);
 
+    // The pointer crossing a channel's name starts fetching it.
+    //
+    // Between noticing a channel and clicking it there is somewhere between a
+    // fifth and a whole second of human time, and the round trip to Discord
+    // is about a third of a second. Spending the one inside the other is the
+    // entire trick: by the time the click lands the messages are usually
+    // already here, and opening looks instant because no waiting happened
+    // while anybody was looking.
+    m_channelList->setMouseTracking(true);
+    connect(m_channelList, &QListWidget::itemEntered, this, [this](QListWidgetItem *item) {
+        if (!item || item->data(KindRole).toString() != QLatin1String("channel"))
+            return;
+        prefetchChannel(item->data(IdRole).toString());
+    });
+
+    // One at a time, spaced apart. Six requests at once is how a client gets
+    // itself rate limited, and the allowance belongs to the person's real
+    // clicks rather than to our guesses about them.
+    m_prefetchTimer.setSingleShot(true);
+    m_prefetchTimer.setInterval(220);
+    connect(&m_prefetchTimer, &QTimer::timeout, this, &MainWindow::pumpPrefetch);
+
     connect(m_channelDelegate, &ChannelDelegate::joinVoiceRequested, this, &MainWindow::joinVoice);
     connect(m_channelDelegate, &ChannelDelegate::leaveVoiceRequested, this,
             [this](const QString &) { leaveVoice(); });
@@ -1963,6 +1985,10 @@ void MainWindow::onGuildSelected(int row)
     if (m_members)
         m_members->setGuild(m_currentGuildId);
 
+    // Start pulling the channels near the top of this server down before
+    // anybody picks one.
+    prefetchGuild(m_currentGuildId);
+
     if (!m_currentGuildId.isEmpty()) {
         // Discord only sends member statuses when asked for a specific
         // channel's member list, so pick the first readable text channel.
@@ -2251,6 +2277,16 @@ void MainWindow::openChannel(const QString &channelId)
     }
 
     m_messageView->setHtml(loadingSkeletonHtml());
+
+    // It is already on its way, because the pointer crossed this channel a
+    // moment before the click did. Asking again would send a second request
+    // for the same thing and arrive no sooner.
+    if (m_prefetchInFlight && m_prefetchCurrent == channelId)
+        return;
+
+    // Anything queued for this channel is now being fetched properly, so it
+    // does not need fetching twice.
+    m_prefetchQueue.removeAll(channelId);
     const int limit =
         AppConfig::instance().value(QStringLiteral("appearance/historyLimit"), HistoryLimit).toInt();
 
@@ -2364,6 +2400,113 @@ QString MainWindow::loadingSkeletonHtml()
     }
 
     return html;
+}
+
+// ---------------------------------------------------------------------------
+// Fetching ahead
+// ---------------------------------------------------------------------------
+
+void MainWindow::prefetchChannel(const QString &channelId)
+{
+    if (m_prefetchGaveUp || channelId.isEmpty())
+        return;
+
+    // Already here, already asked for, or already on the list.
+    if (m_store->hasHistory(channelId) || m_prefetchAsked.contains(channelId))
+        return;
+
+    const ChannelInfo channel = m_store->channel(channelId);
+
+    // Only the ones that hold messages. A voice channel or a category has no
+    // history to fetch and asking for it spends the allowance for nothing.
+    if (!channel.isTextLike())
+        return;
+
+    m_prefetchAsked.insert(channelId);
+    m_prefetchQueue.append(channelId);
+    pumpPrefetch();
+}
+
+void MainWindow::prefetchGuild(const QString &guildId)
+{
+    if (guildId.isEmpty())
+        return;
+
+    // The first handful only. Somebody opening a server looks at the top of
+    // the list; fetching forty channels to cover the one they might pick is
+    // how a client gets itself rate limited.
+    int asked = 0;
+    const QList<ChannelGroup> groups = m_store->groupedChannels(guildId);
+    for (const ChannelGroup &group : groups) {
+        for (const ChannelInfo &channel : group.channels) {
+            if (asked >= 6)
+                return;
+            if (!channel.isTextLike())
+                continue;
+            prefetchChannel(channel.id);
+            ++asked;
+        }
+    }
+}
+
+void MainWindow::pumpPrefetch()
+{
+    if (m_prefetchGaveUp || m_prefetchInFlight || m_prefetchQueue.isEmpty())
+        return;
+
+    // Never while a channel somebody actually opened is still waiting. A
+    // guess must not stand in front of a request.
+    if (m_loadingOlder)
+        return;
+
+    const QString channelId = m_prefetchQueue.takeFirst();
+    if (m_store->hasHistory(channelId)) {
+        pumpPrefetch();
+        return;
+    }
+
+    m_prefetchInFlight = true;
+    m_prefetchCurrent = channelId;
+
+    const int limit =
+        AppConfig::instance().value(QStringLiteral("appearance/historyLimit"), HistoryLimit).toInt();
+
+    m_rest->fetchMessages(
+        channelId, limit,
+        [this, channelId](const QJsonArray &messages) {
+            m_prefetchInFlight = false;
+            m_prefetchCurrent.clear();
+
+            // Only if nothing else filled it in the meantime.
+            if (!m_store->hasHistory(channelId))
+                m_store->setHistory(channelId, messages);
+
+            m_prefetchTimer.start();
+        },
+        [this, channelId](const RestClient::Error &error) {
+            m_prefetchInFlight = false;
+            m_prefetchCurrent.clear();
+
+            // Somebody opened this while it was on its way, and it failed. If
+            // it is left as a skeleton for ever that is worse than the wait,
+            // so the ordinary path takes over.
+            if (channelId == m_currentChannelId && !m_store->hasHistory(channelId))
+                openChannel(channelId);
+
+            if (error.isRateLimit()) {
+                // Stop entirely. Carrying on would spend the allowance that
+                // the next channel somebody actually clicks will need.
+                m_prefetchGaveUp = true;
+                m_prefetchQueue.clear();
+                wlog(QStringLiteral("prefetch"),
+                     QStringLiteral("rate limited, fetching ahead is off for this session"));
+                return;
+            }
+
+            // A channel we cannot read is not worth mentioning. It is the
+            // ordinary case in a large server.
+            m_prefetchTimer.start();
+        });
 }
 
 void MainWindow::scheduleRender()

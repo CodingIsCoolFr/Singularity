@@ -296,6 +296,37 @@ private:
     // What a channel shows while it waits for Discord.
     static QString loadingSkeletonHtml();
 
+    // Fetching a channel's history before anybody asks for it.
+    //
+    // Opening a channel for the first time costs about a third of a second of
+    // round trip to Discord, measured, and no amount of local cleverness
+    // shortens that. What removes the wait is not doing it while somebody is
+    // watching: the history for a channel you are about to open is already
+    // here, because it was fetched when you opened the server, or when the
+    // pointer crossed its name.
+    //
+    // One request at a time, spaced out, and never while a channel somebody
+    // actually clicked is still loading. This is speculative work, and
+    // speculative work that gets in the way of real work is worse than none.
+    void prefetchChannel(const QString &channelId);
+    void prefetchGuild(const QString &guildId);
+    void pumpPrefetch();
+
+    QStringList m_prefetchQueue;
+    QSet<QString> m_prefetchAsked;
+    QTimer m_prefetchTimer;
+
+    // Which channel is being fetched ahead right now. Clicking that same
+    // channel must wait for the request already on its way rather than
+    // sending a second one for the same thing.
+    QString m_prefetchCurrent;
+    bool m_prefetchInFlight = false;
+
+    // Set when Discord says we are asking too often. Speculation stops for
+    // the rest of the session rather than spending the allowance somebody
+    // else's real request will need.
+    bool m_prefetchGaveUp = false;
+
     MessageInfo m_lastRendered;
     bool m_hasLastRendered = false;
 
