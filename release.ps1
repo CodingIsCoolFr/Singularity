@@ -105,6 +105,8 @@ Singularity $version.
 
 **Download ``Singularity-$version-setup.exe`` below.** Windows x64, installs for you only, no administrator prompt.
 
+Website: <https://singularity-client.pages.dev>
+
 ## Warning
 
 Discord does not permit third party clients on a normal user account, and using one can get the account banned. Your password is sent to ``discord.com`` and nowhere else, is never written to disk and never logged; only the returned token is kept, sealed with your Windows account key.
