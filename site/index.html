@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Singularity — a Discord client in C++</title>
-<meta name="description" content="A Discord client written from scratch in C++ with Qt 6. No Electron, no web view. Encrypted voice, received video, plugins compiled into the binary. Windows.">
+<meta name="description" content="A Discord client written from scratch in C++ with Qt 6. No Electron, no web view. Encrypted voice, received video, seven plugins compiled into the binary. Windows.">
 <meta name="theme-color" content="#05070b">
 <link rel="icon" href="mark.png" type="image/png">
 
@@ -19,16 +19,17 @@
 <body>
 
 <canvas id="hole" aria-hidden="true"></canvas>
-<div id="shade" aria-hidden="true"></div>
 
 <nav>
   <div class="wrap">
     <a class="brand" href="#top"><img src="mark.png" alt="">Singularity</a>
     <div class="links">
       <a href="#what" class="hideable">What it does</a>
+      <a href="#look" class="hideable">The look</a>
       <a href="#voice" class="hideable">Calls</a>
-      <a href="#privacy">Privacy</a>
-      <a href="#get">Download</a>
+      <a href="#privacy" class="hideable">Privacy</a>
+      <a href="#missing">Limits</a>
+      <a href="#get" class="get">Download</a>
     </div>
   </div>
 </nav>
@@ -44,7 +45,7 @@
         <span class="chip">Qt 6.10</span>
         <span class="chip">Windows x64</span>
         <span class="chip">End-to-end encrypted voice</span>
-        <span class="chip">Plugins compiled in</span>
+        <span class="chip">Seven plugins, compiled in</span>
       </div>
 
       <div class="cta">
@@ -59,11 +60,23 @@
 
 <main class="veil">
 
+<section id="stats">
+  <div class="wrap rise">
+    <div class="slab">
+      <div><b>54 MB</b><span>the whole installer</span></div>
+      <div><b>24</b><span>files in the install folder</span></div>
+      <div><b>0</b><span>browsers bundled</span></div>
+      <div><b>0</b><span>plugin files on disk</span></div>
+    </div>
+  </div>
+</section>
+
 <section id="warning">
-  <div class="wrap">
+  <div class="wrap rise">
     <div class="panel danger">
-      <h2>Read this before you install it</h2>
-      <p class="lede"><b style="color:var(--text)">Discord does not permit third party clients on a normal user account. Running this can get the account banned.</b> That risk is accepted here on purpose. Nothing on this page makes it smaller, and you should decide about it before you download anything.</p>
+      <p class="kicker">Read this first</p>
+      <h2>It can get your account banned</h2>
+      <p class="lede"><b>Discord does not permit third party clients on a normal user account.</b> That risk is taken here on purpose, and nothing on this page makes it smaller. Decide about it before you download anything.</p>
 
       <dl class="rows">
         <div class="row"><dt>Your password</dt><dd>Sent to <code>discord.com</code> and nowhere else. Never written to disk. Never logged.</dd></div>
@@ -76,9 +89,10 @@
 </section>
 
 <section id="what">
-  <div class="wrap">
+  <div class="wrap rise">
+    <p class="kicker">Built and working</p>
     <h2>What it does</h2>
-    <p class="lede">Everything below is built and working today. What is not built is further down, named plainly.</p>
+    <p class="lede">Everything here works today. What does not exist yet is further down, named plainly, because a page that only lists strengths is a page you cannot trust about anything.</p>
 
     <div class="grid">
       <div class="panel card">
@@ -88,15 +102,15 @@
       </div>
 
       <div class="panel card">
-        <h3><span class="dot moon"></span>Watching</h3>
+        <h3><span class="dot idle"></span>Watching</h3>
         <p>Other people's cameras and shared screens are received and decoded, and appear in a grid above the conversation.</p>
-        <p>Sending your own is the other half of that problem, and is not built yet.</p>
+        <p>Sending your own is the other half of that problem, and is not built.</p>
       </div>
 
       <div class="panel card">
         <h3><span class="dot"></span>Reading</h3>
-        <p>Message history, live messages, edits and deletes. Images, GIFs, custom emoji, stickers and link previews, animated ones included.</p>
-        <p>Click any picture for a full size viewer with scroll to zoom and drag to pan.</p>
+        <p>History, live messages, edits and deletes, reactions and replies, and scrolling up to load more.</p>
+        <p>Images, GIFs, custom emoji, stickers and link previews. Click any picture for a viewer with scroll to zoom and drag to pan.</p>
       </div>
 
       <div class="panel card">
@@ -109,62 +123,116 @@
 </section>
 
 <section id="look">
-  <div class="wrap">
+  <div class="wrap rise">
+    <p class="kicker">One colour decides everything</p>
     <h2>The look</h2>
-    <p class="lede">A drawn black hole, with night ink laid over it. The background on this page is not a video or a picture — it is the program's own shader, recompiled for the browser. Same ray marching, same photon ring, same Doppler boost on the side of the disk turning toward you.</p>
+    <p class="lede">Pick a seed colour and the whole application is derived from it <b>while it is running</b> — surfaces, accents, every stylesheet token, and the accretion disk of the hole itself. No restart, no theme files. Try it: these retint this page and the background behind it, using the same rule the program uses.</p>
 
-    <dl class="rows">
-      <div class="row"><dt>One seed colour</dt><dd>Pick a colour and the whole application is derived from it while it runs — surfaces, accents, every stylesheet token, and the hole's own disk. No restart. Twelve presets ship, from Monochrome to Ember to Void.</dd></div>
+    <div class="seeds" id="seeds" role="group" aria-label="Theme seed"></div>
+
+    <div class="mock" id="mock" aria-hidden="true">
+      <div class="m-rail">
+        <div class="m-ico sel">S</div>
+        <div class="m-ico">DM</div>
+        <div class="m-ico">QT</div>
+        <div class="m-ico">GL</div>
+      </div>
+      <div class="m-side">
+        <div class="m-cat">Text channels</div>
+        <div class="m-ch sel"><span>#</span>general</div>
+        <div class="m-ch"><span>#</span>builds</div>
+        <div class="m-ch"><span>#</span>shaders</div>
+        <div class="m-cat">Voice channels</div>
+        <div class="m-ch"><span>«</span>Lounge</div>
+        <div class="m-ch"><span>«</span>Away</div>
+      </div>
+      <div class="m-chat">
+        <div class="m-msg">
+          <div class="m-av a"></div>
+          <div>
+            <div class="m-name">mitya<i>today at 4:21</i></div>
+            <div class="m-body">the disk is baked once now, not every frame</div>
+          </div>
+        </div>
+        <div class="m-msg">
+          <div class="m-av"></div>
+          <div>
+            <div class="m-name">guest<i>today at 4:22</i></div>
+            <div class="m-body">so it keeps moving the whole way down the page</div>
+          </div>
+        </div>
+        <div class="m-box">Message #general</div>
+      </div>
+    </div>
+
+    <dl class="rows" style="margin-top:20px">
       <div class="row"><dt>Depth from layers</dt><dd>The rail, the sidebar and the conversation each sit a real step lighter than the one behind, so they read as separate planes without a single border drawn.</dd></div>
       <div class="row"><dt>Colour is information</dt><dd>The status dots are the one thing the seed never touches. Green, yellow and red have to keep meaning online, away and busy whatever else changes.</dd></div>
-      <div class="row"><dt>Even the title bar</dt><dd>It belongs to Windows rather than Qt, so it is recoloured through the system instead of replaced with a hand made one. Snap layouts and double click to maximise keep working, and there is still no seam across the top.</dd></div>
+      <div class="row"><dt>Even the title bar</dt><dd>It belongs to Windows rather than Qt, so it is recoloured through the system instead of replaced by a hand made one. Snap layouts and double click to maximise keep working, and there is still no seam across the top.</dd></div>
+      <div class="row"><dt>A hue-less seed</dt><dd>Black and grey have no hue, and scaling one would leave the disk unlit — so those take a silver branch instead. That is the default, and it is what you are looking at.</dd></div>
     </dl>
+  </div>
+</section>
 
-    <div class="palette">
-      <span class="sw"><i style="background:#07090e"></i>#07090e ground</span>
-      <span class="sw"><i style="background:#0a0d14"></i>#0a0d14 rail</span>
-      <span class="sw"><i style="background:#10151f"></i>#10151f sidebar</span>
-      <span class="sw"><i style="background:#151b28"></i>#151b28 conversation</span>
-      <span class="sw"><i style="background:#1c2433"></i>#1c2433 composer</span>
-      <span class="sw"><i style="background:#6ee7d8"></i>#6ee7d8 selection</span>
-      <span class="sw"><i style="background:#8aa4ff"></i>#8aa4ff moonlight</span>
-      <span class="sw"><i style="background:#3dd68c"></i>#3dd68c online</span>
+<section id="background">
+  <div class="wrap rise">
+    <p class="kicker">The background you are looking at</p>
+    <h2>Drawn, not filmed</h2>
+    <p class="lede">This is not a video and not a picture of the program. It is the program's own shader, recompiled for the browser — the same bent rays, the same photon ring, the same bright edge where the disk turns toward you.</p>
+
+    <div class="grid">
+      <div class="panel card">
+        <h3><span class="num">1</span>It was too slow</h3>
+        <p>Moved across unchanged, it marched a hundred steps along a bent ray for every pixel, every frame. On a 240 Hz monitor that is 240 of those a second, full screen, while the browser is also scrolling text over the top.</p>
+      </div>
+      <div class="panel card">
+        <h3><span class="num">2</span>Most of it never changes</h3>
+        <p>Where each ray goes, how far it bends, which part of the disk it strikes, whether it falls in — all decided by geometry that never moves. It is now worked out once into textures and reused.</p>
+      </div>
+      <div class="panel card">
+        <h3><span class="num">3</span>What changes is thin</h3>
+        <p>The spiral turns, the stars twinkle, the grain moves. A few lines of arithmetic on numbers already fetched. The ray marching happens once instead of sixty times a second.</p>
+      </div>
     </div>
+
+    <p class="lede" style="margin:24px 0 0">A detail worth the trouble: the spiral's phase is stored as a cosine and a sine rather than as an angle. An angle wraps from +&pi; to &minus;&pi;, and smoothing across that seam would average two nearly identical directions into a wrong one and draw a hard line across the disk.</p>
   </div>
 </section>
 
 <section id="voice">
-  <div class="wrap">
+  <div class="wrap rise">
+    <p class="kicker">Four fixes, each of which sounds like silence</p>
     <h2>How a call actually works</h2>
-    <p class="lede">Getting sound in and out took four separate fixes, each of which looked like the whole problem at the time. They are written down because every one of them presents as plain silence.</p>
+    <p class="lede">Getting sound in and out took four separate fixes, every one of which looked like the whole problem at the time. They are written down because all four present identically: nothing comes out.</p>
 
     <div class="grid">
       <div class="panel card">
-        <h3><span class="dot"></span>1 · Keep the port</h3>
-        <p>The voice gateway is version 8, and the server hands back a host <i>and</i> a port. Dropping the port reaches a different machine, which answers, and then closes. That reply looks like progress and is not.</p>
+        <h3><span class="num">1</span>Keep the port</h3>
+        <p>The voice gateway hands back a host <i>and</i> a port. Dropping the port reaches a different machine, which answers, and then closes. That reply looks like progress and is not.</p>
       </div>
       <div class="panel card">
-        <h3><span class="dot"></span>2 · Encryption is not optional</h3>
-        <p>Since 1 March 2026 Discord accepts only end-to-end encrypted calls. Singularity uses Discord's own DAVE library for the key exchange — and its list of known members must include your own id, because you are in the group too.</p>
+        <h3><span class="num">2</span>Encryption is not optional</h3>
+        <p>Since 1 March 2026 Discord accepts only end-to-end encrypted calls. Singularity uses Discord's own DAVE library — whose list of known members must include your own id, because you are in the group too.</p>
       </div>
       <div class="panel card">
-        <h3><span class="dot"></span>3 · Half the header is encrypted</h3>
+        <h3><span class="num">3</span>Half the header is encrypted</h3>
         <p>In the modes Discord uses, only the fixed header and a four byte preamble are in the clear. Counting the rest as header makes every single packet fail to open.</p>
       </div>
       <div class="panel card">
-        <h3><span class="dot"></span>4 · Qt does not mix</h3>
+        <h3><span class="num">4</span>Qt does not mix</h3>
         <p>Two people's audio written to one output is queued, not blended, which is heard as chopped and rushed speech. Each speaker gets a queue, and a 20 ms tick sums them into one frame, with Opus filling in packets that never arrived.</p>
       </div>
     </div>
 
-    <p class="lede" style="margin:26px 0 0">If a call is ever silent again, the log prints a tally every five seconds, plus a named reason for every frame thrown away. That line exists because reading the log found in one run what five rounds of theorising could not.</p>
+    <p class="lede" style="margin:24px 0 0">If a call is ever silent again, the log prints a tally every five seconds and a named reason for every frame thrown away. That line exists because reading the log found in one run what five rounds of theorising could not.</p>
   </div>
 </section>
 
 <section id="privacy">
-  <div class="wrap">
+  <div class="wrap rise">
+    <p class="kicker">Absent, not switched off</p>
     <h2>What it never sends</h2>
-    <p class="lede">Most of the tracking people worry about is absent — not because a switch turns it off, but because the code to do it was never written. That is worth stating plainly rather than claiming as a feature.</p>
+    <p class="lede">Most of the tracking people worry about is missing — not because a setting disables it, but because the code to do it was never written. That is worth stating plainly rather than claiming as a feature.</p>
 
     <dl class="rows">
       <div class="row"><dt>Analytics events</dt><dd>The official client posts to an endpoint called <code>/science</code> as you click around. Singularity never calls it.</dd></div>
@@ -175,14 +243,15 @@
       <div class="row"><dt>Third party images</dt><dd>Pictures come only from Discord's own hosts.</dd></div>
     </dl>
 
-    <p class="lede" style="margin:26px 0 0">What the <b style="color:var(--text)">Anonymous</b> plugin genuinely does is the part Singularity <i>does</i> send and can stop sending. It strips tracking codes out of links before they leave, and can hide your typing and your status. Because it rewrites what you say, it tests itself against six known cases every time it loads — and if any comes out wrong it refuses to touch messages for the rest of the session and says so. A tracking code getting through is a small harm. A broken link the sender cannot see is a worse one.</p>
+    <p class="lede" style="margin:24px 0 0">What the <b>Anonymous</b> plugin genuinely does is the part Singularity <i>does</i> send and can stop sending. It strips tracking codes out of links before they leave. Because it rewrites what you say, it tests itself against six known cases every time it loads — and if any comes out wrong it refuses to touch messages for the rest of the session and says so. A tracking code getting through is a small harm. A broken link the sender cannot see is a worse one.</p>
   </div>
 </section>
 
 <section id="plugins">
-  <div class="wrap">
+  <div class="wrap rise">
+    <p class="kicker">Nothing on disk to swap out</p>
     <h2>Seven plugins, inside the binary</h2>
-    <p class="lede">There is no plugin folder, so there is nothing on disk for anything else to swap out. Each one has its own settings page.</p>
+    <p class="lede">There is no plugin folder, so there is no file for anything else to replace. Each one has its own settings page.</p>
 
     <div class="rows">
       <div class="plugin"><div><strong>Full timestamps</strong><p>Exact date and time on every message.</p></div><span class="state on">On</span></div>
@@ -194,18 +263,19 @@
       <div class="plugin"><div><strong>Nitro watch</strong><p>Spots gift links the instant they are posted, anywhere, and offers a Claim button. It does not claim by itself.</p></div><span class="state">Off</span></div>
     </div>
 
-    <div class="panel" style="margin-top:22px">
+    <div class="panel" style="margin-top:20px">
       <h3 style="margin:0 0 10px;font-weight:500;font-size:17px">Why Nitro watch does not claim by itself</h3>
       <p style="margin:0;color:var(--dim);font-size:15.5px">Discord does not catch automated accounts by measuring how fast you click. It catches them on the shape of the account: a redeem arriving from a session that never opened the channel, never scrolled, never moved a pointer, and that does it again next week at four in the morning. A random delay hides none of that, because none of it is about timing.</p>
-      <p style="margin:12px 0 0;color:var(--dim);font-size:15.5px">Dead codes are also posted deliberately, to see who bites. A person glances at a suspicious link and moves on. Anything redeeming on its own takes the bait every time, and marks itself doing it. So the part worth automating is the part that is slow for a person: <b style="color:var(--text)">noticing</b>. The press stays yours, which is the part that keeps the account ordinary.</p>
+      <p style="margin:12px 0 0;color:var(--dim);font-size:15.5px">Dead codes are also posted deliberately, to see who bites. A person glances at a suspicious link and moves on. Anything redeeming on its own takes the bait every time, and marks itself doing it. So the part worth automating is the part that is slow for a person: <b style="color:var(--text)">noticing</b>. The press stays yours, which is what keeps the account ordinary.</p>
     </div>
   </div>
 </section>
 
-<section id="honest">
-  <div class="wrap">
+<section id="missing">
+  <div class="wrap rise">
+    <p class="kicker">The honest part</p>
     <h2>What is not built</h2>
-    <p class="lede">Roughly in the order they are worth doing. This list is here because a page that only lists strengths is a page you cannot trust about anything.</p>
+    <p class="lede">Roughly in the order it is worth doing.</p>
 
     <div class="panel">
       <ul class="plain">
@@ -213,7 +283,7 @@
         <li>File upload, and drag and drop.</li>
         <li>Search.</li>
         <li>An emoji picker.</li>
-        <li>Member list down the right side of a server.</li>
+        <li>The member list down the right side of a server.</li>
         <li>Right click menus on messages, channels and people.</li>
         <li>Unread marks and mention badges.</li>
         <li>Threads and forum channels.</li>
@@ -221,16 +291,17 @@
       </ul>
     </div>
 
-    <p class="lede" style="margin:26px 0 0">It is also <b style="color:var(--text)">Windows only</b>, and unsigned. Windows will warn that the publisher is unknown, because a code signing certificate costs money every year and this is one person's project.</p>
+    <p class="lede" style="margin:24px 0 0">It is also <b>Windows only</b>, and unsigned. Windows will warn that the publisher is unknown, because a code signing certificate costs money every year and this is one person's project.</p>
   </div>
 </section>
 
 <section id="get">
-  <div class="wrap">
+  <div class="wrap rise">
+    <p class="kicker">One setup program</p>
     <h2>Get it</h2>
-    <p class="lede">One setup program. It installs for you only and never asks for administrator — there is no service, no driver and nothing shared, so there is nothing to elevate for.</p>
+    <p class="lede">It installs for you only and never asks for administrator. There is no service, no driver and nothing shared, so there is nothing to elevate for — and a small program asking for rights it does not need is how it starts looking untrustworthy.</p>
 
-    <div class="cta" style="margin-bottom:28px">
+    <div class="cta" style="margin-bottom:26px">
       <a class="btn primary" id="download2" href="https://github.com/CodingIsCoolFr/singularity-updates/releases/latest">Download the latest release</a>
       <a class="btn ghost" href="https://github.com/CodingIsCoolFr/singularity-updates/releases">All releases</a>
     </div>
@@ -257,17 +328,121 @@
 import { startHole } from './hole.js';
 
 const canvas = document.getElementById('hole');
-if (!startHole(canvas)) {
-    // No WebGL2. The flat background is already the colour the shader clears
-    // to, so rather than leave a dead canvas, show the drawn banner instead.
+const hole = startHole(canvas);
+
+if (!hole) {
+    // No WebGL2, or no floating point render targets. The flat background is
+    // already the colour the shader clears to, so rather than leave a dead
+    // canvas, fall back to the drawn banner.
     canvas.style.display = 'none';
-    document.getElementById('shade').style.background =
-        'linear-gradient(180deg, rgba(5,7,11,0.45) 0%, rgba(5,7,11,0.92) 70%), url(banner.png) center top / cover no-repeat';
+    document.body.style.background =
+        'linear-gradient(180deg, rgba(5,7,11,0.35) 0%, rgba(5,7,11,0.95) 62%), url(banner.png) center top / cover no-repeat fixed #05070b';
 }
 
-// The version and size are read from the release the updater itself reads, so
-// this page cannot quietly go stale while the program moves on. If GitHub is
-// unreachable or rate limiting, the wording already in the HTML stands.
+/* ---------------------------------------------------------------- seeds */
+
+// The presets the program ships, with Monochrome first because it is the
+// default. Picking one retints the page and the hole together, which is what
+// applySeed() does to a running application.
+const SEEDS = [
+    ['Monochrome', '#121212'],
+    ['Singularity', '#6ee7d8'],
+    ['Ember', '#eb2e4a'],
+    ['Ocean', '#468cbe'],
+    ['Violet', '#9b59b6'],
+    ['Jade', '#27ae60'],
+    ['Gold', '#f1c40f'],
+    ['Ice', '#7dd3fc'],
+];
+
+const holder = document.getElementById('seeds');
+const root = document.documentElement;
+
+function apply(hex, button) {
+    // The page's own accent. A hue-less seed keeps the silver the program
+    // falls back to, so the two never disagree about what is on screen.
+    const n = parseInt(hex.slice(1), 16);
+    const rgb = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+    const max = Math.max(...rgb), min = Math.min(...rgb);
+
+    let css = '#cdd6e6';
+    if (max - min > 6) {
+        // Lift it until it reads against a near-black page, the same way the
+        // hole's accent is scaled up until it can light a disk.
+        const k = max < 150 ? 150 / max : 1;
+        css = '#' + rgb.map(v => Math.min(255, Math.round(v * k)).toString(16).padStart(2, '0')).join('');
+    }
+
+    root.style.setProperty('--accent', css);
+    root.style.setProperty('--accent-soft', css + '29');
+    if (hole) hole.setSeed(hex);
+
+    for (const b of holder.children) b.setAttribute('aria-pressed', String(b === button));
+}
+
+for (const [name, hex] of SEEDS) {
+    const b = document.createElement('button');
+    b.className = 'seed';
+    b.type = 'button';
+    b.setAttribute('aria-pressed', 'false');
+    b.innerHTML = `<i style="background:${hex}"></i>${name}`;
+    b.addEventListener('click', () => apply(hex, b));
+    holder.appendChild(b);
+}
+holder.firstElementChild.setAttribute('aria-pressed', 'true');
+
+/* --------------------------------------------------------------- reveal */
+
+const rise = document.querySelectorAll('.rise');
+if ('IntersectionObserver' in window) {
+    // Opt in to hiding only now, with the observer about to be built. Until
+    // this line every word on the page is readable, which is where it should
+    // stay if anything above here ever throws.
+    document.documentElement.classList.add('animate');
+
+    const io = new IntersectionObserver((entries) => {
+        for (const e of entries) {
+            if (!e.isIntersecting) continue;
+            e.target.classList.add('seen');
+            io.unobserve(e.target);
+        }
+    }, { rootMargin: '0px 0px -12% 0px' });
+
+    // Anything already level with the viewport or above it is shown at once
+    // rather than observed. Opening a link straight to a section, or
+    // reloading part way down, otherwise left every section above the landing
+    // point invisible for good: they were never scrolled into view, so
+    // nothing ever told them to appear, and scrolling back up found blanks.
+    for (const el of rise) {
+        if (el.getBoundingClientRect().top < window.innerHeight) el.classList.add('seen');
+        else io.observe(el);
+    }
+}
+
+/* ------------------------------------------------------- nav highlight */
+
+const links = [...document.querySelectorAll('nav .links a[href^="#"]')];
+const targets = links.map(a => document.querySelector(a.getAttribute('href'))).filter(Boolean);
+
+if ('IntersectionObserver' in window && targets.length) {
+    // The top quarter of the viewport decides which section you are in, so
+    // the mark moves when a heading reaches reading height rather than when
+    // a section merely peeks in at the bottom.
+    const spy = new IntersectionObserver((entries) => {
+        for (const e of entries) {
+            if (!e.isIntersecting) continue;
+            const id = '#' + e.target.id;
+            for (const a of links) a.classList.toggle('here', a.getAttribute('href') === id);
+        }
+    }, { rootMargin: '-25% 0px -70% 0px' });
+    targets.forEach(t => spy.observe(t));
+}
+
+/* -------------------------------------------------------------- release */
+
+// Read from the same release the updater reads, so this page cannot quietly
+// go stale while the program moves on. If GitHub is unreachable or rate
+// limiting, the wording already in the HTML stands.
 (async () => {
     try {
         const r = await fetch('https://api.github.com/repos/CodingIsCoolFr/singularity-updates/releases/latest');

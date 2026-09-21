@@ -1,43 +1,210 @@
-// The same black hole the program draws, moved to the browser.
+// The black hole, drawn the cheap way.
 //
-// This is a port of src/ui/AuroraWidget.cpp rather than a lookalike. The
-// fragment shader below is that file's shader with its GLSL 3.30 header
-// swapped for the GLSL ES 3.00 one WebGL2 wants; the ray marching, the
-// Doppler boost on the approaching side of the disk, the photon ring and the
-// starfield are unchanged. A site that merely resembled the program would
-// start drifting from it the first time either one was touched.
+// ---------------------------------------------------------------------------
+// Why this is not just the program's shader any more
+// ---------------------------------------------------------------------------
 //
-// One thing is deliberately different. The program hard-codes a field of view
-// of 1.22, which suits a window with a whole client drawn over it: the hole is
-// scenery there, and it is meant to stay out of the way. A landing page has
-// the opposite job, so the same number is a uniform here and set tighter,
-// which frames the hole the way the banner does. Nothing about the physics
-// changes - it is where the camera stands, not what it is looking at.
+// The first version of this file was src/ui/AuroraWidget.cpp's shader moved
+// to WebGL, and it was too slow. Not because the shader is bad - it runs fine
+// in the program - but because of what a web page asks of it. The program
+// draws into one modest window. A page draws full screen, at whatever refresh
+// rate the monitor happens to have, while the browser is also compositing
+// scrolling text over the top.
 //
-// The colours are the ones the shipped theme actually produces. Singularity's
-// default seed is #121212, which has no hue, and a hue-less seed would scale
-// the disk to black - so Theme::storeHole takes a silver branch instead. These
-// three vectors are that branch, copied from src/ui/Theme.cpp.
-const ACCENT = [0.82, 0.90, 1.00];
-const DISK   = [0.62, 0.78, 1.00];
-const GRADE  = [1.02, 1.06, 1.16];
+// That shader marches a hundred steps along a bent ray for every single
+// pixel, every single frame. Capping the frame rate and shrinking the canvas
+// helped and was not enough, and the last resort - freezing the animation
+// once you scrolled - fixed the numbers by removing the thing people came to
+// look at. That was the wrong trade.
+//
+// So the work is split by how often it actually changes.
+//
+// **Almost none of it changes.** Where each ray goes, how far it bends, which
+// part of the accretion disk it strikes, whether it falls in: all of that is
+// decided by the camera and the geometry, and neither moves. It is computed
+// once, into textures, and then reused for every frame after.
+//
+// **What changes is thin.** The spiral pattern turns, the stars twinkle, the
+// grain moves. Those are a few lines of arithmetic on numbers already looked
+// up from a texture.
+//
+// The result is the same picture with the ray marching done once instead of
+// sixty times a second, so it can run all the way down the page without
+// stopping, which is what it should have done in the first place.
+//
+// ---------------------------------------------------------------------------
+// What is stored, and why in that shape
+// ---------------------------------------------------------------------------
+//
+// A ray can cross the disk's plane more than once - that is what draws the
+// far side of the disk arcing over the top of the shadow - so two crossings
+// are kept. For each one:
+//
+//   x            how far out the strike is, 0 at the inner edge, 1 at the
+//                outer. Negative means this ray missed, and the density
+//                curve already returns nothing for that, so there is no flag
+//                to keep in step.
+//   dop          the Doppler boost, which brightens the side of the disk
+//                turning toward the camera and dims the other.
+//   cosP, sinP   the spiral's phase, stored as its cosine and sine rather
+//                than as an angle.
+//
+// That last one matters. The textures are sampled with smoothing, and an
+// angle wraps from +pi to -pi, so smoothing across that seam would average
+// two nearly equal directions into a wrong one and draw a hard line across
+// the disk. A cosine and a sine have no seam. The rotation is then exact
+// arithmetic rather than a second trigonometric call:
+//
+//     sin(P - wt) = sinP*cos(wt) - cosP*sin(wt)
+//
+// The starfield is deliberately *not* baked. It is recomputed each frame from
+// the stored escape direction, because that is what keeps the stars twinkling
+// and it costs a fraction of what the ray marching did.
+//
+// ---------------------------------------------------------------------------
+// The colours
+// ---------------------------------------------------------------------------
+//
+// These are the ones the shipped theme actually produces, from Theme.cpp.
+// Singularity's default seed is #121212, which has no hue at all, and scaling
+// a hue-less colour would leave the disk black - so the theme takes a silver
+// branch for that case instead. The page can retint at runtime, exactly as
+// the program can, which is what the swatches on the page do.
+const SILVER = {
+    accent: [0.82, 0.90, 1.00],
+    disk:   [0.62, 0.78, 1.00],
+    grade:  [1.02, 1.06, 1.16],
+};
+
+// Theme::storeHole, ported. A seed with no hue keeps the silver disk; any
+// other is scaled up until it is bright enough to light one.
+export function holeColours(hex) {
+    const m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+    if (!m) return SILVER;
+
+    const n = parseInt(m[1], 16);
+    let a = [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+
+    const max = Math.max(a[0], a[1], a[2]);
+    const min = Math.min(a[0], a[1], a[2]);
+    if (max - min < 0.02) return SILVER;
+
+    if (max < 0.42) a = a.map(v => v * (0.42 / max));
+
+    return {
+        accent: a,
+        disk: a.map(v => Math.min(1, Math.max(0.12, v * 0.78))),
+        grade: a.map(v => 0.78 + v * 0.38),
+    };
+}
 
 const VERT = `#version 300 es
 void main() {
-    vec2 verts[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
-    gl_Position = vec4(verts[gl_VertexID], 0.0, 1.0);
+    vec2 v[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+    gl_Position = vec4(v[gl_VertexID], 0.0, 1.0);
 }`;
 
-const FRAG = (steps) => `#version 300 es
+// --------------------------------------------------------------------------
+// Pass one. Run once, when the size changes. This is the expensive one.
+// --------------------------------------------------------------------------
+const BAKE = `#version 300 es
 precision highp float;
 
 uniform vec2  uResolution;
-uniform float uTime;
-uniform vec2  uPointer;
 uniform float uZoom;
+
+layout(location = 0) out vec4 oHitA;
+layout(location = 1) out vec4 oHitB;
+layout(location = 2) out vec4 oSky;
+
+const float RS = 0.50;
+const float INNER = RS * 2.45;
+const float OUTER = RS * 11.2;
+
+void main() {
+    vec2 uv = (gl_FragCoord.xy - 0.5 * uResolution) / uResolution.y;
+
+    // The camera is fixed. In the program it orbits slowly, which is lovely
+    // and is also the one thing that would force all of this to be computed
+    // again every frame. The drift you see on the page is the whole picture
+    // being sampled with a moving offset instead, which is why this is baked
+    // a little wider than it is shown.
+    vec3 ro = vec3(0.0, 0.62, 7.15);
+    vec3 ta = vec3(0.0, 0.02, 0.0);
+    vec3 ww = normalize(ta - ro);
+    vec3 uu = normalize(cross(ww, vec3(0.0, 1.0, 0.0)));
+    vec3 vv = cross(uu, ww);
+    vec3 rd = normalize(uv.x * uu + uv.y * vv + uZoom * ww);
+
+    vec3 pos = ro;
+    vec3 vel = rd;
+
+    vec4 hitA = vec4(-1.0, 1.0, 0.0, 0.0);
+    vec4 hitB = vec4(-1.0, 1.0, 0.0, 0.0);
+    int found = 0;
+
+    float photon = 0.0;
+    bool captured = false;
+
+    for (int i = 0; i < 100; ++i) {
+        float r = length(pos);
+
+        if (r < RS) { captured = true; break; }
+
+        float dt = 0.036 * max(r, 0.22);
+        vel += -1.50 * RS * pos / (r * r * r * r) * dt;
+        vec3 nxt = pos + vel * dt;
+
+        photon += smoothstep(0.09, 0.0, abs(r - 1.52 * RS)) * 0.075;
+
+        if (pos.y * nxt.y < 0.0) {
+            float f = pos.y / (pos.y - nxt.y + 1e-6);
+            vec3 hit = mix(pos, nxt, f);
+            float rho = length(hit.xz);
+
+            if (rho > INNER && rho < OUTER) {
+                float x = (rho - INNER) / (OUTER - INNER);
+                float ang = atan(hit.z, hit.x);
+                float phase = 2.0 * ang - log(rho + 0.04) * 8.5;
+
+                vec3 tang = normalize(vec3(-hit.z, 0.0, hit.x));
+                float vkep = 0.50 / sqrt(max(rho, 0.2));
+                float dop = 1.0 + dot(normalize(vel), tang) * vkep * 1.35;
+
+                vec4 rec = vec4(x, dop, cos(phase), sin(phase));
+                if (found == 0) { hitA = rec; found = 1; }
+                else if (found == 1) { hitB = rec; found = 2; }
+            }
+        }
+
+        pos = nxt;
+        if (r > 22.0) break;
+    }
+
+    oHitA = hitA;
+    oHitB = hitB;
+    // A captured ray sees no sky at all. Storing a zero direction says so
+    // without spending a channel on a flag.
+    oSky = vec4(captured ? vec3(0.0) : normalize(vel), photon);
+}`;
+
+// --------------------------------------------------------------------------
+// Pass two. Run every frame. This is the cheap one.
+// --------------------------------------------------------------------------
+const DRAW = `#version 300 es
+precision highp float;
+
+uniform sampler2D tHitA;
+uniform sampler2D tHitB;
+uniform sampler2D tSky;
+
+uniform vec2  uResolution;
+uniform float uTime;
+uniform vec2  uDrift;
 uniform vec3  uAccent;
 uniform vec3  uDisk;
 uniform vec3  uGrade;
+
 out vec4 fragColor;
 
 float hash12(vec2 p) {
@@ -72,98 +239,69 @@ vec3 starfield(vec3 rd) {
             col += br * tc * tw * (0.28 + 2.4 * pow(h, 9.0));
 
             if (h > 0.988) {
-                col += mix(vec3(0.75, 0.88, 1.0), uAccent, 0.4) * 0.35 * exp(-abs(f.x) * 55.0) * exp(-abs(f.y) * 10.0);
-                col += mix(vec3(0.75, 0.88, 1.0), uAccent, 0.4) * 0.18 * exp(-abs(f.y) * 55.0) * exp(-abs(f.x) * 10.0);
+                vec3 sp = mix(vec3(0.75, 0.88, 1.0), uAccent, 0.4);
+                col += sp * 0.35 * exp(-abs(f.x) * 55.0) * exp(-abs(f.y) * 10.0);
+                col += sp * 0.18 * exp(-abs(f.y) * 55.0) * exp(-abs(f.x) * 10.0);
             }
         }
     }
     return col;
 }
 
+// One crossing of the disk, coloured for this instant. Everything here came
+// out of a texture except the time, which is the whole point.
+void disk(vec4 rec, float wt, inout vec3 col, inout float trans) {
+    float x = rec.x;
+    if (x < -0.5) return;
+
+    // sin(phase - wt), rebuilt from the stored cosine and sine.
+    float s = rec.w * cos(wt) - rec.z * sin(wt);
+    float spir = 0.5 + 0.5 * s;
+
+    float dens = pow(max(1.0 - x, 0.0), 1.05) * (0.62 + 0.38 * spir);
+    dens *= smoothstep(0.0, 0.08, x) * smoothstep(1.0, 0.72, x);
+    if (dens <= 0.0) return;
+
+    float dop = rec.y;
+    vec3 outerC = uDisk * 0.42;
+    vec3 midC   = uDisk;
+    vec3 hotC   = mix(vec3(1.15, 1.25, 1.40), uAccent, 0.55) * 1.25;
+    vec3 dcol = mix(hotC, mix(midC, outerC, smoothstep(0.18, 1.0, x)), smoothstep(0.0, 0.48, x));
+
+    dcol *= pow(clamp(dop, 0.30, 2.1), 2.4);
+    dcol += uAccent * smoothstep(1.12, 1.55, dop) * 0.40;
+    dcol *= mix(vec3(1.0), vec3(0.55, 0.40, 0.48), smoothstep(1.0, 0.55, dop));
+
+    col += trans * dcol * dens * 0.72;
+    trans *= 1.0 - clamp(dens * 0.55, 0.0, 0.78);
+}
+
 void main() {
-    vec2 uv = (gl_FragCoord.xy - 0.5 * uResolution) / uResolution.y;
+    vec2 q = gl_FragCoord.xy / uResolution;
 
-    float t = uTime * 0.055;
-    float cs = cos(t);
-    float sn = sin(t);
+    // The baked picture is wider than what is shown, and this slides the
+    // window over it. That is the slow drift, and the lean toward the cursor.
+    vec2 suv = clamp((q - 0.5) * 0.90 + 0.5 + uDrift, vec2(0.001), vec2(0.999));
 
-    vec3 ro = vec3(0.0, 0.62 + uPointer.y * 0.08, 7.15);
-    ro.xz = mat2(cs, -sn, sn, cs) * ro.xz;
+    vec4 a   = texture(tHitA, suv);
+    vec4 b   = texture(tHitB, suv);
+    vec4 sky = texture(tSky, suv);
 
-    vec3 ta = vec3(uPointer.x * 0.08, 0.02, 0.0);
-    vec3 ww = normalize(ta - ro);
-    vec3 uu = normalize(cross(ww, vec3(0.0, 1.0, 0.0)));
-    vec3 vv = cross(uu, ww);
-    vec3 rd = normalize(uv.x * uu + uv.y * vv + uZoom * ww);
-
-    const float RS = 0.50;
-    const int STEPS = ${steps};
-
-    vec3 pos = ro;
-    vec3 vel = rd;
-    vec3 col = vec3(0.0);
+    float wt = uTime * 1.15;
+    vec3 col = sky.w * uAccent;
     float trans = 1.0;
-    float closest = 1e5;
 
-    for (int i = 0; i < STEPS; ++i) {
-        float r = length(pos);
-        closest = min(closest, r);
+    disk(a, wt, col, trans);
+    disk(b, wt, col, trans);
 
-        if (r < RS) { trans = 0.0; break; }
-
-        float dt = 0.036 * max(r, 0.22);
-        vel += -1.50 * RS * pos / (r * r * r * r) * dt;
-        vec3 nxt = pos + vel * dt;
-
-        float photon = smoothstep(0.09, 0.0, abs(r - 1.52 * RS));
-        col += trans * photon * uAccent * 0.075;
-
-        if (pos.y * nxt.y < 0.0) {
-            float f = pos.y / (pos.y - nxt.y + 1e-6);
-            vec3 hit = mix(pos, nxt, f);
-            float rho = length(hit.xz);
-            float inner = RS * 2.45;
-            float outer = RS * 11.2;
-
-            if (rho > inner && rho < outer) {
-                float x = (rho - inner) / (outer - inner);
-                float ang = atan(hit.z, hit.x);
-                float spir = 0.5 + 0.5 * sin(2.0 * ang - log(rho + 0.04) * 8.5 - uTime * 1.15);
-                float dens = pow(1.0 - x, 1.05) * (0.62 + 0.38 * spir);
-                dens *= smoothstep(0.0, 0.08, x) * smoothstep(1.0, 0.72, x);
-
-                vec3 outerC = uDisk * 0.42;
-                vec3 midC   = uDisk;
-                vec3 hotC   = mix(vec3(1.15, 1.25, 1.40), uAccent, 0.55) * 1.25;
-                vec3 dcol = mix(hotC, mix(midC, outerC, smoothstep(0.18, 1.0, x)), smoothstep(0.0, 0.48, x));
-
-                vec3 tang = normalize(vec3(-hit.z, 0.0, hit.x));
-                float vkep = 0.50 / sqrt(max(rho, 0.2));
-                float dop  = 1.0 + dot(normalize(vel), tang) * vkep * 1.35;
-                dcol *= pow(clamp(dop, 0.30, 2.1), 2.4);
-                dcol += uAccent * smoothstep(1.12, 1.55, dop) * 0.40;
-                dcol *= mix(vec3(1.0), vec3(0.55, 0.40, 0.48), smoothstep(1.0, 0.55, dop));
-
-                col += trans * dcol * dens * 0.72;
-                trans *= 1.0 - clamp(dens * 0.55, 0.0, 0.78);
-                if (trans < 0.03) break;
-            }
-        }
-
-        pos = nxt;
-        if (r > 22.0) break;
-    }
-
-    col += trans * starfield(normalize(vel));
-
-    float ring = smoothstep(0.16, 0.0, abs(closest - 1.5 * RS));
-    col += ring * uAccent * 0.28;
+    // A zero direction is a ray that fell in, and sees nothing.
+    if (dot(sky.xyz, sky.xyz) > 0.25)
+        col += trans * starfield(normalize(sky.xyz));
 
     col *= uGrade;
     col = col / (1.0 + col * 0.70);
     col = pow(clamp(col, 0.0, 1.0), vec3(0.92));
 
-    vec2 q = gl_FragCoord.xy / uResolution;
     float vig = pow(16.0 * q.x * q.y * (1.0 - q.x) * (1.0 - q.y), 0.38);
     col *= mix(0.22, 1.0, vig);
 
@@ -173,111 +311,159 @@ void main() {
     fragColor = vec4(col, 1.0);
 }`;
 
-function compile(gl, type, source) {
-    const sh = gl.createShader(type);
-    gl.shaderSource(sh, source);
-    gl.compileShader(sh);
-    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
-        console.warn('hole: shader failed', gl.getShaderInfoLog(sh));
-        gl.deleteShader(sh);
+function build(gl, fragSource) {
+    const mk = (type, src) => {
+        const sh = gl.createShader(type);
+        gl.shaderSource(sh, src);
+        gl.compileShader(sh);
+        if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+            console.warn('hole:', gl.getShaderInfoLog(sh));
+            return null;
+        }
+        return sh;
+    };
+
+    const vs = mk(gl.VERTEX_SHADER, VERT);
+    const fs = mk(gl.FRAGMENT_SHADER, fragSource);
+    if (!vs || !fs) return null;
+
+    const p = gl.createProgram();
+    gl.attachShader(p, vs);
+    gl.attachShader(p, fs);
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+        console.warn('hole:', gl.getProgramInfoLog(p));
         return null;
     }
-    return sh;
+    return p;
 }
 
 export function startHole(canvas) {
-    // Honour the setting before spending anything on it. Somebody who has
-    // asked their system for less movement has asked this page too.
-    const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
     const gl = canvas.getContext('webgl2', {
         alpha: false,
         antialias: false,
         depth: false,
         stencil: false,
-        // Was 'low-power', which on a desktop with both a built-in and a real
-        // graphics chip is an invitation to draw a hundred-step ray march on
-        // the weaker one.
         powerPreference: 'high-performance',
         preserveDrawingBuffer: false,
     });
-    // No WebGL2 means no hole. The page stays on its flat background, which is
-    // the same near-black the shader clears to, so nothing looks broken.
-    if (!gl) return false;
+    if (!gl) return null;
 
-    // A hundred ray marching steps per pixel is a desktop budget. Phones get
-    // fewer steps and a smaller buffer; the picture is the same one, drawn
-    // more coarsely, which is a fairer trade than a still image.
+    // Rendering into a float texture is what makes the baking possible. It is
+    // everywhere now, but a browser without it gets the drawn banner rather
+    // than a half working picture.
+    if (!gl.getExtension('EXT_color_buffer_float')) return null;
+
+    const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     const small = Math.min(window.innerWidth, window.innerHeight) < 700;
-    const steps = small ? 52 : 84;
 
-    // Every pixel costs a full ray march, so the count is capped rather than
-    // left to the display. A maximised window on a 4K screen at 1.5 device
-    // pixels is around eight million of them; this is under two and a half,
-    // and the canvas is stretched back up by CSS. The picture is a soft glow
-    // with no fine detail in it, so the loss is close to invisible and the
-    // saving is better than threefold.
-    const BUDGET = small ? 900000 : 2400000;
+    const bakeProg = build(gl, BAKE);
+    const drawProg = build(gl, DRAW);
+    if (!bakeProg || !drawProg) return null;
 
-    // Frames are capped too. requestAnimationFrame runs at the refresh rate,
-    // and on a 240 Hz monitor that is four times the work for an animation
-    // that drifts slowly enough to look identical at sixty.
-    const FRAME_MS = 1000 / 60 - 1;
-
-    const vs = compile(gl, gl.VERTEX_SHADER, VERT);
-    const fs = compile(gl, gl.FRAGMENT_SHADER, FRAG(steps));
-    if (!vs || !fs) return false;
-
-    const prog = gl.createProgram();
-    gl.attachShader(prog, vs);
-    gl.attachShader(prog, fs);
-    gl.linkProgram(prog);
-    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
-        console.warn('hole: link failed', gl.getProgramInfoLog(prog));
-        return false;
-    }
-    gl.useProgram(prog);
-
-    const uResolution = gl.getUniformLocation(prog, 'uResolution');
-    const uTime = gl.getUniformLocation(prog, 'uTime');
-    const uPointer = gl.getUniformLocation(prog, 'uPointer');
-
-    // Tighter than the program's 1.22, so the hole fills the page the way it
-    // fills the banner. A narrow phone already crops the sides, so it pulls
-    // back there instead of showing nothing but shadow.
-    gl.uniform1f(gl.getUniformLocation(prog, 'uZoom'), small ? 1.20 : 1.62);
-
-    gl.uniform3fv(gl.getUniformLocation(prog, 'uAccent'), ACCENT);
-    gl.uniform3fv(gl.getUniformLocation(prog, 'uDisk'), DISK);
-    gl.uniform3fv(gl.getUniformLocation(prog, 'uGrade'), GRADE);
-
-    // The vertex shader builds its own triangle from gl_VertexID, so there is
-    // nothing to put in a buffer. WebGL still insists on a bound array object.
     gl.bindVertexArray(gl.createVertexArray());
 
-    let w = 0, h = 0;
-    function resize() {
-        const scale = Math.min(window.devicePixelRatio || 1, 1);
-        let nw = Math.max(1, Math.round(canvas.clientWidth * scale));
-        let nh = Math.max(1, Math.round(canvas.clientHeight * scale));
+    const bakeU = {
+        res: gl.getUniformLocation(bakeProg, 'uResolution'),
+        zoom: gl.getUniformLocation(bakeProg, 'uZoom'),
+    };
+    const drawU = {
+        res: gl.getUniformLocation(drawProg, 'uResolution'),
+        time: gl.getUniformLocation(drawProg, 'uTime'),
+        drift: gl.getUniformLocation(drawProg, 'uDrift'),
+        accent: gl.getUniformLocation(drawProg, 'uAccent'),
+        disk: gl.getUniformLocation(drawProg, 'uDisk'),
+        grade: gl.getUniformLocation(drawProg, 'uGrade'),
+    };
 
-        const over = (nw * nh) / BUDGET;
-        if (over > 1) {
-            const k = Math.sqrt(over);
-            nw = Math.max(1, Math.round(nw / k));
-            nh = Math.max(1, Math.round(nh / k));
+    gl.useProgram(drawProg);
+    gl.uniform1i(gl.getUniformLocation(drawProg, 'tHitA'), 0);
+    gl.uniform1i(gl.getUniformLocation(drawProg, 'tHitB'), 1);
+    gl.uniform1i(gl.getUniformLocation(drawProg, 'tSky'), 2);
+
+    let fbo = null;
+    const tex = [null, null, null];
+    let bakeW = 0, bakeH = 0;
+
+    function makeTargets(w, h) {
+        for (let i = 0; i < 3; ++i) {
+            if (tex[i]) gl.deleteTexture(tex[i]);
+            tex[i] = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, tex[i]);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         }
 
-        if (nw === w && nh === h) return;
-        w = canvas.width = nw;
-        h = canvas.height = nh;
-        gl.viewport(0, 0, w, h);
-        gl.uniform2f(uResolution, w, h);
+        if (fbo) gl.deleteFramebuffer(fbo);
+        fbo = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+        for (let i = 0; i < 3; ++i) {
+            gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, gl.TEXTURE_2D, tex[i], 0);
+        }
+        gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2]);
+
+        const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        return ok;
     }
 
-    // The pointer nudges the camera, exactly as uPointer does in the program.
-    // Eased, so the hole drifts toward the cursor instead of snapping at it.
-    let px = 0, py = 0, tx = 0, ty = 0;
+    function bake() {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+        gl.viewport(0, 0, bakeW, bakeH);
+        gl.useProgram(bakeProg);
+        gl.uniform2f(bakeU.res, bakeW, bakeH);
+        // Baked wider than shown, leaving the margin the drift slides across.
+        gl.uniform1f(bakeU.zoom, (small ? 1.20 : 1.62) * 0.90);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+
+    // Three floating point textures at full size is a lot of memory for a web
+    // page, and the smoothing on the way out hides the difference, so they
+    // are baked smaller than they are shown.
+    const BAKE_BUDGET = small ? 700000 : 1600000;
+    const DRAW_BUDGET = small ? 1100000 : 2600000;
+
+    function fit(cssW, cssH, budget) {
+        const s = Math.min(window.devicePixelRatio || 1, 1.25);
+        let w = Math.max(1, Math.round(cssW * s));
+        let h = Math.max(1, Math.round(cssH * s));
+        const over = (w * h) / budget;
+        if (over > 1) {
+            const k = Math.sqrt(over);
+            w = Math.max(1, Math.round(w / k));
+            h = Math.max(1, Math.round(h / k));
+        }
+        return [w, h];
+    }
+
+    let ok = true;
+    function resize() {
+        const [dw, dh] = fit(canvas.clientWidth, canvas.clientHeight, DRAW_BUDGET);
+        if (dw === canvas.width && dh === canvas.height) return;
+
+        canvas.width = dw;
+        canvas.height = dh;
+
+        const [bw, bh] = fit(canvas.clientWidth, canvas.clientHeight, BAKE_BUDGET);
+        bakeW = bw;
+        bakeH = bh;
+
+        ok = makeTargets(bakeW, bakeH);
+        if (ok) bake();
+    }
+
+    for (let i = 0; i < 3; ++i) {
+        gl.activeTexture(gl.TEXTURE0 + i);
+        gl.bindTexture(gl.TEXTURE_2D, tex[i]);
+    }
+
+    let colours = SILVER;
+    let tx = 0, ty = 0, px = 0, py = 0;
+
     window.addEventListener('pointermove', (e) => {
         tx = (e.clientX / window.innerWidth) * 2 - 1;
         ty = (e.clientY / window.innerHeight) * 2 - 1;
@@ -285,59 +471,66 @@ export function startHole(canvas) {
 
     let time = 0;
     let last = performance.now();
-    let drawn = 0;
-    let running = true;
+    let drawnAt = 0;
+    let alive = true;
+
+    // Frames are capped. requestAnimationFrame runs at the display's refresh
+    // rate, and a 240 Hz monitor would otherwise ask for four times the work
+    // to show an animation that looks identical at sixty.
+    const FRAME_MS = 1000 / 60 - 1.5;
 
     function frame(now) {
-        if (!running) return;
+        if (!alive) return;
         requestAnimationFrame(frame);
-
-        if (now - drawn < FRAME_MS) return;
-        drawn = now;
+        if (now - drawnAt < FRAME_MS) return;
+        drawnAt = now;
 
         const dt = Math.min((now - last) / 1000, 0.05);
         last = now;
         if (!still) time += dt;
 
         resize();
-        px += (tx - px) * 0.05;
-        py += (ty - py) * 0.05;
+        if (!ok) return;
 
-        gl.uniform1f(uTime, time);
-        gl.uniform2f(uPointer, px, py);
+        px += (tx - px) * 0.04;
+        py += (ty - py) * 0.04;
+
+        for (let i = 0; i < 3; ++i) {
+            gl.activeTexture(gl.TEXTURE0 + i);
+            gl.bindTexture(gl.TEXTURE_2D, tex[i]);
+        }
+
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.useProgram(drawProg);
+        gl.uniform2f(drawU.res, canvas.width, canvas.height);
+        gl.uniform1f(drawU.time, time);
+        gl.uniform2f(drawU.drift,
+            Math.sin(time * 0.061) * 0.030 + px * 0.016,
+            Math.cos(time * 0.047) * 0.022 - py * 0.012);
+        gl.uniform3fv(drawU.accent, colours.accent);
+        gl.uniform3fv(drawU.disk, colours.disk);
+        gl.uniform3fv(drawU.grade, colours.grade);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
 
-    function stop() { running = false; }
-    function start() {
-        if (running) return;
-        running = true;
-        last = drawn = performance.now();
-        requestAnimationFrame(frame);
-    }
-
-    // Below the hero the veil dims the hole and the reader is reading, so
-    // there is no reason to keep ray marching behind their paragraphs. This
-    // is what makes scrolling smooth: the page stops competing with itself.
-    let heroVisible = true;
-    const hero = document.querySelector('header.hero');
-    if (hero && 'IntersectionObserver' in window) {
-        new IntersectionObserver((entries) => {
-            heroVisible = entries[0].isIntersecting;
-            if (!heroVisible) stop();
-            else if (!document.hidden) start();
-        }, { threshold: 0 }).observe(hero);
-    }
-
-    // A hidden tab gets no frames from the browser anyway, but the clock would
-    // keep running and the hole would jump on return. Stopping the clock too
-    // means it carries on from where it was.
+    // Only a hidden tab stops it. Scrolling does not: an animated background
+    // that freezes the moment you read something is worse than no animation,
+    // and now that a frame is cheap there is no reason to.
     document.addEventListener('visibilitychange', () => {
-        if (document.hidden) stop();
-        else if (heroVisible) start();
+        if (document.hidden) {
+            alive = false;
+        } else if (!alive) {
+            alive = true;
+            last = drawnAt = performance.now();
+            requestAnimationFrame(frame);
+        }
     });
 
     resize();
+    if (!ok) return null;
     requestAnimationFrame(frame);
-    return true;
+
+    return {
+        setSeed(hex) { colours = holeColours(hex); },
+    };
 }
