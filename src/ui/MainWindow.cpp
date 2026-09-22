@@ -209,10 +209,9 @@ bool containsGlobal(const QWidget *widget, const QPoint &global)
 
 // The empty part of the top strip.
 //
-// A press here is declined so Windows treats the strip as the caption.
-// Dragging that caption is what snaps the window to an edge, a corner, or
-// the whole screen, and dragging it back out is what restores the size it
-// had. Doing the move ourselves is what made a snap land and then jump back.
+// The background is its own window, so a hit test on the outer frame never
+// sees this strip. The drag has to be started from here. Windows then snaps
+// it, and pulling a snapped window back out restores the previous size.
 class TitleDragArea : public QWidget
 {
 public:
@@ -224,8 +223,28 @@ public:
     }
 
 protected:
-    void mousePressEvent(QMouseEvent *event) override { event->ignore(); }
-    void mouseDoubleClickEvent(QMouseEvent *event) override { event->ignore(); }
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton) {
+            if (QWindow *handle = window()->windowHandle())
+                handle->startSystemMove();
+            return;
+        }
+        QWidget::mousePressEvent(event);
+    }
+
+    void mouseDoubleClickEvent(QMouseEvent *event) override
+    {
+        if (event->button() != Qt::LeftButton) {
+            QWidget::mouseDoubleClickEvent(event);
+            return;
+        }
+        QWidget *top = window();
+        if (top->isMaximized())
+            top->showNormal();
+        else
+            top->showMaximized();
+    }
 };
 
 } // namespace
@@ -242,9 +261,9 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     setWindowTitle(QStringLiteral("Singularity"));
     setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
     resize(1440, 900);
-    // A normal window, so Windows will snap it. The caption strip itself is
-    // removed in WM_NCCALCSIZE, otherwise the buttons sit under an empty bar.
-    // No system menu: that flag paints Windows' own minimize, maximize and close.
+    // A normal resizable window. The sizing border stays, so the edges can
+    // be dragged and a snap has somewhere to land. The caption bar itself is
+    // pulled up in WM_NCCALCSIZE so the buttons are not left under an empty strip.
     setWindowFlags(Qt::Window | Qt::CustomizeWindowHint);
 
     buildUi();
@@ -5752,19 +5771,19 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
         // Qt writes the style from the window flags on every show and every
         // state change, and that style has no sizing border. Snap, and the
         // restore size that comes back when a snapped window is pulled out,
-        // both require a caption and a thick frame. The bits are put back
-        // before Windows applies the change.
-        // The client area is the whole window. Leaving the standard caption
-        // in place is what left a black band above the buttons.
+        // both require a thick frame. The bits are put back before Windows
+        // applies the change.
+        //
+        // The default calculation keeps a caption and a sizing border. The
+        // caption is what left an empty band above the buttons, so the client
+        // is pulled up to the top of the window. The left, right and bottom
+        // insets stay, and those are the edges you drag to resize.
         if (msg->message == WM_NCCALCSIZE && msg->wParam) {
             auto *params = reinterpret_cast<NCCALCSIZE_PARAMS *>(msg->lParam);
-            if (IsZoomed(msg->hwnd)) {
-                MONITORINFO info;
-                info.cbSize = sizeof(info);
-                if (GetMonitorInfo(MonitorFromWindow(msg->hwnd, MONITOR_DEFAULTTONEAREST), &info))
-                    params->rgrc[0] = info.rcWork;
-            }
-            *result = 0;
+            const int windowTop = params->rgrc[0].top;
+            *result = DefWindowProc(msg->hwnd, msg->message, msg->wParam, msg->lParam);
+            if (!IsZoomed(msg->hwnd))
+                params->rgrc[0].top = windowTop;
             return true;
         }
 
@@ -5795,10 +5814,6 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
                     const QString name = widget->objectName();
                     if (widget == m_menuBar || name.startsWith(QLatin1String("Caption"))) {
                         *result = HTCLIENT;
-                        return true;
-                    }
-                    if (name == QLatin1String("TitleDrag")) {
-                        *result = HTCAPTION;
                         return true;
                     }
                 }
