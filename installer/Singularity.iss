@@ -140,8 +140,6 @@ function ShowWindow(hWnd: HWND; nCmdShow: Integer): Integer;
 const
   FrameCount = 24;
   BM_CLICK = $00F5;
-  SW_SHOW = 5;
-  SW_SHOWNOACTIVATE = 4;
 
   // The program's own colours. Inno wants them the other way round from the
   // way they are written everywhere else - blue, green, red - so these do not
@@ -318,7 +316,7 @@ begin
     Exit;
   WizardForm.Visible := True;
   if WizardSilent then
-    ShowWindow(WizardForm.Handle, SW_SHOWNOACTIVATE)
+    ShowWindow(WizardForm.Handle, 4)
   else
     ShowWindow(WizardForm.Handle, SW_SHOW);
 end;
