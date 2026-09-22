@@ -24,12 +24,10 @@
   <div class="wrap">
     <a class="brand" href="#top"><img src="mark.png" alt="">Singularity</a>
     <div class="links">
-      <a href="#what" class="hideable">What it does</a>
-      <a href="#look" class="hideable">The look</a>
-      <a href="#speed" class="hideable">Speed</a>
-      <a href="#voice" class="hideable">Calls</a>
+      <a href="#features" class="hideable">Features</a>
+      <a href="#look" class="hideable">Look</a>
+      <a href="#plugins" class="hideable">Plugins</a>
       <a href="#privacy" class="hideable">Privacy</a>
-      <a href="#missing">Limits</a>
       <a href="#get" class="get">Download</a>
     </div>
   </div>
@@ -38,23 +36,24 @@
 <header class="hero" id="top">
   <div class="wrap">
     <div class="hero-inner">
+      <p class="kicker">A native Discord client</p>
       <h1>Singularity</h1>
-      <p class="tag">A Discord client written from scratch in <b>C++</b>.<br>No Electron. No web view. No plugin folder.</p>
+      <p class="tag">Written from scratch in <b>C++</b>. Not a patch on top of Discord.<br>Not Electron. Not a browser.</p>
+
+      <div class="cta">
+        <a class="btn primary" id="download" href="https://github.com/CodingIsCoolFr/singularity-updates/releases/latest">Download for Windows</a>
+        <a class="btn ghost" href="https://github.com/CodingIsCoolFr/singularity-updates/releases">All releases</a>
+      </div>
+
+      <p class="meta" id="relmeta">Windows x64 · about 54 MB · installs for you only, no administrator prompt</p>
 
       <div class="chips">
         <span class="chip">C++20</span>
         <span class="chip">Qt 6.10</span>
-        <span class="chip">Windows x64</span>
-        <span class="chip">End-to-end encrypted voice</span>
+        <span class="chip">Encrypted voice</span>
+        <span class="chip">Screen share and camera</span>
         <span class="chip">Seven plugins, compiled in</span>
       </div>
-
-      <div class="cta">
-        <a class="btn primary" id="download" href="https://github.com/CodingIsCoolFr/singularity-updates/releases/latest">Download for Windows</a>
-        <a class="btn ghost" href="#warning">Read the warning first</a>
-      </div>
-
-      <p class="meta" id="relmeta">Windows x64 · about 54 MB · installs for you only, no administrator prompt</p>
     </div>
   </div>
 </header>
@@ -65,35 +64,18 @@
   <div class="wrap rise">
     <div class="slab">
       <div><b>54 MB</b><span>the whole installer</span></div>
-      <div><b>24</b><span>files in the install folder</span></div>
       <div><b>0</b><span>browsers bundled</span></div>
       <div><b>0</b><span>plugin files on disk</span></div>
+      <div><b>7</b><span>plugins compiled in</span></div>
     </div>
   </div>
 </section>
 
-<section id="warning">
+<section id="features">
   <div class="wrap rise">
-    <div class="panel danger">
-      <p class="kicker">Read this first</p>
-      <h2>It can get your account banned</h2>
-      <p class="lede"><b>Discord does not permit third party clients on a normal user account.</b> That risk is taken here on purpose, and nothing on this page makes it smaller. Decide about it before you download anything.</p>
-
-      <dl class="rows">
-        <div class="row"><dt>Your password</dt><dd>Sent to <code>discord.com</code> and nowhere else. Never written to disk. Never logged.</dd></div>
-        <div class="row"><dt>Your session token</dt><dd>Sealed with your Windows account key, so no other account on the machine can read it. The log records its length, never its value.</dd></div>
-        <div class="row"><dt>Captchas</dt><dd>Not answered, ever. If Discord demands one, the sign-in window says so and offers token entry instead.</dd></div>
-        <div class="row"><dt>Images</dt><dd>Fetched only from Discord's own hosts, so a stranger's message cannot make your client call an address of their choosing.</dd></div>
-      </dl>
-    </div>
-  </div>
-</section>
-
-<section id="what">
-  <div class="wrap rise">
-    <p class="kicker">Built and working</p>
-    <h2>What it does</h2>
-    <p class="lede">Everything here works today. What does not exist yet is further down, named plainly, because a page that only lists strengths is a page you cannot trust about anything.</p>
+    <p class="kicker">In the client today</p>
+    <h2>A full client, not a skin</h2>
+    <p class="lede">Vencord and BetterDiscord sit on top of Discord. Singularity is the client. Voice, video, messages, friends and plugins are the program itself.</p>
 
     <div class="grid">
       <div class="panel card">
@@ -183,146 +165,15 @@
   </div>
 </section>
 
-<section id="background">
-  <div class="wrap rise">
-    <p class="kicker">The background you are looking at</p>
-    <h2>Drawn, not filmed</h2>
-    <p class="lede">This is not a video and not a picture of the program. It is the program's own shader, recompiled for the browser — the same bent rays, the same photon ring, the same bright edge where the disk turns toward you.</p>
-
-    <div class="grid">
-      <div class="panel card">
-        <h3><span class="num">1</span>It was too slow</h3>
-        <p>Moved across unchanged, it marched a hundred steps along a bent ray for every pixel, every frame. On a 240 Hz monitor that is 240 of those a second, full screen, while the browser is also scrolling text over the top.</p>
-      </div>
-      <div class="panel card">
-        <h3><span class="num">2</span>Most of it never changes</h3>
-        <p>Where each ray goes, how far it bends, which part of the disk it strikes, whether it falls in — all decided by geometry that never moves. It is now worked out once into textures and reused.</p>
-      </div>
-      <div class="panel card">
-        <h3><span class="num">3</span>What changes is thin</h3>
-        <p>The spiral turns, the stars twinkle, the grain moves. A few lines of arithmetic on numbers already fetched. The ray marching happens once instead of sixty times a second.</p>
-      </div>
-    </div>
-
-    <p class="lede" style="margin:24px 0 0">A detail worth the trouble: the spiral's phase is stored as a cosine and a sine rather than as an angle. An angle wraps from +&pi; to &minus;&pi;, and smoothing across that seam would average two nearly identical directions into a wrong one and draw a hard line across the disk.</p>
-  </div>
-</section>
-
-<section id="speed">
-  <div class="wrap rise">
-    <p class="kicker">Measured, not guessed</p>
-    <h2>Why opening a channel is instant</h2>
-    <p class="lede">It was not, for a while. Three attempts went into making the drawing faster before anybody timed it, and the timing ended the argument in one line.</p>
-
-    <div class="grid">
-      <div class="panel card">
-        <h3><span class="num">0</span>Building the markup</h3>
-        <p>Zero milliseconds for a hundred messages. Never the problem, and three fixes were aimed at it.</p>
-      </div>
-      <div class="panel card">
-        <h3><span class="num">14</span>Laying out the text</h3>
-        <p>A hundred messages of plain markup, measured in the text engine on its own. Never the problem either.</p>
-      </div>
-      <div class="panel card">
-        <h3><span class="num">517</span>Waiting for Discord</h3>
-        <p>A single message took 372 ms in the same session, so most of it is round trip whatever you ask for. No client makes that faster — the official one waits exactly as long.</p>
-      </div>
-    </div>
-
-    <p class="lede" style="margin:24px 0 0">So the wait is not made shorter, it is moved. Opening a server begins fetching its first few channels, and <b>moving the pointer across a channel's name begins fetching that one</b>. Between noticing a channel and clicking it there is a fifth of a second to a whole second of human time, and the round trip fits inside it.</p>
-
-    <p class="lede" style="margin:16px 0 0">Guessing ahead must never get in the way of the real thing, so it runs one request at a time, stops while a channel somebody actually opened is loading, takes six channels per server rather than forty, and gives up entirely the first time Discord says it is being asked too often.</p>
-
-    <p class="kicker" style="margin:40px 0 0">The stutter that was left</p>
-    <h2 style="margin:8px 0 0">It was never the messages</h2>
-    <p class="lede">With the network moved out of the way a stutter remained, and it matched nothing in the log: the whole conversation being laid out again, several times a second, with no request in front of it. The client was spending 67 to 91 ms where the text engine alone spends 14. The difference was the pictures, and three separate things were paying for them over and over.</p>
-
-    <div class="grid">
-      <div class="panel card">
-        <h3><span class="num">15×</span>A second, for one emoji</h3>
-        <p>Handing an animation its next frame marked the page dirty from the first character to the last, which lays out <b>every message in the channel</b> — fifteen times a second, for as long as one animated emoji was on screen. Nothing had moved: every frame is drawn at the size the first one settled on. So it paints now, and does not lay out.</p>
-      </div>
-      <div class="panel card">
-        <h3><span class="num">100</span>Layouts to fill in avatars</h3>
-        <p>A picture arriving does change the height of the page, so that one needs a real layout. It was being done once per picture. They share one pass now.</p>
-      </div>
-      <div class="panel card">
-        <h3><span class="num">1</span>Message per reaction</h3>
-        <p>Each message is written as one table, and the text engine turns each table into a frame it can find by position — so the right one is cut out and replaced where it sits. A reaction used to rebuild all hundred. If anything does not add up it falls back to the full redraw rather than leave a half edited conversation on screen.</p>
-      </div>
-    </div>
-
-    <p class="kicker" style="margin:40px 0 0">And then it was measured again</p>
-    <h2 style="margin:8px 0 0">2.7 GB, to show less than Discord</h2>
-    <p class="lede">A client that uses four times the memory of the thing it replaces has no reason to exist. A screenshot of a task manager found this, because memory was the one thing the log never mentioned. It does now — the working set, beside what is holding it, every minute.</p>
-
-    <div class="grid">
-      <div class="panel card">
-        <h3><span class="num">48</span>MB, for one thumbnail</h3>
-        <p>A picture was stored exactly as it arrived. A photo from a phone is 4032 by 3024, which is 48 MB the moment it is decoded — to draw a thumbnail 340 across. Nothing kept for drawing is now larger than 640 on its long edge. Clicking a picture still opens it at full quality, decoded from the bytes as they arrived and never held.</p>
-      </div>
-      <div class="panel card">
-        <h3><span class="num">250</span>Pictures, said the limit</h3>
-        <p>A picture is not a unit of memory. Two hundred and fifty of them is thirty megabytes or three gigabytes depending on what somebody posted. The budget is 96 MB now, counted in bytes — and avatars and emoji are no longer exempt from it, because a large server has thousands of faces and an exemption with no ceiling only grows.</p>
-      </div>
-      <div class="panel card">
-        <h3><span class="num">0</span>Things you can undo</h3>
-        <p>You cannot type in the message view. Qt did not know that, and kept every channel opened, every reaction and every picture that landed so it could be undone. Fetching ahead had the same shape of problem: six channels a server, none of them ever released. Twenty four are kept now.</p>
-      </div>
-    </div>
-
-    <p class="lede" style="margin:24px 0 0">It settled at <b>347 MB</b>, measured twice a minute apart, with the heap moving by one megabyte between readings — not a leak — and the largest single block at 31 MB, so not a forgotten buffer either. Most of what was left after the cache work turned out not to be a cache at all: it was four hundred messages held in one channel and the conversation being rebuilt several times a second, which are the two bugs below.</p>
-
-    <p class="kicker" style="margin:40px 0 0">The last of it</p>
-    <h2 style="margin:8px 0 0">Forty, not a hundred</h2>
-    <p class="lede">With memory written down every minute, the log gave up the last piece. Building the markup for a hundred messages is <b>1 ms</b>. Laying them out is 42 to 197 — and that cost is paid per message. A hundred were being measured to show the ten or fifteen that fit on a screen, on every channel opened, every time.</p>
-    <p class="lede" style="margin:16px 0 0">A channel now draws its newest forty. Scrolling to the top draws forty more, instantly and with no request at all, because those messages were already here and simply were not drawn. Only when everything held is on screen is there anything to ask Discord for. Nothing about what gets fetched changed — this is about what the text engine is asked to measure.</p>
-
-    <p class="kicker" style="margin:40px 0 0">Three bugs, one mistake</p>
-    <h2 style="margin:8px 0 0">A window needs a far edge, and a place needs a name</h2>
-    <p class="lede">Drawing forty worked and then grew without a ceiling: 40, 90, 150, 200, 250, 300, 350 messages in twenty seconds, and a redraw that had come down to 22 ms was back at 301. Capping it moved the runaway one level down — <b>four hundred messages pulled from Discord in 1.7 seconds</b>, the conversation rebuilt under the reader every eighty milliseconds.</p>
-    <p class="lede" style="margin:16px 0 0">Both are the same mistake. Reaching the top is a <b>position</b>, and a position stays true while nobody moves — so anything hung off it fires again on the next scroll event whether or not the person did anything. It is an action now, and an action happens once.</p>
-    <p class="lede" style="margin:16px 0 0">The third was keeping the reader's place as <b>a number of pixels</b>. The document changes height when messages arrive above, when the window drops messages below, when an edit lands, when a picture loads — so a pixel count means something different after any of those, and three separate pieces of arithmetic each got one case right and the rest wrong. The message under the top edge is the one being read; putting <i>that</i> back is the whole job. One piece of code now, none of it arithmetic on pixels, and tested on its own: park the view on a message, insert fifty above it, and the same message returns to the top edge to the pixel.</p>
-  </div>
-</section>
-
-<section id="voice">
-  <div class="wrap rise">
-    <p class="kicker">Four fixes, each of which sounds like silence</p>
-    <h2>How a call actually works</h2>
-    <p class="lede">Getting sound in and out took four separate fixes, every one of which looked like the whole problem at the time. They are written down because all four present identically: nothing comes out.</p>
-
-    <div class="grid">
-      <div class="panel card">
-        <h3><span class="num">1</span>Keep the port</h3>
-        <p>The voice gateway hands back a host <i>and</i> a port. Dropping the port reaches a different machine, which answers, and then closes. That reply looks like progress and is not.</p>
-      </div>
-      <div class="panel card">
-        <h3><span class="num">2</span>Encryption is not optional</h3>
-        <p>Since 1 March 2026 Discord accepts only end-to-end encrypted calls. Singularity uses Discord's own DAVE library — whose list of known members must include your own id, because you are in the group too.</p>
-      </div>
-      <div class="panel card">
-        <h3><span class="num">3</span>Half the header is encrypted</h3>
-        <p>In the modes Discord uses, only the fixed header and a four byte preamble are in the clear. Counting the rest as header makes every single packet fail to open.</p>
-      </div>
-      <div class="panel card">
-        <h3><span class="num">4</span>Qt does not mix</h3>
-        <p>Two people's audio written to one output is queued, not blended, which is heard as chopped and rushed speech. Each speaker gets a queue, and a 20 ms tick sums them into one frame, with Opus filling in packets that never arrived.</p>
-      </div>
-    </div>
-
-    <p class="lede" style="margin:24px 0 0">A large server posts hundreds of notices a second. Writing each one to disk used to happen on the same thread that plays the call, so a busy channel sounded late. Those routine notices are still applied. They are no longer written down one by one, and a tick that arrives late fills the gap instead of leaving one.</p>
-    <p class="lede" style="margin:24px 0 0">If a call is ever silent again, the log prints a tally every five seconds and a named reason for every frame thrown away. That line exists because reading the log found in one run what five rounds of theorising could not.</p>
-  </div>
-</section>
-
 <section id="privacy">
   <div class="wrap rise">
-    <p class="kicker">Absent, not switched off</p>
-    <h2>What it never sends</h2>
-    <p class="lede">Most of the tracking people worry about is missing — not because a setting disables it, but because the code to do it was never written. That is worth stating plainly rather than claiming as a feature.</p>
+    <p class="kicker">Privacy friendly</p>
+    <h2>What stays on your machine</h2>
+    <p class="lede">The tracking the official client sends was never written here. Your sign-in stays between you and Discord.</p>
 
     <dl class="rows">
+      <div class="row"><dt>Your password</dt><dd>Sent to <code>discord.com</code> and nowhere else. Never written to disk. Never logged.</dd></div>
+      <div class="row"><dt>Your session</dt><dd>Sealed with your Windows account key. The log records its length, never its value.</dd></div>
       <div class="row"><dt>Analytics events</dt><dd>The official client posts to an endpoint called <code>/science</code> as you click around. Singularity never calls it.</dd></div>
       <div class="row"><dt>Read receipts</dt><dd>Nothing tells Discord which messages you have looked at, or when.</dd></div>
       <div class="row"><dt>A real fingerprint</dt><dd>The client details sent on sign-in are fixed numbers written into the source, not your actual Windows version, locale or hardware — and they are identical for everyone running Singularity.</dd></div>
@@ -361,9 +212,9 @@
 
 <section id="missing">
   <div class="wrap rise">
-    <p class="kicker">The honest part</p>
+    <p class="kicker">Still on the list</p>
     <h2>What is not built</h2>
-    <p class="lede">Roughly in the order it is worth doing.</p>
+    <p class="lede">The rest of the client is in. These are the pieces that are not, yet.</p>
 
     <div class="panel">
       <ul class="plain">
@@ -375,7 +226,7 @@
       </ul>
     </div>
 
-    <p class="lede" style="margin:24px 0 0">It is also <b>Windows only</b>, and unsigned. Windows will warn that the publisher is unknown, because a code signing certificate costs money every year and this is one person's project.</p>
+    <p class="lede" style="margin:24px 0 0">Windows only, for now.</p>
   </div>
 </section>
 
