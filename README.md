@@ -4,7 +4,7 @@
 
 <br>
 
-[![Website](https://img.shields.io/badge/website-synchord.pages.dev-eef4fb?style=flat-square&labelColor=07090e)](https://synchord.pages.dev)
+[![Website](https://img.shields.io/badge/website-singularitycord.pages.dev-eef4fb?style=flat-square&labelColor=07090e)](https://singularitycord.pages.dev)
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-cdd6e6?style=flat-square&labelColor=07090e)
 ![Qt 6.10](https://img.shields.io/badge/Qt-6.10-cdd6e6?style=flat-square&labelColor=07090e)
 ![Windows](https://img.shields.io/badge/platform-Windows-8892a6?style=flat-square&labelColor=07090e)
@@ -17,7 +17,7 @@
 
 Windows x64 · 54 MB · installs for you only, no administrator prompt
 
-**Website — [synchord.pages.dev](https://synchord.pages.dev)**
+**Website — [singularitycord.pages.dev](https://singularitycord.pages.dev)**
 
 The same download, the whole story, and the black hole drawn live in your browser.
 
