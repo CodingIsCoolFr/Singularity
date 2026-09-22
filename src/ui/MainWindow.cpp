@@ -3744,7 +3744,10 @@ void MainWindow::setPresenceStatus(const QString &status)
     // there too, so this client agrees with itself at once.
     if (!m_selfUserId.isEmpty()) {
         m_store->setPresence(m_selfUserId,
-                             QJsonObject{{QStringLiteral("status"), m_gateway->presenceStatus()}});
+                             QJsonObject{
+                                 {QStringLiteral("status"), m_gateway->presenceStatus()},
+                                 {QStringLiteral("activities"), m_gateway->clientActivities()},
+                             });
     }
 
     // Opcode 3 tells this session. The settings write is what the real client

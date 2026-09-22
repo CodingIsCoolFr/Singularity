@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QHash>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
 #include <QObject>
@@ -59,6 +60,10 @@ public:
     // sign-in otherwise.
     void setPresenceStatus(const QString &status);
     QString presenceStatus() const { return m_presenceStatus; }
+
+    // The line other people see when this client is open and nothing else is.
+    // Empty while invisible, so appearing offline does not advertise the app.
+    QJsonArray clientActivities() const;
 
     // Sends the status we are holding, even when it has not changed. Needed
     // after sign-in: Discord does not take the status inside the first

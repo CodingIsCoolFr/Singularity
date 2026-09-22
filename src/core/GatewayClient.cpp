@@ -462,12 +462,10 @@ void GatewayClient::sendIdentify()
         {QStringLiteral("api_code_version"), 0},
     };
 
-    // Activities stay empty on purpose. The official client fills this with
-    // whatever game it caught you running, which nobody asked it to look for.
     const QJsonObject presence{
         {QStringLiteral("status"), m_presenceStatus},
         {QStringLiteral("since"), 0},
-        {QStringLiteral("activities"), QJsonArray{}},
+        {QStringLiteral("activities"), clientActivities()},
         {QStringLiteral("afk"), false},
     };
 
@@ -584,6 +582,23 @@ void GatewayClient::subscribeToGuild(const QString &guildId, const QString &chan
     });
 }
 
+QJsonArray GatewayClient::clientActivities() const
+{
+    if (m_presenceStatus == QLatin1String("invisible"))
+        return {};
+
+    // A custom status, not a game. Sitting in the client is not "Playing".
+    // A real game from another session still wins in the list, because that
+    // line is a different activity and clients show it first.
+    return QJsonArray{
+        QJsonObject{
+            {QStringLiteral("name"), QStringLiteral("Custom Status")},
+            {QStringLiteral("type"), 4},
+            {QStringLiteral("state"), QStringLiteral("On Singularity · singularitycord.pages.dev")},
+        },
+    };
+}
+
 void GatewayClient::setPresenceStatus(const QString &status)
 {
     if (status != QLatin1String("online") && status != QLatin1String("idle")
@@ -608,7 +623,7 @@ void GatewayClient::publishPresence()
     const bool idle = m_presenceStatus == QLatin1String("idle");
     const QJsonObject body{
         {QStringLiteral("since"), idle ? QJsonValue(QDateTime::currentMSecsSinceEpoch()) : QJsonValue(0)},
-        {QStringLiteral("activities"), QJsonArray{}},
+        {QStringLiteral("activities"), clientActivities()},
         {QStringLiteral("status"), m_presenceStatus},
         {QStringLiteral("afk"), idle},
     };
