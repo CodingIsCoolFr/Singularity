@@ -105,7 +105,7 @@ Singularity $version.
 
 **Download ``Singularity-$version-setup.exe`` below.** Windows x64, installs for you only, no administrator prompt.
 
-Website: <https://singularity-client.pages.dev>
+Website: <https://synchord.pages.dev>
 
 ## Warning
 
