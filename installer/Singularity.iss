@@ -305,6 +305,23 @@ begin
   end;
 end;
 
+function VerySilent: Boolean;
+var
+  I: Integer;
+  S: String;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+  begin
+    S := ParamStr(I);
+    if (CompareText(S, '/VERYSILENT') = 0) or (CompareText(S, '-VERYSILENT') = 0) then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
+end;
+
 procedure InitializeWizard;
 var
   W, H: Integer;
@@ -312,7 +329,7 @@ begin
   // An update the program started itself passes /VERYSILENT. Building the
   // window anyway would put it in front, and the unpack stops the taskbar
   // taking clicks until the window goes away.
-  if WizardVerySilent then
+  if VerySilent then
     Exit;
 
   LoadFrames;
