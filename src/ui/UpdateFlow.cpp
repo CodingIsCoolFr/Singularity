@@ -238,14 +238,14 @@ private:
 
 QPointer<UpdateOffer> g_offer;
 
-// The same screen the installer used to draw: the hole, the name, and
-// "Installing...". It lives in this process, whose event loop keeps running,
-// so the taskbar is not waiting on a window that has stopped answering.
+// The installer's old window: just the hole, the name, and "Installing...".
+// Nothing of the open app is behind it. This process keeps running, so the
+// taskbar is not waiting on a window that has stopped answering.
 class InstallScreen : public QWidget
 {
 public:
-    explicit InstallScreen(QWidget *owner)
-        : QWidget(owner, Qt::Tool | Qt::FramelessWindowHint)
+    InstallScreen()
+        : QWidget(nullptr, Qt::Window | Qt::FramelessWindowHint)
     {
         setObjectName(QStringLiteral("InstallScreen"));
         setAttribute(Qt::WA_DeleteOnClose);
@@ -253,11 +253,12 @@ public:
         setFixedSize(420, 310);
         setStyleSheet(QStringLiteral(
             "#InstallScreen { background: #07090e; }"
-            "QLabel { background: transparent; }"));
+            "QLabel { background: transparent; color: #eef4fb; }"));
 
         m_hole = new QLabel(this);
         m_hole->setFixedSize(96, 96);
         m_hole->move((width() - 96) / 2, 38);
+        m_hole->setAlignment(Qt::AlignCenter);
 
         auto *title = new QLabel(QStringLiteral("Singularity"), this);
         title->setStyleSheet(QStringLiteral(
@@ -266,23 +267,25 @@ public:
         title->move((width() - title->width()) / 2, 150);
 
         m_step = new QLabel(QStringLiteral("Installing..."), this);
-        m_step->setStyleSheet(QStringLiteral("color: #9aa6bc; font-size: 9pt;"));
+        m_step->setStyleSheet(QStringLiteral("color: #8b95a8; font-family: 'Segoe UI'; font-size: 9pt;"));
         m_step->adjustSize();
         m_step->move((width() - m_step->width()) / 2, 200);
 
         m_track = new QWidget(this);
         m_track->setGeometry(40, 234, width() - 80, 3);
-        m_track->setStyleSheet(QStringLiteral("background: #1c2433;"));
+        m_track->setStyleSheet(QStringLiteral("background: #1a2230;"));
         m_fill = new QWidget(m_track);
         m_fill->setGeometry(0, 0, 0, 3);
-        m_fill->setStyleSheet(QStringLiteral("background: #cdd6e6;"));
+        m_fill->setStyleSheet(QStringLiteral("background: #d5dde8;"));
 
         for (int i = 0; i < 24; ++i) {
-            m_frames.append(QPixmap(QStringLiteral(":/spinner/spin%1.bmp")
-                                        .arg(i, 2, 10, QLatin1Char('0'))));
+            const QPixmap source(QStringLiteral(":/spinner/spin%1.bmp").arg(i, 2, 10, QLatin1Char('0')));
+            m_frames.append(source.isNull()
+                                ? source
+                                : source.scaled(96, 96, Qt::KeepAspectRatio, Qt::SmoothTransformation));
         }
         if (!m_frames.isEmpty() && !m_frames.first().isNull())
-            m_hole->setPixmap(m_frames.first().scaled(96, 96, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+            m_hole->setPixmap(m_frames.first());
 
         connect(&m_timer, &QTimer::timeout, this, [this]() { tick(); });
         m_timer.start(40);
@@ -290,13 +293,11 @@ public:
 
     void place()
     {
-        QRect area;
-        if (QWidget *owner = parentWidget(); owner && owner->isVisible())
-            area = QRect(owner->mapToGlobal(QPoint(0, 0)), owner->size());
-        else if (QScreen *screen = QGuiApplication::primaryScreen())
-            area = screen->availableGeometry();
-        if (!area.isNull())
+        QScreen *screen = QGuiApplication::primaryScreen();
+        if (screen) {
+            const QRect area = screen->availableGeometry();
             move(area.center() - QPoint(width() / 2, height() / 2));
+        }
         liftOverApp(this);
     }
 
@@ -307,14 +308,16 @@ private:
             m_frame = (m_frame + 1) % m_frames.size();
             const QPixmap &frame = m_frames.at(m_frame);
             if (!frame.isNull())
-                m_hole->setPixmap(frame.scaled(96, 96, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                m_hole->setPixmap(frame);
         }
-        // No percentage comes back from the installer. The bar keeps moving
-        // so the window does not look stuck.
-        const int width = m_track->width();
-        const int chunk = qMax(24, width / 5);
-        m_travel = (m_travel + 4) % (width + chunk);
-        m_fill->setGeometry(m_travel - chunk, 0, chunk, 3);
+        // The bar fills from the left, the way the old installer did. The
+        // installer does not report a percentage, so it eases toward the end
+        // and waits there until the new copy starts.
+        const int full = m_track->width();
+        const int cap = full * 9 / 10;
+        if (m_filled < cap)
+            m_filled = qMin(cap, m_filled + qMax(1, (cap - m_filled) / 40));
+        m_fill->setGeometry(0, 0, m_filled, 3);
     }
 
     QLabel *m_hole = nullptr;
@@ -324,7 +327,7 @@ private:
     QTimer m_timer;
     QList<QPixmap> m_frames;
     int m_frame = 0;
-    int m_travel = 0;
+    int m_filled = 0;
 };
 
 QPointer<InstallScreen> g_install;
@@ -457,8 +460,13 @@ Updater *updater()
 
         if (g_offer)
             g_offer->close();
+        // Hide the open window. The install screen is the only thing on
+        // screen, which is how the old installer looked. This process stays
+        // alive behind that, so the taskbar keeps working.
         QWidget *owner = g_owner ? g_owner.data() : QApplication::activeWindow();
-        g_install = new InstallScreen(owner);
+        if (owner && owner->window())
+            owner->window()->hide();
+        g_install = new InstallScreen;
         g_install->place();
         releaseForegroundLock();
 
@@ -484,6 +492,8 @@ Updater *updater()
                 g_install->close();
             releaseForegroundLock();
             if (code != 0) {
+                if (QWidget *owner = g_owner ? g_owner.data() : QApplication::activeWindow())
+                    owner->window()->show();
                 QMessageBox::warning(g_owner, QStringLiteral("Could not install the update"),
                                      QStringLiteral("The installer stopped before it finished."));
                 return;
