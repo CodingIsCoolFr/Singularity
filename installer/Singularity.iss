@@ -18,7 +18,7 @@
 ;     iscc installer\Singularity.iss
 
 #define AppName       "Singularity"
-#define AppVersion    "0.6.18"
+#define AppVersion    "0.6.19"
 #define AppPublisher  "Singularity"
 #define AppExe        "Singularity.exe"
 
@@ -66,13 +66,11 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ; Restart Manager asks it to close properly first, which matters: killing it
 ; outright would lose settings that Qt writes on the way out.
 ;
-; "force" rather than "yes", and this is not a small distinction. With "yes"
-; Inno shows a page listing what it needs to close - and the pages are hidden
-; here, so that page appeared as nothing at all. The installer sat on "Getting
-; ready" for ever, waiting for an answer to a question nobody could see. It
-; looked exactly like a hang, and it only happens when the program is already
-; running, which is every single self-update.
-CloseApplications=yes
+; "force" rather than "yes". With "yes" Inno shows a page listing what it
+; needs to close, and the pages are hidden here, so that page is invisible.
+; The installer then sits on "Getting ready" until that unseen question times
+; out, which is the minute the whole machine feels frozen after every update.
+CloseApplications=force
 RestartApplications=no
 
 [Languages]

@@ -813,6 +813,13 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
                 m_voiceRefreshTimer.start(400);
         }
     });
+
+    // In place before the first paint, so the hole is never the first thing
+    // on screen. startSession only raises it and opens the connection.
+    m_loading = new LoadingOverlay(this);
+    m_loading->setGeometry(rect());
+    m_loading->show();
+    m_loading->raise();
 }
 
 // ---------------------------------------------------------------------------
@@ -1439,8 +1446,11 @@ void MainWindow::startSession(const QString &token)
     // hundred presences arrive over the following second and a half, and each
     // one redraws part of the window. Watching that is watching the furniture
     // being carried in.
-    m_loading = new LoadingOverlay(this);
-    m_loading->show();
+    if (!m_loading) {
+        m_loading = new LoadingOverlay(this);
+        m_loading->setGeometry(rect());
+        m_loading->show();
+    }
     m_loading->raise();
 
     // Chosen before the socket opens, so the sign-in and the later presence
@@ -5585,6 +5595,12 @@ void MainWindow::showEvent(QShowEvent *event)
     SetWindowLongPtr(hwnd, GWL_STYLE, style);
     SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    if (m_loading) {
+        m_loading->setGeometry(rect());
+        m_loading->raise();
+        const HWND cover = reinterpret_cast<HWND>(m_loading->winId());
+        SetWindowPos(cover, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
 #endif
     wlog(QStringLiteral("app"), QStringLiteral("main window shown"));
 }

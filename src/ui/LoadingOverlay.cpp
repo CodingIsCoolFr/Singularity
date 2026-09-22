@@ -25,7 +25,15 @@ LoadingOverlay::LoadingOverlay(QWidget *parent)
     , m_step(QStringLiteral("Connecting..."))
 {
     setAttribute(Qt::WA_TransparentForMouseEvents, false);
-    setAutoFillBackground(false);
+    // Its own window, drawn above the background. A normal child is painted
+    // underneath that OpenGL surface, which is the hole flashing through the
+    // loading disk.
+    setAttribute(Qt::WA_NativeWindow);
+    setAttribute(Qt::WA_OpaquePaintEvent);
+    QPalette fill = palette();
+    fill.setColor(QPalette::Window, QColor(QLatin1String(Theme::Dark)));
+    setPalette(fill);
+    setAutoFillBackground(true);
 
     m_age.start();
 
