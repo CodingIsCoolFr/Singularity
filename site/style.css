@@ -313,6 +313,23 @@ h1 {
 
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(258px, 1fr)); gap: 16px; }
 
+/* The six-up row Vencord uses under the download: a mark, a title, one sentence. */
+.tiles {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 28px 36px;
+    margin: 8px 0 56px;
+}
+.tile .mark {
+    display: block;
+    font-size: 22px;
+    line-height: 1;
+    margin-bottom: 12px;
+}
+.tile h3 { margin: 0 0 6px; font-size: 18px; font-weight: 560; letter-spacing: -0.02em; }
+.tile p { margin: 0; color: var(--dim); font-size: 15px; line-height: 1.5; }
+@media (max-width: 800px) { .tiles { grid-template-columns: 1fr; gap: 22px; } }
+
 .card { transition: border-color 0.2s var(--ease), transform 0.2s var(--ease); }
 .card:hover { border-color: var(--edge-lit); transform: translateY(-2px); }
 
