@@ -6326,10 +6326,20 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
         // insets stay, and those are the edges you drag to resize.
         if (msg->message == WM_NCCALCSIZE && msg->wParam) {
             auto *params = reinterpret_cast<NCCALCSIZE_PARAMS *>(msg->lParam);
+            // Maximized, the default client starts below a real caption. That
+            // is the gray band. The work area is the screen above the taskbar,
+            // so the background fills the top and the taskbar stays visible.
+            if (IsZoomed(msg->hwnd)) {
+                MONITORINFO info;
+                info.cbSize = sizeof(info);
+                if (GetMonitorInfo(MonitorFromWindow(msg->hwnd, MONITOR_DEFAULTTONEAREST), &info))
+                    params->rgrc[0] = info.rcWork;
+                *result = 0;
+                return true;
+            }
             const int windowTop = params->rgrc[0].top;
             *result = DefWindowProc(msg->hwnd, msg->message, msg->wParam, msg->lParam);
-            if (!IsZoomed(msg->hwnd))
-                params->rgrc[0].top = windowTop;
+            params->rgrc[0].top = windowTop;
             return true;
         }
 

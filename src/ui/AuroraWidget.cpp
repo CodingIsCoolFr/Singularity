@@ -58,7 +58,7 @@ vec3 starfield(vec3 rd)
         if (h > 0.905) {
             float d = length(f);
             float br = smoothstep(0.080 + h * 0.035, 0.0, d);
-            float tw = 0.78 + 0.22 * sin(uTime * (0.7 + h * 3.2) + h * 40.0);
+            float tw = 0.78 + 0.22 * sin(uTime * (0.22 + h * 1.0) + h * 40.0);
             vec3 tc = mix(mix(vec3(0.75, 0.82, 0.95), uAccent, 0.35), vec3(0.95, 0.97, 1.0), fract(h * 9.1));
             if (fract(h * 13.7) > 0.82)
                 tc = mix(vec3(0.55, 0.70, 1.0), uAccent, 0.45);
@@ -333,7 +333,7 @@ vec3 starfield(vec3 rd)
         if (h > 0.905) {
             float d = length(f);
             float br = smoothstep(0.080 + h * 0.035, 0.0, d);
-            float tw = 0.78 + 0.22 * sin(uTime * (0.7 + h * 3.2) + h * 40.0);
+            float tw = 0.78 + 0.22 * sin(uTime * (0.22 + h * 1.0) + h * 40.0);
             vec3 tc = mix(mix(vec3(0.75, 0.82, 0.95), uAccent, 0.35), vec3(0.95, 0.97, 1.0), fract(h * 9.1));
             if (fract(h * 13.7) > 0.82)
                 tc = mix(vec3(0.55, 0.70, 1.0), uAccent, 0.45);
@@ -376,7 +376,7 @@ void main()
     vec4 a = texture(tHitA, suv);
     vec4 b = texture(tHitB, suv);
     vec4 sky = texture(tSky, suv);
-    float wt = uTime * 1.15;
+    float wt = uTime * 0.38;
     vec3 col = sky.w * uAccent;
     float trans = 1.0;
     disk(a, wt, col, trans);
@@ -694,7 +694,7 @@ void AuroraWidget::paintGL()
         if (m_bakeSize != QSize(w, h))
             bakeHole(w, h);
 
-        const float drift = m_time * 0.015f;
+        const float drift = m_time * 0.005f;
         m_program->bind();
         m_program->setUniformValue(m_uResolution, QVector2D(float(w), float(h)));
         m_program->setUniformValue(m_uTime, m_time);
