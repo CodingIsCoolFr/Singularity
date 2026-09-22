@@ -18,7 +18,7 @@
 ;     iscc installer\Singularity.iss
 
 #define AppName       "Singularity"
-#define AppVersion    "0.6.36"
+#define AppVersion    "0.6.37"
 #define AppPublisher  "Singularity"
 #define AppExe        "Singularity.exe"
 
@@ -72,6 +72,11 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ; out, which is the minute the whole machine feels frozen after every update.
 CloseApplications=force
 RestartApplications=no
+; Only this program. The default filter is every exe and dll in the folder,
+; and Explorer keeps the shortcut's target open to draw its icon. Restart
+; Manager then stops Explorer for a few seconds, which is the taskbar not
+; taking clicks after every update.
+CloseApplicationsFilter=Singularity.exe
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -269,9 +274,12 @@ begin
   // was the Ready page, which stayed in the way despite being disabled. Left
   // in because the difference is the whole look.
   WizardForm.BorderStyle := bsNone;
-  // Stay in front for the whole install. The window has no title bar, so if
-  // another program covers it there is no way to find it again.
-  WizardForm.FormStyle := fsStayOnTop;
+  // A hand-run install stays in front: the window has no title bar, so if
+  // another program covers it there is no way to find it again. An update
+  // the program started itself must not. A topmost window with no border
+  // sits over the taskbar and clicks there do nothing until it finishes.
+  if not WizardSilent then
+    WizardForm.FormStyle := fsStayOnTop;
   WizardForm.ClientWidth := W;
   WizardForm.ClientHeight := H;
   WizardForm.Position := poScreenCenter;
