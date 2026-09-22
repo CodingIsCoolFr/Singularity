@@ -30,6 +30,10 @@ public:
     void setGuild(const QString &guildId);
     QString guildId() const { return m_guildId; }
 
+    // When the open channel is a voice channel, the panel lists the people
+    // in that call. A text channel keeps Discord's own member list.
+    void setFocusChannel(const QString &channelId, bool voice);
+
     // Folded away to a narrow strip, remembered between runs.
     void setCollapsed(bool collapsed);
     bool isCollapsed() const { return m_collapsed; }
@@ -45,6 +49,8 @@ private:
 
     MessageStore *m_store = nullptr;
     QString m_guildId;
+    QString m_focusChannel;
+    bool m_focusIsVoice = false;
     bool m_collapsed = false;
 
     QWidget *m_header = nullptr;

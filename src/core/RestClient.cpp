@@ -2,6 +2,7 @@
 
 #include "core/DiscordIdentity.h"
 
+#include <QDateTime>
 #include <QFile>
 #include <QFileInfo>
 #include <QHttpMultiPart>
@@ -64,8 +65,15 @@ void RestClient::dispatch(QNetworkReply *reply, ObjectHandler onObject, ArrayHan
         error.httpStatus = status;
         error.body = doc.isObject() ? doc.object() : QJsonObject{};
         error.message = error.body.value(QStringLiteral("message")).toString();
-        if (error.message.isEmpty())
-            error.message = reply->errorString();
+        const QJsonObject formErrors = error.body.value(QStringLiteral("errors")).toObject();
+        if (!formErrors.isEmpty()) {
+            error.message += QStringLiteral(" ")
+                + QString::fromUtf8(QJsonDocument(formErrors).toJson(QJsonDocument::Compact));
+        }
+        if (error.message.isEmpty()) {
+            const QString raw = QString::fromUtf8(payload.left(180)).simplified();
+            error.message = raw.isEmpty() ? reply->errorString() : raw;
+        }
 
         if (status == 401)
             emit unauthorized();
@@ -95,13 +103,16 @@ void RestClient::fetchMessages(const QString &channelId, int limit, ArrayHandler
 void RestClient::sendMessage(const QString &channelId, const QString &content, const QString &replyTo,
                              const QStringList &files, ObjectHandler onOk, ErrorHandler onError)
 {
-    const QString nonce = QString::number(QRandomGenerator::global()->generate64());
+    // A nonce Discord will accept: a snowflake-sized number, not a random
+    // 64-bit value that does not fit in a signed integer. The oversized one
+    // is a 400, and the message never leaves the machine.
+    const qint64 nonce = QDateTime::currentMSecsSinceEpoch() * 1000
+        + QRandomGenerator::global()->bounded(1000);
 
     QJsonObject body{
         {QStringLiteral("content"), content},
-        {QStringLiteral("nonce"), nonce},
+        {QStringLiteral("nonce"), QString::number(nonce)},
         {QStringLiteral("tts"), false},
-        {QStringLiteral("flags"), 0},
     };
 
     if (!replyTo.isEmpty()) {

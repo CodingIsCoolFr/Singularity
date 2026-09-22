@@ -24,6 +24,9 @@ constexpr int OpHeartbeatAck = 11;
 constexpr int OpPresenceUpdate = 3;
 constexpr int OpVoiceStateUpdate = 4;
 constexpr int OpGuildSubscribe = 14;
+// The subscription the current desktop client actually sends. Some servers
+// answer this and ignore the older one, which is an empty member list.
+constexpr int OpGuildSubscriptionsBulk = 37;
 
 // Go Live. Watching somebody's shared screen is a request on this socket, and
 // the answer is a whole second voice server to connect to.
@@ -512,6 +515,19 @@ void GatewayClient::subscribeToGuild(const QString &guildId, const QString &chan
                                                  ? QStringLiteral(" (no member list)")
                                                  : QStringLiteral(" via channel %1").arg(channelId)));
 
+    const QJsonObject subscription{
+        {QStringLiteral("typing"), true},
+        {QStringLiteral("threads"), true},
+        {QStringLiteral("activities"), true},
+        // Without this, a large server sends whoever was in voice at
+        // sign-in and then goes quiet. People join and leave, and the
+        // list on screen stays the old one.
+        {QStringLiteral("voice_states"), true},
+        {QStringLiteral("members"), QJsonArray{}},
+        {QStringLiteral("channels"), channels},
+        {QStringLiteral("thread_member_lists"), QJsonArray{}},
+    };
+
     sendJson(QJsonObject{
         {QStringLiteral("op"), OpGuildSubscribe},
         {QStringLiteral("d"),
@@ -520,10 +536,18 @@ void GatewayClient::subscribeToGuild(const QString &guildId, const QString &chan
              {QStringLiteral("typing"), true},
              {QStringLiteral("threads"), true},
              {QStringLiteral("activities"), true},
+             {QStringLiteral("voice_states"), true},
              {QStringLiteral("members"), QJsonArray{}},
              {QStringLiteral("channels"), channels},
              {QStringLiteral("thread_member_lists"), QJsonArray{}},
          }},
+    });
+
+    QJsonObject subscriptions;
+    subscriptions.insert(guildId, subscription);
+    sendJson(QJsonObject{
+        {QStringLiteral("op"), OpGuildSubscriptionsBulk},
+        {QStringLiteral("d"), QJsonObject{{QStringLiteral("subscriptions"), subscriptions}}},
     });
 }
 

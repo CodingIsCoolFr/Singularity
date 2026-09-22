@@ -1625,6 +1625,13 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
         return;
     }
 
+    if (eventType == QLatin1String("GUILD_CREATE")) {
+        m_store->applyGuild(data);
+        if (data.value(QStringLiteral("id")).toString() == m_currentGuildId)
+            populateChannelList(false);
+        return;
+    }
+
     if (eventType == QLatin1String("GUILD_MEMBER_LIST_UPDATE")) {
         m_store->ingestMemberListUpdate(data);
         return;
@@ -2180,24 +2187,6 @@ void MainWindow::onGuildSelected(int row)
     // anybody picks one.
     prefetchGuild(m_currentGuildId);
 
-    if (!m_currentGuildId.isEmpty()) {
-        // Discord only sends member statuses when asked for a specific
-        // channel's member list, so pick the first readable text channel.
-        QString anyTextChannel;
-        const QList<ChannelGroup> groups = m_store->groupedChannels(m_currentGuildId);
-        for (const ChannelGroup &group : groups) {
-            for (const ChannelInfo &channel : group.channels) {
-                if (!channel.isVoice()) {
-                    anyTextChannel = channel.id;
-                    break;
-                }
-            }
-            if (!anyTextChannel.isEmpty())
-                break;
-        }
-        m_gateway->subscribeToGuild(m_currentGuildId, anyTextChannel);
-    }
-
     populateChannelList();
 }
 
@@ -2319,7 +2308,7 @@ void MainWindow::populateChannelList(bool autoSelectFirst)
 
             QStringList marks;
             if (state.streaming)
-                marks << QStringLiteral("sharing a screen, which Singularity cannot show yet");
+                marks << QStringLiteral("sharing a screen");
             if (state.video)
                 marks << QStringLiteral("camera on");
             if (state.deafened)
@@ -2388,6 +2377,23 @@ void MainWindow::populateChannelList(bool autoSelectFirst)
         openChannel(QString());
 }
 
+void MainWindow::watchGuildChannel(const QString &guildId, const QString &channelId)
+{
+    if (guildId.isEmpty() || channelId.isEmpty())
+        return;
+    if (m_listGuild == guildId && m_listChannel == channelId)
+        return;
+
+    // Drop the previous channel's rows only when the server itself changes.
+    // Clearing on every channel, then asking a channel Discord will not list,
+    // is how the panel got stuck on "0 online".
+    if (m_listGuild != guildId)
+        m_store->clearMemberList(guildId);
+    m_listGuild = guildId;
+    m_listChannel = channelId;
+    m_gateway->subscribeToGuild(guildId, channelId);
+}
+
 void MainWindow::onChannelSelected(int row)
 {
     if (row < 0)
@@ -2425,6 +2431,8 @@ void MainWindow::openChannel(const QString &channelId)
     // The Friends row is not a channel, it swaps the whole chat area.
     if (channelId == QLatin1String("singularity:friends")) {
         m_currentChannelId.clear();
+        if (m_members)
+            m_members->setFocusChannel(QString(), false);
         m_friends->refresh();
         m_chatStack->setCurrentWidget(m_friends);
         m_composer->setEnabled(false);
@@ -2473,6 +2481,11 @@ void MainWindow::openChannel(const QString &channelId)
     m_channelTitle->setText(channel.isDirect() ? channel.name : QStringLiteral("# ") + channel.name);
     m_channelTopic->setText(channel.topic);
     m_channelTopic->setVisible(!channel.topic.isEmpty());
+    if (m_members)
+        m_members->setFocusChannel(channelId, channel.isVoice());
+    if (!channel.guildId.isEmpty())
+        watchGuildChannel(channel.guildId, channelId);
+
     m_composer->setEnabled(true);
     m_composer->setPlaceholderText(
         QStringLiteral("Message %1").arg(channel.isDirect() ? channel.name : QStringLiteral("#") + channel.name));
@@ -4189,12 +4202,17 @@ void MainWindow::sendCurrentMessage()
 
     m_rest->sendMessage(
         channelId, content, replyTo, files, [](const QJsonObject &) {},
-        [this, content](const RestClient::Error &error) {
+        [this, content, replyTo, files](const RestClient::Error &error) {
             QString reason = error.message;
             if (error.isRateLimit())
                 reason = QStringLiteral("rate limited");
-            flashStatus(
-                QStringLiteral("Send failed (%1). Your text: %2").arg(reason, content.left(60)), 8000);
+            wlog(QStringLiteral("rest"),
+                 QStringLiteral("send failed: HTTP %1 %2").arg(error.httpStatus).arg(reason));
+            m_composer->setPlainText(content);
+            m_replyMessageId = replyTo;
+            m_pendingFiles = files;
+            refreshComposerContext();
+            flashStatus(QStringLiteral("Send failed (%1).").arg(reason.left(180)), 8000);
         });
 }
 

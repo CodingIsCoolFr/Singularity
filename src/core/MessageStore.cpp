@@ -186,6 +186,12 @@ void MessageStore::setVoiceState(const QJsonObject &rawState)
     if (userId.isEmpty())
         return;
 
+    // A voice state often carries the person, which is the only name we get
+    // for someone who has never typed in a channel we have open.
+    const QJsonObject member = rawState.value(QStringLiteral("member")).toObject();
+    if (!member.isEmpty())
+        rememberUser(member.value(QStringLiteral("user")).toObject());
+
     const QString channelId = rawState.value(QStringLiteral("channel_id")).toString();
     if (channelId.isEmpty()) {
         // A null channel means they left voice.
@@ -215,6 +221,55 @@ void MessageStore::setVoiceState(const QJsonObject &rawState)
 
     emit userChanged(userId);
     emit voiceStatesChanged();
+}
+
+void MessageStore::replaceGuildVoiceStates(const QString &guildId, const QJsonArray &states)
+{
+    if (guildId.isEmpty())
+        return;
+
+    QStringList gone;
+    for (auto it = m_voiceStates.constBegin(); it != m_voiceStates.constEnd(); ++it) {
+        if (it.value().guildId == guildId)
+            gone.append(it.key());
+    }
+    for (const QString &userId : gone)
+        m_voiceStates.remove(userId);
+
+    for (const QJsonValue &value : states) {
+        QJsonObject state = value.toObject();
+        if (!state.contains(QStringLiteral("guild_id")))
+            state.insert(QStringLiteral("guild_id"), guildId);
+        const QString userId = state.value(QStringLiteral("user_id")).toString();
+        if (userId.isEmpty() || state.value(QStringLiteral("channel_id")).toString().isEmpty())
+            continue;
+
+        const QJsonObject member = state.value(QStringLiteral("member")).toObject();
+        if (!member.isEmpty())
+            rememberUser(member.value(QStringLiteral("user")).toObject());
+
+        VoiceStateInfo info;
+        info.channelId = state.value(QStringLiteral("channel_id")).toString();
+        info.guildId = guildId;
+        info.streaming = state.value(QStringLiteral("self_stream")).toBool();
+        info.video = state.value(QStringLiteral("self_video")).toBool();
+        info.muted = state.value(QStringLiteral("self_mute")).toBool()
+            || state.value(QStringLiteral("mute")).toBool();
+        info.deafened = state.value(QStringLiteral("self_deaf")).toBool()
+            || state.value(QStringLiteral("deaf")).toBool();
+        info.since = QDateTime::currentDateTimeUtc();
+        m_voiceStates.insert(userId, info);
+    }
+
+    emit voiceStatesChanged();
+}
+
+void MessageStore::clearMemberList(const QString &guildId)
+{
+    if (!m_memberLists.contains(guildId))
+        return;
+    m_memberLists.remove(guildId);
+    emit memberListChanged(guildId);
 }
 
 void MessageStore::noteActivity(const QString &userId)
@@ -555,6 +610,11 @@ MemberList MessageStore::memberList(const QString &guildId) const
     return m_memberLists.value(guildId);
 }
 
+void MessageStore::applyGuild(const QJsonObject &rawGuild)
+{
+    ingestGuild(rawGuild);
+}
+
 void MessageStore::ingestGuild(const QJsonObject &rawGuild)
 {
     GuildInfo guild;
@@ -606,17 +666,15 @@ void MessageStore::ingestGuild(const QJsonObject &rawGuild)
         guild.channelIds.append(channelId);
     }
 
-    // Voice states ride along with the guild, so the "in voice" line works.
-    const QJsonArray voiceStates = rawGuild.value(QStringLiteral("voice_states")).toArray();
-    for (const QJsonValue &value : voiceStates) {
-        QJsonObject state = value.toObject();
-        if (!state.contains(QStringLiteral("guild_id")))
-            state.insert(QStringLiteral("guild_id"), guild.id);
-        setVoiceState(state);
-    }
-
+    const bool known = m_guilds.contains(guild.id);
     m_guilds.insert(guild.id, guild);
-    m_guildOrder.append(guild.id);
+    if (!known)
+        m_guildOrder.append(guild.id);
+
+    // A later, complete copy of the server replaces the voice snapshot we
+    // had. Large servers arrive almost empty and fill in afterwards.
+    if (rawGuild.contains(QStringLiteral("voice_states")))
+        replaceGuildVoiceStates(guild.id, rawGuild.value(QStringLiteral("voice_states")).toArray());
 }
 
 void MessageStore::ingestChannel(const QJsonObject &rawChannel, const QString &guildId)

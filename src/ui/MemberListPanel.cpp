@@ -140,7 +140,11 @@ MemberListPanel::MemberListPanel(MessageStore *store, QWidget *parent)
     layout->addWidget(m_body, 1);
 
     connect(m_store, &MessageStore::memberListChanged, this, [this](const QString &guildId) {
-        if (guildId == m_guildId)
+        if (guildId == m_guildId && !m_focusIsVoice)
+            rebuild();
+    });
+    connect(m_store, &MessageStore::voiceStatesChanged, this, [this]() {
+        if (m_focusIsVoice)
             rebuild();
     });
 
@@ -173,6 +177,17 @@ void MemberListPanel::setGuild(const QString &guildId)
         return;
 
     m_guildId = guildId;
+    m_focusChannel.clear();
+    m_focusIsVoice = false;
+    rebuild();
+}
+
+void MemberListPanel::setFocusChannel(const QString &channelId, bool voice)
+{
+    if (m_focusChannel == channelId && m_focusIsVoice == voice)
+        return;
+    m_focusChannel = channelId;
+    m_focusIsVoice = voice;
     rebuild();
 }
 
@@ -228,8 +243,46 @@ void MemberListPanel::rebuild()
         return;
     }
 
-    const MemberList list = m_store->memberList(m_guildId);
     const GuildInfo guild = m_store->guild(m_guildId);
+
+    // A voice channel's people are the call, not the hundred members of
+    // whichever text channel was asked about first. That other list is why
+    // the panel showed a different crowd from the channel you were in.
+    if (m_focusIsVoice && !m_focusChannel.isEmpty()) {
+        const QStringList members = m_store->voiceMembers(m_focusChannel);
+        m_counts->setText(QStringLiteral("<span style='color:%1'>●</span> %2 in this call")
+                              .arg(QLatin1String(Theme::Green))
+                              .arg(members.size()));
+
+        const int scroll = m_list->verticalScrollBar() ? m_list->verticalScrollBar()->value() : 0;
+        m_list->setUpdatesEnabled(false);
+        m_list->clear();
+
+        auto *heading = new QListWidgetItem(m_list);
+        heading->setData(SingularityRoles::Heading, true);
+        heading->setText(QStringLiteral("In this call — %1").arg(members.size()));
+        heading->setFlags(Qt::NoItemFlags);
+
+        for (const QString &userId : members) {
+            const UserInfo info = m_store->user(userId);
+            const QString name = info.displayName().isEmpty() ? userId : info.displayName();
+            auto *item = new QListWidgetItem(name, m_list);
+            item->setData(SingularityRoles::Id, userId);
+            item->setData(SingularityRoles::Status, m_store->presenceBubble(userId));
+            item->setData(SingularityRoles::Subtitle, doingNow(*m_store, userId));
+            const QUrl url = MediaCache::avatarUrl(userId, info.avatarHash, 64);
+            const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
+            item->setIcon(picture.isNull() ? MediaCache::initialsAvatar(name, 32)
+                                          : MediaCache::circular(picture, 32));
+        }
+
+        m_list->setUpdatesEnabled(true);
+        if (m_list->verticalScrollBar())
+            m_list->verticalScrollBar()->setValue(scroll);
+        return;
+    }
+
+    const MemberList list = m_store->memberList(m_guildId);
 
     m_counts->setText(
         QStringLiteral("<span style='color:%1'>●</span> %2 online "

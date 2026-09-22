@@ -367,6 +367,9 @@ private:
     void applyVoiceSettings();
 
     QString m_currentGuildId;   // empty means direct messages
+    QString m_listGuild;
+    QString m_listChannel;
+    void watchGuildChannel(const QString &guildId, const QString &channelId);
     QString m_currentChannelId;
     QString m_selfUserId;
     QString m_selfAvatarHash;

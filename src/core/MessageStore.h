@@ -268,6 +268,9 @@ public:
     void clear();
     void ingestReady(const QJsonObject &readyPayload);
 
+    // A large server arrives later, already full, after an empty placeholder.
+    void applyGuild(const QJsonObject &rawGuild);
+
     // User accounts get a second payload right after READY. That is where
     // voice states and most presences actually live, so without this you only
     // ever see yourself in a voice channel.
@@ -373,6 +376,13 @@ public:
     // Where someone is sitting in voice.
     VoiceStateInfo voiceState(const QString &userId) const;
     void setVoiceState(const QJsonObject &rawState);
+
+    // Replaces every voice state for one server. A large server's first
+    // snapshot is partial, and patching later updates onto it leaves people
+    // in channels they left.
+    void replaceGuildVoiceStates(const QString &guildId, const QJsonArray &states);
+
+    void clearMemberList(const QString &guildId);
 
     // Who is sitting in one voice channel right now.
     QStringList voiceMembers(const QString &channelId) const;
