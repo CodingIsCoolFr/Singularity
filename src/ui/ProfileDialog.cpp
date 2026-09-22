@@ -1,3 +1,4 @@
+#include "ui/CaptchaDialog.h"
 #include "ui/ProfileDialog.h"
 
 #include "core/Logger.h"
@@ -13,6 +14,7 @@
 #include <QFrame>
 #include <QGraphicsDropShadowEffect>
 #include <QHBoxLayout>
+#include <QJsonArray>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
@@ -1188,14 +1190,56 @@ void ProfileDialog::toggleFriend()
                 updateFriendButton();
         };
     };
-    const auto onError = [this](const RestClient::Error &error) {
-        wlog(QStringLiteral("profile"), QStringLiteral("relationship change failed: HTTP %1 %2")
-                                            .arg(error.httpStatus).arg(error.message));
-        setNote(error.message.isEmpty() ? QStringLiteral("That did not work.") : error.message, true);
-    };
-
     m_friendButton->setEnabled(false);
     const auto reenable = [this]() { m_friendButton->setEnabled(true); };
+
+    const auto onError = [this, userId, info, onOk, reenable](const RestClient::Error &error) {
+        const QJsonArray keys = error.body.value(QStringLiteral("captcha_key")).toArray();
+        bool needsCheck = false;
+        for (const QJsonValue &key : keys) {
+            if (key.toString() == QLatin1String("captcha-required"))
+                needsCheck = true;
+        }
+        if (needsCheck && !info.isFriend() && info.relationship != 4 && !info.isBlocked()) {
+            const QString token = CaptchaDialog::solve(
+                this, error.body.value(QStringLiteral("captcha_sitekey")).toString(),
+                error.body.value(QStringLiteral("captcha_rqdata")).toString());
+            if (token.isEmpty()) {
+                setNote(QStringLiteral("Discord asked for a check, and it was not finished."), true);
+                reenable();
+                return;
+            }
+            RestClient::CaptchaProof proof;
+            proof.key = token;
+            proof.rqtoken = error.body.value(QStringLiteral("captcha_rqtoken")).toString();
+            proof.sessionId = error.body.value(QStringLiteral("captcha_session_id")).toString();
+            m_rest->addFriend(userId,
+                              [onOk, reenable, info](const QJsonObject &o) {
+                                  onOk(info.relationship == 3 ? 1 : 4)(o);
+                                  reenable();
+                              },
+                              [this, reenable](const RestClient::Error &again) {
+                                  wlog(QStringLiteral("profile"),
+                                       QStringLiteral("relationship change failed: HTTP %1 %2")
+                                           .arg(again.httpStatus)
+                                           .arg(again.message));
+                                  setNote(again.message.isEmpty() ? QStringLiteral("That did not work.")
+                                                                  : again.message.left(180),
+                                          true);
+                                  reenable();
+                              },
+                              proof);
+            return;
+        }
+
+        wlog(QStringLiteral("profile"), QStringLiteral("relationship change failed: HTTP %1 %2")
+                                            .arg(error.httpStatus).arg(error.message));
+        const QString shown = error.message.contains(QStringLiteral("captcha"))
+            ? QStringLiteral("Discord asked for a check, and it was not finished.")
+            : (error.message.isEmpty() ? QStringLiteral("That did not work.") : error.message.left(180));
+        setNote(shown, true);
+        reenable();
+    };
 
     if (info.isFriend() || info.relationship == 4 || info.isBlocked()) {
         m_rest->removeRelationship(userId,
@@ -1207,7 +1251,7 @@ void ProfileDialog::toggleFriend()
                               onOk(info.relationship == 3 ? 1 : 4)(o);
                               reenable();
                           },
-                          [onError, reenable](const RestClient::Error &e) { onError(e); reenable(); });
+                          [onError](const RestClient::Error &e) { onError(e); });
     }
 }
 

@@ -239,11 +239,20 @@ void RestClient::openDirectMessage(const QString &userId, ObjectHandler onOk, Er
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
-void RestClient::addFriend(const QString &userId, ObjectHandler onOk, ErrorHandler onError)
+void RestClient::addFriend(const QString &userId, ObjectHandler onOk, ErrorHandler onError,
+                           const CaptchaProof &captcha)
 {
     // An empty object means "ordinary friend request".
     const QString path = QStringLiteral("/users/@me/relationships/%1").arg(userId);
-    QNetworkReply *reply = m_network.put(buildRequest(path), QByteArray("{}"));
+    QNetworkRequest request = buildRequest(path);
+    if (!captcha.key.isEmpty()) {
+        request.setRawHeader("X-Captcha-Key", captcha.key.toUtf8());
+        if (!captcha.rqtoken.isEmpty())
+            request.setRawHeader("X-Captcha-Rqtoken", captcha.rqtoken.toUtf8());
+        if (!captcha.sessionId.isEmpty())
+            request.setRawHeader("X-Captcha-Session-Id", captcha.sessionId.toUtf8());
+    }
+    QNetworkReply *reply = m_network.put(request, QByteArray("{}"));
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
