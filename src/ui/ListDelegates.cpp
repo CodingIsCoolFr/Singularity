@@ -176,6 +176,21 @@ void drawGearGlyph(QPainter *painter, const QRectF &box, const QColor &colour)
     }
 }
 
+// A closed padlock, for a voice channel that has hit its user limit.
+void drawLock(QPainter *painter, const QRectF &box, const QColor &colour)
+{
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(colour);
+    const QPointF centre = box.center();
+    painter->drawRoundedRect(QRectF(centre.x() - 4.5, centre.y() - 1.0, 9.0, 7.0), 1.4, 1.4);
+
+    QPen pen(colour);
+    pen.setWidthF(1.4);
+    painter->setPen(pen);
+    painter->setBrush(Qt::NoBrush);
+    painter->drawArc(QRectF(centre.x() - 3.2, centre.y() - 7.2, 6.4, 7.2), 0, 180 * 16);
+}
+
 // Draws the little speaker that marks a voice channel.
 void drawSpeaker(QPainter *painter, const QRectF &box, const QColor &colour)
 {
@@ -1040,13 +1055,43 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
         textRightInset += width + 8;
     }
 
+    // A capped voice channel shows how full it is. At the cap, and when we
+    // are not already in it, the speaker becomes a lock and the row dims.
+    const int voiceLimit = isVoice ? index.data(SingularityRoles::VoiceLimit).toInt() : 0;
+    const int voiceCount = isVoice ? index.data(SingularityRoles::VoiceCount).toInt() : 0;
+    const bool joinedHere = isVoice && !m_joinedChannelId.isEmpty()
+        && index.data(SingularityRoles::Id).toString() == m_joinedChannelId;
+    const bool voiceFull = voiceLimit > 0 && voiceCount >= voiceLimit && !joinedHere;
+
+    QString occupancy;
+    if (voiceLimit > 0 && !showButtons) {
+        occupancy = QStringLiteral("%1 / %2")
+                        .arg(voiceCount, 2, 10, QChar('0'))
+                        .arg(voiceLimit, 2, 10, QChar('0'));
+        QFont countFont = option.font;
+        countFont.setPixelSize(11);
+        painter->setFont(countFont);
+        const int countWidth = painter->fontMetrics().horizontalAdvance(occupancy);
+        const QRect countRect(cell.right() - countWidth - 12, cell.top(), countWidth, cell.height());
+        painter->setPen(QColor(voiceFull ? Theme::TextFaint : Theme::TextMuted));
+        painter->drawText(countRect, Qt::AlignRight | Qt::AlignVCenter, occupancy);
+        textRightInset += countWidth + 10;
+    }
+
+    if (voiceFull)
+        colour = QColor(Theme::TextFaint);
+
     // --- the # or speaker mark -------------------------------------------
     const QRectF markBox(panel.left() + 8, panel.top(), 18, panel.height());
     painter->save();
-    if (kind == QLatin1String("voice"))
-        drawSpeaker(painter, markBox, colour);
-    else
+    if (kind == QLatin1String("voice")) {
+        if (voiceFull)
+            drawLock(painter, markBox, colour);
+        else
+            drawSpeaker(painter, markBox, colour);
+    } else {
         drawHashMark(painter, markBox, colour);
+    }
     painter->restore();
 
     QFont font = option.font;

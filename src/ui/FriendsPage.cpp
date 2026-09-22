@@ -429,8 +429,13 @@ void FriendsPage::rebuildActivity()
         card.channelId = channelId;
         const ChannelInfo channel = m_store->channel(channelId);
         const GuildInfo guild = m_store->guild(card.guildId);
-        card.subtitle = QStringLiteral("In a Voice Channel");
+        const bool full = channel.userLimit > 0 && members.size() >= channel.userLimit;
+        card.subtitle = full ? QStringLiteral("Voice channel full") : QStringLiteral("In a Voice Channel");
         card.detail = channel.name;
+        if (full) {
+            card.guildId.clear();
+            card.channelId.clear();
+        }
         card.guildIcon = MediaCache::guildIconUrl(guild.id, guild.iconHash, 32);
         cards.prepend(card);
     }

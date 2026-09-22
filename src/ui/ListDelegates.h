@@ -39,6 +39,11 @@ constexpr int Heading = Qt::UserRole + 13;
 // Unread is a dot. Mentions is a count, drawn in place of the dot.
 constexpr int Unread = Qt::UserRole + 14;
 constexpr int Mentions = Qt::UserRole + 15;
+
+// Voice channel rows: how many people are in it, and the cap. Zero cap means
+// no limit. A count at the cap is full.
+constexpr int VoiceCount = Qt::UserRole + 16;
+constexpr int VoiceLimit = Qt::UserRole + 17;
 } // namespace SingularityRoles
 
 // Shared easing used by both delegates below.

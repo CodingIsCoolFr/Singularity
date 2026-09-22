@@ -2290,6 +2290,16 @@ void MainWindow::populateChannelList(bool autoSelectFirst)
         item->setData(IdRole, channel.id);
         item->setData(KindRole, channel.isVoice() ? QStringLiteral("voice") : QStringLiteral("channel"));
         item->setToolTip(channel.topic.isEmpty() ? channel.name : channel.topic);
+        if (channel.isVoice()) {
+            const int sitting = m_store->voiceMembers(channel.id).size();
+            item->setData(SingularityRoles::VoiceCount, sitting);
+            item->setData(SingularityRoles::VoiceLimit, channel.userLimit);
+            if (channel.userLimit > 0 && sitting >= channel.userLimit)
+                item->setToolTip(QStringLiteral("%1 is full (%2/%3)")
+                                     .arg(channel.name)
+                                     .arg(sitting)
+                                     .arg(channel.userLimit));
+        }
         m_channelList->addItem(item);
         if (firstSelectable < 0 && !channel.isVoice())
             firstSelectable = m_channelList->count() - 1;
@@ -5255,6 +5265,14 @@ void MainWindow::requestUnknownName(const QString &userId)
         });
 }
 
+bool MainWindow::voiceChannelFull(const QString &channelId) const
+{
+    const ChannelInfo channel = m_store->channel(channelId);
+    if (channel.userLimit <= 0 || channelId == m_voiceChannelId)
+        return false;
+    return m_store->voiceMembers(channelId).size() >= channel.userLimit;
+}
+
 void MainWindow::joinVoice(const QString &channelId)
 {
     const ChannelInfo channel = m_store->channel(channelId);
@@ -5267,6 +5285,13 @@ void MainWindow::joinVoiceAt(const QString &guildId, const QString &channelId)
 {
     if (guildId.isEmpty() || channelId.isEmpty())
         return;
+
+    if (voiceChannelFull(channelId)) {
+        const ChannelInfo full = m_store->channel(channelId);
+        const QString name = full.name.isEmpty() ? QStringLiteral("That voice channel") : full.name;
+        flashStatus(QStringLiteral("%1 is full.").arg(name), 4000);
+        return;
+    }
 
     const ChannelInfo known = m_store->channel(channelId);
     if (!known.id.isEmpty() && !known.isVoice())

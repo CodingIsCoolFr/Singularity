@@ -89,6 +89,7 @@ private:
     // Carrying sound is not built yet.
     void joinVoice(const QString &channelId);
     void joinVoiceAt(const QString &guildId, const QString &channelId);
+    bool voiceChannelFull(const QString &channelId) const;
     void leaveVoice();
     void updateVoicePanel();
     void createInvite(const QString &channelId);
