@@ -319,7 +319,9 @@ public:
 
     // MESSAGE_REACTION_REMOVE_ALL, and REMOVE_EMOJI when an emoji is given.
     void clearReactions(const QJsonObject &data);
-    void appendMessage(const QJsonObject &rawMessage);
+    // Adds one message. Returns how many older messages were dropped to keep
+    // the channel under its cap, or -1 when this message was already stored.
+    int appendMessage(const QJsonObject &rawMessage);
     void updateMessage(const QJsonObject &rawMessage);
     void markDeleted(const QString &channelId, const QString &messageId);
     void removeMessage(const QString &channelId, const QString &messageId);

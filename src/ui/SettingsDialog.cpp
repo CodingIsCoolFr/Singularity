@@ -10,6 +10,7 @@
 
 #include <QApplication>
 #include <QAudioDevice>
+#include <QButtonGroup>
 #include <QCheckBox>
 #include <QClipboard>
 #include <QColorDialog>
@@ -22,6 +23,7 @@
 #include <QFormLayout>
 #include <QMessageBox>
 #include <QMovie>
+#include <QPainter>
 #include <QRadioButton>
 #include <QStandardPaths>
 #include <QGridLayout>
@@ -53,9 +55,9 @@ QLabel *pageTitle(const QString &text, QWidget *parent)
 QLabel *groupTitle(const QString &text, QWidget *parent)
 {
     auto *label = new QLabel(text, parent);
-    label->setStyleSheet(QStringLiteral("color: %1; font-size: 10.5px; font-weight: 700; "
-                                        "letter-spacing: 1.2px; margin-top: 18px;")
-                             .arg(QLatin1String(Theme::Accent)));
+    label->setStyleSheet(QStringLiteral("color: %1; font-size: 11px; font-weight: 700; "
+                                        "letter-spacing: 0.8px; margin-top: 22px;")
+                             .arg(QLatin1String(Theme::TextMuted)));
     return label;
 }
 
@@ -120,7 +122,7 @@ SettingsDialog::SettingsDialog(MessageStore *store, RestClient *rest, PluginHost
 {
     setWindowTitle(QStringLiteral("Settings"));
     setAccessibleName(QStringLiteral("Settings"));
-    resize(900, 640);
+    resize(980, 680);
 
     auto *root = new QHBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
@@ -175,10 +177,54 @@ SettingsDialog::SettingsDialog(MessageStore *store, RestClient *rest, PluginHost
 }
 #SettingsNav QListWidget::item:hover { background-color: %4; color: %5; }
 #SettingsNav QListWidget::item:selected {
-    background-color: %4;
+    background-color: %6;
     color: %5;
     font-weight: 600;
 }
+QScrollArea, QStackedWidget { background: %8; border: none; }
+QScrollArea > QWidget > QWidget { background: %8; }
+
+QPushButton {
+    background-color: %6;
+    color: %5;
+    border: 1px solid %2;
+    border-radius: 8px;
+    padding: 7px 14px;
+    min-height: 18px;
+}
+QPushButton:hover { background-color: %4; }
+QPushButton:pressed { background-color: %6; }
+QPushButton:disabled { color: %9; }
+
+QSpinBox, QComboBox, QLineEdit {
+    background-color: %6;
+    color: %5;
+    border: 1px solid %2;
+    border-radius: 8px;
+    padding: 6px 10px;
+    min-height: 22px;
+    selection-background-color: %7;
+}
+QSpinBox:focus, QComboBox:focus, QLineEdit:focus { border-color: %7; }
+QComboBox::drop-down { border: none; width: 22px; }
+QComboBox QAbstractItemView {
+    background-color: %8;
+    color: %5;
+    border: 1px solid %2;
+    selection-background-color: %4;
+    outline: none;
+}
+
+QCheckBox, QRadioButton {
+    spacing: 8px;
+    color: %5;
+    background: transparent;
+}
+QCheckBox::indicator, QRadioButton::indicator {
+    width: 16px;
+    height: 16px;
+}
+
 QSlider::groove:horizontal {
     height: 5px;
     background: %6;
@@ -198,7 +244,8 @@ QSlider::handle:horizontal {
                       .arg(QLatin1String(Theme::SurfaceSidebar), QLatin1String(Theme::Border),
                            QLatin1String(Theme::TextMuted), QLatin1String(Theme::SurfaceHover),
                            QLatin1String(Theme::TextPrimary), QLatin1String(Theme::SurfaceInput),
-                           QLatin1String(Theme::Accent)));
+                           QLatin1String(Theme::Accent), QLatin1String(Theme::SurfaceChat),
+                           QLatin1String(Theme::TextFaint)));
 }
 
 SettingsDialog::~SettingsDialog()
@@ -637,88 +684,127 @@ QWidget *SettingsDialog::buildAppearancePage()
     // -----------------------------------------------------------------
 
     layout->addWidget(groupTitle(QStringLiteral("BACKGROUND"), page));
-    layout->addWidget(hint(QStringLiteral("The black hole is drawn live. A picture of your own can "
-                                          "take its place — an animated GIF or WebP, or a still image."),
+    layout->addWidget(hint(QStringLiteral("The black hole is drawn live. A picture fills the window "
+                                          "instead, keeping its own shape. The edges are cropped, "
+                                          "never stretched. GIF, WebP, PNG or JPEG."),
                            page));
 
-    auto *bgRow = new QWidget(page);
-    auto *bgLayout = new QHBoxLayout(bgRow);
-    bgLayout->setContentsMargins(0, 6, 0, 6);
-    bgLayout->setSpacing(10);
+    auto *modeRow = new QWidget(page);
+    auto *modeLayout = new QHBoxLayout(modeRow);
+    modeLayout->setContentsMargins(0, 8, 0, 8);
+    modeLayout->setSpacing(8);
 
-    auto *useHole = new QRadioButton(QStringLiteral("Black hole"), bgRow);
-    auto *usePicture = new QRadioButton(QStringLiteral("My picture"), bgRow);
-    bgLayout->addWidget(useHole);
-    bgLayout->addWidget(usePicture);
-    bgLayout->addStretch(1);
-    layout->addWidget(bgRow);
+    auto *useHole = new QPushButton(QStringLiteral("Black hole"), modeRow);
+    auto *usePicture = new QPushButton(QStringLiteral("My picture"), modeRow);
+    useHole->setCheckable(true);
+    usePicture->setCheckable(true);
+    useHole->setCursor(Qt::PointingHandCursor);
+    usePicture->setCursor(Qt::PointingHandCursor);
+    auto *modes = new QButtonGroup(modeRow);
+    modes->setExclusive(true);
+    modes->addButton(useHole);
+    modes->addButton(usePicture);
+    modeLayout->addWidget(useHole);
+    modeLayout->addWidget(usePicture);
+    modeLayout->addStretch(1);
+    layout->addWidget(modeRow);
 
-    // The chosen picture, shown small. A path on its own tells you almost
-    // nothing; the point of a wallpaper is what it looks like.
+    // Wide, the same shape as the window, so a GIF is judged the way it will
+    // actually sit rather than as a postage stamp beside two buttons.
     auto *preview = new QLabel(page);
-    preview->setFixedSize(220, 124);
+    preview->setFixedSize(520, 220);
     preview->setAlignment(Qt::AlignCenter);
-    preview->setStyleSheet(QStringLiteral("background: %1; border: 1px solid %2; border-radius: 8px; color: %3;")
+    preview->setStyleSheet(QStringLiteral("background: %1; border: 1px solid %2; border-radius: 12px; color: %3;")
                                .arg(QLatin1String(Theme::SurfaceInput), QLatin1String(Theme::Border),
                                     QLatin1String(Theme::TextFaint)));
+    layout->addWidget(preview);
+
+    auto *fileName = new QLabel(page);
+    fileName->setStyleSheet(QStringLiteral("color: %1; font-size: 12px;")
+                                .arg(QLatin1String(Theme::TextMuted)));
+    layout->addWidget(fileName);
 
     auto *fileRow = new QWidget(page);
     auto *fileLayout = new QHBoxLayout(fileRow);
-    fileLayout->setContentsMargins(0, 0, 0, 0);
-    fileLayout->setSpacing(10);
-    fileLayout->addWidget(preview);
-
-    auto *fileButtons = new QVBoxLayout;
-    fileButtons->setSpacing(6);
+    fileLayout->setContentsMargins(0, 4, 0, 0);
+    fileLayout->setSpacing(8);
 
     auto *chooseFile = new QPushButton(QStringLiteral("Choose a picture…"), fileRow);
     auto *clearFile = new QPushButton(QStringLiteral("Remove"), fileRow);
-    fileButtons->addWidget(chooseFile);
-    fileButtons->addWidget(clearFile);
-
-    auto *dimLabel = new QLabel(QStringLiteral("Dim"), fileRow);
-    dimLabel->setStyleSheet(QStringLiteral("color: %1; font-size: 11px; margin-top: 6px;")
-                                .arg(QLatin1String(Theme::TextMuted)));
-    fileButtons->addWidget(dimLabel);
-
-    auto *dim = makeSlider(0, 90, config.value(QStringLiteral("appearance/backgroundDim"), 45).toInt(),
-                           fileRow);
-    dim->setFixedWidth(150);
-    fileButtons->addWidget(dim);
-    fileButtons->addStretch(1);
-
-    fileLayout->addLayout(fileButtons);
+    fileLayout->addWidget(chooseFile);
+    fileLayout->addWidget(clearFile);
     fileLayout->addStretch(1);
     layout->addWidget(fileRow);
 
-    layout->addWidget(hint(QStringLiteral("Dimming is not decoration. Every panel above the background "
-                                          "is translucent glass, so a bright picture makes the "
-                                          "conversation hard to read."),
+    auto *dimHeader = new QHBoxLayout;
+    auto *dimLabel = new QLabel(QStringLiteral("Dim"), page);
+    dimLabel->setStyleSheet(QStringLiteral("color: %1;").arg(QLatin1String(Theme::TextPrimary)));
+    auto *dimValue = new QLabel(page);
+    dimValue->setStyleSheet(QStringLiteral("color: %1;").arg(QLatin1String(Theme::TextMuted)));
+    dimHeader->addWidget(dimLabel);
+    dimHeader->addStretch(1);
+    dimHeader->addWidget(dimValue);
+    layout->addLayout(dimHeader);
+
+    auto *dim = makeSlider(0, 80, config.value(QStringLiteral("appearance/backgroundDim"), 45).toInt(),
+                           page);
+    layout->addWidget(dim);
+
+    layout->addWidget(hint(QStringLiteral("Dim lays a flat darkening over the whole picture, so a "
+                                          "bright GIF stays even instead of turning into a spotlight. "
+                                          "Higher is darker, and the conversation stays readable."),
                            page));
 
-    // Drawn here rather than in several places, because the preview, the
-    // radio buttons and the two file buttons all have to agree at once.
-    auto refreshBackground = [this, preview, useHole, usePicture, chooseFile, clearFile, dim]() {
+    // The preview, the mode buttons and the file buttons have to agree.
+    auto refreshBackground = [preview, fileName, dimValue, useHole, usePicture, clearFile, dim]() {
         AppConfig &config = AppConfig::instance();
         const QString path = config.value(QStringLiteral("appearance/backgroundPath")).toString();
         const bool picture =
             config.value(QStringLiteral("appearance/backgroundMode")).toString()
-            == QLatin1String("picture");
+            == QLatin1String("picture")
+            && !path.isEmpty() && QFileInfo::exists(path);
 
+        useHole->blockSignals(true);
+        usePicture->blockSignals(true);
         useHole->setChecked(!picture);
         usePicture->setChecked(picture);
-        usePicture->setEnabled(!path.isEmpty());
+        useHole->blockSignals(false);
+        usePicture->blockSignals(false);
+        usePicture->setEnabled(!path.isEmpty() && QFileInfo::exists(path));
         clearFile->setEnabled(!path.isEmpty());
         dim->setEnabled(picture);
+        dimValue->setText(QStringLiteral("%1%").arg(dim->value()));
 
-        if (path.isEmpty() || !QFileInfo::exists(path)) {
+        // Dark ink on the accent, because the accent can be a bright swatch
+        // and the normal text colour is already light.
+        const QString onStyle = QStringLiteral(
+            "QPushButton { background: %1; color: #07090d; border: 1px solid %1; font-weight: 600; }")
+                                    .arg(QLatin1String(Theme::Accent));
+        const QString offStyle = QStringLiteral(
+            "QPushButton { background: %1; color: %2; border: 1px solid %3; }")
+                                     .arg(QLatin1String(Theme::SurfaceInput),
+                                          QLatin1String(Theme::TextMuted),
+                                          QLatin1String(Theme::Border));
+        useHole->setStyleSheet(useHole->isChecked() ? onStyle : offStyle);
+        usePicture->setStyleSheet(usePicture->isChecked() ? onStyle : offStyle);
+
+        if (!picture && (path.isEmpty() || !QFileInfo::exists(path))) {
             preview->setPixmap(QPixmap());
-            preview->setText(QStringLiteral("No picture chosen"));
+            preview->setText(path.isEmpty() ? QStringLiteral("No picture chosen")
+                                            : QStringLiteral("That file is no longer there"));
+            fileName->setText(QStringLiteral("Black hole"));
             return;
         }
 
-        // Only the first frame of an animation, which is all a thumbnail
-        // needs and avoids a second decoder running behind the settings.
+        if (!picture) {
+            preview->setPixmap(QPixmap());
+            preview->setText(QStringLiteral("Black hole"));
+            fileName->setText(QStringLiteral("Drawn live, tinted by the theme colour."));
+            return;
+        }
+
+        // First frame only. A second decoder running behind the settings
+        // window is not what a thumbnail is for.
         QImage first(path);
         if (first.isNull()) {
             QMovie probe(path);
@@ -729,16 +815,33 @@ QWidget *SettingsDialog::buildAppearancePage()
         if (first.isNull()) {
             preview->setPixmap(QPixmap());
             preview->setText(QStringLiteral("Could not read that file"));
+            fileName->setText(QFileInfo(path).fileName());
             return;
         }
 
+        QImage fitted = first.scaled(preview->size(), Qt::KeepAspectRatioByExpanding,
+                                     Qt::SmoothTransformation);
+        const int x = qMax(0, (fitted.width() - preview->width()) / 2);
+        const int y = qMax(0, (fitted.height() - preview->height()) / 2);
+        fitted = fitted.copy(x, y, preview->width(), preview->height());
+
+        QPainter painter(&fitted);
+        painter.fillRect(fitted.rect(), QColor(7, 9, 13, dim->value() * 255 / 100));
+        painter.end();
+
         preview->setText(QString());
-        preview->setPixmap(QPixmap::fromImage(
-            first.scaled(preview->size(), Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation)
-                .copy(QRect(QPoint(0, 0), preview->size()))));
+        preview->setPixmap(QPixmap::fromImage(fitted));
+
+        const bool animated = QFileInfo(path).suffix().compare(QLatin1String("gif"), Qt::CaseInsensitive) == 0
+            || QFileInfo(path).suffix().compare(QLatin1String("webp"), Qt::CaseInsensitive) == 0;
+        fileName->setText(QStringLiteral("%1  ·  %2×%3%4")
+                              .arg(QFileInfo(path).fileName())
+                              .arg(first.width())
+                              .arg(first.height())
+                              .arg(animated ? QStringLiteral("  ·  animated") : QString()));
     };
 
-    connect(useHole, &QRadioButton::toggled, this, [this, refreshBackground](bool on) {
+    connect(useHole, &QPushButton::toggled, this, [this, refreshBackground](bool on) {
         if (!on)
             return;
         AppConfig::instance().setValue(QStringLiteral("appearance/backgroundMode"),
@@ -747,7 +850,7 @@ QWidget *SettingsDialog::buildAppearancePage()
         emit appearanceChanged();
     });
 
-    connect(usePicture, &QRadioButton::toggled, this, [this, refreshBackground](bool on) {
+    connect(usePicture, &QPushButton::toggled, this, [this, refreshBackground](bool on) {
         if (!on)
             return;
         AppConfig::instance().setValue(QStringLiteral("appearance/backgroundMode"),
@@ -789,8 +892,9 @@ QWidget *SettingsDialog::buildAppearancePage()
         emit appearanceChanged();
     });
 
-    connect(dim, &QSlider::valueChanged, this, [this](int value) {
+    connect(dim, &QSlider::valueChanged, this, [this, refreshBackground](int value) {
         AppConfig::instance().setValue(QStringLiteral("appearance/backgroundDim"), value);
+        refreshBackground();
         emit appearanceChanged();
     });
 

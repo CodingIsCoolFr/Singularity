@@ -214,11 +214,18 @@ void main()
     }
 
     vec3 col = texture(uTex, uv).rgb;
-    col *= (1.0 - uDim);
 
-    vec2 q = gl_FragCoord.xy / uResolution;
-    float vig = pow(16.0 * q.x * q.y * (1.0 - q.x) * (1.0 - q.y), 0.30);
-    col *= mix(0.45, 1.0, vig);
+    // A flat scrim, not a multiply. Multiplying crushed a bright GIF into a
+    // spotlight in the middle of the window, which is why an uploaded picture
+    // looked pasted on rather than like a wallpaper.
+    float dim = clamp(uDim, 0.0, 0.85);
+    col = mix(col, vec3(0.027, 0.035, 0.051), dim);
+
+    // A slight darkening at the far edges, so the picture meets the frame
+    // instead of ending in a hard cut. Not enough to hide the picture.
+    vec2 q = gl_FragCoord.xy / uResolution - 0.5;
+    float edge = smoothstep(0.78, 0.35, length(q * vec2(1.1, 1.0)));
+    col *= mix(0.90, 1.0, edge);
 
     fragColor = vec4(col, 1.0);
 }
@@ -378,7 +385,16 @@ void AuroraWidget::uploadFrame(const QImage &frame)
     if (frame.isNull())
         return;
 
-    const QImage rgba = frame.convertToFormat(QImage::Format_RGBA8888);
+    // Transparent pixels in a GIF would upload as black and read as holes in
+    // the wallpaper. They are painted onto the same night colour as the rest
+    // of the window first, so a frame with see-through parts stays one picture.
+    QImage flat(frame.size(), QImage::Format_RGBA8888);
+    flat.fill(QColor(7, 9, 13, 255));
+    {
+        QPainter painter(&flat);
+        painter.drawImage(0, 0, frame);
+    }
+    const QImage rgba = flat;
 
     if (m_pictureTex == 0) {
         glGenTextures(1, &m_pictureTex);

@@ -1447,9 +1447,11 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
     }
 
     if (eventType == QLatin1String("MESSAGE_CREATE")) {
-        m_store->appendMessage(data);
+        const int dropped = m_store->appendMessage(data);
         const QString channelId = data.value(QStringLiteral("channel_id")).toString();
-        if (channelId == m_currentChannelId && m_store->hasHistory(channelId)) {
+        if (dropped > 0 && channelId == m_currentChannelId)
+            m_renderFirst = qMax(0, m_renderFirst - dropped);
+        if (dropped >= 0 && channelId == m_currentChannelId && m_store->hasHistory(channelId)) {
             const MessageInfo message = MessageStore::parseMessage(data);
             const bool grouped = m_hasLastRendered && shouldGroup(m_lastRendered, message);
             appendMessageToView(message, grouped);

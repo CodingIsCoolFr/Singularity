@@ -1100,26 +1100,32 @@ void MessageStore::clearReactions(const QJsonObject &data)
     emit messageChanged(channelId, messageId);
 }
 
-void MessageStore::appendMessage(const QJsonObject &rawMessage)
+int MessageStore::appendMessage(const QJsonObject &rawMessage)
 {
     rememberUser(rawMessage.value(QStringLiteral("author")).toObject());
     const MessageInfo message = parseMessage(rawMessage);
     if (message.channelId.isEmpty() || message.id.isEmpty())
-        return;
+        return -1;
 
     QList<MessageInfo> &list = m_messages[message.channelId];
     const auto existing = std::find_if(list.begin(), list.end(), [&message](const MessageInfo &item) {
         return item.id == message.id;
     });
     if (existing != list.end())
-        return;
+        return -1;
 
     list.append(message);
-    // Keep memory flat on busy channels.
-    if (list.size() > 500)
-        list.remove(0, list.size() - 500);
+
+    // Keep memory flat on busy channels. The caller has to move its window
+    // back by the same number, or the next redraw points at the wrong message.
+    int dropped = 0;
+    if (list.size() > 500) {
+        dropped = list.size() - 500;
+        list.remove(0, dropped);
+    }
 
     emit messageAdded(message.channelId, message);
+    return dropped;
 }
 
 void MessageStore::updateMessage(const QJsonObject &rawMessage)
