@@ -32,6 +32,32 @@ void AnimatedImage::clear()
     emit frameChanged();
 }
 
+bool AnimatedImage::isAnimatedData(const QByteArray &bytes)
+{
+    if (bytes.isEmpty())
+        return false;
+
+    QBuffer buffer;
+    buffer.setData(bytes);
+    buffer.open(QIODevice::ReadOnly);
+
+    QImageReader reader(&buffer);
+    const QByteArray format = reader.format().toLower();
+    if (format != "gif" && format != "webp")
+        return false;
+
+    const int counted = reader.imageCount();
+    if (counted > 1)
+        return true;
+    if (counted == 1)
+        return false;
+
+    // A GIF's count is 0 until something actually steps to the next frame.
+    if (reader.read().isNull())
+        return false;
+    return reader.jumpToNextImage();
+}
+
 bool AnimatedImage::setData(const QByteArray &bytes)
 {
     teardown();
@@ -43,12 +69,9 @@ bool AnimatedImage::setData(const QByteArray &bytes)
 
     // Ask the image plugins whether this format actually moves. GIF and
     // animated WebP do; PNG does not, because Qt ships no APNG reader.
+    const bool animated = isAnimatedData(m_bytes);
     m_buffer.setBuffer(&m_bytes);
     m_buffer.open(QIODevice::ReadOnly);
-
-    QImageReader reader(&m_buffer);
-    const bool animated = reader.supportsAnimation() && reader.imageCount() > 1;
-    m_buffer.seek(0);
 
     if (animated) {
         m_movie = new QMovie(&m_buffer, QByteArray(), this);

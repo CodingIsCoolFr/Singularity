@@ -1005,6 +1005,21 @@ MessageInfo MessageStore::parseMessage(const QJsonObject &raw)
             break;
         }
 
+        // A Tenor or Klipy card's picture is a poster. The thing that moves
+        // is the video next to it.
+        const QJsonObject video = rawEmbed.value(QStringLiteral("video")).toObject();
+        QString videoUrl = video.value(QStringLiteral("proxy_url")).toString();
+        if (videoUrl.isEmpty())
+            videoUrl = video.value(QStringLiteral("url")).toString();
+        embed.videoUrl = videoUrl;
+        if (!videoUrl.isEmpty()
+            && (embed.type == QLatin1String("gifv") || embed.type == QLatin1String("video"))) {
+            if (embed.imageWidth <= 0)
+                embed.imageWidth = video.value(QStringLiteral("width")).toInt();
+            if (embed.imageHeight <= 0)
+                embed.imageHeight = video.value(QStringLiteral("height")).toInt();
+        }
+
         if (embed.imageUrl.isEmpty() && embed.title.isEmpty() && embed.description.isEmpty())
             continue;
 

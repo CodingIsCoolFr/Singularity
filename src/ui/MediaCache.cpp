@@ -1,12 +1,11 @@
 #include "ui/MediaCache.h"
+#include "ui/AnimatedImage.h"
 
 #include "core/DiscordIdentity.h"
 #include "core/Logger.h"
 #include "ui/Theme.h"
 
-#include <QBuffer>
 #include <QCryptographicHash>
-#include <QImageReader>
 #include <QNetworkReply>
 #include <QPainter>
 #include <QPainterPath>
@@ -282,14 +281,9 @@ void MediaCache::fetch(const QUrl &url)
             return;
         }
 
-        bool moves = false;
-        {
-            QBuffer buffer;
-            buffer.setData(payload);
-            buffer.open(QIODevice::ReadOnly);
-            QImageReader reader(&buffer);
-            moves = reader.supportsAnimation() && reader.imageCount() > 1;
-        }
+        // imageCount() is 0 for a GIF until its frames are walked, so the old
+        // "count > 1" test stored every animation as a single still frame.
+        const bool moves = AnimatedImage::isAnimatedData(payload);
 
         // Shrunk here, once, rather than at full size for ever.
         //

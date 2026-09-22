@@ -2,12 +2,17 @@
 
 #include "ui/AnimatedImage.h"
 #include "ui/MediaCache.h"
+#include "core/Logger.h"
 
+#include <QAudioOutput>
+#include <QElapsedTimer>
+#include <QMediaPlayer>
 #include <QPalette>
 #include <QScrollBar>
-#include <QElapsedTimer>
 #include <QTextDocument>
 #include <QTimer>
+#include <QVideoFrame>
+#include <QVideoSink>
 
 #include <utility>
 
@@ -33,6 +38,13 @@ bool looksLikeAvatar(const QUrl &url)
 bool looksLikeEmoji(const QUrl &url)
 {
     return url.path().startsWith(QLatin1String("/emojis/"));
+}
+
+bool looksLikeVideo(const QUrl &url)
+{
+    const QString path = url.path().toLower();
+    return path.endsWith(QLatin1String(".mp4")) || path.endsWith(QLatin1String(".webm"))
+        || path.endsWith(QLatin1String(".mov"));
 }
 
 } // namespace
@@ -152,6 +164,8 @@ void ChatView::setAnimationsEnabled(bool enabled)
     m_animationTimer.stop();
     qDeleteAll(m_animations);
     m_animations.clear();
+    qDeleteAll(m_videos);
+    m_videos.clear();
 }
 
 void ChatView::clearImageCache()
@@ -164,6 +178,8 @@ void ChatView::clearImageCache()
     m_arrivalTimer.stop();
     qDeleteAll(m_animations);
     m_animations.clear();
+    qDeleteAll(m_videos);
+    m_videos.clear();
     m_animationTimer.stop();
 }
 
@@ -245,6 +261,56 @@ QPixmap ChatView::prepare(const QUrl &url) const
     return ready;
 }
 
+void ChatView::adoptVideo(const QUrl &url)
+{
+    if (!m_animationsEnabled || !looksLikeVideo(url))
+        return;
+
+    const QString key = url.toString();
+    if (m_videos.contains(key) || m_videos.size() >= 4)
+        return;
+
+    auto *player = new QMediaPlayer(this);
+    auto *sink = new QVideoSink(player);
+    auto *audio = new QAudioOutput(player);
+    audio->setMuted(true);
+    player->setAudioOutput(audio);
+    player->setVideoSink(sink);
+    player->setLoops(QMediaPlayer::Infinite);
+
+    connect(sink, &QVideoSink::videoFrameChanged, this, [this, url](const QVideoFrame &frame) {
+        const QImage image = frame.toImage();
+        if (!image.isNull())
+            showVideoFrame(url, image);
+    });
+    connect(player, &QMediaPlayer::errorOccurred, this, [url](QMediaPlayer::Error, const QString &reason) {
+        wlog(QStringLiteral("media"),
+             QStringLiteral("could not play %1: %2").arg(url.toString(), reason));
+    });
+
+    m_videos.insert(key, player);
+    player->setSource(url);
+    player->play();
+}
+
+void ChatView::showVideoFrame(const QUrl &url, const QImage &frame)
+{
+    const QString key = url.toString();
+    const bool first = !m_frameSize.contains(key);
+    const QPixmap pixmap = scaleForDocument(url, frame);
+    if (pixmap.isNull())
+        return;
+
+    document()->addResource(QTextDocument::ImageResource, url, pixmap);
+    if (first) {
+        // The first frame is what gives the picture a size. Later frames
+        // only change pixels, so the page does not get laid out again.
+        document()->markContentsDirty(0, document()->characterCount());
+    } else {
+        viewport()->update();
+    }
+}
+
 void ChatView::adoptAnimation(const QUrl &url)
 {
     if (!m_animationsEnabled)
@@ -322,6 +388,20 @@ QVariant ChatView::loadResource(int type, const QUrl &name)
 
     if (!MediaCache::isAllowedHost(name))
         return {};
+
+    // A gifv card points at an mp4. Treating it as a picture marks it failed
+    // and it stays a blank box.
+    if (looksLikeVideo(name)) {
+        adoptVideo(name);
+        const QString key = name.toString();
+        const auto locked = m_frameSize.constFind(key);
+        if (locked == m_frameSize.constEnd())
+            return {};
+        const QVariant existing = document()->resource(QTextDocument::ImageResource, name);
+        if (existing.isValid())
+            return existing;
+        return {};
+    }
 
     // Remember that this view wants the picture, so the `ready` signal knows
     // whether it needs to redraw.

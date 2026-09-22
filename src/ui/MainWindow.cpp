@@ -3549,8 +3549,18 @@ QString MainWindow::embedsHtml(const MessageInfo &message)
     QString html;
 
     for (const EmbedInfo &embed : message.embeds) {
-        const bool pictureReachable =
-            !embed.imageUrl.isEmpty() && ChatView::isAllowedImageHost(QUrl(embed.imageUrl));
+        // gifv's image is a poster. The mp4 next to it is what actually plays.
+        QString shown = embed.imageUrl;
+        if ((embed.type == QLatin1String("gifv") || embed.type == QLatin1String("video"))
+            && !embed.videoUrl.isEmpty()) {
+            const QUrl video(embed.videoUrl);
+            const QString path = video.path().toLower();
+            if ((path.endsWith(QLatin1String(".mp4")) || path.endsWith(QLatin1String(".webm")))
+                && ChatView::isAllowedImageHost(video)) {
+                shown = embed.videoUrl;
+            }
+        }
+        const bool pictureReachable = !shown.isEmpty() && ChatView::isAllowedImageHost(QUrl(shown));
 
         // A Tenor or Giphy link is only a picture, so skip the card frame.
         if (embed.isPictureOnly()) {
@@ -3558,7 +3568,7 @@ QString MainWindow::embedsHtml(const MessageInfo &message)
                 continue;
             html += QStringLiteral("<div class=\"attach\"><a href=\"singularity-image:%1\">"
                                    "<img src=\"%1\"></a></div>")
-                        .arg(embed.imageUrl.toHtmlEscaped());
+                        .arg(shown.toHtmlEscaped());
             continue;
         }
 
@@ -3586,7 +3596,7 @@ QString MainWindow::embedsHtml(const MessageInfo &message)
         if (pictureReachable) {
             inner += QStringLiteral("<div class=\"attach\"><a href=\"singularity-image:%1\">"
                                     "<img src=\"%1\"></a></div>")
-                         .arg(embed.imageUrl.toHtmlEscaped());
+                         .arg(shown.toHtmlEscaped());
         }
 
         if (inner.isEmpty())
@@ -3624,14 +3634,15 @@ QString MainWindow::renderContent(const QString &raw)
         while (it.hasNext()) {
             const QRegularExpressionMatch match = it.next();
             const bool animated = match.captured(1) == QLatin1String("a");
-            const QString name = match.captured(2);
             const QString id = match.captured(3);
 
             rebuilt += text.mid(last, match.capturedStart() - last);
+            // width and height only. Qt's text engine does not understand
+            // title, and the rest of the tag was spilling onto the page as
+            // text next to a blank square.
             rebuilt += QStringLiteral("<img src=\"https://cdn.discordapp.com/emojis/%1.%2?size=48\" "
-                                      "width=\"22\" height=\"22\" alt=\":%3:\" title=\":%3:\">")
-                           .arg(id, animated ? QStringLiteral("gif") : QStringLiteral("png"),
-                                name.toHtmlEscaped());
+                                      "width=\"22\" height=\"22\">")
+                           .arg(id, animated ? QStringLiteral("gif") : QStringLiteral("png"));
             last = match.capturedEnd();
         }
         rebuilt += text.mid(last);

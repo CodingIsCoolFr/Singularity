@@ -23,6 +23,12 @@ public:
 
     // Returns true if the bytes decoded into something drawable.
     bool setData(const QByteArray &bytes);
+
+    // True when the file has more than one frame.
+    //
+    // QImageReader::imageCount() stays 0 for a GIF until the frames have been
+    // walked, so "count > 1" treated every animated gif as a still.
+    static bool isAnimatedData(const QByteArray &bytes);
     void clear();
 
     QImage currentFrame() const;

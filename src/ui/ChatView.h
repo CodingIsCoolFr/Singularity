@@ -1,10 +1,13 @@
 #pragma once
 
 #include <QHash>
+#include <QImage>
 #include <QPixmap>
 #include <QSet>
 #include <QTextBrowser>
 #include <QTimer>
+
+class QMediaPlayer;
 
 class AnimatedImage;
 
@@ -45,6 +48,8 @@ protected:
 private:
     void pumpAnimations();
     void adoptAnimation(const QUrl &url);
+    void adoptVideo(const QUrl &url);
+    void showVideoFrame(const QUrl &url, const QImage &frame);
     QPixmap prepare(const QUrl &url) const;
     QPixmap scaleForDocument(const QUrl &url, const QImage &source) const;
     QSize boxFor(const QUrl &url) const;
@@ -53,6 +58,9 @@ private:
 
     QSet<QString> m_wanted;
     QHash<QString, AnimatedImage *> m_animations;
+
+    // gifv cards are mp4s. One player each, muted and looping.
+    QHash<QString, QMediaPlayer *> m_videos;
 
     // The size each picture settled on, so later frames never change the page
     // height and make the view jump.

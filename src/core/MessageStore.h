@@ -205,6 +205,10 @@ struct EmbedInfo
     // Always the proxied address, never the original host, so the client only
     // ever fetches pictures through Discord.
     QString imageUrl;
+
+    // gifv embeds keep the moving picture here (an mp4 on Discord's proxy).
+    // imageUrl is the poster, which is one frame and never plays.
+    QString videoUrl;
     int imageWidth = 0;
     int imageHeight = 0;
     int colour = 0;
