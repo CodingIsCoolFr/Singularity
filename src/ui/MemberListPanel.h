@@ -48,6 +48,7 @@ signals:
 
 private:
     void rebuild();
+    void refreshAvatar(const QString &userId);
 
     MessageStore *m_store = nullptr;
     QString m_guildId;

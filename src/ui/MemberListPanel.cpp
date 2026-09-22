@@ -43,6 +43,31 @@ QString doingNow(const MessageStore &store, const QString &userId)
     return custom;
 }
 
+// The rows already on screen, in order. A status tick does not change who is
+// listed, and rebuilding a hundred faces for one bubble is what stalled the
+// black hole for a moment.
+bool sameOrder(QListWidget *list, const QStringList &ids, const QList<bool> &headings)
+{
+    if (list->count() != ids.size())
+        return false;
+    for (int i = 0; i < ids.size(); ++i) {
+        QListWidgetItem *item = list->item(i);
+        if (item->data(SingularityRoles::Heading).toBool() != headings.at(i))
+            return false;
+        if (item->data(SingularityRoles::Id).toString() != ids.at(i))
+            return false;
+    }
+    return true;
+}
+
+void setFace(QListWidgetItem *item, const QString &userId, const QString &name, const QString &avatarHash)
+{
+    const QUrl url = MediaCache::avatarUrl(userId, avatarHash, 64);
+    const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
+    item->setIcon(picture.isNull() ? QIcon(MediaCache::initialsAvatar(name, 32))
+                                   : QIcon(MediaCache::circular(picture, 32)));
+}
+
 // Discord's own names for the two groups that are not roles.
 QString headingName(const QString &groupId, const GuildInfo &guild, int count)
 {
@@ -162,10 +187,13 @@ MemberListPanel::MemberListPanel(MessageStore *store, QWidget *parent)
     // Pictures arrive later than the list does, so a face that was a grey
     // circle when the row was built has to be put in when it turns up.
     connect(&MediaCache::instance(), &MediaCache::ready, this, [this](const QUrl &url) {
-        if (url.path().startsWith(QLatin1String("/avatars/"))
-            || url.path().startsWith(QLatin1String("/embed/avatars/"))) {
-            rebuild();
-        }
+        const QString path = url.path();
+        if (!path.startsWith(QLatin1String("/avatars/")))
+            return;
+        const QStringList parts = path.split(QLatin1Char('/'));
+        if (parts.size() < 3)
+            return;
+        refreshAvatar(parts.at(2));
     });
 
     setCollapsed(AppConfig::instance()
@@ -246,6 +274,24 @@ void MemberListPanel::refresh()
     rebuild();
 }
 
+void MemberListPanel::refreshAvatar(const QString &userId)
+{
+    if (userId.isEmpty() || m_collapsed || m_guildId.isEmpty())
+        return;
+
+    for (int i = 0; i < m_list->count(); ++i) {
+        QListWidgetItem *item = m_list->item(i);
+        if (item->data(SingularityRoles::Heading).toBool())
+            continue;
+        if (item->data(SingularityRoles::Id).toString() != userId)
+            continue;
+        const UserInfo info = m_store->user(userId);
+        const QString name = item->text().isEmpty() ? info.displayName() : item->text();
+        setFace(item, userId, name, info.avatarHash);
+        return;
+    }
+}
+
 void MemberListPanel::rebuild()
 {
     if (m_guildId.isEmpty() || m_collapsed) {
@@ -265,12 +311,34 @@ void MemberListPanel::rebuild()
                               .arg(QLatin1String(Theme::Green))
                               .arg(members.size()));
 
+        QStringList ids;
+        QList<bool> headings;
+        ids.reserve(members.size() + 1);
+        headings.reserve(members.size() + 1);
+        ids.append(QStringLiteral("call"));
+        headings.append(true);
+        for (const QString &userId : members) {
+            ids.append(userId);
+            headings.append(false);
+        }
+
+        if (sameOrder(m_list, ids, headings)) {
+            m_list->item(0)->setText(QStringLiteral("In this call — %1").arg(members.size()));
+            for (int i = 0; i < members.size(); ++i) {
+                QListWidgetItem *item = m_list->item(i + 1);
+                item->setData(SingularityRoles::Status, m_store->presenceBubble(members.at(i)));
+                item->setData(SingularityRoles::Subtitle, doingNow(*m_store, members.at(i)));
+            }
+            return;
+        }
+
         const int scroll = m_list->verticalScrollBar() ? m_list->verticalScrollBar()->value() : 0;
         m_list->setUpdatesEnabled(false);
         m_list->clear();
 
         auto *heading = new QListWidgetItem(m_list);
         heading->setData(SingularityRoles::Heading, true);
+        heading->setData(SingularityRoles::Id, QStringLiteral("call"));
         heading->setText(QStringLiteral("In this call — %1").arg(members.size()));
         heading->setFlags(Qt::NoItemFlags);
 
@@ -281,10 +349,7 @@ void MemberListPanel::rebuild()
             item->setData(SingularityRoles::Id, userId);
             item->setData(SingularityRoles::Status, m_store->presenceBubble(userId));
             item->setData(SingularityRoles::Subtitle, doingNow(*m_store, userId));
-            const QUrl url = MediaCache::avatarUrl(userId, info.avatarHash, 64);
-            const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
-            item->setIcon(picture.isNull() ? MediaCache::initialsAvatar(name, 32)
-                                          : MediaCache::circular(picture, 32));
+            setFace(item, userId, name, info.avatarHash);
         }
 
         m_list->setUpdatesEnabled(true);
@@ -303,9 +368,42 @@ void MemberListPanel::rebuild()
             .arg(QLatin1String(Theme::TextFaint))
             .arg(list.memberCount));
 
-    // Keeping the scroll position. This rebuilds whenever anyone's status
-    // changes, and a list that jumps back to the top every few seconds is
-    // unusable.
+    QStringList ids;
+    QList<bool> headings;
+    ids.reserve(list.rows.size());
+    headings.reserve(list.rows.size());
+    for (const MemberRow &row : list.rows) {
+        ids.append(row.heading ? row.groupId : row.userId);
+        headings.append(row.heading);
+    }
+
+    // Same people, same order. Write the new status onto the rows that are
+    // already there and leave the pictures alone.
+    if (sameOrder(m_list, ids, headings)) {
+        for (int i = 0; i < list.rows.size(); ++i) {
+            const MemberRow &row = list.rows.at(i);
+            QListWidgetItem *item = m_list->item(i);
+            if (row.heading) {
+                const int count = list.groupCounts.value(row.groupId, row.groupCount);
+                item->setText(headingName(row.groupId, guild, count));
+                continue;
+            }
+            const UserInfo info = m_store->user(row.userId);
+            const QString name = row.nickname.isEmpty() ? info.displayName() : row.nickname;
+            item->setText(name);
+            item->setData(SingularityRoles::Status, m_store->presenceBubble(row.userId));
+            item->setData(SingularityRoles::Subtitle, doingNow(*m_store, row.userId));
+            const RoleInfo role = guild.roles.value(row.colourRoleId);
+            if (role.hasColour())
+                item->setData(SingularityRoles::NameColour, QColor(QRgb(role.colour)));
+            else
+                item->setData(SingularityRoles::NameColour, QVariant());
+        }
+        return;
+    }
+
+    // Keeping the scroll position. A list that jumps back to the top every
+    // few seconds is unusable.
     const int scroll = m_list->verticalScrollBar() ? m_list->verticalScrollBar()->value() : 0;
 
     m_list->setUpdatesEnabled(false);
@@ -316,6 +414,7 @@ void MemberListPanel::rebuild()
 
         if (row.heading) {
             item->setData(SingularityRoles::Heading, true);
+            item->setData(SingularityRoles::Id, row.groupId);
 
             // The count off the separate list, falling back to whatever the
             // heading itself carried - which is usually nothing.
@@ -341,10 +440,7 @@ void MemberListPanel::rebuild()
         if (role.hasColour())
             item->setData(SingularityRoles::NameColour, QColor(QRgb(role.colour)));
 
-        const QUrl url = MediaCache::avatarUrl(row.userId, info.avatarHash, 64);
-        const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
-        item->setIcon(picture.isNull() ? QIcon(MediaCache::initialsAvatar(name, 32))
-                                       : QIcon(MediaCache::circular(picture, 32)));
+        setFace(item, row.userId, name, info.avatarHash);
     }
 
     m_list->setUpdatesEnabled(true);

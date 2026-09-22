@@ -492,7 +492,14 @@ void AuroraWidget::paintGL()
 
     if (m_running) {
         const qint64 now = m_clock.elapsed();
-        m_time += float(now - m_lastMs) * 0.001f;
+        // A stalled frame must not fling the disk forward by the whole gap.
+        // The hole pauses with the window, then carries on at the same speed.
+        qint64 step = now - m_lastMs;
+        if (step < 0)
+            step = 0;
+        if (step > 50)
+            step = 50;
+        m_time += float(step) * 0.001f;
         m_lastMs = now;
     }
 
