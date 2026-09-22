@@ -46,12 +46,23 @@ public:
     void fetchMessages(const QString &channelId, int limit, ArrayHandler onOk, ErrorHandler onError,
                        const QString &before = QString());
 
+    // What Discord hands back when it wants a person to finish a check, and
+    // what we hand back after they have.
+    struct CaptchaProof
+    {
+        QString key;
+        QString rqtoken;
+        QString sessionId;
+    };
+
     // POST /channels/{id}/messages
     //
     // `replyTo` quotes that message. `files` are uploaded with it. Either may
     // be empty. A message needs text or a file; Discord refuses one with neither.
+    // `captcha` is set only on the retry after the person finished the check.
     void sendMessage(const QString &channelId, const QString &content, const QString &replyTo,
-                     const QStringList &files, ObjectHandler onOk, ErrorHandler onError);
+                     const QStringList &files, ObjectHandler onOk, ErrorHandler onError,
+                     const CaptchaProof &captcha = {});
 
     // PATCH and DELETE one message you sent.
     void editMessage(const QString &channelId, const QString &messageId, const QString &content,

@@ -1,5 +1,5 @@
 ﻿cmake_minimum_required(VERSION 3.21)
-project(Singularity VERSION 0.6.7 LANGUAGES CXX)
+project(Singularity VERSION 0.6.8 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -117,6 +117,8 @@ qt_add_executable(Singularity WIN32
     src/ui/LoadingOverlay.cpp
     src/ui/MainWindow.h
     src/ui/MainWindow.cpp
+    src/ui/CaptchaDialog.h
+    src/ui/CaptchaDialog.cpp
 )
 
 set_target_properties(Singularity PROPERTIES
@@ -177,6 +179,20 @@ target_include_directories(Singularity PRIVATE
 
 # The prebuilt libsodium is a static library, which its headers must be told.
 target_compile_definitions(Singularity PRIVATE SODIUM_STATIC=1)
+
+if(WIN32)
+    set(WEBVIEW2_ROOT "C:/Users/mitya/vcpkg/packages/webview2_x64-windows")
+    if(EXISTS "${WEBVIEW2_ROOT}/lib/WebView2Loader.dll.lib")
+        target_include_directories(Singularity PRIVATE "${WEBVIEW2_ROOT}/include")
+        target_link_libraries(Singularity PRIVATE "${WEBVIEW2_ROOT}/lib/WebView2Loader.dll.lib" ole32)
+        target_compile_definitions(Singularity PRIVATE SINGULARITY_HAVE_WEBVIEW2=1)
+        add_custom_command(TARGET Singularity POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${WEBVIEW2_ROOT}/bin/WebView2Loader.dll"
+                "$<TARGET_FILE_DIR:Singularity>/WebView2Loader.dll"
+            COMMENT "Copying WebView2Loader beside Singularity")
+    endif()
+endif()
 
 target_link_libraries(Singularity PRIVATE
     Qt6::Core

@@ -101,7 +101,8 @@ void RestClient::fetchMessages(const QString &channelId, int limit, ArrayHandler
 }
 
 void RestClient::sendMessage(const QString &channelId, const QString &content, const QString &replyTo,
-                             const QStringList &files, ObjectHandler onOk, ErrorHandler onError)
+                             const QStringList &files, ObjectHandler onOk, ErrorHandler onError,
+                             const CaptchaProof &captcha)
 {
     // A nonce Discord will accept: a snowflake-sized number, not a random
     // 64-bit value that does not fit in a signed integer. The oversized one
@@ -126,8 +127,19 @@ void RestClient::sendMessage(const QString &channelId, const QString &content, c
     const QString path = QStringLiteral("/channels/%1/messages").arg(channelId);
     const QByteArray json = QJsonDocument(body).toJson(QJsonDocument::Compact);
 
+    const auto withCaptcha = [&captcha](QNetworkRequest request) {
+        if (captcha.key.isEmpty())
+            return request;
+        request.setRawHeader("X-Captcha-Key", captcha.key.toUtf8());
+        if (!captcha.rqtoken.isEmpty())
+            request.setRawHeader("X-Captcha-Rqtoken", captcha.rqtoken.toUtf8());
+        if (!captcha.sessionId.isEmpty())
+            request.setRawHeader("X-Captcha-Session-Id", captcha.sessionId.toUtf8());
+        return request;
+    };
+
     if (files.isEmpty()) {
-        QNetworkReply *reply = m_network.post(buildRequest(path), json);
+        QNetworkReply *reply = m_network.post(withCaptcha(buildRequest(path)), json);
         dispatch(reply, std::move(onOk), nullptr, std::move(onError));
         return;
     }
@@ -135,7 +147,7 @@ void RestClient::sendMessage(const QString &channelId, const QString &content, c
     // The content type on the request has to be cleared. buildRequest sets
     // application/json, and leaving it there strips the multipart boundary
     // Discord needs in order to find the file.
-    QNetworkRequest request = buildRequest(path);
+    QNetworkRequest request = withCaptcha(buildRequest(path));
     request.setHeader(QNetworkRequest::ContentTypeHeader, QVariant());
 
     auto *multi = new QHttpMultiPart(QHttpMultiPart::FormDataType);

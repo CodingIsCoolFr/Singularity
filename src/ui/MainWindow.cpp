@@ -8,6 +8,7 @@
 #include "ui/FriendsPage.h"
 #include "ui/ImageViewer.h"
 #include "ui/AuroraWidget.h"
+#include "ui/CaptchaDialog.h"
 #include "core/CameraShare.h"
 #include "core/ScreenShare.h"
 #include "ui/LoadingOverlay.h"
@@ -4202,7 +4203,41 @@ void MainWindow::sendCurrentMessage()
 
     m_rest->sendMessage(
         channelId, content, replyTo, files, [](const QJsonObject &) {},
-        [this, content, replyTo, files](const RestClient::Error &error) {
+        [this, channelId, content, replyTo, files](const RestClient::Error &error) {
+            const QJsonArray keys = error.body.value(QStringLiteral("captcha_key")).toArray();
+            bool needsCheck = false;
+            for (const QJsonValue &key : keys) {
+                if (key.toString() == QLatin1String("captcha-required"))
+                    needsCheck = true;
+            }
+            if (needsCheck) {
+                const QString token = CaptchaDialog::solve(
+                    this, error.body.value(QStringLiteral("captcha_sitekey")).toString(),
+                    error.body.value(QStringLiteral("captcha_rqdata")).toString());
+                if (token.isEmpty()) {
+                    m_composer->setPlainText(content);
+                    m_replyMessageId = replyTo;
+                    m_pendingFiles = files;
+                    refreshComposerContext();
+                    flashStatus(QStringLiteral("Discord asked for a check, and it was not finished."),
+                                6000);
+                    return;
+                }
+                RestClient::CaptchaProof proof;
+                proof.key = token;
+                proof.rqtoken = error.body.value(QStringLiteral("captcha_rqtoken")).toString();
+                proof.sessionId = error.body.value(QStringLiteral("captcha_session_id")).toString();
+                m_rest->sendMessage(channelId, content, replyTo, files, [](const QJsonObject &) {},
+                                    [this, content](const RestClient::Error &again) {
+                                        m_composer->setPlainText(content);
+                                        flashStatus(QStringLiteral("Send failed (%1).")
+                                                        .arg(again.message.left(180)),
+                                                    8000);
+                                    },
+                                    proof);
+                return;
+            }
+
             QString reason = error.message;
             if (error.isRateLimit())
                 reason = QStringLiteral("rate limited");
