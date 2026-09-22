@@ -140,6 +140,8 @@ function ShowWindow(hWnd: HWND; nCmdShow: Integer): Integer;
 const
   FrameCount = 24;
   BM_CLICK = $00F5;
+  SW_SHOW = 5;
+  SW_SHOWNOACTIVATE = 4;
 
   // The program's own colours. Inno wants them the other way round from the
   // way they are written everywhere else - blue, green, red - so these do not
@@ -311,9 +313,6 @@ end;
 // this itself. A foreground window that stops answering is what made the
 // taskbar hold clicks. The hole still has to be on screen.
 procedure Reveal;
-const
-  SW_SHOW = 5;
-  SW_SHOWNOACTIVATE = 4;
 begin
   if WizardForm = nil then
     Exit;
