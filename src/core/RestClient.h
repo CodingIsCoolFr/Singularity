@@ -62,7 +62,13 @@ public:
     // `captcha` is set only on the retry after the person finished the check.
     void sendMessage(const QString &channelId, const QString &content, const QString &replyTo,
                      const QStringList &files, ObjectHandler onOk, ErrorHandler onError,
-                     const CaptchaProof &captcha = {});
+                     const QString &stickerId = {}, const CaptchaProof &captcha = {});
+
+    // Discord's GIF picker. An empty query is the trending row.
+    void searchGifs(const QString &query, ObjectHandler onOk, ErrorHandler onError);
+
+    // The standard sticker packs, plus anything a server has is already on the guild.
+    void fetchStickerPacks(ObjectHandler onOk, ErrorHandler onError);
 
     // PATCH and DELETE one message you sent.
     void editMessage(const QString &channelId, const QString &messageId, const QString &content,

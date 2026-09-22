@@ -19,6 +19,7 @@ namespace {
 const QStringList kAllowedSuffixes{
     QStringLiteral(".discordapp.com"),
     QStringLiteral(".discordapp.net"),
+    QStringLiteral(".tenor.com"),
 };
 
 // What the cache is allowed to hold, in bytes.

@@ -102,7 +102,7 @@ void RestClient::fetchMessages(const QString &channelId, int limit, ArrayHandler
 
 void RestClient::sendMessage(const QString &channelId, const QString &content, const QString &replyTo,
                              const QStringList &files, ObjectHandler onOk, ErrorHandler onError,
-                             const CaptchaProof &captcha)
+                             const QString &stickerId, const CaptchaProof &captcha)
 {
     // A nonce Discord will accept: a snowflake-sized number, not a random
     // 64-bit value that does not fit in a signed integer. The oversized one
@@ -115,6 +115,9 @@ void RestClient::sendMessage(const QString &channelId, const QString &content, c
         {QStringLiteral("nonce"), QString::number(nonce)},
         {QStringLiteral("tts"), false},
     };
+
+    if (!stickerId.isEmpty())
+        body.insert(QStringLiteral("sticker_ids"), QJsonArray{stickerId});
 
     if (!replyTo.isEmpty()) {
         body.insert(QStringLiteral("message_reference"),
@@ -236,6 +239,22 @@ void RestClient::openDirectMessage(const QString &userId, ObjectHandler onOk, Er
     const QJsonObject body{{QStringLiteral("recipients"), QJsonArray{userId}}};
     QNetworkReply *reply = m_network.post(buildRequest(QStringLiteral("/users/@me/channels")),
                                           QJsonDocument(body).toJson(QJsonDocument::Compact));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
+void RestClient::searchGifs(const QString &query, ObjectHandler onOk, ErrorHandler onError)
+{
+    const QString path = query.trimmed().isEmpty()
+        ? QStringLiteral("/gifs/trending?media_format=gif&locale=en-US")
+        : QStringLiteral("/gifs/search?q=%1&media_format=gif&locale=en-US&provider=tenor")
+              .arg(QString::fromUtf8(QUrl::toPercentEncoding(query.trimmed())));
+    QNetworkReply *reply = m_network.get(buildRequest(path));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
+void RestClient::fetchStickerPacks(ObjectHandler onOk, ErrorHandler onError)
+{
+    QNetworkReply *reply = m_network.get(buildRequest(QStringLiteral("/sticker-packs")));
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 

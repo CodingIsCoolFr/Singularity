@@ -158,6 +158,13 @@ struct EmojiInfo
     bool animated = false;
 };
 
+struct GuildSticker
+{
+    QString id;
+    QString name;
+    int formatType = 1;
+};
+
 struct GuildInfo
 {
     QString id;
@@ -166,6 +173,7 @@ struct GuildInfo
     QList<QString> channelIds;
     QHash<QString, RoleInfo> roles;
     QList<EmojiInfo> emojis;
+    QList<GuildSticker> stickers;
 };
 
 struct Attachment

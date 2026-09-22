@@ -47,7 +47,10 @@
 #include <QGridLayout>
 #include <QLineEdit>
 #include <QScrollArea>
+#include <QTimer>
 #include <QToolButton>
+
+#include <memory>
 #include <QMediaCaptureSession>
 #include <QMediaDevices>
 #include <QVideoFrame>
@@ -3967,16 +3970,21 @@ void MainWindow::showEmojiMenu()
         cells.append(cell);
     }
 
-    const GuildInfo guild = m_store->guild(m_currentGuildId);
-    for (const EmojiInfo &emoji : guild.emojis) {
-        Cell cell;
-        cell.insert = emoji.animated ? QStringLiteral("<a:%1:%2>").arg(emoji.name, emoji.id)
-                                     : QStringLiteral("<:%1:%2>").arg(emoji.name, emoji.id);
-        cell.filter = emoji.name;
-        const QString ext = emoji.animated ? QStringLiteral("gif") : QStringLiteral("png");
-        cell.icon = QUrl(QStringLiteral("https://cdn.discordapp.com/emojis/%1.%2?size=64")
-                             .arg(emoji.id, ext));
-        cells.append(cell);
+    // Nitro emoji come from every server you are in, not only the one open.
+    // A direct message has no current server, which is why the picker used to
+    // stop after the twenty faces.
+    const QList<GuildInfo> guilds = m_store->guilds();
+    for (const GuildInfo &server : guilds) {
+        for (const EmojiInfo &emoji : server.emojis) {
+            Cell cell;
+            cell.insert = emoji.animated ? QStringLiteral("<a:%1:%2>").arg(emoji.name, emoji.id)
+                                         : QStringLiteral("<:%1:%2>").arg(emoji.name, emoji.id);
+            cell.filter = server.name + QLatin1Char(' ') + emoji.name;
+            const QString ext = emoji.animated ? QStringLiteral("gif") : QStringLiteral("png");
+            cell.icon = QUrl(QStringLiteral("https://cdn.discordapp.com/emojis/%1.%2?size=64")
+                                 .arg(emoji.id, ext));
+            cells.append(cell);
+        }
     }
 
     constexpr int columns = 8;
@@ -3993,6 +4001,7 @@ void MainWindow::showEmojiMenu()
         button->setProperty("insert", cell.insert);
         button->setProperty("filter", cell.filter);
         button->setProperty("iconUrl", cell.icon);
+        button->setProperty("kind", QStringLiteral("emoji"));
         if (!cell.face.isEmpty()) {
             button->setFont(emojiFont);
             button->setText(cell.face);
@@ -4012,11 +4021,19 @@ void MainWindow::showEmojiMenu()
         buttons.append(button);
     }
 
-    auto refill = [grid, buttons](const QString &query) {
+    auto held = std::make_shared<QList<QToolButton *>>(buttons);
+    popup->setProperty("kind", QStringLiteral("emoji"));
+
+    auto refill = [grid, held, popup](const QString &query) {
         while (QLayoutItem *item = grid->takeAt(0))
             delete item;
+        const QString kind = popup->property("kind").toString();
         int placed = 0;
-        for (QToolButton *button : buttons) {
+        for (QToolButton *button : *held) {
+            if (button->property("kind").toString() != kind) {
+                button->hide();
+                continue;
+            }
             const QString key = button->property("filter").toString();
             const bool show = query.isEmpty() || key.contains(query, Qt::CaseInsensitive);
             button->setVisible(show);
@@ -4028,7 +4045,198 @@ void MainWindow::showEmojiMenu()
     };
     refill(QString());
 
-    connect(search, &QLineEdit::textChanged, popup, [refill](const QString &text) { refill(text); });
+    auto addPictureButton = [this, popup, body, held](const QString &kind, const QString &filter,
+                                                      const QUrl &icon, const std::function<void()> &onClick) {
+        auto *button = new QToolButton(body);
+        button->setFixedSize(36, 36);
+        button->setAutoRaise(true);
+        button->setCursor(Qt::PointingHandCursor);
+        button->setToolTip(filter);
+        button->setProperty("filter", filter);
+        button->setProperty("iconUrl", icon);
+        button->setProperty("kind", kind);
+        const QImage picture = MediaCache::instance().image(icon);
+        if (!picture.isNull()) {
+            button->setIcon(QPixmap::fromImage(picture));
+            button->setIconSize(QSize(26, 26));
+        }
+        connect(button, &QToolButton::clicked, popup, [onClick]() { onClick(); });
+        held->append(button);
+    };
+
+    for (const GuildInfo &server : m_store->guilds()) {
+        for (const GuildSticker &sticker : server.stickers) {
+            const QString ext = sticker.formatType == 4 ? QStringLiteral("gif") : QStringLiteral("png");
+            const QUrl icon(QStringLiteral("https://media.discordapp.net/stickers/%1.%2?size=160")
+                                .arg(sticker.id, ext));
+            const QString id = sticker.id;
+            const QString filter = server.name + QLatin1Char(' ') + sticker.name;
+            addPictureButton(QStringLiteral("sticker"), filter, icon, [this, popup, id]() {
+                if (m_currentChannelId.isEmpty())
+                    return;
+                m_rest->sendMessage(m_currentChannelId, QString(), QString(), {},
+                                    [](const QJsonObject &) {},
+                                    [this](const RestClient::Error &error) {
+                                        flashStatus(QStringLiteral("Sticker failed (%1).")
+                                                        .arg(error.message.left(120)),
+                                                    5000);
+                                    },
+                                    id);
+                popup->close();
+            });
+        }
+    }
+
+    auto *gifTimer = new QTimer(popup);
+    gifTimer->setSingleShot(true);
+    gifTimer->setInterval(280);
+
+    auto loadGifs = [this, popup, body, held, search, refill]() {
+        const int ticket = popup->property("gifTicket").toInt() + 1;
+        popup->setProperty("gifTicket", ticket);
+        const QString query = search->text();
+        QPointer<QFrame> alive(popup);
+        m_rest->searchGifs(query, [alive, body, held, refill, ticket, this](const QJsonObject &payload) {
+            if (!alive || alive->property("gifTicket").toInt() != ticket)
+                return;
+            QList<QToolButton *> doomed;
+            for (QToolButton *button : *held) {
+                if (button->property("kind").toString() == QLatin1String("gif"))
+                    doomed.append(button);
+            }
+            for (QToolButton *button : doomed) {
+                held->removeAll(button);
+                button->deleteLater();
+            }
+            const QJsonArray gifs = payload.value(QStringLiteral("gifs")).toArray();
+            for (const QJsonValue &value : gifs) {
+                const QJsonObject gif = value.toObject();
+                const QString page = gif.value(QStringLiteral("url")).toString();
+                QString preview = gif.value(QStringLiteral("gif_src")).toString();
+                if (preview.isEmpty())
+                    preview = gif.value(QStringLiteral("src")).toString();
+                if (page.isEmpty() || preview.isEmpty())
+                    continue;
+                auto *button = new QToolButton(body);
+                button->setFixedSize(72, 72);
+                button->setAutoRaise(true);
+                button->setCursor(Qt::PointingHandCursor);
+                button->setToolTip(gif.value(QStringLiteral("title")).toString());
+                button->setProperty("filter", gif.value(QStringLiteral("title")).toString());
+                button->setProperty("iconUrl", QUrl(preview));
+                button->setProperty("kind", QStringLiteral("gif"));
+                const QImage picture = MediaCache::instance().image(QUrl(preview));
+                if (!picture.isNull()) {
+                    button->setIcon(QPixmap::fromImage(picture));
+                    button->setIconSize(QSize(64, 64));
+                }
+                connect(button, &QToolButton::clicked, alive.data(), [this, alive, page]() {
+                    if (m_currentChannelId.isEmpty())
+                        return;
+                    m_rest->sendMessage(m_currentChannelId, page, QString(), {},
+                                        [](const QJsonObject &) {},
+                                        [this](const RestClient::Error &error) {
+                                            flashStatus(QStringLiteral("GIF failed (%1).")
+                                                            .arg(error.message.left(120)),
+                                                        5000);
+                                        });
+                    if (alive)
+                        alive->close();
+                });
+                held->append(button);
+            }
+            if (alive->property("kind").toString() == QLatin1String("gif"))
+                refill(QString());
+        }, [](const RestClient::Error &) {});
+    };
+
+    connect(gifTimer, &QTimer::timeout, popup, loadGifs);
+
+    auto *tabs = new QHBoxLayout;
+    tabs->setSpacing(6);
+    const struct { const char *label; const char *kind; } tabNames[] = {
+        {"Emoji", "emoji"}, {"Stickers", "sticker"}, {"GIFs", "gif"},
+    };
+    for (const auto &tab : tabNames) {
+        auto *button = new QPushButton(QString::fromUtf8(tab.label), popup);
+        button->setObjectName(QStringLiteral("ComposerTool"));
+        button->setFixedHeight(28);
+        button->setCursor(Qt::PointingHandCursor);
+        const QString kind = QString::fromUtf8(tab.kind);
+        connect(button, &QPushButton::clicked, popup, [this, popup, search, refill, loadGifs, kind, body, held]() {
+            popup->setProperty("kind", kind);
+            if (kind == QLatin1String("sticker") && !popup->property("packs").toBool()) {
+                popup->setProperty("packs", true);
+                QPointer<QFrame> alive(popup);
+                m_rest->fetchStickerPacks([alive, body, held, refill, this](const QJsonObject &payload) {
+                    if (!alive)
+                        return;
+                    const QJsonArray packs = payload.value(QStringLiteral("sticker_packs")).toArray();
+                    for (const QJsonValue &packValue : packs) {
+                        const QJsonArray stickers = packValue.toObject().value(QStringLiteral("stickers")).toArray();
+                        for (const QJsonValue &value : stickers) {
+                            const QJsonObject sticker = value.toObject();
+                            if (sticker.value(QStringLiteral("format_type")).toInt() == 3)
+                                continue;
+                            const QString id = sticker.value(QStringLiteral("id")).toString();
+                            if (id.isEmpty())
+                                continue;
+                            const int format = sticker.value(QStringLiteral("format_type")).toInt(1);
+                            const QString ext = format == 4 ? QStringLiteral("gif") : QStringLiteral("png");
+                            const QUrl icon(QStringLiteral("https://media.discordapp.net/stickers/%1.%2?size=160")
+                                                .arg(id, ext));
+                            const QString name = sticker.value(QStringLiteral("name")).toString();
+                            auto *button = new QToolButton(body);
+                            button->setFixedSize(36, 36);
+                            button->setProperty("filter", name);
+                            button->setProperty("iconUrl", icon);
+                            button->setProperty("kind", QStringLiteral("sticker"));
+                            const QImage picture = MediaCache::instance().image(icon);
+                            if (!picture.isNull()) {
+                                button->setIcon(QPixmap::fromImage(picture));
+                                button->setIconSize(QSize(26, 26));
+                            }
+                            connect(button, &QToolButton::clicked, alive.data(), [this, alive, id]() {
+                                if (m_currentChannelId.isEmpty())
+                                    return;
+                                m_rest->sendMessage(m_currentChannelId, QString(), QString(), {},
+                                                    [](const QJsonObject &) {},
+                                                    [this](const RestClient::Error &error) {
+                                                        flashStatus(QStringLiteral("Sticker failed (%1).")
+                                                                        .arg(error.message.left(120)),
+                                                                    5000);
+                                                    },
+                                                    id);
+                                if (alive)
+                                    alive->close();
+                            });
+                            held->append(button);
+                        }
+                    }
+                    if (alive->property("kind").toString() == QLatin1String("sticker"))
+                        refill(QString());
+                }, [](const RestClient::Error &) {});
+            }
+            if (kind == QLatin1String("gif")) {
+                search->setPlaceholderText(QStringLiteral("Search GIFs"));
+                loadGifs();
+            } else if (kind == QLatin1String("sticker")) {
+                search->setPlaceholderText(QStringLiteral("Find a sticker"));
+            } else {
+                search->setPlaceholderText(QStringLiteral("Find an emoji"));
+            }
+            refill(search->text());
+        });
+        tabs->addWidget(button);
+    }
+    outer->addLayout(tabs);
+
+    connect(search, &QLineEdit::textChanged, popup, [popup, gifTimer, refill](const QString &text) {
+        if (popup->property("kind").toString() == QLatin1String("gif"))
+            gifTimer->start();
+        else
+            refill(text);
+    });
     connect(&MediaCache::instance(), &MediaCache::ready, popup, [popup](const QUrl &url) {
         const QImage picture = MediaCache::instance().image(url);
         if (picture.isNull())
@@ -4234,7 +4442,7 @@ void MainWindow::sendCurrentMessage()
                                                         .arg(again.message.left(180)),
                                                     8000);
                                     },
-                                    proof);
+                                    QString(), proof);
                 return;
             }
 

@@ -656,6 +656,17 @@ void MessageStore::ingestGuild(const QJsonObject &rawGuild)
             guild.emojis.append(emoji);
     }
 
+    const QJsonArray stickers = rawGuild.value(QStringLiteral("stickers")).toArray();
+    for (const QJsonValue &value : stickers) {
+        const QJsonObject rawSticker = value.toObject();
+        GuildSticker sticker;
+        sticker.id = rawSticker.value(QStringLiteral("id")).toString();
+        sticker.name = rawSticker.value(QStringLiteral("name")).toString();
+        sticker.formatType = rawSticker.value(QStringLiteral("format_type")).toInt(1);
+        if (!sticker.id.isEmpty() && sticker.formatType != 3)
+            guild.stickers.append(sticker);
+    }
+
     const QJsonArray channels = rawGuild.value(QStringLiteral("channels")).toArray();
     for (const QJsonValue &value : channels) {
         const QJsonObject rawChannel = value.toObject();
