@@ -479,10 +479,10 @@ QDialog { background-color: @chat; }
     color: @muted;
     border-radius: 6px;
     padding: 0;
-    min-width: 32px;
-    max-width: 32px;
-    min-height: 32px;
-    max-height: 32px;
+    min-width: 26px;
+    max-width: 26px;
+    min-height: 26px;
+    max-height: 26px;
 }
 #UserPanel QPushButton:hover { background-color: @hover; color: @text; }
 #UserPanel QPushButton:checked { color: @red; background: transparent; }

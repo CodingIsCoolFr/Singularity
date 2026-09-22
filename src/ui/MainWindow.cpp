@@ -87,6 +87,9 @@
 
 #include <QTextEdit>
 #include <QTextFrame>
+
+class QLabel;
+void setPanelText(QLabel *label, const QString &text);
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QWindow>
@@ -293,7 +296,7 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         flashStatus(QStringLiteral("Discord refused this session. Log out and sign in again."), 0);
 
         if (m_selfStatus) {
-            m_selfStatus->setText(QStringLiteral("signed out"));
+            setPanelText(m_selfStatus, QStringLiteral("signed out"));
             m_selfStatus->setStyleSheet(QStringLiteral("color: %1; font-size: 11px;")
                                             .arg(QLatin1String(Theme::Accent)));
         }
@@ -1170,6 +1173,51 @@ QWidget *MainWindow::buildSidebar(QWidget *parent)
     return sidebar;
 }
 
+// A name that is wider than the gap beside the buttons was clipped mid-letter.
+// This keeps the whole string and draws as much of it as fits.
+class ElidingLabel : public QLabel
+{
+public:
+    explicit ElidingLabel(const QString &text, QWidget *parent = nullptr)
+        : QLabel(parent)
+        , m_full(text)
+    {
+        setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        setMinimumWidth(0);
+        QLabel::setText(text);
+    }
+
+    void setFullText(const QString &text)
+    {
+        m_full = text;
+        elide();
+    }
+
+protected:
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QLabel::resizeEvent(event);
+        elide();
+    }
+
+private:
+    void elide()
+    {
+        const int width = contentsRect().width();
+        QLabel::setText(width > 0 ? fontMetrics().elidedText(m_full, Qt::ElideRight, width) : m_full);
+    }
+
+    QString m_full;
+};
+
+void setPanelText(QLabel *label, const QString &text)
+{
+    if (auto *eliding = dynamic_cast<ElidingLabel *>(label))
+        eliding->setFullText(text);
+    else if (label)
+        label->setText(text);
+}
+
 QWidget *MainWindow::buildUserPanel(QWidget *parent)
 {
     auto *panel = new QWidget(parent);
@@ -1180,8 +1228,8 @@ QWidget *MainWindow::buildUserPanel(QWidget *parent)
     panel->installEventFilter(this);
 
     auto *layout = new QHBoxLayout(panel);
-    layout->setContentsMargins(10, 8, 10, 8);
-    layout->setSpacing(10);
+    layout->setContentsMargins(8, 8, 4, 8);
+    layout->setSpacing(6);
 
     m_selfAvatar = new QLabel(panel);
     m_selfAvatar->setFixedSize(32, 32);
@@ -1191,11 +1239,11 @@ QWidget *MainWindow::buildUserPanel(QWidget *parent)
     text->setContentsMargins(0, 0, 0, 0);
     text->setSpacing(0);
 
-    m_selfName = new QLabel(QStringLiteral("Signing in..."), panel);
+    m_selfName = new ElidingLabel(QStringLiteral("Signing in..."), panel);
     m_selfName->setObjectName(QStringLiteral("SelfName"));
     text->addWidget(m_selfName);
 
-    m_selfStatus = new QLabel(QStringLiteral("connecting"), panel);
+    m_selfStatus = new ElidingLabel(QStringLiteral("connecting"), panel);
     m_selfStatus->setObjectName(QStringLiteral("SelfStatus"));
     text->addWidget(m_selfStatus);
 
@@ -1209,6 +1257,7 @@ QWidget *MainWindow::buildUserPanel(QWidget *parent)
         button->setToolTip(tip);
         button->setCursor(Qt::PointingHandCursor);
         button->setFocusPolicy(Qt::NoFocus);
+        button->setFixedSize(26, 26);
         return button;
     };
 
@@ -1568,8 +1617,8 @@ void MainWindow::onGatewayState(GatewayClient::State state)
     m_statusDot->setStyleSheet(QStringLiteral("color: %1; padding-right: 10px;").arg(colour));
 
     if (m_selfStatus) {
-        m_selfStatus->setText(text);
         m_selfStatus->setStyleSheet(QStringLiteral("color: %1; font-size: 11px;").arg(colour));
+        setPanelText(m_selfStatus, text);
     }
 }
 
@@ -3900,11 +3949,11 @@ void MainWindow::updateUserPanel()
             label = QStringLiteral("online");
         }
 
-        m_selfStatus->setText(label);
         m_selfStatus->setStyleSheet(QStringLiteral("color: %1; font-size: 11px;").arg(colour));
+        setPanelText(m_selfStatus, label);
     }
 
-    m_selfName->setText(m_selfDisplayName.isEmpty() ? QStringLiteral("Signed in") : m_selfDisplayName);
+    setPanelText(m_selfName, m_selfDisplayName.isEmpty() ? QStringLiteral("Signed in") : m_selfDisplayName);
 
     const QUrl url = MediaCache::avatarUrl(m_selfUserId, m_selfAvatarHash, 80);
     const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
