@@ -35,6 +35,10 @@ constexpr int Elapsed = Qt::UserRole + 11;
 // of the headings rather than a person.
 constexpr int NameColour = Qt::UserRole + 12;
 constexpr int Heading = Qt::UserRole + 13;
+
+// Unread is a dot. Mentions is a count, drawn in place of the dot.
+constexpr int Unread = Qt::UserRole + 14;
+constexpr int Mentions = Qt::UserRole + 15;
 } // namespace SingularityRoles
 
 // Shared easing used by both delegates below.

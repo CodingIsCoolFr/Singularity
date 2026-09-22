@@ -358,6 +358,28 @@ void GuildRailDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
     }
     painter->restore();
 
+    const int mentions = index.data(SingularityRoles::Mentions).toInt();
+    const bool unread = index.data(SingularityRoles::Unread).toBool();
+    if (mentions > 0 || unread) {
+        painter->setPen(Qt::NoPen);
+        if (mentions > 0) {
+            const QString count = mentions > 9 ? QStringLiteral("9+") : QString::number(mentions);
+            QFont badgeFont = option.font;
+            badgeFont.setPixelSize(9);
+            badgeFont.setWeight(QFont::Bold);
+            painter->setFont(badgeFont);
+            const int width = qMax(16, painter->fontMetrics().horizontalAdvance(count) + 8);
+            const QRect badge(iconRect.right() - width + 4, iconRect.bottom() - 12, width, 16);
+            painter->setBrush(QColor(Theme::Red));
+            painter->drawRoundedRect(badge, 8, 8);
+            painter->setPen(QColor(Theme::TextPrimary));
+            painter->drawText(badge, Qt::AlignCenter, count);
+        } else {
+            painter->setBrush(QColor(Theme::TextPrimary));
+            painter->drawEllipse(QRect(iconRect.right() - 6, iconRect.bottom() - 8, 8, 8));
+        }
+    }
+
     // --- the pill on the left --------------------------------------------
     if (lift > 0.01) {
         // Hover shows a short stub, selection grows it to most of the icon.
@@ -993,11 +1015,30 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
     }
 
     // --- label ------------------------------------------------------------
+    const int mentions = index.data(SingularityRoles::Mentions).toInt();
+    const bool unread = index.data(SingularityRoles::Unread).toBool();
+
     QColor colour(Theme::TextMuted);
     if (selectAmount > 0.5)
         colour = QColor(Theme::Light);
-    else if (hoverAmount > 0.3)
+    else if (unread || hoverAmount > 0.3)
         colour = QColor(Theme::TextPrimary);
+
+    if (mentions > 0) {
+        const QString count = mentions > 99 ? QStringLiteral("99+") : QString::number(mentions);
+        QFont badgeFont = option.font;
+        badgeFont.setPixelSize(10);
+        badgeFont.setWeight(QFont::Bold);
+        painter->setFont(badgeFont);
+        const int width = qMax(16, painter->fontMetrics().horizontalAdvance(count) + 8);
+        const QRect badge(cell.right() - width - 8, cell.center().y() - 8, width, 16);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor(Theme::Red));
+        painter->drawRoundedRect(badge, 8, 8);
+        painter->setPen(QColor(Theme::TextPrimary));
+        painter->drawText(badge, Qt::AlignCenter, count);
+        textRightInset += width + 8;
+    }
 
     // --- the # or speaker mark -------------------------------------------
     const QRectF markBox(panel.left() + 8, panel.top(), 18, panel.height());
@@ -1009,7 +1050,7 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
     painter->restore();
 
     QFont font = option.font;
-    font.setWeight(selectAmount > 0.5 ? QFont::DemiBold : QFont::Normal);
+    font.setWeight((selectAmount > 0.5 || unread) ? QFont::DemiBold : QFont::Normal);
     painter->setFont(font);
     painter->setPen(colour);
 

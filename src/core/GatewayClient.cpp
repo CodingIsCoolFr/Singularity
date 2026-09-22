@@ -593,7 +593,7 @@ void GatewayClient::joinVoice(const QString &guildId, const QString &channelId, 
              {QStringLiteral("channel_id"), channelId},
              {QStringLiteral("self_mute"), selfMute},
              {QStringLiteral("self_deaf"), selfDeaf},
-             {QStringLiteral("self_video"), false},
+             {QStringLiteral("self_video"), m_selfVideo},
          }},
     };
 
@@ -700,9 +700,20 @@ void GatewayClient::setStreamPaused(const QString &streamKey, bool paused)
     });
 }
 
+void GatewayClient::setSelfVideo(bool on)
+{
+    if (m_selfVideo == on)
+        return;
+    m_selfVideo = on;
+    if (m_voiceChannelId.isEmpty())
+        return;
+    joinVoice(m_voiceGuildId, m_voiceChannelId, m_voiceMuted, m_voiceDeafened, true);
+}
+
 void GatewayClient::leaveVoice(const QString &guildId)
 {
     wlog(QStringLiteral("voice"), QStringLiteral("leaving voice in guild %1").arg(guildId));
+    m_selfVideo = false;
 
     // A null channel is how Discord is told you left.
     sendJson(QJsonObject{

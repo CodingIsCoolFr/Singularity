@@ -8,6 +8,7 @@
 #include "ui/FriendsPage.h"
 #include "ui/ImageViewer.h"
 #include "ui/AuroraWidget.h"
+#include "core/CameraShare.h"
 #include "core/ScreenShare.h"
 #include "ui/LoadingOverlay.h"
 #include "ui/MemberListPanel.h"
@@ -39,7 +40,13 @@
 #include <QInputDialog>
 #include <QMouseEvent>
 #include <QAbstractTextDocumentLayout>
+#include <QCamera>
+#include <QFileDialog>
 #include <QFileInfo>
+#include <QMediaCaptureSession>
+#include <QMediaDevices>
+#include <QVideoFrame>
+#include <QVideoSink>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QPainter>
@@ -312,6 +319,8 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         flashStatus(QStringLiteral("[%1] %2").arg(id, line), 5000);
     });
 
+    connect(m_store, &MessageStore::readStateChanged, this, &MainWindow::refreshUnreadMarks);
+
     connect(m_store, &MessageStore::channelHistoryChanged, this, [this](const QString &channelId) {
         // A page of older messages is applied by the scroll itself, which
         // inserts them above the reader. Rebuilding here would replace that
@@ -429,6 +438,54 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         if (m_share)
             m_share->requestKeyframe();
     });
+
+    connect(m_voice, &VoiceConnection::keyframeWanted, this, [this]() {
+        if (m_camera && m_camera->isRunning())
+            m_camera->requestKeyframe();
+    });
+
+    m_camera = new CameraShare(this);
+    connect(m_camera, &CameraShare::picture, this, [this](const QList<QByteArray> &units, bool) {
+        if (m_voice)
+            m_voice->sendPicture(units);
+    });
+    connect(m_camera, &CameraShare::started, this, [this](int width, int height, const QString &encoder) {
+        wlog(QStringLiteral("camera"), QStringLiteral("encoding with %1").arg(encoder));
+        if (m_voice)
+            m_voice->startSendingVideo(width, height);
+        m_gateway->setSelfVideo(true);
+        flashStatus(QStringLiteral("Camera on — %1x%2").arg(width).arg(height), 4000);
+        updateVoicePanel();
+    });
+    connect(m_camera, &CameraShare::failed, this, [this](const QString &reason) {
+        flashStatus(reason, 6000);
+        stopCamera();
+    });
+
+    const QCameraDevice device = QMediaDevices::defaultVideoInput();
+    if (!device.isNull()) {
+        m_webcam = new QCamera(device, this);
+        m_cameraSession = new QMediaCaptureSession(this);
+        m_cameraSink = new QVideoSink(this);
+        m_cameraSession->setCamera(m_webcam);
+        m_cameraSession->setVideoSink(m_cameraSink);
+        connect(m_cameraSink, &QVideoSink::videoFrameChanged, this, [this](const QVideoFrame &incoming) {
+            if (!m_camera || !m_camera->isRunning())
+                return;
+            QVideoFrame frame = incoming;
+            if (!frame.map(QVideoFrame::ReadOnly))
+                return;
+            QImage image = frame.toImage();
+            frame.unmap();
+            if (image.isNull())
+                return;
+            image = image.scaled(960, 540, Qt::KeepAspectRatio, Qt::FastTransformation)
+                        .convertToFormat(QImage::Format_ARGB32);
+            m_camera->submit(image);
+            if (m_callView && !m_selfUserId.isEmpty())
+                m_callView->setFrame(m_selfUserId, image, CallView::Surface::Camera);
+        });
+    }
 
     // The capture cannot start until there is somewhere to send it.
     connect(m_shareVoice, &VoiceConnection::stateChanged, this,
@@ -1085,7 +1142,7 @@ QWidget *MainWindow::buildVoicePanel(QWidget *parent)
     auto *panel = new QFrame(parent);
     panel->setObjectName(QStringLiteral("VoicePanel"));
     panel->setVisible(false);
-    panel->setFixedHeight(132);
+    panel->setFixedHeight(168);
 
     // Two rows, because three buttons and a channel name do not fit across a
     // 240 pixel sidebar.
@@ -1153,11 +1210,18 @@ QWidget *MainWindow::buildVoicePanel(QWidget *parent)
     connect(m_shareButton, &QPushButton::clicked, this, &MainWindow::startScreenShare);
     buttons->addWidget(m_shareButton, 1, 0);
 
+    m_cameraButton = new QPushButton(QStringLiteral("Camera"), panel);
+    m_cameraButton->setFixedHeight(26);
+    m_cameraButton->setCheckable(true);
+    m_cameraButton->setToolTip(QStringLiteral("Show your camera to everyone in this call"));
+    connect(m_cameraButton, &QPushButton::clicked, this, &MainWindow::toggleCamera);
+    buttons->addWidget(m_cameraButton, 1, 1);
+
     auto *leave = new QPushButton(QStringLiteral("Leave"), panel);
     leave->setFixedHeight(26);
     leave->setToolTip(QStringLiteral("Leave the call"));
     connect(leave, &QPushButton::clicked, this, &MainWindow::leaveVoice);
-    buttons->addWidget(leave, 1, 1);
+    buttons->addWidget(leave, 2, 0, 1, 2);
 
     // No trailing stretch: the columns already share the width between them,
     // which is what stops them overlapping.
@@ -1254,7 +1318,9 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
     // Links are handled here so profile links can be told apart from web ones.
     m_messageView->setOpenLinks(false);
     m_messageView->setOpenExternalLinks(false);
+    m_messageView->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_messageView, &ChatView::anchorClicked, this, &MainWindow::handleAnchor);
+    connect(m_messageView, &QWidget::customContextMenuRequested, this, &MainWindow::showMessageMenu);
     layout->addWidget(m_messageView, 1);
 
     m_typingLabel = new QLabel(QString(), chat);
@@ -1267,10 +1333,44 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
     auto *composerLayout = new QVBoxLayout(composerWrap);
     composerLayout->setContentsMargins(18, 4, 18, 16);
 
+    m_composerContext = new QWidget(composerWrap);
+    auto *contextLayout = new QHBoxLayout(m_composerContext);
+    contextLayout->setContentsMargins(4, 0, 4, 0);
+    m_composerContextText = new QLabel(m_composerContext);
+    m_composerContextText->setStyleSheet(QStringLiteral("color: %1;").arg(QLatin1String(Theme::TextMuted)));
+    auto *cancelContext = new QPushButton(QStringLiteral("Cancel"), m_composerContext);
+    cancelContext->setFixedHeight(24);
+    connect(cancelContext, &QPushButton::clicked, this, &MainWindow::clearComposerContext);
+    contextLayout->addWidget(m_composerContextText, 1);
+    contextLayout->addWidget(cancelContext);
+    m_composerContext->hide();
+    composerLayout->addWidget(m_composerContext);
+
+    m_attachmentLabel = new QLabel(composerWrap);
+    m_attachmentLabel->setStyleSheet(QStringLiteral("color: %1;").arg(QLatin1String(Theme::TextMuted)));
+    m_attachmentLabel->hide();
+    composerLayout->addWidget(m_attachmentLabel);
+
     auto *composerBox = new QFrame(composerWrap);
     composerBox->setObjectName(QStringLiteral("ComposerBox"));
     auto *boxLayout = new QVBoxLayout(composerBox);
     boxLayout->setContentsMargins(0, 0, 0, 0);
+
+    auto *tools = new QHBoxLayout;
+    tools->setContentsMargins(6, 4, 6, 0);
+    tools->setSpacing(6);
+    auto *attach = new QPushButton(QStringLiteral("Attach"), composerBox);
+    auto *emoji = new QPushButton(QStringLiteral("Emoji"), composerBox);
+    attach->setFixedHeight(24);
+    emoji->setFixedHeight(24);
+    attach->setToolTip(QStringLiteral("Add a file or a picture"));
+    emoji->setToolTip(QStringLiteral("Insert an emoji"));
+    connect(attach, &QPushButton::clicked, this, &MainWindow::chooseAttachment);
+    connect(emoji, &QPushButton::clicked, this, &MainWindow::showEmojiMenu);
+    tools->addWidget(attach);
+    tools->addWidget(emoji);
+    tools->addStretch(1);
+    boxLayout->addLayout(tools);
 
     m_composer = new QTextEdit(composerBox);
     m_composer->setObjectName(QStringLiteral("MessageInput"));
@@ -1455,13 +1555,36 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
         const QString channelId = data.value(QStringLiteral("channel_id")).toString();
         if (dropped > 0 && channelId == m_currentChannelId)
             m_renderFirst = qMax(0, m_renderFirst - dropped);
-        if (dropped >= 0 && channelId == m_currentChannelId && m_store->hasHistory(channelId)) {
+        if (dropped >= 0) {
             const MessageInfo message = MessageStore::parseMessage(data);
-            const bool grouped = m_hasLastRendered && shouldGroup(m_lastRendered, message);
-            appendMessageToView(message, grouped);
-            m_lastRendered = message;
-            m_hasLastRendered = true;
+            const bool mine = message.authorId == m_selfUserId;
+            const bool seen = mine || (channelId == m_currentChannelId && m_stickToBottom);
+            const QString raw = data.value(QStringLiteral("content")).toString();
+            bool mention = data.value(QStringLiteral("mention_everyone")).toBool()
+                || raw.contains(QStringLiteral("<@") + m_selfUserId)
+                || raw.contains(QStringLiteral("<@!") + m_selfUserId);
+            const QJsonArray named = data.value(QStringLiteral("mentions")).toArray();
+            for (const QJsonValue &value : named) {
+                if (value.toObject().value(QStringLiteral("id")).toString() == m_selfUserId)
+                    mention = true;
+            }
+            m_store->noteIncoming(channelId, message.id, mention && !mine, seen);
+            if (seen && channelId == m_currentChannelId)
+                m_rest->ackMessage(channelId, message.id);
+
+            if (channelId == m_currentChannelId && m_store->hasHistory(channelId)) {
+                const bool grouped = m_hasLastRendered && shouldGroup(m_lastRendered, message);
+                appendMessageToView(message, grouped);
+                m_lastRendered = message;
+                m_hasLastRendered = true;
+            }
         }
+        return;
+    }
+
+    if (eventType == QLatin1String("MESSAGE_ACK")) {
+        m_store->markChannelRead(data.value(QStringLiteral("channel_id")).toString(),
+                                 data.value(QStringLiteral("message_id")).toString());
         return;
     }
 
@@ -1864,6 +1987,7 @@ void MainWindow::populateGuildRail()
         }
     }
     m_guildRail->setCurrentRow(wanted);
+    refreshUnreadMarks();
 }
 
 void MainWindow::saveRailOrderFromView()
@@ -2240,6 +2364,8 @@ void MainWindow::populateChannelList(bool autoSelectFirst)
 
     m_channelList->blockSignals(false);
 
+    refreshUnreadMarks();
+
     if (!autoSelectFirst)
         return;
 
@@ -2339,8 +2465,11 @@ void MainWindow::openChannel(const QString &channelId)
         QStringLiteral("Message %1").arg(channel.isDirect() ? channel.name : QStringLiteral("#") + channel.name));
     m_composer->setFocus();
 
+    clearComposerContext();
+
     if (m_store->hasHistory(channelId)) {
         renderChannel();
+        acknowledgeChannel(channelId);
         return;
     }
 
@@ -2376,6 +2505,8 @@ void MainWindow::openChannel(const QString &channelId)
                      .arg(started->elapsed())
                      .arg(messages.size()));
             m_store->setHistory(channelId, messages);
+            if (channelId == m_currentChannelId)
+                acknowledgeChannel(channelId);
         },
         [this, channelId](const RestClient::Error &error) {
             wlog(QStringLiteral("rest"), QStringLiteral("history failed for %1: HTTP %2 %3")
@@ -3627,18 +3758,278 @@ void MainWindow::onComposerChanged()
         m_rest->sendTyping(m_currentChannelId);
 }
 
+QString MainWindow::messageIdAt(const QPoint &viewportPos) const
+{
+    if (!m_messageView)
+        return {};
+
+    const QTextCursor cursor = m_messageView->cursorForPosition(viewportPos);
+    const int position = cursor.position();
+    const QList<QTextFrame *> frames = m_messageView->document()->rootFrame()->childFrames();
+    if (frames.size() != m_renderedIds.size())
+        return {};
+
+    for (int i = 0; i < frames.size(); ++i) {
+        if (position >= frames.at(i)->firstPosition() && position <= frames.at(i)->lastPosition())
+            return m_renderedIds.at(i);
+    }
+    return {};
+}
+
+void MainWindow::refreshComposerContext()
+{
+    if (!m_composerContext)
+        return;
+
+    if (!m_editingMessageId.isEmpty()) {
+        m_composerContextText->setText(QStringLiteral("Editing a message"));
+        m_composerContext->show();
+    } else if (!m_replyMessageId.isEmpty()) {
+        QString preview;
+        const QList<MessageInfo> messages = m_store->messages(m_currentChannelId);
+        for (const MessageInfo &message : messages) {
+            if (message.id != m_replyMessageId)
+                continue;
+            preview = message.content.left(80);
+            if (preview.isEmpty())
+                preview = QStringLiteral("attachment");
+            preview = message.authorName + QStringLiteral(": ") + preview;
+            break;
+        }
+        m_composerContextText->setText(QStringLiteral("Replying to %1").arg(preview));
+        m_composerContext->show();
+    } else {
+        m_composerContext->hide();
+    }
+
+    if (m_pendingFiles.isEmpty()) {
+        m_attachmentLabel->hide();
+    } else {
+        QStringList names;
+        for (const QString &path : m_pendingFiles)
+            names.append(QFileInfo(path).fileName());
+        m_attachmentLabel->setText(QStringLiteral("Attached: %1").arg(names.join(QStringLiteral(", "))));
+        m_attachmentLabel->show();
+    }
+}
+
+void MainWindow::clearComposerContext()
+{
+    m_replyMessageId.clear();
+    m_editingMessageId.clear();
+    m_pendingFiles.clear();
+    refreshComposerContext();
+}
+
+void MainWindow::beginReply(const QString &messageId)
+{
+    m_editingMessageId.clear();
+    m_replyMessageId = messageId;
+    refreshComposerContext();
+    m_composer->setFocus();
+}
+
+void MainWindow::beginEdit(const QString &messageId)
+{
+    const QList<MessageInfo> messages = m_store->messages(m_currentChannelId);
+    for (const MessageInfo &message : messages) {
+        if (message.id != messageId)
+            continue;
+        m_replyMessageId.clear();
+        m_pendingFiles.clear();
+        m_editingMessageId = messageId;
+        m_composer->setPlainText(message.content);
+        refreshComposerContext();
+        m_composer->setFocus();
+        return;
+    }
+}
+
+void MainWindow::chooseAttachment()
+{
+    const QStringList picked = QFileDialog::getOpenFileNames(
+        this, QStringLiteral("Attach files"), QString(),
+        QStringLiteral("All files (*.*)"));
+    if (picked.isEmpty())
+        return;
+
+    for (const QString &path : picked) {
+        if (QFileInfo(path).size() > 25ll * 1024 * 1024) {
+            flashStatus(QStringLiteral("%1 is over 25 MB, which Discord will not take.")
+                            .arg(QFileInfo(path).fileName()),
+                        5000);
+            continue;
+        }
+        if (!m_pendingFiles.contains(path))
+            m_pendingFiles.append(path);
+    }
+    if (m_pendingFiles.size() > 10)
+        m_pendingFiles = m_pendingFiles.mid(0, 10);
+    refreshComposerContext();
+}
+
+void MainWindow::showEmojiMenu()
+{
+    QMenu menu(this);
+    const QStringList faces{
+        QStringLiteral("😀"), QStringLiteral("😂"), QStringLiteral("❤️"), QStringLiteral("👍"),
+        QStringLiteral("👎"), QStringLiteral("🔥"), QStringLiteral("🎉"), QStringLiteral("😭"),
+        QStringLiteral("😮"), QStringLiteral("😡"), QStringLiteral("👀"), QStringLiteral("💯"),
+        QStringLiteral("✅"), QStringLiteral("🙏"), QStringLiteral("💀"), QStringLiteral("🤔"),
+        QStringLiteral("😎"), QStringLiteral("🥳"), QStringLiteral("😢"), QStringLiteral("🤝"),
+    };
+    for (const QString &face : faces) {
+        connect(menu.addAction(face), &QAction::triggered, this, [this, face]() {
+            m_composer->insertPlainText(face);
+            m_composer->setFocus();
+        });
+    }
+
+    const GuildInfo guild = m_store->guild(m_currentGuildId);
+    if (!guild.emojis.isEmpty()) {
+        menu.addSeparator();
+        const int limit = qMin(40, guild.emojis.size());
+        for (int i = 0; i < limit; ++i) {
+            const EmojiInfo &emoji = guild.emojis.at(i);
+            const QString token = emoji.animated
+                ? QStringLiteral("<a:%1:%2>").arg(emoji.name, emoji.id)
+                : QStringLiteral("<:%1:%2>").arg(emoji.name, emoji.id);
+            connect(menu.addAction(QStringLiteral(":%1:").arg(emoji.name)), &QAction::triggered, this,
+                    [this, token]() {
+                        m_composer->insertPlainText(token);
+                        m_composer->setFocus();
+                    });
+        }
+    }
+
+    menu.exec(QCursor::pos());
+}
+
+void MainWindow::showMessageMenu(const QPoint &pos)
+{
+    const QString messageId = messageIdAt(pos);
+    if (messageId.isEmpty() || m_currentChannelId.isEmpty())
+        return;
+
+    MessageInfo message;
+    const QList<MessageInfo> messages = m_store->messages(m_currentChannelId);
+    for (const MessageInfo &candidate : messages) {
+        if (candidate.id == messageId) {
+            message = candidate;
+            break;
+        }
+    }
+    if (message.id.isEmpty())
+        return;
+
+    const bool mine = message.authorId == m_selfUserId;
+    const ChannelInfo channel = m_store->channel(m_currentChannelId);
+
+    QMenu menu(this);
+    connect(menu.addAction(QStringLiteral("Reply")), &QAction::triggered, this, [this, messageId]() {
+        beginReply(messageId);
+    });
+    if (mine) {
+        connect(menu.addAction(QStringLiteral("Edit")), &QAction::triggered, this, [this, messageId]() {
+            beginEdit(messageId);
+        });
+        connect(menu.addAction(QStringLiteral("Delete")), &QAction::triggered, this, [this, messageId]() {
+            const QString channelId = m_currentChannelId;
+            m_rest->deleteMessage(
+                channelId, messageId, [](const QJsonObject &) {},
+                [this](const RestClient::Error &error) {
+                    flashStatus(QStringLiteral("Could not delete that message (%1).").arg(error.message),
+                                5000);
+                });
+        });
+    }
+
+    connect(menu.addAction(QStringLiteral("Copy text")), &QAction::triggered, this, [message]() {
+        QApplication::clipboard()->setText(message.content);
+    });
+
+    const QString link = channel.guildId.isEmpty()
+        ? QStringLiteral("https://discord.com/channels/@me/%1/%2").arg(channel.id, message.id)
+        : QStringLiteral("https://discord.com/channels/%1/%2/%3").arg(channel.guildId, channel.id, message.id);
+    connect(menu.addAction(QStringLiteral("Copy link")), &QAction::triggered, this, [link]() {
+        QApplication::clipboard()->setText(link);
+    });
+
+    QMenu *react = menu.addMenu(QStringLiteral("Add reaction"));
+    const QStringList faces{QStringLiteral("👍"), QStringLiteral("❤️"), QStringLiteral("😂"),
+                            QStringLiteral("😮"), QStringLiteral("😢"), QStringLiteral("🔥")};
+    for (const QString &face : faces) {
+        connect(react->addAction(face), &QAction::triggered, this, [this, messageId, face]() {
+            m_rest->addReaction(m_currentChannelId, messageId, face, [](const QJsonObject &) {},
+                                [this](const RestClient::Error &error) {
+                                    flashStatus(QStringLiteral("Could not react (%1).").arg(error.message),
+                                                4000);
+                                });
+        });
+    }
+
+    menu.exec(m_messageView->viewport()->mapToGlobal(pos));
+}
+
+void MainWindow::refreshUnreadMarks()
+{
+    if (!m_guildRail || !m_channelList || !m_store)
+        return;
+
+    for (int row = 0; row < m_guildRail->count(); ++row) {
+        QListWidgetItem *item = m_guildRail->item(row);
+        const QString id = item->data(IdRole).toString();
+        if (item->data(KindRole).toString() != QLatin1String("guild"))
+            continue;
+        item->setData(SingularityRoles::Mentions, m_store->guildMentionCount(id));
+        item->setData(SingularityRoles::Unread, m_store->guildHasUnread(id));
+    }
+
+    for (int row = 0; row < m_channelList->count(); ++row) {
+        QListWidgetItem *item = m_channelList->item(row);
+        const QString kind = item->data(KindRole).toString();
+        if (kind != QLatin1String("channel") && kind != QLatin1String("dm")
+            && kind != QLatin1String("voice"))
+            continue;
+        const QString id = item->data(IdRole).toString();
+        item->setData(SingularityRoles::Mentions, m_store->mentionCount(id));
+        item->setData(SingularityRoles::Unread, id == m_currentChannelId ? false : m_store->isUnread(id));
+    }
+
+    m_guildRail->viewport()->update();
+    m_channelList->viewport()->update();
+}
+
+void MainWindow::acknowledgeChannel(const QString &channelId)
+{
+    if (channelId.isEmpty() || !m_store || !m_rest)
+        return;
+
+    QString messageId = m_store->channel(channelId).lastMessageId;
+    const QList<MessageInfo> messages = m_store->messages(channelId);
+    if (!messages.isEmpty())
+        messageId = messages.last().id;
+    if (messageId.isEmpty())
+        return;
+
+    m_store->markChannelRead(channelId, messageId);
+    m_rest->ackMessage(channelId, messageId);
+}
+
 void MainWindow::sendCurrentMessage()
 {
     if (m_currentChannelId.isEmpty())
         return;
 
     QString content = m_composer->toPlainText();
-    if (content.trimmed().isEmpty())
+    const bool editing = !m_editingMessageId.isEmpty();
+    if (content.trimmed().isEmpty() && (editing || m_pendingFiles.isEmpty()))
         return;
 
-    if (!m_plugins->runOutgoingMessage(content, m_currentChannelId)) {
+    if (!editing && !m_plugins->runOutgoingMessage(content, m_currentChannelId)) {
         flashStatus(QStringLiteral("A plugin cancelled that message."), 4000);
         m_composer->clear();
+        clearComposerContext();
         return;
     }
 
@@ -3648,13 +4039,24 @@ void MainWindow::sendCurrentMessage()
     }
 
     const QString channelId = m_currentChannelId;
+    const QString replyTo = m_replyMessageId;
+    const QString editingId = m_editingMessageId;
+    const QStringList files = m_pendingFiles;
     m_composer->clear();
+    clearComposerContext();
+
+    if (editing) {
+        m_rest->editMessage(
+            channelId, editingId, content, [](const QJsonObject &) {},
+            [this, content](const RestClient::Error &error) {
+                flashStatus(QStringLiteral("Edit failed (%1).").arg(error.message), 6000);
+                m_composer->setPlainText(content);
+            });
+        return;
+    }
 
     m_rest->sendMessage(
-        channelId, content,
-        [](const QJsonObject &) {
-            // The gateway echoes the message back, so nothing to do here.
-        },
+        channelId, content, replyTo, files, [](const QJsonObject &) {},
         [this, content](const RestClient::Error &error) {
             QString reason = error.message;
             if (error.isRateLimit())
@@ -4379,6 +4781,52 @@ void MainWindow::joinVoice(const QString &channelId)
     flashStatus(QStringLiteral("Joining %1...").arg(channel.name), 4000);
 }
 
+void MainWindow::toggleCamera()
+{
+    if (m_camera && m_camera->isRunning()) {
+        stopCamera();
+        return;
+    }
+
+    if (m_voiceChannelId.isEmpty() || m_voice->state() != VoiceConnection::State::Connected) {
+        flashStatus(QStringLiteral("Join a voice channel before turning your camera on."), 4000);
+        if (m_cameraButton)
+            m_cameraButton->setChecked(false);
+        return;
+    }
+    if (!m_webcam || !m_camera) {
+        flashStatus(QStringLiteral("No camera was found on this machine."), 5000);
+        if (m_cameraButton)
+            m_cameraButton->setChecked(false);
+        return;
+    }
+
+    m_webcam->start();
+    m_camera->start(960, 540, 20);
+    if (m_cameraButton) {
+        m_cameraButton->setChecked(true);
+        m_cameraButton->setText(QStringLiteral("Camera on"));
+    }
+}
+
+void MainWindow::stopCamera()
+{
+    if (m_camera)
+        m_camera->stop();
+    if (m_webcam)
+        m_webcam->stop();
+    if (m_voice && m_voice->isSendingVideo())
+        m_voice->stopSendingVideo();
+    if (m_gateway)
+        m_gateway->setSelfVideo(false);
+    if (m_callView && !m_selfUserId.isEmpty())
+        m_callView->dropFrames(m_selfUserId, CallView::Surface::Camera);
+    if (m_cameraButton) {
+        m_cameraButton->setChecked(false);
+        m_cameraButton->setText(QStringLiteral("Camera"));
+    }
+}
+
 void MainWindow::leaveVoice()
 {
     if (m_voiceChannelId.isEmpty())
@@ -4395,6 +4843,7 @@ void MainWindow::leaveVoice()
     // not ended explicitly: Discord keeps the stream, and the people left
     // behind watch a picture that has stopped arriving.
     stopScreenShare();
+    stopCamera();
 
     m_voiceRetryTimer.stop();
     m_voiceRetries = 0;

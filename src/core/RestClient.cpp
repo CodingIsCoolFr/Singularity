@@ -2,7 +2,11 @@
 
 #include "core/DiscordIdentity.h"
 
+#include <QFile>
+#include <QFileInfo>
+#include <QHttpMultiPart>
 #include <QJsonDocument>
+#include <QMimeDatabase>
 #include <QNetworkReply>
 #include <QRandomGenerator>
 #include <QUrl>
@@ -88,22 +92,113 @@ void RestClient::fetchMessages(const QString &channelId, int limit, ArrayHandler
     dispatch(reply, nullptr, std::move(onOk), std::move(onError));
 }
 
-void RestClient::sendMessage(const QString &channelId, const QString &content, ObjectHandler onOk, ErrorHandler onError)
+void RestClient::sendMessage(const QString &channelId, const QString &content, const QString &replyTo,
+                             const QStringList &files, ObjectHandler onOk, ErrorHandler onError)
 {
-    // The nonce lets the official client match its own echoes. Discord accepts
-    // any unique string, so a random 64 bit number is enough.
     const QString nonce = QString::number(QRandomGenerator::global()->generate64());
 
-    const QJsonObject body{
+    QJsonObject body{
         {QStringLiteral("content"), content},
         {QStringLiteral("nonce"), nonce},
         {QStringLiteral("tts"), false},
         {QStringLiteral("flags"), 0},
     };
 
+    if (!replyTo.isEmpty()) {
+        body.insert(QStringLiteral("message_reference"),
+                    QJsonObject{{QStringLiteral("message_id"), replyTo},
+                                {QStringLiteral("channel_id"), channelId}});
+        body.insert(QStringLiteral("allowed_mentions"),
+                    QJsonObject{{QStringLiteral("replied_user"), true}});
+    }
+
     const QString path = QStringLiteral("/channels/%1/messages").arg(channelId);
-    QNetworkReply *reply = m_network.post(buildRequest(path), QJsonDocument(body).toJson(QJsonDocument::Compact));
+    const QByteArray json = QJsonDocument(body).toJson(QJsonDocument::Compact);
+
+    if (files.isEmpty()) {
+        QNetworkReply *reply = m_network.post(buildRequest(path), json);
+        dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+        return;
+    }
+
+    // The content type on the request has to be cleared. buildRequest sets
+    // application/json, and leaving it there strips the multipart boundary
+    // Discord needs in order to find the file.
+    QNetworkRequest request = buildRequest(path);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QVariant());
+
+    auto *multi = new QHttpMultiPart(QHttpMultiPart::FormDataType);
+    QHttpPart payload;
+    payload.setHeader(QNetworkRequest::ContentDispositionHeader,
+                      QVariant(QStringLiteral("form-data; name=\"payload_json\"")));
+    payload.setBody(json);
+    multi->append(payload);
+
+    QMimeDatabase mime;
+    for (int i = 0; i < files.size(); ++i) {
+        auto *file = new QFile(files.at(i));
+        if (!file->open(QIODevice::ReadOnly)) {
+            delete file;
+            continue;
+        }
+        file->setParent(multi);
+
+        const QString name = QFileInfo(files.at(i)).fileName();
+        QHttpPart part;
+        part.setHeader(QNetworkRequest::ContentDispositionHeader,
+                       QVariant(QStringLiteral("form-data; name=\"files[%1]\"; filename=\"%2\"")
+                                    .arg(i)
+                                    .arg(name)));
+        part.setHeader(QNetworkRequest::ContentTypeHeader,
+                       QVariant(mime.mimeTypeForFile(name).name()));
+        part.setBodyDevice(file);
+        multi->append(part);
+    }
+
+    QNetworkReply *reply = m_network.post(request, multi);
+    multi->setParent(reply);
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
+void RestClient::editMessage(const QString &channelId, const QString &messageId, const QString &content,
+                             ObjectHandler onOk, ErrorHandler onError)
+{
+    const QJsonObject body{{QStringLiteral("content"), content}};
+    const QString path = QStringLiteral("/channels/%1/messages/%2").arg(channelId, messageId);
+    QNetworkReply *reply = m_network.sendCustomRequest(
+        buildRequest(path), QByteArrayLiteral("PATCH"),
+        QJsonDocument(body).toJson(QJsonDocument::Compact));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
+void RestClient::deleteMessage(const QString &channelId, const QString &messageId, ObjectHandler onOk,
+                               ErrorHandler onError)
+{
+    const QString path = QStringLiteral("/channels/%1/messages/%2").arg(channelId, messageId);
+    QNetworkReply *reply = m_network.deleteResource(buildRequest(path));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
+void RestClient::addReaction(const QString &channelId, const QString &messageId, const QString &emoji,
+                             ObjectHandler onOk, ErrorHandler onError)
+{
+    const QString encoded = QString::fromUtf8(QUrl::toPercentEncoding(emoji));
+    const QString path = QStringLiteral("/channels/%1/messages/%2/reactions/%3/@me")
+                             .arg(channelId, messageId, encoded);
+    QNetworkReply *reply = m_network.put(buildRequest(path), QByteArray());
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
+void RestClient::ackMessage(const QString &channelId, const QString &messageId)
+{
+    if (channelId.isEmpty() || messageId.isEmpty())
+        return;
+
+    const QJsonObject body{{QStringLiteral("token"), QJsonValue::Null}};
+    const QString path = QStringLiteral("/channels/%1/messages/%2/ack").arg(channelId, messageId);
+    QNetworkReply *reply = m_network.post(buildRequest(path),
+                                          QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);
 }
 
 void RestClient::sendTyping(const QString &channelId)

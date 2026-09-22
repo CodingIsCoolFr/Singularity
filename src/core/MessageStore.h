@@ -104,6 +104,7 @@ struct ChannelInfo
     int position = 0;
     int bitrate = 0;            // voice channels only
     int userLimit = 0;          // voice channels only, 0 means no limit
+    QString lastMessageId;
 
     bool isTextLike() const { return type == 0 || type == 1 || type == 3 || type == 5; }
     bool isDirect() const { return type == 1 || type == 3; }
@@ -150,6 +151,13 @@ struct MemberList
     int memberCount = 0;
 };
 
+struct EmojiInfo
+{
+    QString name;
+    QString id;
+    bool animated = false;
+};
+
 struct GuildInfo
 {
     QString id;
@@ -157,6 +165,7 @@ struct GuildInfo
     QString iconHash;
     QList<QString> channelIds;
     QHash<QString, RoleInfo> roles;
+    QList<EmojiInfo> emojis;
 };
 
 struct Attachment
@@ -313,6 +322,19 @@ public:
     // request back in time starts from.
     QString oldestMessageId(const QString &channelId) const;
 
+    // What you have and have not read.
+    //
+    // A channel is unread when a message has arrived that you were not looking
+    // at. Mentions are counted on top of that, because a server shows a number
+    // for those and only a dot for everything else.
+    void ingestReadState(const QJsonObject &readyPayload);
+    void noteIncoming(const QString &channelId, const QString &messageId, bool mention, bool seen);
+    void markChannelRead(const QString &channelId, const QString &messageId);
+    bool isUnread(const QString &channelId) const;
+    int mentionCount(const QString &channelId) const;
+    bool guildHasUnread(const QString &guildId) const;
+    int guildMentionCount(const QString &guildId) const;
+
     // MESSAGE_REACTION_ADD and MESSAGE_REACTION_REMOVE. `selfUserId` decides
     // whether the change was yours, which is what highlights the pill.
     void applyReaction(const QJsonObject &data, bool added, const QString &selfUserId);
@@ -377,6 +399,7 @@ public:
 // drift into a signals section, which moc rejects in a very confusing way.
 signals:
     void channelHistoryChanged(const QString &channelId);
+    void readStateChanged();
     void messageAdded(const QString &channelId, const MessageInfo &message);
     void messageChanged(const QString &channelId, const QString &messageId);
     void userChanged(const QString &userId);
@@ -393,6 +416,15 @@ private:
     QHash<QString, ChannelInfo> m_channels;
     QList<QString> m_directOrder;
     QHash<QString, QList<MessageInfo>> m_messages;
+
+    struct ReadMark
+    {
+        QString lastReadId;
+        int mentions = 0;
+        bool unread = false;
+    };
+    QHash<QString, ReadMark> m_reads;
+    static bool newerId(const QString &a, const QString &b);
     QHash<QString, bool> m_historyLoaded;
 
     // Channel ids, least recently touched first.

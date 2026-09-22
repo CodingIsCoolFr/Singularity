@@ -47,7 +47,26 @@ public:
                        const QString &before = QString());
 
     // POST /channels/{id}/messages
-    void sendMessage(const QString &channelId, const QString &content, ObjectHandler onOk, ErrorHandler onError);
+    //
+    // `replyTo` quotes that message. `files` are uploaded with it. Either may
+    // be empty. A message needs text or a file; Discord refuses one with neither.
+    void sendMessage(const QString &channelId, const QString &content, const QString &replyTo,
+                     const QStringList &files, ObjectHandler onOk, ErrorHandler onError);
+
+    // PATCH and DELETE one message you sent.
+    void editMessage(const QString &channelId, const QString &messageId, const QString &content,
+                     ObjectHandler onOk, ErrorHandler onError);
+    void deleteMessage(const QString &channelId, const QString &messageId, ObjectHandler onOk,
+                       ErrorHandler onError);
+
+    // PUT .../reactions/{emoji}/@me. `emoji` is a character, or "name:id" for
+    // a custom one.
+    void addReaction(const QString &channelId, const QString &messageId, const QString &emoji,
+                     ObjectHandler onOk, ErrorHandler onError);
+
+    // Tells Discord you have seen up to this message, which is what clears the
+    // unread mark on every other client too.
+    void ackMessage(const QString &channelId, const QString &messageId);
 
     // POST /channels/{id}/typing - fire and forget.
     void sendTyping(const QString &channelId);

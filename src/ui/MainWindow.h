@@ -55,6 +55,20 @@ private slots:
     void onChannelSelected(int row);
     void onComposerChanged();
     void sendCurrentMessage();
+    void showMessageMenu(const QPoint &pos);
+    void beginReply(const QString &messageId);
+    void beginEdit(const QString &messageId);
+    void clearComposerContext();
+    void chooseAttachment();
+    void showEmojiMenu();
+    void refreshComposerContext();
+    QString messageIdAt(const QPoint &viewportPos) const;
+
+    void refreshUnreadMarks();
+    void acknowledgeChannel(const QString &channelId);
+
+    void toggleCamera();
+    void stopCamera();
     void openPlugins();
     void openSettings();
     void applyAppearance();
@@ -189,6 +203,12 @@ private:
     QLabel *m_sidebarHeader = nullptr;
     ChatView *m_messageView = nullptr;
     QTextEdit *m_composer = nullptr;
+    QWidget *m_composerContext = nullptr;
+    QLabel *m_composerContextText = nullptr;
+    QLabel *m_attachmentLabel = nullptr;
+    QString m_replyMessageId;
+    QString m_editingMessageId;
+    QStringList m_pendingFiles;
     QLabel *m_channelTitle = nullptr;
     QLabel *m_channelTopic = nullptr;
     QLabel *m_typingLabel = nullptr;
@@ -285,6 +305,11 @@ private:
     class ScreenShare *m_share = nullptr;
     VoiceConnection *m_shareVoice = nullptr;
     QPushButton *m_shareButton = nullptr;
+    QPushButton *m_cameraButton = nullptr;
+    class CameraShare *m_camera = nullptr;
+    class QCamera *m_webcam = nullptr;
+    class QMediaCaptureSession *m_cameraSession = nullptr;
+    class QVideoSink *m_cameraSink = nullptr;
 
     QString m_myStreamKey;
     QString m_myStreamServerId;

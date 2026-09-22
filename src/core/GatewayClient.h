@@ -74,6 +74,7 @@ public:
     // after a gateway drop: Discord has forgotten the call, but the ids match.
     void joinVoice(const QString &guildId, const QString &channelId, bool selfMute, bool selfDeaf,
                    bool force = false);
+    void setSelfVideo(bool on);
     void leaveVoice(const QString &guildId);
 
     // Asks to watch somebody's shared screen.
@@ -180,6 +181,7 @@ private:
     QString m_voiceChannelId;
     bool m_voiceMuted = false;
     bool m_voiceDeafened = false;
+    bool m_selfVideo = false;
 
     // What Discord tells everybody else about you. The Anonymous plugin is
     // the only thing that changes this.

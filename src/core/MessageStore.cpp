@@ -298,6 +298,7 @@ void MessageStore::clear()
     m_directOrder.clear();
     m_messages.clear();
     m_historyLoaded.clear();
+    m_reads.clear();
 }
 
 void MessageStore::ingestReady(const QJsonObject &readyPayload)
@@ -348,6 +349,8 @@ void MessageStore::ingestReady(const QJsonObject &readyPayload)
         if (!id.isEmpty() && !m_directOrder.contains(id))
             m_directOrder.append(id);
     }
+
+    ingestReadState(readyPayload);
 }
 
 void MessageStore::ingestReadySupplemental(const QJsonObject &payload)
@@ -582,6 +585,17 @@ void MessageStore::ingestGuild(const QJsonObject &rawGuild)
         guild.roles.insert(role.id, role);
     }
 
+    const QJsonArray emojis = rawGuild.value(QStringLiteral("emojis")).toArray();
+    for (const QJsonValue &value : emojis) {
+        const QJsonObject rawEmoji = value.toObject();
+        EmojiInfo emoji;
+        emoji.id = rawEmoji.value(QStringLiteral("id")).toString();
+        emoji.name = rawEmoji.value(QStringLiteral("name")).toString();
+        emoji.animated = rawEmoji.value(QStringLiteral("animated")).toBool();
+        if (!emoji.id.isEmpty() && !emoji.name.isEmpty())
+            guild.emojis.append(emoji);
+    }
+
     const QJsonArray channels = rawGuild.value(QStringLiteral("channels")).toArray();
     for (const QJsonValue &value : channels) {
         const QJsonObject rawChannel = value.toObject();
@@ -621,6 +635,7 @@ void MessageStore::ingestChannel(const QJsonObject &rawChannel, const QString &g
     channel.bitrate = rawChannel.value(QStringLiteral("bitrate")).toInt();
     channel.userLimit = rawChannel.value(QStringLiteral("user_limit")).toInt();
     channel.rtcRegion = rawChannel.value(QStringLiteral("rtc_region")).toString();
+    channel.lastMessageId = rawChannel.value(QStringLiteral("last_message_id")).toString();
 
     // Direct messages have no name, so build one from the other people in it.
     if (channel.name.isEmpty() && channel.isDirect()) {
@@ -1013,6 +1028,108 @@ QString MessageStore::oldestMessageId(const QString &channelId) const
     return list.isEmpty() ? QString() : list.first().id;
 }
 
+bool MessageStore::newerId(const QString &a, const QString &b)
+{
+    if (a.isEmpty())
+        return false;
+    if (b.isEmpty())
+        return true;
+    return a.toULongLong() > b.toULongLong();
+}
+
+void MessageStore::ingestReadState(const QJsonObject &readyPayload)
+{
+    const QJsonValue raw = readyPayload.value(QStringLiteral("read_state"));
+    QJsonArray entries;
+    if (raw.isArray())
+        entries = raw.toArray();
+    else if (raw.isObject())
+        entries = raw.toObject().value(QStringLiteral("entries")).toArray();
+
+    for (const QJsonValue &value : entries) {
+        const QJsonObject entry = value.toObject();
+        const QString channelId = entry.value(QStringLiteral("id")).toString();
+        if (channelId.isEmpty())
+            continue;
+
+        ReadMark mark;
+        mark.lastReadId = entry.value(QStringLiteral("last_message_id")).toString();
+        mark.mentions = entry.value(QStringLiteral("mention_count")).toInt();
+        const QString latest = m_channels.value(channelId).lastMessageId;
+        mark.unread = newerId(latest, mark.lastReadId) || mark.mentions > 0;
+        m_reads.insert(channelId, mark);
+    }
+}
+
+void MessageStore::noteIncoming(const QString &channelId, const QString &messageId, bool mention,
+                                bool seen)
+{
+    if (channelId.isEmpty() || messageId.isEmpty())
+        return;
+
+    if (m_channels.contains(channelId))
+        m_channels[channelId].lastMessageId = messageId;
+
+    ReadMark mark = m_reads.value(channelId);
+    if (seen) {
+        mark.lastReadId = messageId;
+        mark.mentions = 0;
+        mark.unread = false;
+    } else if (newerId(messageId, mark.lastReadId)) {
+        mark.unread = true;
+        if (mention)
+            ++mark.mentions;
+    }
+    m_reads.insert(channelId, mark);
+    emit readStateChanged();
+}
+
+void MessageStore::markChannelRead(const QString &channelId, const QString &messageId)
+{
+    if (channelId.isEmpty())
+        return;
+
+    ReadMark mark = m_reads.value(channelId);
+    if (!messageId.isEmpty())
+        mark.lastReadId = messageId;
+    mark.mentions = 0;
+    mark.unread = false;
+    m_reads.insert(channelId, mark);
+    emit readStateChanged();
+}
+
+bool MessageStore::isUnread(const QString &channelId) const
+{
+    const ReadMark mark = m_reads.value(channelId);
+    if (mark.unread || mark.mentions > 0)
+        return true;
+    return newerId(m_channels.value(channelId).lastMessageId, mark.lastReadId);
+}
+
+int MessageStore::mentionCount(const QString &channelId) const
+{
+    return m_reads.value(channelId).mentions;
+}
+
+bool MessageStore::guildHasUnread(const QString &guildId) const
+{
+    const GuildInfo guild = m_guilds.value(guildId);
+    for (const QString &channelId : guild.channelIds) {
+        if (isUnread(channelId))
+            return true;
+    }
+    return false;
+}
+
+int MessageStore::guildMentionCount(const QString &guildId) const
+{
+    int total = 0;
+    const GuildInfo guild = m_guilds.value(guildId);
+    for (const QString &channelId : guild.channelIds)
+        total += mentionCount(channelId);
+    return total;
+}
+
 void MessageStore::applyReaction(const QJsonObject &data, bool added, const QString &selfUserId)
 {
     const QString channelId = data.value(QStringLiteral("channel_id")).toString();
@@ -1115,6 +1232,8 @@ int MessageStore::appendMessage(const QJsonObject &rawMessage)
         return -1;
 
     list.append(message);
+    if (m_channels.contains(message.channelId))
+        m_channels[message.channelId].lastMessageId = message.id;
 
     // Keep memory flat on busy channels. The caller has to move its window
     // back by the same number, or the next redraw points at the wrong message.

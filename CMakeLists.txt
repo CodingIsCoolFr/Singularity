@@ -1,5 +1,5 @@
 ﻿cmake_minimum_required(VERSION 3.21)
-project(Singularity VERSION 0.6.4 LANGUAGES CXX)
+project(Singularity VERSION 0.6.5 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -83,6 +83,8 @@ qt_add_executable(Singularity WIN32
     src/core/ScreenCapture.cpp
     src/core/ScreenShare.h
     src/core/ScreenShare.cpp
+    src/core/CameraShare.h
+    src/core/CameraShare.cpp
     src/core/Updater.h
     src/core/Updater.cpp
     src/ui/UpdateFlow.h
