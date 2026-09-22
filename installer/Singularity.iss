@@ -18,7 +18,7 @@
 ;     iscc installer\Singularity.iss
 
 #define AppName       "Singularity"
-#define AppVersion    "0.6.39"
+#define AppVersion    "0.6.40"
 #define AppPublisher  "Singularity"
 #define AppExe        "Singularity.exe"
 
@@ -63,11 +63,16 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ;
 ; Restart Manager treats Explorer as a locker of this exe, because Explorer
 ; keeps the shortcut target open to draw its icon, and then shuts Explorer
-; down. That is the taskbar ignoring clicks for the whole install. The running
-; copy quits itself before this copies files, and InitializeSetup waits until
-; that copy is gone. Nothing else has to close.
+; down. That is the taskbar ignoring clicks for the whole install.
+;
+; CloseApplications=no is not enough on its own. The copy that downloads this
+; still passes /CLOSEAPPLICATIONS, and that switch turns Restart Manager back
+; on. The filter is a name that is not in this install, so even then there is
+; nothing for it to close. InitializeSetup waits until Singularity.exe itself
+; has exited, which is the only process that needs to let go of the files.
 CloseApplications=no
 RestartApplications=no
+CloseApplicationsFilter=do-not-close-explorer.none
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -262,17 +267,40 @@ begin
     CloseHandle(Held);
 end;
 
+// Copies from before the mutex existed have no name to wait on. The image
+// name is enough, and it is not this installer's name.
+function SingularityImageRunning: Boolean;
+var
+  TempFile, Command: String;
+  Lines: TArrayOfString;
+  I, ResultCode: Integer;
+begin
+  TempFile := ExpandConstant('{tmp}\singularity-running.txt');
+  Command := '/C tasklist /FI "IMAGENAME eq Singularity.exe" /NH > "' + TempFile + '"';
+  Exec(ExpandConstant('{cmd}'), Command, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Result := False;
+  if LoadStringsFromFile(TempFile, Lines) then
+    for I := 0 to GetArrayLength(Lines) - 1 do
+      if Pos('Singularity.exe', Lines[I]) > 0 then
+        Result := True;
+  DeleteFile(TempFile);
+end;
+
 function InitializeSetup: Boolean;
 var
-  Tries: Integer;
+  Tries, ResultCode: Integer;
 begin
   Result := True;
-  // Thirty seconds is far longer than the program takes to finish writing
-  // settings and exit. Past that, copying anyway is better than sitting here.
+  // The program quits itself as it launches this. Give that time to finish
+  // writing settings. Only Singularity.exe is asked to close, never Explorer.
   for Tries := 1 to 150 do
   begin
-    if not SingularityStillRunning then
+    if (not SingularityStillRunning) and (not SingularityImageRunning) then
       Exit;
+    if Tries = 40 then
+      Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM Singularity.exe', '', SW_HIDE, ewNoWait, ResultCode);
+    if Tries = 100 then
+      Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM Singularity.exe', '', SW_HIDE, ewNoWait, ResultCode);
     WinSleep(200);
   end;
 end;
