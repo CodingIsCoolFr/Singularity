@@ -313,6 +313,11 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     });
 
     connect(m_store, &MessageStore::channelHistoryChanged, this, [this](const QString &channelId) {
+        // A page of older messages is applied by the scroll itself, which
+        // inserts them above the reader. Rebuilding here would replace that
+        // with the newest page and the scroll would appear to repeat.
+        if (m_applyingHistory)
+            return;
         if (channelId == m_currentChannelId)
             scheduleRender();
     });
@@ -604,17 +609,21 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         //
         // Somebody pinned to the newest message is not reading history, so
         // that alone rules it out.
-        // Back at the bottom, so the window follows the newest message again.
-        // Without this, reading a long way back would leave everything said
-        // since then off the end of what is drawn.
-        if (!m_windowAtTail && value >= bar->maximum() - 8 && bar->maximum() > 0) {
-            m_windowAtTail = true;
-            m_stickToBottom = true;
-            scheduleRender();
+        // Our own scrolling — opening a channel, restoring a place, inserting
+        // a page of history — must not be read as the reader arriving
+        // somewhere. setTextCursor(End) in particular jumps to the bottom for
+        // one moment during a redraw, and treating that as "they scrolled
+        // back down" put the newest page back on screen every time they
+        // tried to read upwards.
+        if (m_autoScrolling)
             return;
+
+        if (!m_windowAtTail && m_readerMoved && value >= bar->maximum() - 240
+            && bar->maximum() > 0) {
+            revealNewer();
         }
 
-        if (!m_stickToBottom && value <= 120 && bar->maximum() > 0)
+        if (!m_stickToBottom && m_readerMoved && value <= 240 && bar->maximum() > 0)
             reachedTop();
     });
 
@@ -2724,8 +2733,24 @@ void MainWindow::renderChannel()
     // reads further up. Past the ceiling the window slides: messages appear at
     // the top and leave at the bottom, and the cost of a redraw stops growing.
     const int held = int(all.size());
-    const int take = qMin(qMin(m_renderWindow, MaxRenderedMessages), held);
-    const int first = m_windowAtTail ? held - take : qBound(0, m_renderFirst, held - take);
+    int take = 0;
+    int first = 0;
+    if (!sameChannel) {
+        // A channel opens on its newest messages.
+        take = qMin(RenderWindowStep, held);
+        first = held - take;
+        m_windowAtTail = true;
+    } else if (m_windowAtTail) {
+        // Still following the end, so a redraw keeps the newest page, and
+        // keeps it at least as long as what was already on screen.
+        take = qMin(held, qMax(m_renderedCount, RenderWindowStep));
+        take = qMin(take, MaxRenderedMessages);
+        first = held - take;
+    } else {
+        // Reading backwards. The page stays where the reader left it.
+        take = qMin(held, m_renderedCount > 0 ? m_renderedCount : RenderWindowStep);
+        first = qBound(0, m_renderFirst, qMax(0, held - take));
+    }
 
     const QList<MessageInfo> messages = all.mid(first, take);
 
@@ -2761,7 +2786,12 @@ void MainWindow::renderChannel()
 
     // Painting is held off until the position has been decided, so the reader
     // never sees the conversation at the wrong place for a frame.
+    //
+    // The scroll changes this causes are ours, not the reader's. Leaving them
+    // unmarked made a redraw while reading history look like they had jumped
+    // back to the newest message, and the next draw put that page back.
     m_messageView->setUpdatesEnabled(false);
+    m_autoScrolling = true;
     m_messageView->setHtml(html);
 
     // The cursor goes to the end, and this is not housekeeping.
@@ -2774,6 +2804,7 @@ void MainWindow::renderChannel()
     QTextCursor end(m_messageView->document());
     end.movePosition(QTextCursor::End);
     m_messageView->setTextCursor(end);
+    m_autoScrolling = false;
 
     const qint64 laidOutMs = clock.elapsed() - builtMs;
 
@@ -2801,6 +2832,7 @@ void MainWindow::renderChannel()
 
     m_renderedCount = messages.size();
     m_renderFirst = first;
+    m_windowAtTail = first + messages.size() >= held;
     m_renderedIds = drawnIds;
     m_renderedChannelId = m_currentChannelId;
 
@@ -3012,15 +3044,20 @@ void MainWindow::appendMessageToView(const MessageInfo &message, bool grouped)
     QScrollBar *bar = m_messageView->verticalScrollBar();
     const bool wasAtBottom = bar->value() >= bar->maximum() - 40;
 
+    m_autoScrolling = true;
     QTextCursor cursor(m_messageView->document());
     cursor.movePosition(QTextCursor::End);
     cursor.insertHtml(messageHtml(message, grouped));
+    m_autoScrolling = false;
 
     // One more message is on screen than a moment ago, and the drawn window
     // has to say so or the next redraw would leave it out.
     ++m_renderedCount;
     m_renderedIds.append(message.id);
     m_renderWindow = qMin(MaxRenderedMessages, m_renderWindow + 1);
+
+    if (m_renderedCount > MaxRenderedMessages)
+        trimRenderedStart(m_renderedCount - (MaxRenderedMessages - RenderWindowStep));
 
     if (wasAtBottom) {
         m_stickToBottom = true;
@@ -3941,66 +3978,260 @@ void MainWindow::tryStartStream()
     m_streamEndpoint.clear();
 }
 
+// Inserts messages into the document and moves the scrollbar by the height
+// that appeared, so the messages already on screen do not jump.
+//
+// `above` means the new rows belong at the top. The scrollbar has to move
+// down by their height, or the reader is thrown to the new top and the page
+// they were reading disappears. Below, the scrollbar is already right.
+bool MainWindow::insertMessagesIntoView(int storeIndex, int count, bool above)
+{
+    if (count <= 0 || m_currentChannelId.isEmpty())
+        return false;
+
+    const QList<MessageInfo> all = m_store->messages(m_currentChannelId);
+    if (storeIndex < 0 || storeIndex + count > all.size())
+        return false;
+
+    if (m_renderedCount > 0) {
+        const bool contiguous = above
+            ? (storeIndex + count == m_renderFirst)
+            : (storeIndex == m_renderFirst + m_renderedCount);
+        if (!contiguous)
+            return false;
+    }
+
+    QString html;
+    html.reserve(count * 400);
+    QStringList ids;
+    ids.reserve(count);
+
+    MessageInfo previous;
+    bool havePrevious = false;
+    if (!above && m_renderedCount > 0 && storeIndex > 0) {
+        previous = all.at(storeIndex - 1);
+        havePrevious = true;
+    }
+
+    for (int i = 0; i < count; ++i) {
+        const MessageInfo &message = all.at(storeIndex + i);
+        const bool grouped = havePrevious && shouldGroup(previous, message);
+        html += messageHtml(message, grouped);
+        ids.append(message.id);
+        previous = message;
+        havePrevious = true;
+    }
+
+    QTextDocument *document = m_messageView->document();
+    QScrollBar *bar = m_messageView->verticalScrollBar();
+    const int value = bar->value();
+    const int heightBefore = qRound(document->size().height());
+
+    // Remember the line on screen before the document changes, in case the
+    // insert cannot be kept and the page has to be drawn again.
+    captureScrollAnchor();
+
+    m_messageView->setUpdatesEnabled(false);
+    m_autoScrolling = true;
+
+    QTextCursor cursor(document);
+    cursor.beginEditBlock();
+    if (above)
+        cursor.movePosition(QTextCursor::Start);
+    else
+        cursor.movePosition(QTextCursor::End);
+    cursor.insertHtml(html);
+    cursor.endEditBlock();
+
+    if (above) {
+        m_renderedIds = ids + m_renderedIds;
+        m_renderFirst = storeIndex;
+    } else {
+        for (const QString &id : ids)
+            m_renderedIds.append(id);
+    }
+    m_renderedCount += count;
+    m_windowAtTail = m_renderFirst + m_renderedCount >= all.size();
+
+    const QList<QTextFrame *> rows = document->rootFrame()->childFrames();
+    const bool framesMatch = rows.size() == m_renderedCount;
+
+    const int delta = qRound(document->size().height()) - heightBefore;
+    if (above && delta > 0)
+        bar->setValue(qBound(0, value + delta, bar->maximum()));
+
+    m_autoScrolling = false;
+    m_stickToBottom = false;
+    m_messageView->setUpdatesEnabled(true);
+
+    if (!framesMatch) {
+        // The rows and the messages have to stay in the same order or a
+        // later edit cannot find its frame. Draw the page recorded above
+        // instead, and keep the reader on the line they were already on.
+        wlog(QStringLiteral("ui"),
+             QStringLiteral("history insert left %1 frames for %2 messages; redrawing the page")
+                 .arg(rows.size())
+                 .arg(m_renderedCount));
+        if (above)
+            m_windowAtTail = false;
+        renderChannel();
+        return true;
+    }
+
+    m_anchorMessageId.clear();
+
+    // The message that used to be first may now belong to the one above it,
+    // and was drawn with a header it should no longer have.
+    if (above && m_renderedCount > count) {
+        const MessageInfo &lastNew = all.at(storeIndex + count - 1);
+        const MessageInfo &oldFirst = all.at(storeIndex + count);
+        if (shouldGroup(lastNew, oldFirst))
+            replaceMessageInView(oldFirst.id);
+    }
+
+    wlog(QStringLiteral("ui"),
+         QStringLiteral("showing messages %1-%2 of %3")
+             .arg(m_renderFirst + 1)
+             .arg(m_renderFirst + m_renderedCount)
+             .arg(all.size()));
+    return true;
+}
+
+bool MainWindow::prependMessagesToView(int storeIndex, int count)
+{
+    return insertMessagesIntoView(storeIndex, count, true);
+}
+
+bool MainWindow::appendMessagesToView(int storeIndex, int count)
+{
+    return insertMessagesIntoView(storeIndex, count, false);
+}
+
+void MainWindow::trimRenderedEnd(int keep)
+{
+    if (keep < 1 || m_renderedCount <= keep)
+        return;
+
+    QTextDocument *document = m_messageView->document();
+    const QList<QTextFrame *> rows = document->rootFrame()->childFrames();
+    if (rows.size() != m_renderedCount)
+        return;
+
+    const int from = qMax(0, rows.at(keep)->firstPosition() - 1);
+    m_autoScrolling = true;
+    QTextCursor cursor(document);
+    cursor.beginEditBlock();
+    cursor.setPosition(from);
+    cursor.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+    cursor.removeSelectedText();
+    cursor.endEditBlock();
+    m_autoScrolling = false;
+
+    while (m_renderedIds.size() > keep)
+        m_renderedIds.removeLast();
+    m_renderedCount = keep;
+    m_windowAtTail = false;
+}
+
+void MainWindow::trimRenderedStart(int drop)
+{
+    if (drop <= 0 || drop >= m_renderedCount)
+        return;
+
+    QTextDocument *document = m_messageView->document();
+    const QList<QTextFrame *> rows = document->rootFrame()->childFrames();
+    if (rows.size() != m_renderedCount)
+        return;
+
+    const int heightBefore = qRound(document->size().height());
+    const int to = rows.at(drop - 1)->lastPosition() + 1;
+
+    m_autoScrolling = true;
+    QTextCursor cursor(document);
+    cursor.beginEditBlock();
+    cursor.setPosition(0);
+    cursor.setPosition(qMin(to, document->characterCount()), QTextCursor::KeepAnchor);
+    cursor.removeSelectedText();
+    cursor.endEditBlock();
+
+    const int delta = heightBefore - qRound(document->size().height());
+    QScrollBar *bar = m_messageView->verticalScrollBar();
+    bar->setValue(qMax(0, bar->value() - delta));
+    m_autoScrolling = false;
+
+    m_renderFirst += drop;
+    m_renderedCount -= drop;
+    m_renderedIds = m_renderedIds.mid(drop);
+}
+
 // Somebody has scrolled to the top and wants what is above.
 //
-// There are two different things that can mean, and telling them apart is the
-// point of this. Usually the messages are already here and simply were not
-// drawn, because a channel opens showing only the newest handful - so the
-// answer is to draw more, which is instant and needs no network at all. Only
-// when everything held for this channel is already on screen is there
-// anything to ask Discord for.
+// The messages already held are put in above the ones on screen, and the
+// scrollbar moves by their height so the reader stays on the line they were
+// reading. They then scroll up into the new lines. Replacing the whole page
+// and pinning the old top line back to the top is what made every scroll
+// land on the same messages.
 void MainWindow::reachedTop()
 {
-    if (m_currentChannelId.isEmpty())
+    if (m_currentChannelId.isEmpty() || m_loadingOlder)
         return;
 
-    // A hard stop on doing this twice for one scroll.
-    //
-    // This is what ran away. Growing the window is instant, unlike a fetch,
-    // so there was no request in flight to act as a guard - and the anchor
-    // that keeps the reader's place puts them near the top again by design,
-    // which fires this, which grows it again. Seven times in twenty seconds,
-    // each redraw costing more than the last.
-    if (m_growCooldown.isValid() && m_growCooldown.elapsed() < 400)
+    if (m_growCooldown.isValid() && m_growCooldown.elapsed() < 200)
         return;
 
-    const int held = m_store->messages(m_currentChannelId).size();
-
-    const bool canDrawMore = m_renderedCount < held && m_renderWindow < MaxRenderedMessages;
-    const bool canSlideBack = m_renderFirst > 0;
-
-    // Nothing happens without a fresh push on the wheel.
-    //
-    // This is the guard that was missing twice. Reaching the top is a
-    // position, and a position stays true for as long as nobody moves - so
-    // anything triggered by it will trigger again on the next scroll event,
-    // and again, whether or not the person did anything. Asking instead
-    // whether they have scrolled since the last time makes it an action, and
-    // an action happens once.
     if (!m_scrolledSinceLoad)
         return;
+
+    const QList<MessageInfo> all = m_store->messages(m_currentChannelId);
+    const int held = all.size();
+    if (held == 0 || m_renderedCount == 0)
+        return;
+
     m_scrolledSinceLoad = false;
     m_growCooldown.restart();
 
-    // Whatever happens next, the reader stays looking at the message they are
-    // looking at. Nothing below computes a position any more.
-    captureScrollAnchor();
-
-    if (!canDrawMore && !canSlideBack) {
-        loadOlderMessages();
+    if (m_renderFirst > 0) {
+        const int count = qMin(RenderWindowStep, m_renderFirst);
+        if (!prependMessagesToView(m_renderFirst - count, count)) {
+            m_renderFirst = qMax(0, m_renderFirst - count);
+            m_windowAtTail = false;
+            captureScrollAnchor();
+            renderChannel();
+        }
+        if (m_renderedCount > MaxRenderedMessages)
+            trimRenderedEnd(MaxRenderedMessages - RenderWindowStep);
         return;
     }
 
-    if (canDrawMore) {
-        m_renderWindow = qMin(MaxRenderedMessages, m_renderedCount + RenderWindowStep);
-    } else {
-        // At full size, so the window slides: messages arrive at the top and
-        // the same number leave at the bottom.
-        m_windowAtTail = false;
-        m_renderFirst = qMax(0, m_renderFirst - RenderWindowStep);
+    loadOlderMessages();
+}
+
+void MainWindow::revealNewer()
+{
+    if (m_currentChannelId.isEmpty() || m_windowAtTail)
+        return;
+
+    const int held = m_store->messages(m_currentChannelId).size();
+    const int drawnEnd = m_renderFirst + m_renderedCount;
+    if (drawnEnd >= held) {
+        m_windowAtTail = true;
+        return;
     }
 
-    renderChannel();
+    if (m_growCooldown.isValid() && m_growCooldown.elapsed() < 200)
+        return;
+    m_growCooldown.restart();
+
+    const int count = qMin(RenderWindowStep, held - drawnEnd);
+    if (!appendMessagesToView(drawnEnd, count)) {
+        m_windowAtTail = m_renderFirst + m_renderedCount >= held;
+        captureScrollAnchor();
+        renderChannel();
+        return;
+    }
+
+    if (m_renderedCount > MaxRenderedMessages)
+        trimRenderedStart(m_renderedCount - (MaxRenderedMessages - RenderWindowStep));
 }
 
 void MainWindow::loadOlderMessages()
@@ -4017,32 +4248,30 @@ void MainWindow::loadOlderMessages()
     m_loadingOlder = true;
     const QString channelId = m_currentChannelId;
 
-    // Which message the reader is on, so the fifty that are about to arrive
-    // above it do not move them. Captured now rather than when the reply
-    // lands, because by then the view may have moved on.
-    if (m_anchorMessageId.isEmpty())
-        captureScrollAnchor();
-
     m_rest->fetchMessages(
         channelId, 50,
         [this, channelId](const QJsonArray &messages) {
             m_loadingOlder = false;
 
+            // The store signal would otherwise rebuild the channel from the
+            // newest message, which is the scroll repeating itself.
+            m_applyingHistory = true;
             const int added = m_store->prependHistory(channelId, messages);
+            m_applyingHistory = false;
 
-            // The window moves back over the messages that just arrived, but
-            // not all the way to the oldest of them.
-            //
-            // Going to the very start looked right and was the second
-            // runaway: it put the reader at the top of the document, which is
-            // what asks for more, so another fifty were fetched, and another -
-            // four hundred messages in under two seconds. Stopping one step
-            // short leaves a step of new messages above them, which is both
-            // what they were reaching for and far enough from the top that
-            // the next fetch waits until they scroll again.
             if (added > 0 && channelId == m_currentChannelId) {
-                m_windowAtTail = false;
-                m_renderFirst = qMax(0, added - RenderWindowStep);
+                // The page already on screen shifted down by the new rows.
+                m_renderFirst += added;
+                const int count = qMin(added, RenderWindowStep);
+                const int index = m_renderFirst - count;
+                if (!prependMessagesToView(index, count)) {
+                    m_renderFirst = index;
+                    m_windowAtTail = false;
+                    captureScrollAnchor();
+                    renderChannel();
+                }
+                if (m_renderedCount > MaxRenderedMessages)
+                    trimRenderedEnd(MaxRenderedMessages - RenderWindowStep);
             }
 
             if (added == 0) {

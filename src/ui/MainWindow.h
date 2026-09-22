@@ -102,18 +102,33 @@ private:
     // Discord for more when there is nothing left undrawn.
     void reachedTop();
 
+    // The other direction. Messages that were let go of while reading upwards
+    // are put back when the reader comes back down, so the scrollbar keeps
+    // moving through the conversation instead of stopping at a cut edge.
+    void revealNewer();
+
+    // Inserts a run of messages that sit immediately above or below what is
+    // already drawn. The scrollbar moves by exactly the height that was
+    // inserted, so the messages on screen stay where they are and the new
+    // ones are simply there to scroll into.
+    bool insertMessagesIntoView(int storeIndex, int count, bool above);
+    bool prependMessagesToView(int storeIndex, int count);
+    bool appendMessagesToView(int storeIndex, int count);
+
+    // Drops drawn messages that are far off the end the reader is not looking
+    // at, once the document has grown past the ceiling. What is on screen is
+    // left alone.
+    void trimRenderedStart(int drop);
+    void trimRenderedEnd(int keep);
+
     // How many messages a channel opens with, and how many more each scroll to
     // the top adds. Forty is several screens' worth on any window somebody
     // would actually use.
     static constexpr int RenderWindowStep = 40;
 
-    // The ceiling the window stops growing at.
-    //
-    // 0.5.3 had no ceiling and one session reached three hundred and fifty
-    // messages drawn, at 301 ms a redraw. Past this the window slides instead:
-    // messages appear at the top and leave at the bottom, so a redraw costs
-    // the same however far back somebody reads.
-    static constexpr int MaxRenderedMessages = 120;
+    // Past this the far end of the document, the end nobody is looking at, is
+    // dropped. The conversation on screen does not get smaller.
+    static constexpr int MaxRenderedMessages = 240;
 
     // What is drawn, against what is held. They differ because a channel opens
     // showing only its newest messages.
@@ -294,6 +309,11 @@ private:
 
     void loadOlderMessages();
     bool m_loadingOlder = false;
+
+    // Set while a history page is being merged into the store, so the
+    // "history changed" signal does not throw away the document and draw the
+    // newest page again. That redraw was the scroll repeating itself.
+    bool m_applyingHistory = false;
     QSet<QString> m_fullyLoaded;
     // The reader's place, kept as a message rather than a pixel count. See
     // captureScrollAnchor for why the pixel count never worked.
