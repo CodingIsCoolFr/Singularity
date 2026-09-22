@@ -18,7 +18,7 @@
 ;     iscc installer\Singularity.iss
 
 #define AppName       "Singularity"
-#define AppVersion    "0.6.10"
+#define AppVersion    "0.6.11"
 #define AppPublisher  "Singularity"
 #define AppExe        "Singularity.exe"
 
@@ -271,6 +271,9 @@ begin
   // was the Ready page, which stayed in the way despite being disabled. Left
   // in because the difference is the whole look.
   WizardForm.BorderStyle := bsNone;
+  // Stay in front for the whole install. The window has no title bar, so if
+  // another program covers it there is no way to find it again.
+  WizardForm.FormStyle := fsStayOnTop;
   WizardForm.ClientWidth := W;
   WizardForm.ClientHeight := H;
   WizardForm.Position := poScreenCenter;

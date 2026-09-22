@@ -136,7 +136,14 @@ Updater *updater()
                          g_progress->setWindowTitle(QStringLiteral("Update"));
                          g_progress->setAttribute(Qt::WA_DeleteOnClose);
                          g_progress->setMinimumDuration(0);
+                         g_progress->setWindowModality(Qt::ApplicationModal);
+                         // A download that slips behind the window you were
+                         // using looks like the update never started.
+                         g_progress->setWindowFlags(g_progress->windowFlags() | Qt::WindowStaysOnTopHint);
                          g_progress->setValue(0);
+                         g_progress->show();
+                         g_progress->raise();
+                         g_progress->activateWindow();
 
                          updater()->download();
                      });
