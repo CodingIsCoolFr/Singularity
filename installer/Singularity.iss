@@ -18,7 +18,7 @@
 ;     iscc installer\Singularity.iss
 
 #define AppName       "Singularity"
-#define AppVersion    "0.6.51"
+#define AppVersion    "0.6.52"
 #define AppPublisher  "Singularity"
 #define AppExe        "Singularity.exe"
 
@@ -33,6 +33,9 @@ VersionInfoVersion={#AppVersion}
 ; Per user, so no administrator prompt.
 PrivilegesRequired=lowest
 DefaultDirName={autopf}\{#AppName}
+; A self-update passes /DIR to a new folder beside the running copy. With
+; this left on, Inno would ignore that and overwrite the copy that is open.
+UsePreviousAppDir=no
 DefaultGroupName={#AppName}
 
 ; Nothing to click through. Each of these pages asked something that was
@@ -303,11 +306,21 @@ begin
   DeleteFile(TempFile);
 end;
 
+function SkipRunningWait: Boolean;
+begin
+  // Set by the program when the new files are going into their own folder.
+  // The open copy is not locking those files, and closing it is what used
+  // to hand the foreground to this window.
+  Result := CompareText(ExpandConstant('{param:SKIPWAIT|0}'), '1') = 0;
+end;
+
 function InitializeSetup: Boolean;
 var
   Tries, ResultCode: Integer;
 begin
   Result := True;
+  if SkipRunningWait then
+    Exit;
   // The program quits itself as it launches this. Give that time to finish
   // writing settings. Only Singularity.exe is asked to close, never Explorer.
   for Tries := 1 to 150 do
@@ -332,34 +345,38 @@ end;
 // to whatever is on screen. A foreground window that then stops answering
 // is the taskbar holding every click until the unpack ends.
 procedure Reveal;
-var
-  Style: Longint;
 begin
   if WizardForm = nil then
     Exit;
-  if not WizardSilent then
+  if WizardSilent then
   begin
-    WizardForm.Visible := True;
-    ShowWindow(WizardForm.Handle, SW_SHOW);
+    WizardForm.Visible := False;
+    ShowWindow(WizardForm.Handle, 0);
+    if GetForegroundWindow = WizardForm.Handle then
+      SetForegroundWindow(GetShellWindow);
     Exit;
   end;
 
-  // GWL_EXSTYLE, WS_EX_NOACTIVATE. A window with this style is not chosen
-  // as the foreground when the previous foreground program exits. The style
-  // has to be on before the window is shown, or showing it takes the foreground.
-  Style := GetWindowLongW(WizardForm.Handle, -20);
-  if (Style and $08000000) = 0 then
-    SetWindowLongW(WizardForm.Handle, -20, Style or $08000000);
   WizardForm.Visible := True;
-  ShowWindow(WizardForm.Handle, 4);
-  if GetForegroundWindow = WizardForm.Handle then
-    SetForegroundWindow(GetShellWindow);
+  ShowWindow(WizardForm.Handle, SW_SHOW);
 end;
 
 procedure InitializeWizard;
 var
   W, H: Integer;
 begin
+  // A self-update must not put a window in front. The unpack runs on this
+  // thread, and a front window that stops answering is the taskbar holding
+  // every click. The program draws the hole itself while this runs hidden.
+  if WizardSilent then
+  begin
+    WizardForm.Visible := False;
+    ShowWindow(WizardForm.Handle, 0);
+    if GetForegroundWindow = WizardForm.Handle then
+      SetForegroundWindow(GetShellWindow);
+    Exit;
+  end;
+
   LoadFrames;
   FrameIndex := 0;
   LastPercent := -1;

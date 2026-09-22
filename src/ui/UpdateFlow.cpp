@@ -9,6 +9,8 @@
 #include <QEvent>
 #include <functional>
 
+#include <QCoreApplication>
+#include <QDir>
 #include <QApplication>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -172,6 +174,21 @@ public:
         releaseForegroundLock();
     }
 
+    void showInstalling()
+    {
+        m_yes->hide();
+        m_no->hide();
+        m_notes->hide();
+        m_bar->hide();
+        m_title->setText(QStringLiteral("Installing"));
+        m_body->setText(QStringLiteral("Installing Singularity %1.\n\n"
+                                       "The new copy is being written beside this one, "
+                                       "so this window stays open and the taskbar keeps working.")
+                            .arg(m_version));
+        place();
+        releaseForegroundLock();
+    }
+
     void setProgress(qint64 got, qint64 total)
     {
         if (total <= 0)
@@ -310,39 +327,63 @@ Updater *updater()
                      });
 
     QObject::connect(instance, &Updater::readyToInstall, qApp, [](const QString &path) {
-        if (g_offer)
-            g_offer->close();
         releaseForegroundLock();
 
-        // /SILENT shows the black hole. It is not topmost and it does not
-        // take focus, so the taskbar keeps working while it turns.
-        const QStringList switches{
-            QStringLiteral("/SILENT"),
+        // The folder this copy lives in. A copy already under versions\<n>
+        // belongs to the folder above that, so the next one is a sibling
+        // rather than nested inside it.
+        QDir root(QCoreApplication::applicationDirPath());
+        const QString here = QDir::cleanPath(root.absolutePath());
+        if (root.cdUp() && root.dirName() == QLatin1String("versions"))
+            root.cdUp();
+        else
+            root.setPath(here);
+
+        QString version = updater()->latestVersion();
+        if (version.startsWith(QLatin1Char('v'), Qt::CaseInsensitive))
+            version.remove(0, 1);
+        const QString dest = QDir::cleanPath(root.filePath(QStringLiteral("versions/") + version));
+        QDir().mkpath(dest);
+
+        if (g_offer)
+            g_offer->showInstalling();
+
+        // Discord writes the new version beside the one that is open and
+        // never puts an installer in front. This copy keeps drawing and
+        // keeps taking clicks. The installer has no window of its own, and
+        // it does not wait for this process to exit, because it is not
+        // replacing these files.
+        auto *install = new QProcess(qApp);
+        install->setProgram(path);
+        install->setArguments({
+            QStringLiteral("/VERYSILENT"),
             QStringLiteral("/SUPPRESSMSGBOXES"),
             QStringLiteral("/NORESTART"),
-
-            // This copy quits on its own, and the installer waits for that.
-            // Asking Windows to close whoever has the exe open shuts Explorer
-            // down with it, which is the taskbar freezing after every update.
             QStringLiteral("/NOCLOSEAPPLICATIONS"),
-
-            // The installer starts Singularity again itself, from its [Run]
-            // section. Letting Windows restart it as well would leave two.
             QStringLiteral("/NORESTARTAPPLICATIONS"),
-        };
-
-        wlog(QStringLiteral("update"), QStringLiteral("installing silently from %1").arg(path));
-
-        // Started before closing, because once this process is gone there is
-        // nothing left to start anything.
-        if (!QProcess::startDetached(path, switches)) {
+            QStringLiteral("/SKIPWAIT=1"),
+            QStringLiteral("/DIR=") + QDir::toNativeSeparators(dest),
+        });
+        QObject::connect(install, &QProcess::finished, qApp, [install](int code, QProcess::ExitStatus) {
+            install->deleteLater();
+            releaseForegroundLock();
+            if (code != 0) {
+                QMessageBox::warning(g_owner, QStringLiteral("Could not install the update"),
+                                     QStringLiteral("The installer stopped before it finished."));
+                return;
+            }
+            // The installer's own last step starts the new copy.
+            qApp->quit();
+        });
+        QObject::connect(install, &QProcess::errorOccurred, qApp, [install](QProcess::ProcessError) {
             QMessageBox::warning(g_owner, QStringLiteral("Could not start the installer"),
-                                 QStringLiteral("It was downloaded to:\n%1").arg(path));
-            return;
-        }
+                                 install->errorString());
+            install->deleteLater();
+        });
 
-        qApp->closeAllWindows();
-        qApp->quit();
+        wlog(QStringLiteral("update"),
+             QStringLiteral("installing %1 beside the running copy, into %2").arg(version, dest));
+        install->start();
     });
 
     return instance;
