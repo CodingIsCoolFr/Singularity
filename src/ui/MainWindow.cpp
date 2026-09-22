@@ -196,7 +196,7 @@ QPushButton *captionButton(QWidget *parent, const QString &name, const QString &
     button->setObjectName(name);
     button->setFlat(true);
     button->setFocusPolicy(Qt::NoFocus);
-    button->setFixedSize(46, 36);
+    button->setFixedSize(46, 32);
     button->setCursor(Qt::ArrowCursor);
     return button;
 }
@@ -835,13 +835,16 @@ void MainWindow::buildUi()
     m_menuBar = new QMenuBar(m_aurora);
     m_menuBar->setObjectName(QStringLiteral("AppMenu"));
     m_menuBar->setNativeMenuBar(false);
-    titleLayout->addWidget(m_menuBar);
+    m_menuBar->setFixedHeight(32);
+    titleLayout->addWidget(m_menuBar, 0, Qt::AlignVCenter);
 
-    // Empty strip between the menu and the caption buttons. Presses here are
-    // declined, which is what makes Windows treat them as the caption.
+    // Empty strip between the menu and the caption buttons. A press here is
+    // the caption, so the window can be dragged and snapped. The menu and the
+    // buttons are not part of that strip: a press on them has to reach them.
     auto *dragStrip = new TitleDragArea(m_aurora);
+    dragStrip->setObjectName(QStringLiteral("TitleDrag"));
     dragStrip->setFixedHeight(32);
-    titleLayout->addWidget(dragStrip, 1);
+    titleLayout->addWidget(dragStrip, 1, Qt::AlignVCenter);
 
     auto *minBtn = captionButton(m_aurora, QStringLiteral("CaptionMin"), QStringLiteral("–"));
     m_captionMax = captionButton(m_aurora, QStringLiteral("CaptionMax"), QStringLiteral("□"));
@@ -854,9 +857,9 @@ void MainWindow::buildUi()
             showMaximized();
     });
     connect(closeBtn, &QPushButton::clicked, this, &QWidget::close);
-    titleLayout->addWidget(minBtn);
-    titleLayout->addWidget(m_captionMax);
-    titleLayout->addWidget(closeBtn);
+    titleLayout->addWidget(minBtn, 0, Qt::AlignVCenter);
+    titleLayout->addWidget(m_captionMax, 0, Qt::AlignVCenter);
+    titleLayout->addWidget(closeBtn, 0, Qt::AlignVCenter);
     shell->addLayout(titleLayout);
 
     auto *rootLayout = new QHBoxLayout();
@@ -5442,15 +5445,10 @@ void MainWindow::layoutTitleRow()
     if (!m_titleLayout)
         return;
 
-    // Restored, the frame clips the first few pixels, so the row starts
-    // below that and the buttons sit on the menu's line. Maximised, Windows
-    // has already moved the client down off the top of the screen.
-    int top = 8;
-#ifdef Q_OS_WIN
-    if (!isMaximized())
-        top = GetSystemMetrics(SM_CXPADDEDBORDER) + GetSystemMetrics(SM_CYSIZEFRAME);
-#endif
-    m_titleLayout->setContentsMargins(8, top, 8, 0);
+    // A few pixels, so the row clears the rounded corner and still sits on
+    // the top line. The sizing-border metric is much taller than that corner
+    // and was pushing the buttons down off the menu.
+    m_titleLayout->setContentsMargins(8, 4, 8, 0);
 }
 
 void MainWindow::showEvent(QShowEvent *event)
@@ -5515,6 +5513,32 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
             // a press-and-drag run Windows' snap tracking until the window
             // stopped answering.
             change->styleNew &= ~WS_SYSMENU;
+        }
+
+        // The top band is the caption, which is what makes a drag snap. The
+        // menu and the three buttons live in that band too, and a caption hit
+        // there swallows the click: the menu never opens, and a button press
+        // becomes a drag. Those widgets stay client area.
+        if (msg->message == WM_NCHITTEST) {
+            const QPoint global(GET_X_LPARAM(msg->lParam), GET_Y_LPARAM(msg->lParam));
+            const QPoint local = mapFromGlobal(global);
+            constexpr int edge = 6;
+            const bool onEdge = local.x() < edge || local.y() < edge || local.x() >= width() - edge
+                || local.y() >= height() - edge;
+            if (!onEdge) {
+                for (QWidget *widget = childAt(local); widget && widget != this;
+                     widget = widget->parentWidget()) {
+                    const QString name = widget->objectName();
+                    if (widget == m_menuBar || name.startsWith(QLatin1String("Caption"))) {
+                        *result = HTCLIENT;
+                        return true;
+                    }
+                    if (name == QLatin1String("TitleDrag")) {
+                        *result = HTCAPTION;
+                        return true;
+                    }
+                }
+            }
         }
     }
     return QMainWindow::nativeEvent(eventType, message, result);
