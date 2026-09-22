@@ -35,6 +35,37 @@ constexpr int OpStreamDelete = 19;
 constexpr int OpStreamWatch = 20;
 constexpr int OpStreamSetPaused = 22;
 
+// These arrive dozens of times a second in a large server. Writing each one
+// to disk happened on the same thread that plays a call, which is why a busy
+// channel sounded late. They are still handled. They are just not logged.
+bool routineGatewayEvent(const QString &name)
+{
+    return name == QLatin1String("PRESENCE_UPDATE")
+        || name == QLatin1String("VOICE_STATE_UPDATE")
+        || name == QLatin1String("GUILD_MEMBER_LIST_UPDATE")
+        || name == QLatin1String("GUILD_MEMBER_UPDATE")
+        || name == QLatin1String("MESSAGE_CREATE")
+        || name == QLatin1String("MESSAGE_UPDATE")
+        || name == QLatin1String("MESSAGE_DELETE")
+        || name == QLatin1String("MESSAGE_DELETE_BULK")
+        || name == QLatin1String("MESSAGE_REACTION_ADD")
+        || name == QLatin1String("MESSAGE_REACTION_ADD_MANY")
+        || name == QLatin1String("MESSAGE_REACTION_REMOVE")
+        || name == QLatin1String("TYPING_START")
+        || name == QLatin1String("CHANNEL_UPDATE")
+        || name == QLatin1String("CHANNEL_DELETE")
+        || name == QLatin1String("VOICE_CHANNEL_START_TIME_UPDATE")
+        || name == QLatin1String("VOICE_CHANNEL_STATUS_UPDATE")
+        || name == QLatin1String("PASSIVE_UPDATE_V2")
+        || name == QLatin1String("STREAM_CREATE")
+        || name == QLatin1String("STREAM_DELETE")
+        || name == QLatin1String("STREAM_SERVER_UPDATE")
+        || name == QLatin1String("STREAM_UPDATE")
+        || name == QLatin1String("CONTENT_INVENTORY_INBOX_STALE")
+        || name == QLatin1String("USER_APPLICATION_IDENTITY_UPDATE")
+        || name == QLatin1String("SESSIONS_REPLACE");
+}
+
 // Capability bitfield the desktop client sends. It tells Discord which
 // optimised payload shapes this client understands.
 constexpr int ClientCapabilities = 161789;
@@ -287,8 +318,10 @@ void GatewayClient::onTextMessage(const QString &message)
     const QJsonObject data = packet.value(QStringLiteral("d")).toObject();
 
     if (op == OpDispatch) {
-        wlog(QStringLiteral("gateway"), QStringLiteral("event %1")
-                                            .arg(packet.value(QStringLiteral("t")).toString()));
+        const QString eventName = packet.value(QStringLiteral("t")).toString();
+        if (!routineGatewayEvent(eventName)) {
+            wlog(QStringLiteral("gateway"), QStringLiteral("event %1").arg(eventName));
+        }
     } else if (op != OpHeartbeatAck) {
         wlog(QStringLiteral("gateway"), QStringLiteral("op %1").arg(op));
     }

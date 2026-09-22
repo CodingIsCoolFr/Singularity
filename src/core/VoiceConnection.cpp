@@ -2173,17 +2173,27 @@ void VoiceConnection::onPlayTick()
     if (!m_outputStream)
         return;
 
-    // Never run ahead of the sound card. Excess in the queues was already
-    // thrown away above, so sitting this tick out cannot grow into lag.
-    if (m_output && m_output->bytesFree() < FrameBytes)
-        return;
+    // One frame per tick keeps the call on time. A tick that arrives late
+    // finds the device empty, and writing only one frame then leaves a hole
+    // where the missed ones should have been. Fill what the device has room
+    // for, up to three, which is the whole cushion.
+    int budget = 1;
+    if (m_output) {
+        const int freeFrames = m_output->bytesFree() / FrameBytes;
+        budget = qBound(1, freeFrames, 3);
+    }
 
-    const QByteArray mixed = mixWaitingStreams();
-    if (mixed.isEmpty())
-        return;
+    for (int i = 0; i < budget; ++i) {
+        if (m_output && m_output->bytesFree() < FrameBytes)
+            break;
 
-    m_outputStream->write(mixed);
-    ++m_statPlayed;
+        const QByteArray mixed = mixWaitingStreams();
+        if (mixed.isEmpty())
+            break;
+
+        m_outputStream->write(mixed);
+        ++m_statPlayed;
+    }
 }
 
 void VoiceConnection::playDecoded(quint32 ssrc, const QByteArray &frame)

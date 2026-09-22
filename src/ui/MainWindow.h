@@ -217,11 +217,10 @@ private:
     QMenuBar *m_menuBar = nullptr;
     QWidget *m_titleBar = nullptr;
 
-    // Frameless window handling: which edges a point counts as grabbing, and
-    // the cursor that says so.
-    Qt::Edges edgesAt(const QPoint &pos) const;
-    static Qt::CursorShape cursorForEdges(Qt::Edges edges);
     QPushButton *m_captionMax = nullptr;
+    // Size at the moment the maximize button was pressed. A snap layout
+    // changes it before the button comes up; a plain click does not.
+    QSize m_snapClickSize;
     QTimer m_statusClearTimer;
     QLabel *m_selfAvatar = nullptr;
     QLabel *m_selfName = nullptr;

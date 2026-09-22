@@ -206,50 +206,25 @@ bool containsGlobal(const QWidget *widget, const QPoint &global)
     return widget && widget->isVisible() && widget->rect().contains(widget->mapFromGlobal(global));
 }
 
-// The strip along the top that a frameless window can be dragged by.
+// The empty part of the top strip.
 //
-// startSystemMove hands the drag to Windows rather than moving the window by
-// hand from mouse deltas. That is what makes it feel like a title bar: snap
-// to the screen edges, snap to the half of the screen, and the shake to
-// minimise everything else all come for free, and none of them can be
-// imitated by setting a position.
+// A press here is declined so Windows treats the strip as the caption.
+// Dragging that caption is what snaps the window to an edge, a corner, or
+// the whole screen, and dragging it back out is what restores the size it
+// had. Doing the move ourselves is what made a snap land and then jump back.
 class TitleDragArea : public QWidget
 {
 public:
-    TitleDragArea(QWidget *window, QWidget *parent)
+    explicit TitleDragArea(QWidget *parent)
         : QWidget(parent)
-        , m_window(window)
     {
         setAttribute(Qt::WA_TranslucentBackground, false);
         setAutoFillBackground(false);
     }
 
 protected:
-    void mousePressEvent(QMouseEvent *event) override
-    {
-        if (event->button() != Qt::LeftButton || !m_window) {
-            QWidget::mousePressEvent(event);
-            return;
-        }
-        if (QWindow *handle = m_window->windowHandle())
-            handle->startSystemMove();
-    }
-
-    // Double click does what double clicking a title bar does.
-    void mouseDoubleClickEvent(QMouseEvent *event) override
-    {
-        if (event->button() != Qt::LeftButton || !m_window) {
-            QWidget::mouseDoubleClickEvent(event);
-            return;
-        }
-        if (m_window->isMaximized())
-            m_window->showNormal();
-        else
-            m_window->showMaximized();
-    }
-
-private:
-    QWidget *m_window = nullptr;
+    void mousePressEvent(QMouseEvent *event) override { event->ignore(); }
+    void mouseDoubleClickEvent(QMouseEvent *event) override { event->ignore(); }
 };
 
 } // namespace
@@ -266,7 +241,13 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     setWindowTitle(QStringLiteral("Singularity"));
     setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
     resize(1440, 900);
-    setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
+    // Not frameless. A frameless window can be resized from its edges, and
+    // Windows will not snap it: the drag lands, then the size jumps back
+    // because there is no caption to remember the restore rectangle.
+    // ExpandedClientAreaHint keeps our own top strip painted edge to edge
+    // while the frame underneath stays a normal window.
+    setWindowFlags(Qt::Window | Qt::CustomizeWindowHint | Qt::WindowSystemMenuHint
+                   | Qt::ExpandedClientAreaHint | Qt::NoTitleBarBackgroundHint);
 
     buildUi();
     buildMenu();
@@ -837,10 +818,6 @@ void MainWindow::buildUi()
     m_aurora->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     setCentralWidget(m_aurora);
 
-    // Needed for the resize edges below: without tracking, move events only
-    // arrive while a button is held, so the cursor would never change until
-    // after the press it is meant to invite.
-    m_aurora->setMouseTracking(true);
     m_aurora->installEventFilter(this);
 
     auto *shell = new QVBoxLayout(m_aurora);
@@ -856,14 +833,9 @@ void MainWindow::buildUi()
     m_menuBar->setNativeMenuBar(false);
     titleLayout->addWidget(m_menuBar);
 
-    // Something to actually take hold of.
-    //
-    // The window is frameless, so Windows draws no title bar to drag it by,
-    // and the strip where one would be was layout stretch rather than a
-    // widget: nothing there to receive a press. This is that strip, and it
-    // hands the drag to the window manager through startSystemMove, which
-    // behaves like a real title bar including snapping to edges.
-    auto *dragStrip = new TitleDragArea(this, m_aurora);
+    // Empty strip between the menu and the caption buttons. Presses here are
+    // declined, which is what makes Windows treat them as the caption.
+    auto *dragStrip = new TitleDragArea(m_aurora);
     dragStrip->setFixedHeight(32);
     titleLayout->addWidget(dragStrip, 1);
 
@@ -4459,44 +4431,6 @@ void MainWindow::sendCurrentMessage()
         });
 }
 
-// Which window edges a point is close enough to count as grabbing.
-//
-// Ten pixels rather than the four or so Windows uses for a frame it draws
-// itself. That frame has a visible edge to aim at; this one does not, so the
-// target has to be wide enough to find by waving at the corner.
-Qt::Edges MainWindow::edgesAt(const QPoint &pos) const
-{
-    constexpr int grab = 10;
-
-    Qt::Edges edges;
-    if (pos.x() <= grab)
-        edges |= Qt::LeftEdge;
-    if (pos.x() >= m_aurora->width() - grab)
-        edges |= Qt::RightEdge;
-    if (pos.y() <= grab)
-        edges |= Qt::TopEdge;
-    if (pos.y() >= m_aurora->height() - grab)
-        edges |= Qt::BottomEdge;
-    return edges;
-}
-
-Qt::CursorShape MainWindow::cursorForEdges(Qt::Edges edges)
-{
-    if ((edges & Qt::TopEdge && edges & Qt::LeftEdge)
-        || (edges & Qt::BottomEdge && edges & Qt::RightEdge)) {
-        return Qt::SizeFDiagCursor;
-    }
-    if ((edges & Qt::TopEdge && edges & Qt::RightEdge)
-        || (edges & Qt::BottomEdge && edges & Qt::LeftEdge)) {
-        return Qt::SizeBDiagCursor;
-    }
-    if (edges & (Qt::LeftEdge | Qt::RightEdge))
-        return Qt::SizeHorCursor;
-    if (edges & (Qt::TopEdge | Qt::BottomEdge))
-        return Qt::SizeVerCursor;
-    return Qt::ArrowCursor;
-}
-
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 {
     // A person scrolling the conversation, told apart from the document
@@ -4515,36 +4449,6 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         default:
             break;
         }
-    }
-
-    // Dragging and resizing the window without a frame.
-    //
-    // The black hole covers every pixel, so it is what the mouse lands on
-    // anywhere the interface has not put a card. That makes it the right
-    // place to notice a press near an edge and hand the resize to Windows.
-    // Both of these go through the window manager rather than moving the
-    // window by hand: snapping to edges and to half the screen come with it,
-    // and neither can be imitated by setting a position.
-    if (watched == m_aurora && !isMaximized() && !isFullScreen()) {
-        if (event->type() == QEvent::MouseMove) {
-            auto *mouse = static_cast<QMouseEvent *>(event);
-            const Qt::Edges edges = edgesAt(mouse->position().toPoint());
-            m_aurora->setCursor(cursorForEdges(edges));
-        }
-
-        if (event->type() == QEvent::MouseButtonPress) {
-            auto *mouse = static_cast<QMouseEvent *>(event);
-            const Qt::Edges edges = edgesAt(mouse->position().toPoint());
-            if (mouse->button() == Qt::LeftButton && edges) {
-                if (QWindow *handle = windowHandle()) {
-                    handle->startSystemResize(edges);
-                    return true;
-                }
-            }
-        }
-
-        if (event->type() == QEvent::Leave)
-            m_aurora->unsetCursor();
     }
 
     // Clicking your own panel offers your status, and your profile under it.
@@ -5532,6 +5436,17 @@ void MainWindow::flashStatus(const QString &text, int ms)
 void MainWindow::showEvent(QShowEvent *event)
 {
     QMainWindow::showEvent(event);
+#ifdef Q_OS_WIN
+    // The HWND already exists by the first show, which is the first moment
+    // the caption bits can be forced on. WM_STYLECHANGING keeps them on
+    // afterwards, including when a snap changes the window state.
+    const HWND hwnd = reinterpret_cast<HWND>(winId());
+    LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
+    style |= WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU;
+    SetWindowLongPtr(hwnd, GWL_STYLE, style);
+    SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+#endif
     wlog(QStringLiteral("app"), QStringLiteral("main window shown"));
 }
 
@@ -5563,54 +5478,40 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
 {
     if (eventType == "windows_generic_MSG") {
         const MSG *msg = static_cast<MSG *>(message);
-        if (msg->message == WM_NCHITTEST) {
-            RECT winRect;
-            GetWindowRect(msg->hwnd, &winRect);
-            const int x = GET_X_LPARAM(msg->lParam);
-            const int y = GET_Y_LPARAM(msg->lParam);
-            // Windows reports about eight pixels for a frame it draws itself,
-            // complete with a visible edge to aim at. This window has no such
-            // edge, so eight invisible pixels is a target nobody can hit.
-            // Widened to something a person can find by waving at the corner.
-            const int border =
-                qMax(10, GetSystemMetrics(SM_CXFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER));
-            const int localX = x - winRect.left;
-            const int localY = y - winRect.top;
-            const int w = winRect.right - winRect.left;
 
-            if (!isMaximized() && !isFullScreen()) {
-                const bool left = localX < border;
-                const bool right = w - localX < border;
-                const bool top = localY < border;
-                const bool bottom = winRect.bottom - y < border;
-                if (top && left)
-                    *result = HTTOPLEFT;
-                else if (top && right)
-                    *result = HTTOPRIGHT;
-                else if (bottom && left)
-                    *result = HTBOTTOMLEFT;
-                else if (bottom && right)
-                    *result = HTBOTTOMRIGHT;
-                else if (left)
-                    *result = HTLEFT;
-                else if (right)
-                    *result = HTRIGHT;
-                else if (top)
-                    *result = HTTOP;
-                else if (bottom)
-                    *result = HTBOTTOM;
-                else if (localY < 36 && localX > 90 && localX < w - 46 * 3) {
-                    *result = HTCAPTION;
-                } else {
-                    return QMainWindow::nativeEvent(eventType, message, result);
-                }
+        // Qt writes the style from the window flags on every show and every
+        // state change, and that style has no sizing border. Snap, and the
+        // restore size that comes back when a snapped window is pulled out,
+        // both require a caption and a thick frame. The bits are put back
+        // before Windows applies the change.
+        if (msg->message == WM_STYLECHANGING && msg->wParam == GWL_STYLE) {
+            auto *change = reinterpret_cast<STYLESTRUCT *>(msg->lParam);
+            change->styleNew |= WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX
+                                | WS_SYSMENU;
+        }
+
+        // The maximize button has to report as the real one or Windows 11
+        // will not open the snap layout grid on it. A click that did not
+        // pick a layout still maximizes; picking one already changed the size.
+        if (msg->message == WM_NCHITTEST && m_captionMax && !isFullScreen()) {
+            const QPoint global(GET_X_LPARAM(msg->lParam), GET_Y_LPARAM(msg->lParam));
+            if (m_captionMax->isVisible()
+                && m_captionMax->rect().contains(m_captionMax->mapFromGlobal(global))) {
+                *result = HTMAXBUTTON;
                 return true;
             }
+        }
 
-            if (localY < 36 && localX > 90 && localX < w - 46 * 3) {
-                *result = HTCAPTION;
-                return true;
-            }
+        if (msg->message == WM_NCLBUTTONDOWN && msg->wParam == HTMAXBUTTON)
+            m_snapClickSize = size();
+
+        if (msg->message == WM_NCLBUTTONUP && msg->wParam == HTMAXBUTTON && size() == m_snapClickSize) {
+            if (isMaximized())
+                showNormal();
+            else
+                showMaximized();
+            *result = 0;
+            return true;
         }
     }
     return QMainWindow::nativeEvent(eventType, message, result);

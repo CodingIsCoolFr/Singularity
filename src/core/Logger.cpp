@@ -55,8 +55,16 @@ void Logger::log(const QString &source, const QString &message)
 
     if (m_file.isOpen()) {
         m_stream << line << '\n';
-        // Flushed every line on purpose: a crash must not lose the last one.
-        m_stream.flush();
+        // Voice lines are flushed as they happen, because that tally is how a
+        // broken call gets diagnosed. Everything else is flushed in batches:
+        // forcing the file out on every gateway notice stalled the thread
+        // that plays the call.
+        const bool immediate = source == QLatin1String("voice") || source == QLatin1String("share")
+            || source == QLatin1String("dave");
+        if (immediate || ++m_sinceFlush >= 24) {
+            m_stream.flush();
+            m_sinceFlush = 0;
+        }
     }
 
     emit lineLogged(line);

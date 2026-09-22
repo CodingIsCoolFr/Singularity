@@ -32,6 +32,7 @@ private:
     QFile m_file;
     QTextStream m_stream;
     QStringList m_history;
+    int m_sinceFlush = 0;
 };
 
 // Short helper so call sites stay readable.
