@@ -586,7 +586,7 @@ void GatewayClient::subscribeToGuild(const QString &guildId, const QString &chan
 
 QJsonArray GatewayClient::clientActivities() const
 {
-    if (m_presenceStatus == QLatin1String("invisible"))
+    if (!m_activityShared || m_presenceStatus == QLatin1String("invisible"))
         return {};
 
     // A Playing card, the same shape as a game: the logo, a line, a clock,

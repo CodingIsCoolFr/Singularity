@@ -473,6 +473,19 @@ QDialog { background-color: @chat; }
 }
 #SelfName   { color: @text; font-size: 13px; font-weight: 600; background: transparent; }
 #SelfStatus { color: @faint; font-size: 11px; background: transparent; }
+#UserPanel QPushButton {
+    background: transparent;
+    border: none;
+    color: @muted;
+    border-radius: 6px;
+    padding: 0;
+    min-width: 32px;
+    max-width: 32px;
+    min-height: 32px;
+    max-height: 32px;
+}
+#UserPanel QPushButton:hover { background-color: @hover; color: @text; }
+#UserPanel QPushButton:checked { color: @red; background: transparent; }
 
 #VoicePanel {
     background-color: @voicePanel;

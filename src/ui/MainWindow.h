@@ -356,6 +356,12 @@ private:
     QSet<QString> m_speakingUsers;
     QPushButton *m_muteButton = nullptr;
     QPushButton *m_deafenButton = nullptr;
+    QPushButton *m_panelActivity = nullptr;
+    QPushButton *m_panelMute = nullptr;
+    QPushButton *m_panelDeafen = nullptr;
+    void setSelfMuted(bool on);
+    void setSelfDeafened(bool on);
+    void setActivityShared(bool on);
     QSlider *m_outputVolumeSlider = nullptr;
     QSlider *m_streamVolumeSlider = nullptr;
     QWidget *m_streamControls = nullptr;

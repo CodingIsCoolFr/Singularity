@@ -68,6 +68,8 @@ public:
     // The application and picture Discord needs before the official client
     // will show the Playing card. Empty until those are known.
     void setClientActivityArt(const QString &applicationId, const QString &imageKey);
+    void setActivityShared(bool on) { m_activityShared = on; }
+    bool activityShared() const { return m_activityShared; }
 
     // Sends the status we are holding, even when it has not changed. Needed
     // after sign-in: Discord does not take the status inside the first
@@ -201,4 +203,5 @@ private:
     qint64 m_clientActivityStart = 0;
     QString m_activityApplicationId;
     QString m_activityImageKey;
+    bool m_activityShared = true;
 };

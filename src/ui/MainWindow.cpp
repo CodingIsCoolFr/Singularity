@@ -1200,6 +1200,40 @@ QWidget *MainWindow::buildUserPanel(QWidget *parent)
     text->addWidget(m_selfStatus);
 
     layout->addLayout(text, 1);
+
+    QFont icons(QStringLiteral("Segoe MDL2 Assets"));
+    icons.setPixelSize(16);
+    const auto iconButton = [&](ushort glyph, const QString &tip) {
+        auto *button = new QPushButton(QChar(glyph), panel);
+        button->setFont(icons);
+        button->setToolTip(tip);
+        button->setCursor(Qt::PointingHandCursor);
+        button->setFocusPolicy(Qt::NoFocus);
+        return button;
+    };
+
+    const bool share = AppConfig::instance().value(QStringLiteral("presence/shareActivity"), true).toBool();
+    m_gateway->setActivityShared(share);
+    m_panelActivity = iconButton(0xE7FC, QStringLiteral("Activity"));
+    m_panelActivity->setCheckable(true);
+    m_panelActivity->setChecked(!share);
+    connect(m_panelActivity, &QPushButton::toggled, this, [this](bool hidden) { setActivityShared(!hidden); });
+    layout->addWidget(m_panelActivity);
+
+    m_panelMute = iconButton(0xE720, QStringLiteral("Mute"));
+    m_panelMute->setCheckable(true);
+    connect(m_panelMute, &QPushButton::toggled, this, [this](bool on) { setSelfMuted(on); });
+    layout->addWidget(m_panelMute);
+
+    m_panelDeafen = iconButton(0xE7F6, QStringLiteral("Deafen"));
+    m_panelDeafen->setCheckable(true);
+    connect(m_panelDeafen, &QPushButton::toggled, this, [this](bool on) { setSelfDeafened(on); });
+    layout->addWidget(m_panelDeafen);
+
+    auto *settings = iconButton(0xE713, QStringLiteral("User Settings"));
+    connect(settings, &QPushButton::clicked, this, &MainWindow::openSettings);
+    layout->addWidget(settings);
+
     return panel;
 }
 
@@ -1251,23 +1285,14 @@ QWidget *MainWindow::buildVoicePanel(QWidget *parent)
     m_muteButton->setFixedHeight(26);
     m_muteButton->setCheckable(true);
     m_muteButton->setToolTip(QStringLiteral("Stop sending your voice"));
-    connect(m_muteButton, &QPushButton::toggled, this, [this](bool on) {
-        m_voice->setMuted(on);
-        m_muteButton->setText(on ? QStringLiteral("Muted") : QStringLiteral("Mute"));
-        // Tell the server too, so other people see the crossed out microphone.
-        m_gateway->joinVoice(m_voiceGuildId, m_voiceChannelId, on, m_deafenButton->isChecked());
-    });
+    connect(m_muteButton, &QPushButton::toggled, this, [this](bool on) { setSelfMuted(on); });
     buttons->addWidget(m_muteButton, 0, 0);
 
     m_deafenButton = new QPushButton(QStringLiteral("Deafen"), panel);
     m_deafenButton->setFixedHeight(26);
     m_deafenButton->setCheckable(true);
     m_deafenButton->setToolTip(QStringLiteral("Stop hearing everyone"));
-    connect(m_deafenButton, &QPushButton::toggled, this, [this](bool on) {
-        m_voice->setDeafened(on);
-        m_deafenButton->setText(on ? QStringLiteral("Deaf") : QStringLiteral("Deafen"));
-        m_gateway->joinVoice(m_voiceGuildId, m_voiceChannelId, m_muteButton->isChecked(), on);
-    });
+    connect(m_deafenButton, &QPushButton::toggled, this, [this](bool on) { setSelfDeafened(on); });
     buttons->addWidget(m_deafenButton, 0, 1);
 
     m_shareButton = new QPushButton(QStringLiteral("Share"), panel);
@@ -3749,6 +3774,64 @@ void MainWindow::showStatusMenu()
     // sidebar: a menu dropped downwards from there would be off the screen.
     const QPoint at = m_userPanel->mapToGlobal(QPoint(8, 0));
     menu.exec(QPoint(at.x(), at.y() - menu.sizeHint().height() - 4));
+}
+
+void MainWindow::setSelfMuted(bool on)
+{
+    if (m_voice)
+        m_voice->setMuted(on);
+    if (m_muteButton && m_muteButton->isChecked() != on) {
+        QSignalBlocker block(m_muteButton);
+        m_muteButton->setChecked(on);
+    }
+    if (m_muteButton)
+        m_muteButton->setText(on ? QStringLiteral("Muted") : QStringLiteral("Mute"));
+    if (m_panelMute && m_panelMute->isChecked() != on) {
+        QSignalBlocker block(m_panelMute);
+        m_panelMute->setChecked(on);
+    }
+    if (!m_voiceChannelId.isEmpty())
+        m_gateway->joinVoice(m_voiceGuildId, m_voiceChannelId, on,
+                             m_deafenButton && m_deafenButton->isChecked());
+}
+
+void MainWindow::setSelfDeafened(bool on)
+{
+    if (m_voice)
+        m_voice->setDeafened(on);
+    if (m_deafenButton && m_deafenButton->isChecked() != on) {
+        QSignalBlocker block(m_deafenButton);
+        m_deafenButton->setChecked(on);
+    }
+    if (m_deafenButton)
+        m_deafenButton->setText(on ? QStringLiteral("Deaf") : QStringLiteral("Deafen"));
+    if (m_panelDeafen && m_panelDeafen->isChecked() != on) {
+        QSignalBlocker block(m_panelDeafen);
+        m_panelDeafen->setChecked(on);
+    }
+    if (on)
+        setSelfMuted(true);
+    else if (!m_voiceChannelId.isEmpty())
+        m_gateway->joinVoice(m_voiceGuildId, m_voiceChannelId,
+                             m_muteButton && m_muteButton->isChecked(), false);
+}
+
+void MainWindow::setActivityShared(bool on)
+{
+    AppConfig::instance().setValue(QStringLiteral("presence/shareActivity"), on);
+    m_gateway->setActivityShared(on);
+    if (m_panelActivity && m_panelActivity->isChecked() == on) {
+        QSignalBlocker block(m_panelActivity);
+        m_panelActivity->setChecked(!on);
+    }
+    m_gateway->publishPresence();
+    if (!m_selfUserId.isEmpty()) {
+        m_store->setPresence(m_selfUserId,
+                             QJsonObject{
+                                 {QStringLiteral("status"), m_gateway->presenceStatus()},
+                                 {QStringLiteral("activities"), m_gateway->clientActivities()},
+                             });
+    }
 }
 
 void MainWindow::setPresenceStatus(const QString &status)
