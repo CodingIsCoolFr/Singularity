@@ -2,6 +2,7 @@
 
 #include "core/GatewayClient.h"
 #include "core/MessageStore.h"
+#include "core/RestClient.h"
 #include "core/SettingsProto.h"
 #include "core/VoiceConnection.h"
 #include "ui/RailLayout.h"
@@ -13,7 +14,6 @@
 #include <QSet>
 #include <QTimer>
 
-class RestClient;
 class PluginHost;
 
 class AuroraWidget;
@@ -382,7 +382,12 @@ private:
     void showPersonMenu(const QString &userId, const QPoint &globalPos);
     void openDirectWith(const QString &userId);
     void ensureClientActivity();
+    void findSingularityApplication(const RestClient::CaptchaProof &captcha = {});
+    void createSingularityApplication(const RestClient::CaptchaProof &captcha = {});
+    // True when Discord asked for a check and the person finished it.
+    bool takeCaptcha(const RestClient::Error &error, RestClient::CaptchaProof *proof);
     void proxyClientLogo(const QString &applicationId);
+    bool m_openedCentered = false;
     void useClientActivity(const QString &applicationId, const QString &imageKey);
     void refreshVolumePopup();
 

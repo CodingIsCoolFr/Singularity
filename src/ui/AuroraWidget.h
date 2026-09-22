@@ -101,7 +101,11 @@ private:
     bool m_running = true;
     QElapsedTimer m_clock;
     float m_time = 0.f;
-    qint64 m_lastMs = 0;
+    qint64 m_runOffset = 0;
+    GLuint m_holeFbo = 0;
+    GLuint m_holeTex = 0;
+    QSize m_holeSize;
+    void ensureHoleTarget(int width, int height);
 
     QVector3D m_accent{0.22f, 0.92f, 0.88f};
     QVector3D m_disk{0.18f, 0.72f, 0.70f};

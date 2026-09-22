@@ -91,7 +91,7 @@ void main()
     vec3 rd = normalize(uv.x * uu + uv.y * vv + 1.22 * ww);
 
     const float RS = 0.50;
-    const int STEPS = 100;
+    const int STEPS = 64;
 
     vec3 pos = ro;
     vec3 vel = rd;
@@ -244,6 +244,7 @@ AuroraWidget::AuroraWidget(QWidget *parent)
     setStyleSheet(QStringLiteral("background:none;border:none;"));
 
     m_clock.start();
+    m_overlayTimer.setTimerType(Qt::PreciseTimer);
     m_overlayTimer.setInterval(16);
     connect(&m_overlayTimer, &QTimer::timeout, this, QOverload<>::of(&QWidget::update));
     m_overlayTimer.start();
@@ -290,7 +291,7 @@ void AuroraWidget::setRunning(bool on)
     if (on == m_running)
         return;
     if (on) {
-        m_lastMs = m_clock.elapsed();
+        m_runOffset = m_clock.elapsed() - qint64(m_time * 1000.f);
         m_overlayTimer.start();
     } else {
         m_overlayTimer.stop();
@@ -446,7 +447,6 @@ void AuroraWidget::initializeGL()
     initializeOpenGLFunctions();
     if (!m_clock.isValid())
         m_clock.start();
-    m_lastMs = m_clock.elapsed();
 
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_BLEND);
@@ -490,18 +490,10 @@ void AuroraWidget::paintGL()
     m_disk += (m_diskTarget - m_disk) * 0.12f;
     m_grade += (m_gradeTarget - m_grade) * 0.12f;
 
-    if (m_running) {
-        const qint64 now = m_clock.elapsed();
-        // A stalled frame must not fling the disk forward by the whole gap.
-        // The hole pauses with the window, then carries on at the same speed.
-        qint64 step = now - m_lastMs;
-        if (step < 0)
-            step = 0;
-        if (step > 50)
-            step = 50;
-        m_time += float(step) * 0.001f;
-        m_lastMs = now;
-    }
+    // Wall clock, not a capped step. A late frame used to slow the disk, which
+    // is the hitch that reads as the background stuttering.
+    if (m_running)
+        m_time = float(m_clock.elapsed() - m_runOffset) * 0.001f;
 
     // A picture of your own, when there is one to show.
     //
@@ -536,8 +528,30 @@ void AuroraWidget::paintGL()
     }
 
     if (m_program && m_program->isLinked()) {
+        // The ray march is the expensive part. Draw it into a smaller target
+        // and stretch it. The disk is soft, so the stretch does not show, and
+        // the frame time stays even.
+        int rw = w;
+        int rh = h;
+        const int longest = qMax(w, h);
+        if (longest > 1280) {
+            const float scale = 1280.f / float(longest);
+            rw = qMax(1, int(w * scale));
+            rh = qMax(1, int(h * scale));
+        }
+        ensureHoleTarget(rw, rh);
+        if (m_holeFbo == 0) {
+            rw = w;
+            rh = h;
+        }
+        const GLuint windowFbo = defaultFramebufferObject();
+        if (m_holeFbo != 0) {
+            glBindFramebuffer(GL_FRAMEBUFFER, m_holeFbo);
+            glViewport(0, 0, rw, rh);
+        }
+
         m_program->bind();
-        m_program->setUniformValue(m_uResolution, QVector2D(float(w), float(h)));
+        m_program->setUniformValue(m_uResolution, QVector2D(float(rw), float(rh)));
         m_program->setUniformValue(m_uTime, m_time);
         m_program->setUniformValue("uPointer", QVector2D(0.f, 0.f));
         m_program->setUniformValue(m_uAccent, m_accent);
@@ -548,7 +562,55 @@ void AuroraWidget::paintGL()
         glDrawArrays(GL_TRIANGLES, 0, 3);
         glBindVertexArray(0);
         m_program->release();
+
+        if (m_holeFbo != 0) {
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, m_holeFbo);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, windowFbo);
+            glBlitFramebuffer(0, 0, rw, rh, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+            glBindFramebuffer(GL_FRAMEBUFFER, windowFbo);
+        }
     }
+}
+
+void AuroraWidget::ensureHoleTarget(int width, int height)
+{
+    if (width <= 0 || height <= 0)
+        return;
+    const QSize wanted(width, height);
+    if (m_holeFbo != 0 && m_holeSize == wanted)
+        return;
+
+    if (m_holeFbo) {
+        glDeleteFramebuffers(1, &m_holeFbo);
+        m_holeFbo = 0;
+    }
+    if (m_holeTex) {
+        glDeleteTextures(1, &m_holeTex);
+        m_holeTex = 0;
+    }
+
+    glGenTextures(1, &m_holeTex);
+    glBindTexture(GL_TEXTURE_2D, m_holeTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glGenFramebuffers(1, &m_holeFbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, m_holeFbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_holeTex, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
+        glDeleteFramebuffers(1, &m_holeFbo);
+        glDeleteTextures(1, &m_holeTex);
+        m_holeFbo = 0;
+        m_holeTex = 0;
+        m_holeSize = QSize();
+        return;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
+    m_holeSize = wanted;
 }
 
 void AuroraWidget::refreshOverlay()
@@ -669,6 +731,12 @@ void AuroraWidget::destroyGl()
         glDeleteBuffers(1, &m_vbo);
     if (m_vao)
         glDeleteVertexArrays(1, &m_vao);
+    if (m_holeFbo)
+        glDeleteFramebuffers(1, &m_holeFbo);
+    if (m_holeTex)
+        glDeleteTextures(1, &m_holeTex);
+    m_holeFbo = 0;
+    m_holeTex = 0;
     if (m_overlayFbo)
         glDeleteFramebuffers(1, &m_overlayFbo);
     if (m_overlayTex)

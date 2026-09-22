@@ -134,8 +134,9 @@ public:
 
     // The Playing card only shows on the official client when it belongs to
     // an application this account owns.
-    void listApplications(ArrayHandler onOk, ErrorHandler onError);
-    void createApplication(const QString &name, ObjectHandler onOk, ErrorHandler onError);
+    void listApplications(ArrayHandler onOk, ErrorHandler onError, const CaptchaProof &captcha = {});
+    void createApplication(const QString &name, ObjectHandler onOk, ErrorHandler onError,
+                           const CaptchaProof &captcha = {});
     void proxyApplicationAsset(const QString &applicationId, const QString &url, ArrayHandler onOk,
                                ErrorHandler onError);
 

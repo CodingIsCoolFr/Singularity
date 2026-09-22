@@ -348,20 +348,36 @@ void RestClient::updateStatus(const QString &status, ObjectHandler onOk, ErrorHa
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
-void RestClient::listApplications(ArrayHandler onOk, ErrorHandler onError)
+void RestClient::listApplications(ArrayHandler onOk, ErrorHandler onError, const CaptchaProof &captcha)
 {
-    QNetworkReply *reply = m_network.get(buildRequest(QStringLiteral("/applications")));
+    QNetworkRequest request = buildRequest(QStringLiteral("/applications"));
+    if (!captcha.key.isEmpty()) {
+        request.setRawHeader("X-Captcha-Key", captcha.key.toUtf8());
+        if (!captcha.rqtoken.isEmpty())
+            request.setRawHeader("X-Captcha-Rqtoken", captcha.rqtoken.toUtf8());
+        if (!captcha.sessionId.isEmpty())
+            request.setRawHeader("X-Captcha-Session-Id", captcha.sessionId.toUtf8());
+    }
+    QNetworkReply *reply = m_network.get(request);
     dispatch(reply, nullptr, std::move(onOk), std::move(onError));
 }
 
-void RestClient::createApplication(const QString &name, ObjectHandler onOk, ErrorHandler onError)
+void RestClient::createApplication(const QString &name, ObjectHandler onOk, ErrorHandler onError,
+                                   const CaptchaProof &captcha)
 {
     const QJsonObject body{
         {QStringLiteral("name"), name},
         {QStringLiteral("description"), QStringLiteral("Singularity, a Discord client")},
     };
-    QNetworkReply *reply = m_network.post(buildRequest(QStringLiteral("/applications")),
-                                          QJsonDocument(body).toJson(QJsonDocument::Compact));
+    QNetworkRequest request = buildRequest(QStringLiteral("/applications"));
+    if (!captcha.key.isEmpty()) {
+        request.setRawHeader("X-Captcha-Key", captcha.key.toUtf8());
+        if (!captcha.rqtoken.isEmpty())
+            request.setRawHeader("X-Captcha-Rqtoken", captcha.rqtoken.toUtf8());
+        if (!captcha.sessionId.isEmpty())
+            request.setRawHeader("X-Captcha-Session-Id", captcha.sessionId.toUtf8());
+    }
+    QNetworkReply *reply = m_network.post(request, QJsonDocument(body).toJson(QJsonDocument::Compact));
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 

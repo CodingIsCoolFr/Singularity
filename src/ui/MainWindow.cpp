@@ -5788,26 +5788,48 @@ void MainWindow::openDirectWith(const QString &userId)
         });
 }
 
+bool MainWindow::takeCaptcha(const RestClient::Error &error, RestClient::CaptchaProof *proof)
+{
+    const QJsonArray keys = error.body.value(QStringLiteral("captcha_key")).toArray();
+    bool needed = false;
+    for (const QJsonValue &key : keys) {
+        if (key.toString() == QLatin1String("captcha-required"))
+            needed = true;
+    }
+    if (!needed)
+        return false;
+
+    const QString token = CaptchaDialog::solve(
+        this, error.body.value(QStringLiteral("captcha_sitekey")).toString(),
+        error.body.value(QStringLiteral("captcha_rqdata")).toString());
+    if (token.isEmpty()) {
+        wlog(QStringLiteral("gateway"),
+             QStringLiteral("Discord asked for a check before the Playing card, and it was not finished"));
+        return false;
+    }
+    proof->key = token;
+    proof->rqtoken = error.body.value(QStringLiteral("captcha_rqtoken")).toString();
+    proof->sessionId = error.body.value(QStringLiteral("captcha_session_id")).toString();
+    return true;
+}
+
 void MainWindow::ensureClientActivity()
 {
     if (!m_rest)
         return;
-
-    const auto fail = [](const RestClient::Error &error) {
-        wlog(QStringLiteral("gateway"),
-             QStringLiteral("could not register the Playing card: HTTP %1 %2")
-                 .arg(error.httpStatus)
-                 .arg(error.message));
-    };
 
     const QString saved = AppConfig::instance().value(QStringLiteral("presence/applicationId")).toString();
     if (!saved.isEmpty()) {
         proxyClientLogo(saved);
         return;
     }
+    findSingularityApplication();
+}
 
+void MainWindow::findSingularityApplication(const RestClient::CaptchaProof &captcha)
+{
     m_rest->listApplications(
-        [this, fail](const QJsonArray &apps) {
+        [this](const QJsonArray &apps) {
             for (const QJsonValue &value : apps) {
                 const QJsonObject app = value.toObject();
                 if (app.value(QStringLiteral("name")).toString() != QLatin1String("Singularity"))
@@ -5819,20 +5841,47 @@ void MainWindow::ensureClientActivity()
                 proxyClientLogo(id);
                 return;
             }
-            m_rest->createApplication(
-                QStringLiteral("Singularity"),
-                [this](const QJsonObject &app) {
-                    const QString id = app.value(QStringLiteral("id")).toString();
-                    if (id.isEmpty())
-                        return;
-                    AppConfig::instance().setValue(QStringLiteral("presence/applicationId"), id);
-                    wlog(QStringLiteral("gateway"),
-                         QStringLiteral("created the Singularity application %1").arg(id));
-                    proxyClientLogo(id);
-                },
-                fail);
+            createSingularityApplication();
         },
-        fail);
+        [this](const RestClient::Error &error) {
+            RestClient::CaptchaProof proof;
+            if (takeCaptcha(error, &proof)) {
+                findSingularityApplication(proof);
+                return;
+            }
+            wlog(QStringLiteral("gateway"),
+                 QStringLiteral("could not register the Playing card: HTTP %1 %2")
+                     .arg(error.httpStatus)
+                     .arg(error.message));
+        },
+        captcha);
+}
+
+void MainWindow::createSingularityApplication(const RestClient::CaptchaProof &captcha)
+{
+    m_rest->createApplication(
+        QStringLiteral("Singularity"),
+        [this](const QJsonObject &app) {
+            const QString id = app.value(QStringLiteral("id")).toString();
+            if (id.isEmpty())
+                return;
+            AppConfig::instance().setValue(QStringLiteral("presence/applicationId"), id);
+            wlog(QStringLiteral("gateway"),
+                 QStringLiteral("created the Singularity application %1").arg(id));
+            proxyClientLogo(id);
+        },
+        [this](const RestClient::Error &error) {
+            RestClient::CaptchaProof proof;
+            if (takeCaptcha(error, &proof)) {
+                createSingularityApplication(proof);
+                return;
+            }
+            wlog(QStringLiteral("gateway"),
+                 QStringLiteral("could not register the Playing card: HTTP %1 %2")
+                     .arg(error.httpStatus)
+                     .arg(error.message));
+        },
+        captcha);
 }
 
 void MainWindow::proxyClientLogo(const QString &applicationId)
@@ -6207,6 +6256,24 @@ void MainWindow::showEvent(QShowEvent *event)
     SetWindowLongPtr(hwnd, GWL_STYLE, style);
     SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    // A frameless window otherwise appears at the top left. The first show
+    // puts it in the middle of the work area.
+    if (!m_openedCentered && !IsZoomed(hwnd)) {
+        m_openedCentered = true;
+        QScreen *screen = this->screen();
+        if (!screen)
+            screen = QApplication::primaryScreen();
+        if (screen) {
+            const QRect area = screen->availableGeometry();
+            QSize fitted = size();
+            if (fitted.width() > area.width() || fitted.height() > area.height())
+                fitted = fitted.boundedTo(area.size());
+            const int x = area.x() + (area.width() - fitted.width()) / 2;
+            const int y = area.y() + (area.height() - fitted.height()) / 2;
+            SetWindowPos(hwnd, nullptr, x, y, fitted.width(), fitted.height(),
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
     if (m_loading) {
         m_loading->setGeometry(rect());
         m_loading->raise();
