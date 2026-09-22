@@ -835,9 +835,12 @@ table.embed { margin: 6px 0 4px 0; }
     font-size: 12px;
 }
 
-.mention {
+.mention, a.mention {
     color: @accent;
+    background-color: @accent40;
     font-family: "Poppins", "Segoe UI", sans-serif;
+    font-weight: 600;
+    text-decoration: none;
 }
 
 /* Underlined, not just tinted. In a grey scheme a colour alone is not enough

@@ -172,9 +172,9 @@ private:
     void captureScrollAnchor();
     bool restoreScrollAnchor();
     QString messageHtml(const MessageInfo &message, bool grouped);
-    QString renderContent(const QString &raw) const;
+    QString renderContent(const QString &raw);
     QString stickersHtml(const MessageInfo &message) const;
-    QString embedsHtml(const MessageInfo &message) const;
+    QString embedsHtml(const MessageInfo &message);
     QString reactionsHtml(const MessageInfo &message) const;
     void updateUserPanel();
     void setTypingHint(const QString &text);

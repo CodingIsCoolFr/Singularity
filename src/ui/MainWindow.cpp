@@ -3376,7 +3376,7 @@ QString MainWindow::reactionsHtml(const MessageInfo &message) const
     return html;
 }
 
-QString MainWindow::embedsHtml(const MessageInfo &message) const
+QString MainWindow::embedsHtml(const MessageInfo &message)
 {
     QString html;
 
@@ -3406,18 +3406,14 @@ QString MainWindow::embedsHtml(const MessageInfo &message) const
                          .arg(embed.authorName.toHtmlEscaped());
         }
         if (!embed.title.isEmpty()) {
-            const QString title = embed.title.toHtmlEscaped();
+            const QString title = renderContent(embed.title);
             inner += embed.url.isEmpty()
                 ? QStringLiteral("<div class=\"embed-title\">%1</div>").arg(title)
                 : QStringLiteral("<div class=\"embed-title\"><a href=\"%1\">%2</a></div>")
                       .arg(embed.url.toHtmlEscaped(), title);
         }
         if (!embed.description.isEmpty()) {
-            QString description = embed.description.toHtmlEscaped();
-            if (description.size() > 400)
-                description = description.left(397) + QStringLiteral("...");
-            description.replace(QLatin1Char('\n'), QStringLiteral("<br>"));
-            inner += QStringLiteral("<div class=\"embed-body\">%1</div>").arg(description);
+            inner += QStringLiteral("<div class=\"embed-body\">%1</div>").arg(renderContent(embed.description));
         }
         if (pictureReachable) {
             inner += QStringLiteral("<div class=\"attach\"><a href=\"singularity-image:%1\">"
@@ -3443,7 +3439,7 @@ QString MainWindow::embedsHtml(const MessageInfo &message) const
     return html;
 }
 
-QString MainWindow::renderContent(const QString &raw) const
+QString MainWindow::renderContent(const QString &raw)
 {
     if (raw.isEmpty())
         return {};
@@ -3475,7 +3471,22 @@ QString MainWindow::renderContent(const QString &raw) const
     }
 
     static const QRegularExpression roleRe(QStringLiteral("&lt;@&amp;(\\d+)&gt;"));
-    text.replace(roleRe, QStringLiteral("<span class=\"mention\">@role</span>"));
+    {
+        const GuildInfo guild = m_store->guild(m_store->channel(m_currentChannelId).guildId);
+        QString rebuilt;
+        int last = 0;
+        auto it = roleRe.globalMatch(text);
+        while (it.hasNext()) {
+            const QRegularExpressionMatch match = it.next();
+            const RoleInfo role = guild.roles.value(match.captured(1));
+            const QString label = role.name.isEmpty() ? QStringLiteral("role") : role.name;
+            rebuilt += text.mid(last, match.capturedStart() - last);
+            rebuilt += QStringLiteral("<span class=\"mention\">@%1</span>").arg(label.toHtmlEscaped());
+            last = match.capturedEnd();
+        }
+        rebuilt += text.mid(last);
+        text = rebuilt;
+    }
 
     // Channel mentions resolve against the store.
     static const QRegularExpression channelRe(QStringLiteral("&lt;#(\\d+)&gt;"));
@@ -3488,7 +3499,8 @@ QString MainWindow::renderContent(const QString &raw) const
             const ChannelInfo channel = m_store->channel(match.captured(1));
             const QString label = channel.name.isEmpty() ? QStringLiteral("channel") : channel.name;
             rebuilt += text.mid(last, match.capturedStart() - last);
-            rebuilt += QStringLiteral("<span class=\"mention\">#%1</span>").arg(label.toHtmlEscaped());
+            rebuilt += QStringLiteral("<a href=\"singularity-channel:%1\" class=\"mention\">#%2</a>")
+                           .arg(match.captured(1), label.toHtmlEscaped());
             last = match.capturedEnd();
         }
         rebuilt += text.mid(last);
@@ -3503,10 +3515,15 @@ QString MainWindow::renderContent(const QString &raw) const
         auto it = userRe.globalMatch(text);
         while (it.hasNext()) {
             const QRegularExpressionMatch match = it.next();
-            const QString name = m_store->userName(match.captured(1));
+            const QString userId = match.captured(1);
+            QString name = m_store->userName(userId);
+            if (name.isEmpty()) {
+                requestUnknownName(userId);
+                name = QStringLiteral("…");
+            }
             rebuilt += text.mid(last, match.capturedStart() - last);
-            rebuilt += QStringLiteral("<span class=\"mention\">@%1</span>")
-                           .arg((name.isEmpty() ? QStringLiteral("user") : name).toHtmlEscaped());
+            rebuilt += QStringLiteral("<a href=\"singularity-user:%1\" class=\"mention\">@%2</a>")
+                           .arg(userId, name.toHtmlEscaped());
             last = match.capturedEnd();
         }
         rebuilt += text.mid(last);
@@ -3522,6 +3539,29 @@ QString MainWindow::renderContent(const QString &raw) const
     text.replace(italicRe, QStringLiteral("<i>\\1</i>"));
     static const QRegularExpression strikeRe(QStringLiteral("~~([^~\\n]+)~~"));
     text.replace(strikeRe, QStringLiteral("<s>\\1</s>"));
+
+    // A pasted channel address is the same thing as <#id>: the name, clickable,
+    // not the long URL.
+    static const QRegularExpression discordChannelRe(
+        QStringLiteral("https?://(?:(?:ptb|canary)\\.)?discord(?:app)?\\.com/channels/"
+                       "(\\d+|@me)/(\\d+)(?:/\\d+)?"));
+    {
+        QString rebuilt;
+        int last = 0;
+        auto it = discordChannelRe.globalMatch(text);
+        while (it.hasNext()) {
+            const QRegularExpressionMatch match = it.next();
+            const QString channelId = match.captured(2);
+            const ChannelInfo channel = m_store->channel(channelId);
+            const QString label = channel.name.isEmpty() ? QStringLiteral("channel") : channel.name;
+            rebuilt += text.mid(last, match.capturedStart() - last);
+            rebuilt += QStringLiteral("<a href=\"singularity-channel:%1\" class=\"mention\">#%2</a>")
+                           .arg(channelId, label.toHtmlEscaped());
+            last = match.capturedEnd();
+        }
+        rebuilt += text.mid(last);
+        text = rebuilt;
+    }
 
     // Plain links become clickable, shortened so one long address cannot
     // stretch the column.
@@ -3710,8 +3750,22 @@ void MainWindow::handleAnchor(const QUrl &url)
 
     // Our own scheme: open the profile card for that person.
     if (url.scheme() == QLatin1String("singularity-user")) {
-        const QString userId = url.path().isEmpty() ? whole.mid(10) : url.path();
+        QString userId = url.path();
+        if (userId.startsWith(QLatin1Char('/')))
+            userId.remove(0, 1);
+        if (userId.isEmpty())
+            userId = whole.mid(QStringLiteral("singularity-user:").size());
         showProfile(userId, QCursor::pos());
+        return;
+    }
+
+    if (url.scheme() == QLatin1String("singularity-channel")) {
+        QString channelId = url.path();
+        if (channelId.startsWith(QLatin1Char('/')))
+            channelId.remove(0, 1);
+        if (channelId.isEmpty())
+            channelId = whole.mid(QStringLiteral("singularity-channel:").size());
+        selectChannelEverywhere(channelId);
         return;
     }
 
@@ -5181,6 +5235,9 @@ void MainWindow::requestUnknownName(const QString &userId)
             m_store->rememberUser(user);
             if (!m_voiceRefreshTimer.isActive())
                 m_voiceRefreshTimer.start(400);
+            // A join line that only had a number can now say the name.
+            if (!m_currentChannelId.isEmpty() && m_store->hasHistory(m_currentChannelId))
+                renderChannel();
         },
         [userId](const RestClient::Error &error) {
             // Deleted accounts and the like. The number stays, which is honest.
