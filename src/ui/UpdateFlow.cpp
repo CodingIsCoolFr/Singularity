@@ -18,6 +18,7 @@
 #include <QMessageBox>
 #include <QPointer>
 #include <QProcess>
+#include <QPixmap>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QScreen>
@@ -219,6 +220,100 @@ private:
 
 QPointer<UpdateOffer> g_offer;
 
+// The same screen the installer used to draw: the hole, the name, and
+// "Installing...". It lives in this process, whose event loop keeps running,
+// so the taskbar is not waiting on a window that has stopped answering.
+class InstallScreen : public QWidget
+{
+public:
+    explicit InstallScreen(QWidget *owner)
+        : QWidget(owner, Qt::Tool | Qt::FramelessWindowHint)
+    {
+        setObjectName(QStringLiteral("InstallScreen"));
+        setAttribute(Qt::WA_DeleteOnClose);
+        setAttribute(Qt::WA_ShowWithoutActivating);
+        setWindowModality(Qt::NonModal);
+        setFixedSize(420, 310);
+        setStyleSheet(QStringLiteral(
+            "#InstallScreen { background: #07090e; }"
+            "QLabel { background: transparent; }"));
+
+        m_hole = new QLabel(this);
+        m_hole->setFixedSize(96, 96);
+        m_hole->move((width() - 96) / 2, 38);
+
+        auto *title = new QLabel(QStringLiteral("Singularity"), this);
+        title->setStyleSheet(QStringLiteral(
+            "color: #eef4fb; font-family: 'Segoe UI Light'; font-size: 22px;"));
+        title->adjustSize();
+        title->move((width() - title->width()) / 2, 150);
+
+        m_step = new QLabel(QStringLiteral("Installing..."), this);
+        m_step->setStyleSheet(QStringLiteral("color: #9aa6bc; font-size: 9pt;"));
+        m_step->adjustSize();
+        m_step->move((width() - m_step->width()) / 2, 200);
+
+        m_track = new QWidget(this);
+        m_track->setGeometry(40, 234, width() - 80, 3);
+        m_track->setStyleSheet(QStringLiteral("background: #1c2433;"));
+        m_fill = new QWidget(m_track);
+        m_fill->setGeometry(0, 0, 0, 3);
+        m_fill->setStyleSheet(QStringLiteral("background: #cdd6e6;"));
+
+        for (int i = 0; i < 24; ++i) {
+            m_frames.append(QPixmap(QStringLiteral(":/spinner/spin%1.bmp")
+                                        .arg(i, 2, 10, QLatin1Char('0'))));
+        }
+        if (!m_frames.isEmpty() && !m_frames.first().isNull())
+            m_hole->setPixmap(m_frames.first().scaled(96, 96, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+
+        connect(&m_timer, &QTimer::timeout, this, [this]() { tick(); });
+        m_timer.start(40);
+    }
+
+    void place()
+    {
+        QRect area;
+        if (QWidget *owner = parentWidget(); owner && owner->isVisible())
+            area = QRect(owner->mapToGlobal(QPoint(0, 0)), owner->size());
+        else if (QScreen *screen = QGuiApplication::primaryScreen())
+            area = screen->availableGeometry();
+        if (!area.isNull())
+            move(area.center() - QPoint(width() / 2, height() / 2));
+        setWindowModality(Qt::NonModal);
+        show();
+        raise();
+    }
+
+private:
+    void tick()
+    {
+        if (!m_frames.isEmpty()) {
+            m_frame = (m_frame + 1) % m_frames.size();
+            const QPixmap &frame = m_frames.at(m_frame);
+            if (!frame.isNull())
+                m_hole->setPixmap(frame.scaled(96, 96, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        }
+        // No percentage comes back from the installer. The bar keeps moving
+        // so the window does not look stuck.
+        const int width = m_track->width();
+        const int chunk = qMax(24, width / 5);
+        m_travel = (m_travel + 4) % (width + chunk);
+        m_fill->setGeometry(m_travel - chunk, 0, chunk, 3);
+    }
+
+    QLabel *m_hole = nullptr;
+    QLabel *m_step = nullptr;
+    QWidget *m_track = nullptr;
+    QWidget *m_fill = nullptr;
+    QTimer m_timer;
+    QList<QPixmap> m_frames;
+    int m_frame = 0;
+    int m_travel = 0;
+};
+
+QPointer<InstallScreen> g_install;
+
 // Trims release notes down to something that fits in a dialog.
 //
 // The old version took the first 600 characters flat, which landed in the
@@ -346,7 +441,11 @@ Updater *updater()
         QDir().mkpath(dest);
 
         if (g_offer)
-            g_offer->showInstalling();
+            g_offer->close();
+        QWidget *owner = g_owner ? g_owner.data() : QApplication::activeWindow();
+        g_install = new InstallScreen(owner);
+        g_install->place();
+        releaseForegroundLock();
 
         // Discord writes the new version beside the one that is open and
         // never puts an installer in front. This copy keeps drawing and
@@ -366,6 +465,8 @@ Updater *updater()
         });
         QObject::connect(install, &QProcess::finished, qApp, [install](int code, QProcess::ExitStatus) {
             install->deleteLater();
+            if (g_install)
+                g_install->close();
             releaseForegroundLock();
             if (code != 0) {
                 QMessageBox::warning(g_owner, QStringLiteral("Could not install the update"),

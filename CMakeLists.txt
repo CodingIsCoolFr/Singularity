@@ -1,5 +1,5 @@
 ﻿cmake_minimum_required(VERSION 3.21)
-project(Singularity VERSION 0.6.53 LANGUAGES CXX)
+project(Singularity VERSION 0.6.54 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -133,6 +133,36 @@ qt_add_resources(Singularity brand
     PREFIX "/brand"
     BASE "${CMAKE_CURRENT_SOURCE_DIR}/brand"
     FILES brand/singularity.png
+)
+
+qt_add_resources(Singularity spinner
+    PREFIX "/spinner"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/installer/spinner"
+    FILES
+        installer/spinner/spin00.bmp
+        installer/spinner/spin01.bmp
+        installer/spinner/spin02.bmp
+        installer/spinner/spin03.bmp
+        installer/spinner/spin04.bmp
+        installer/spinner/spin05.bmp
+        installer/spinner/spin06.bmp
+        installer/spinner/spin07.bmp
+        installer/spinner/spin08.bmp
+        installer/spinner/spin09.bmp
+        installer/spinner/spin10.bmp
+        installer/spinner/spin11.bmp
+        installer/spinner/spin12.bmp
+        installer/spinner/spin13.bmp
+        installer/spinner/spin14.bmp
+        installer/spinner/spin15.bmp
+        installer/spinner/spin16.bmp
+        installer/spinner/spin17.bmp
+        installer/spinner/spin18.bmp
+        installer/spinner/spin19.bmp
+        installer/spinner/spin20.bmp
+        installer/spinner/spin21.bmp
+        installer/spinner/spin22.bmp
+        installer/spinner/spin23.bmp
 )
 
 if(WIN32)
