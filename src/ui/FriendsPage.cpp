@@ -7,11 +7,15 @@
 #include "ui/MediaCache.h"
 #include "ui/Theme.h"
 
+#include <QDateTime>
+#include <QEvent>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QScrollBar>
 #include <QStyle>
 #include <QVBoxLayout>
@@ -61,9 +65,15 @@ FriendsPage::FriendsPage(MessageStore *store, RestClient *rest, QWidget *parent)
     , m_store(store)
     , m_rest(rest)
 {
-    auto *layout = new QVBoxLayout(this);
+    auto *root = new QHBoxLayout(this);
+    root->setContentsMargins(0, 0, 0, 0);
+    root->setSpacing(0);
+
+    auto *mainColumn = new QWidget(this);
+    auto *layout = new QVBoxLayout(mainColumn);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
+    root->addWidget(mainColumn, 1);
 
     layout->addWidget(buildTabBar());
 
@@ -131,6 +141,41 @@ FriendsPage::FriendsPage(MessageStore *store, RestClient *rest, QWidget *parent)
 
     layout->addWidget(m_list, 1);
 
+    m_activity = new QWidget(this);
+    m_activity->setFixedWidth(300);
+    m_activity->setObjectName(QStringLiteral("MemberList"));
+    auto *activityColumn = new QVBoxLayout(m_activity);
+    activityColumn->setContentsMargins(16, 16, 16, 16);
+    activityColumn->setSpacing(10);
+
+    auto *activityTitle = new QLabel(QStringLiteral("Active Now"), m_activity);
+    activityTitle->setStyleSheet(QStringLiteral("color: %1; font-size: 16px; font-weight: 700;")
+                                     .arg(QLatin1String(Theme::TextPrimary)));
+    activityColumn->addWidget(activityTitle);
+
+    auto *scroll = new QScrollArea(m_activity);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setStyleSheet(QStringLiteral("QScrollArea { background: transparent; border: none; }"));
+    auto *host = new QWidget(scroll);
+    host->setStyleSheet(QStringLiteral("background: transparent;"));
+    m_activityLayout = new QVBoxLayout(host);
+    m_activityLayout->setContentsMargins(0, 0, 0, 0);
+    m_activityLayout->setSpacing(8);
+    m_activityLayout->addStretch(1);
+    scroll->setWidget(host);
+    activityColumn->addWidget(scroll, 1);
+    root->addWidget(m_activity);
+
+    connect(m_store, &MessageStore::voiceStatesChanged, this, [this]() {
+        if (isVisible())
+            m_artworkTimer.start();
+    });
+    connect(m_store, &MessageStore::userChanged, this, [this](const QString &) {
+        if (isVisible())
+            m_artworkTimer.start();
+    });
+
     setTab(Tab::Online);
 }
 
@@ -181,6 +226,8 @@ void FriendsPage::setTab(Tab tab)
         tabs.at(i)->style()->polish(tabs.at(i));
     }
 
+    if (m_activity)
+        m_activity->setVisible(tab == Tab::Online || tab == Tab::All);
     refresh();
 }
 
@@ -249,6 +296,152 @@ void FriendsPage::refresh()
 
     m_list->setUpdatesEnabled(true);
     m_heading->setText(QStringLiteral("%1 — %2").arg(heading).arg(m_list->count()));
+    rebuildActivity();
+}
+
+void FriendsPage::rebuildActivity()
+{
+    if (!m_activityLayout)
+        return;
+
+    while (QLayoutItem *item = m_activityLayout->takeAt(0)) {
+        if (QWidget *widget = item->widget())
+            delete widget;
+        delete item;
+    }
+
+    const auto displayOf = [this](const QString &userId) {
+        const UserInfo info = m_store->user(userId);
+        const QString name = info.displayName();
+        return name.isEmpty() ? userId : name;
+    };
+
+    const auto namesOf = [&](const QStringList &ids) {
+        if (ids.isEmpty())
+            return QString();
+        if (ids.size() == 1)
+            return displayOf(ids.first());
+        if (ids.size() == 2)
+            return QStringLiteral("%1 and %2").arg(displayOf(ids.at(0)), displayOf(ids.at(1)));
+        return QStringLiteral("%1, %2, and %3 others")
+            .arg(displayOf(ids.at(0)), displayOf(ids.at(1)))
+            .arg(ids.size() - 2);
+    };
+
+    struct Card
+    {
+        QStringList userIds;
+        QString title;
+        QString subtitle;
+    };
+    QList<Card> cards;
+
+    QHash<QString, QStringList> inVoice;
+    for (const UserInfo &person : m_store->usersWithRelationship(1)) {
+        const VoiceStateInfo state = m_store->voiceState(person.id);
+        if (!state.channelId.isEmpty()) {
+            inVoice[state.channelId].append(person.id);
+            continue;
+        }
+
+        const PresenceInfo presence = m_store->presence(person.id);
+        for (const ActivityInfo &activity : presence.activities) {
+            if (activity.isCustomStatus() || activity.name.isEmpty())
+                continue;
+            Card card;
+            card.userIds = {person.id};
+            card.title = displayOf(person.id);
+            QString line = activity.name;
+            if (!activity.details.isEmpty())
+                line += QStringLiteral(" — ") + activity.details;
+            else if (!activity.state.isEmpty())
+                line += QStringLiteral(" — ") + activity.state;
+            if (activity.startMs > 0) {
+                const qint64 minutes =
+                    (QDateTime::currentMSecsSinceEpoch() - activity.startMs) / 60000;
+                if (minutes > 0)
+                    line += QStringLiteral(" — %1m").arg(minutes);
+            }
+            card.subtitle = line;
+            cards.append(card);
+            break;
+        }
+    }
+
+    for (auto it = inVoice.cbegin(); it != inVoice.cend(); ++it) {
+        Card card;
+        card.userIds = it.value();
+        card.title = namesOf(card.userIds);
+        const ChannelInfo channel = m_store->channel(it.key());
+        card.subtitle = channel.name.isEmpty() ? QStringLiteral("In a Voice Channel") : channel.name;
+        cards.prepend(card);
+    }
+
+    if (cards.isEmpty()) {
+        auto *quiet = new QLabel(QStringLiteral("It's quiet for now.\nWhen a friend is in a call or "
+                                                "playing something, it shows up here."),
+                                 m_activityLayout->parentWidget());
+        quiet->setWordWrap(true);
+        quiet->setStyleSheet(QStringLiteral("color: %1; font-size: 13px;")
+                                 .arg(QLatin1String(Theme::TextMuted)));
+        m_activityLayout->addWidget(quiet);
+        m_activityLayout->addStretch(1);
+        return;
+    }
+
+    for (const Card &card : cards) {
+        auto *frame = new QFrame(m_activityLayout->parentWidget());
+        frame->setObjectName(QStringLiteral("ChatColumn"));
+        frame->setCursor(Qt::PointingHandCursor);
+        auto *box = new QVBoxLayout(frame);
+        box->setContentsMargins(12, 10, 12, 10);
+        box->setSpacing(6);
+
+        auto *faces = new QHBoxLayout;
+        faces->setSpacing(4);
+        const int shown = qMin(4, card.userIds.size());
+        for (int i = 0; i < shown; ++i) {
+            const UserInfo info = m_store->user(card.userIds.at(i));
+            const QUrl url = MediaCache::avatarUrl(info.id, info.avatarHash, 64);
+            const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
+            auto *face = new QLabel(frame);
+            face->setPixmap(picture.isNull() ? MediaCache::initialsAvatar(displayOf(info.id), 28)
+                                             : MediaCache::circular(picture, 28));
+            faces->addWidget(face);
+        }
+        faces->addStretch(1);
+        box->addLayout(faces);
+
+        auto *title = new QLabel(card.title, frame);
+        title->setWordWrap(true);
+        title->setStyleSheet(QStringLiteral("color: %1; font-size: 14px; font-weight: 600;")
+                                 .arg(QLatin1String(Theme::TextPrimary)));
+        box->addWidget(title);
+
+        auto *subtitle = new QLabel(card.subtitle, frame);
+        subtitle->setWordWrap(true);
+        subtitle->setStyleSheet(QStringLiteral("color: %1; font-size: 12px;")
+                                    .arg(QLatin1String(Theme::TextMuted)));
+        box->addWidget(subtitle);
+
+        const QString openId = card.userIds.isEmpty() ? QString() : card.userIds.first();
+        frame->installEventFilter(this);
+        frame->setProperty("profileId", openId);
+        m_activityLayout->addWidget(frame);
+    }
+    m_activityLayout->addStretch(1);
+}
+
+bool FriendsPage::eventFilter(QObject *watched, QEvent *event)
+{
+    if (event->type() == QEvent::MouseButtonRelease) {
+        const QString id = watched->property("profileId").toString();
+        if (!id.isEmpty()) {
+            emit openProfile(id);
+            return true;
+        }
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 void FriendsPage::startDirectMessage(const QString &userId)

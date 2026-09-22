@@ -10,6 +10,8 @@ class QLabel;
 class QLineEdit;
 class QListWidget;
 class QPushButton;
+class QVBoxLayout;
+class QWidget;
 
 // The page behind the "Friends" row at the top of the direct message list.
 //
@@ -35,6 +37,8 @@ private:
     QWidget *buildTabBar();
     void setTab(Tab tab);
     void startDirectMessage(const QString &userId);
+    void rebuildActivity();
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
     MessageStore *m_store = nullptr;
     RestClient *m_rest = nullptr;
@@ -47,6 +51,8 @@ private:
     QLineEdit *m_search = nullptr;
     QLabel *m_heading = nullptr;
     QListWidget *m_list = nullptr;
+    QWidget *m_activity = nullptr;
+    QVBoxLayout *m_activityLayout = nullptr;
 
     // Pictures arrive one at a time, long after the rows are on screen, and
     // with a few hundred friends that is a few hundred arrivals. Rebuilding on

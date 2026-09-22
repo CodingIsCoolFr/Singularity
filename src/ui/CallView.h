@@ -30,6 +30,11 @@ public:
     void setChannel(const QString &channelId);
     QString channelId() const { return m_channelId; }
 
+    // The call keeps running. This only hides the stage, which is what
+    // happens on the friends page: the controls stay, the grid does not
+    // sit on top of the list.
+    void setStageSuppressed(bool suppressed);
+
     void setSpeaking(const QSet<QString> &userIds);
     void setFocusedUser(const QString &userId, Surface surface = Surface::Camera);
     QString focusedUser() const { return m_focusedUser; }
@@ -86,6 +91,7 @@ private:
 
     MessageStore *m_store = nullptr;
     QString m_channelId;
+    bool m_stageSuppressed = false;
     QString m_focusedUser;
     Surface m_focusedSurface = Surface::Camera;
     QString m_hoverUserId;

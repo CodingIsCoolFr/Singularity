@@ -42,7 +42,7 @@ CallView::CallView(MessageStore *store, QWidget *parent)
 
 QSize CallView::sizeHint() const
 {
-    if (m_tiles.isEmpty())
+    if (m_stageSuppressed || m_tiles.isEmpty())
         return QSize(640, 0);
 
     const bool cinema = !m_cameraFrames.isEmpty() || !m_shareFrames.isEmpty();
@@ -51,7 +51,15 @@ QSize CallView::sizeHint() const
 
 QSize CallView::minimumSizeHint() const
 {
-    return m_tiles.isEmpty() ? QSize(200, 0) : QSize(320, 240);
+    return (m_stageSuppressed || m_tiles.isEmpty()) ? QSize(0, 0) : QSize(320, 240);
+}
+
+void CallView::setStageSuppressed(bool suppressed)
+{
+    if (m_stageSuppressed == suppressed)
+        return;
+    m_stageSuppressed = suppressed;
+    refresh();
 }
 
 void CallView::setChannel(const QString &channelId)
@@ -169,7 +177,7 @@ void CallView::refresh()
         }
     }
 
-    const bool show = !m_tiles.isEmpty();
+    const bool show = !m_tiles.isEmpty() && !m_stageSuppressed;
     const bool wasVisible = isVisible();
     setVisible(show);
     layoutTiles();

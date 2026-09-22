@@ -2440,12 +2440,18 @@ void MainWindow::openChannel(const QString &channelId)
         m_currentChannelId.clear();
         if (m_members)
             m_members->setFocusChannel(QString(), false);
+        // The call stays connected. The stage is for when that channel is
+        // what you are looking at. On Friends it was covering the list.
+        if (m_callView)
+            m_callView->setStageSuppressed(true);
         m_friends->refresh();
         m_chatStack->setCurrentWidget(m_friends);
         m_composer->setEnabled(false);
         return;
     }
 
+    if (m_callView)
+        m_callView->setStageSuppressed(false);
     m_chatStack->setCurrentWidget(m_chatPage);
 
     m_currentChannelId = channelId;
