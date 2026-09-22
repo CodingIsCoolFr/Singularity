@@ -18,7 +18,7 @@
 ;     iscc installer\Singularity.iss
 
 #define AppName       "Singularity"
-#define AppVersion    "0.6.44"
+#define AppVersion    "0.6.45"
 #define AppPublisher  "Singularity"
 #define AppExe        "Singularity.exe"
 
@@ -309,6 +309,12 @@ procedure InitializeWizard;
 var
   W, H: Integer;
 begin
+  // An update the program started itself passes /VERYSILENT. Building the
+  // window anyway would put it in front, and the unpack stops the taskbar
+  // taking clicks until the window goes away.
+  if WizardVerySilent then
+    Exit;
+
   LoadFrames;
   FrameIndex := 0;
   LastPercent := -1;
