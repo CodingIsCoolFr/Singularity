@@ -766,6 +766,27 @@ void MessageStore::ingestChannel(const QJsonObject &rawChannel, const QString &g
     m_channels.insert(channel.id, channel);
 }
 
+bool MessageStore::forgetChannel(const QString &channelId)
+{
+    if (!m_channels.contains(channelId))
+        return false;
+
+    const ChannelInfo info = m_channels.take(channelId);
+    m_messages.remove(channelId);
+    m_reads.remove(channelId);
+    m_directOrder.removeAll(channelId);
+
+    if (!info.guildId.isEmpty() && m_guilds.contains(info.guildId)) {
+        GuildInfo guild = m_guilds.value(info.guildId);
+        guild.channelIds.removeAll(channelId);
+        m_guilds.insert(info.guildId, guild);
+    }
+
+    if (info.isDirect())
+        emit directOrderChanged();
+    return true;
+}
+
 void MessageStore::ingestChannelObject(const QJsonObject &rawChannel)
 {
     const QString guildId = rawChannel.value(QStringLiteral("guild_id")).toString();

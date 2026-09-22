@@ -329,6 +329,10 @@ public:
     // Used for CHANNEL_CREATE, so a chat opened from a profile card shows up.
     void ingestChannelObject(const QJsonObject &rawChannel);
 
+    // CHANNEL_DELETE, and closing a direct message. Returns false when the
+    // channel was already gone, so a second notice does not rebuild the list.
+    bool forgetChannel(const QString &channelId);
+
     void setHistory(const QString &channelId, const QJsonArray &rawMessages);
 
     // Puts a batch of older messages on the front of a channel, skipping any

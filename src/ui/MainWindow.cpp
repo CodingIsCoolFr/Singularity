@@ -1165,8 +1165,12 @@ QWidget *MainWindow::buildSidebar(QWidget *parent)
         }
         if (kind == QLatin1String("dm")) {
             const ChannelInfo channel = m_store->channel(item->data(IdRole).toString());
+            if (!channel.isDirect())
+                return;
             if (channel.type == 1 && channel.recipientIds.size() == 1)
-                showPersonMenu(channel.recipientIds.first(), at);
+                showPersonMenuAt(channel.recipientIds.first(), at, channel.id);
+            else
+                showPersonMenuAt(QString(), at, channel.id);
         }
     });
 
@@ -1759,6 +1763,11 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
     if (eventType == QLatin1String("MESSAGE_ACK")) {
         m_store->markChannelRead(data.value(QStringLiteral("channel_id")).toString(),
                                  data.value(QStringLiteral("message_id")).toString());
+        return;
+    }
+
+    if (eventType == QLatin1String("CHANNEL_DELETE")) {
+        applyChannelClosed(data.value(QStringLiteral("id")).toString());
         return;
     }
 
@@ -5881,30 +5890,110 @@ void MainWindow::refreshVolumePopup()
 
 void MainWindow::showPersonMenu(const QString &userId, const QPoint &globalPos)
 {
-    if (userId.isEmpty())
+    showPersonMenuAt(userId, globalPos, QString());
+}
+
+void MainWindow::showPersonMenuAt(const QString &userId, const QPoint &globalPos,
+                                  const QString &closeChannelId)
+{
+    if (userId.isEmpty() && closeChannelId.isEmpty())
         return;
 
     QMenu menu(this);
-    const bool self = userId == m_selfUserId;
+    const bool self = !userId.isEmpty() && userId == m_selfUserId;
 
-    menu.addAction(QStringLiteral("Profile"), this, [this, userId, globalPos]() {
-        showProfile(userId, globalPos);
-    });
+    if (!userId.isEmpty()) {
+        menu.addAction(QStringLiteral("Profile"), this, [this, userId, globalPos]() {
+            showProfile(userId, globalPos);
+        });
 
-    if (!self) {
-        menu.addAction(QStringLiteral("Message"), this, [this, userId]() { openDirectWith(userId); });
+        if (!self) {
+            menu.addAction(QStringLiteral("Message"), this, [this, userId]() { openDirectWith(userId); });
+            menu.addSeparator();
+            menu.addAction(QStringLiteral("User volume"), this, [this, userId, globalPos]() {
+                showUserVolumeMenu(userId, globalPos);
+            });
+        }
+
         menu.addSeparator();
-        menu.addAction(QStringLiteral("User volume"), this, [this, userId, globalPos]() {
-            showUserVolumeMenu(userId, globalPos);
+    }
+
+    if (!closeChannelId.isEmpty()) {
+        menu.addAction(QStringLiteral("Close DM"), this, [this, closeChannelId]() {
+            closeDirectMessage(closeChannelId);
+        });
+        if (!userId.isEmpty())
+            menu.addSeparator();
+    }
+
+    if (!userId.isEmpty()) {
+        menu.addAction(QStringLiteral("Copy User ID"), this, [userId]() {
+            QApplication::clipboard()->setText(userId);
         });
     }
 
-    menu.addSeparator();
-    menu.addAction(QStringLiteral("Copy User ID"), this, [userId]() {
-        QApplication::clipboard()->setText(userId);
-    });
-
     menu.exec(globalPos);
+}
+
+void MainWindow::closeDirectMessage(const QString &channelId)
+{
+    if (!m_rest || channelId.isEmpty())
+        return;
+
+    m_rest->closeDirectChannel(
+        channelId,
+        [this](const QJsonObject &channel) {
+            applyChannelClosed(channel.value(QStringLiteral("id")).toString());
+        },
+        [](const RestClient::Error &error) {
+            wlog(QStringLiteral("ui"),
+                 QStringLiteral("could not close the direct message: HTTP %1 %2")
+                     .arg(error.httpStatus)
+                     .arg(error.message));
+        });
+}
+
+void MainWindow::applyChannelClosed(const QString &channelId)
+{
+    if (channelId.isEmpty())
+        return;
+
+    const ChannelInfo info = m_store->channel(channelId);
+    if (info.id.isEmpty())
+        return;
+
+    const bool direct = info.isDirect();
+    const QString guildId = info.guildId;
+    const bool viewing = m_currentChannelId == channelId;
+    if (!m_store->forgetChannel(channelId))
+        return;
+
+    const int scroll = m_channelList->verticalScrollBar()->value();
+    const QString keep = viewing ? QString() : m_currentChannelId;
+
+    if (m_currentGuildId.isEmpty() || (!guildId.isEmpty() && m_currentGuildId == guildId))
+        populateChannelList(false);
+
+    if (viewing && direct) {
+        for (int row = 0; row < m_channelList->count(); ++row) {
+            if (m_channelList->item(row)->data(IdRole).toString() == QLatin1String("singularity:friends")) {
+                m_channelList->setCurrentRow(row);
+                return;
+            }
+        }
+        return;
+    }
+
+    {
+        QSignalBlocker blocker(m_channelList);
+        for (int row = 0; row < m_channelList->count(); ++row) {
+            if (m_channelList->item(row)->data(IdRole).toString() == keep) {
+                m_channelList->setCurrentRow(row);
+                break;
+            }
+        }
+    }
+    m_channelList->verticalScrollBar()->setValue(scroll);
 }
 
 void MainWindow::openDirectWith(const QString &userId)

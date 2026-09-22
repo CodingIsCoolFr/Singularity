@@ -282,6 +282,13 @@ void RestClient::removeRelationship(const QString &userId, ObjectHandler onOk, E
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+void RestClient::closeDirectChannel(const QString &channelId, ObjectHandler onOk, ErrorHandler onError)
+{
+    const QString path = QStringLiteral("/channels/%1").arg(channelId);
+    QNetworkReply *reply = m_network.deleteResource(buildRequest(path));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::blockUser(const QString &userId, ObjectHandler onOk, ErrorHandler onError)
 {
     const QJsonObject body{{QStringLiteral("type"), 2}};

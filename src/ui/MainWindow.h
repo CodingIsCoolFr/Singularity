@@ -386,6 +386,9 @@ private:
     void ingestSettingsProto(const QByteArray &proto, bool partial);
     void showUserVolumeMenu(const QString &userId, const QPoint &globalPos);
     void showPersonMenu(const QString &userId, const QPoint &globalPos);
+    void showPersonMenuAt(const QString &userId, const QPoint &globalPos, const QString &closeChannelId);
+    void closeDirectMessage(const QString &channelId);
+    void applyChannelClosed(const QString &channelId);
     void openDirectWith(const QString &userId);
     void ensureClientActivity();
     void findSingularityApplication(const RestClient::CaptchaProof &captcha = {});

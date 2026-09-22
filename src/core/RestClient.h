@@ -100,6 +100,12 @@ public:
     // request, or unblocks.
     void removeRelationship(const QString &userId, ObjectHandler onOk, ErrorHandler onError);
 
+    // DELETE /channels/{id} - closes a direct message for this account.
+    // The history stays, and the chat comes back if someone messages again.
+    // Discord sends CHANNEL_DELETE to every session, so the official client
+    // drops the same row.
+    void closeDirectChannel(const QString &channelId, ObjectHandler onOk, ErrorHandler onError);
+
     // PUT /users/@me/relationships/{id} with type 2 - blocks someone.
     void blockUser(const QString &userId, ObjectHandler onOk, ErrorHandler onError);
 
