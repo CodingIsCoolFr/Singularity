@@ -941,7 +941,7 @@ void MainWindow::buildUi()
     m_callView = new CallView(m_store, m_chatSplitter);
     connect(m_callView, &CallView::profileRequested, this,
             [this](const QString &userId) { showProfile(userId, QCursor::pos()); });
-    connect(m_callView, &CallView::volumeMenuRequested, this, &MainWindow::showUserVolumeMenu);
+    connect(m_callView, &CallView::volumeMenuRequested, this, &MainWindow::showPersonMenu);
     connect(m_callView, &CallView::watchAttempted, this, &MainWindow::watchStream);
     connect(m_callView, &CallView::focusRequested, this,
             [this](const QString &userId, CallView::Surface surface) {
@@ -967,6 +967,7 @@ void MainWindow::buildUi()
     connect(m_friends, &FriendsPage::openProfile, this, [this](const QString &userId) {
         showProfile(userId, QCursor::pos());
     });
+    connect(m_friends, &FriendsPage::personMenuRequested, this, &MainWindow::showPersonMenu);
     connect(m_friends, &FriendsPage::joinVoiceChannel, this, &MainWindow::joinVoiceAt);
     m_chatStack->addWidget(m_friends);
 
@@ -984,7 +985,7 @@ void MainWindow::buildUi()
     m_members = new MemberListPanel(m_store, m_aurora);
     connect(m_members, &MemberListPanel::profileRequested, this,
             [this](const QString &userId) { showProfile(userId, QCursor::pos()); });
-    connect(m_members, &MemberListPanel::volumeMenuRequested, this, &MainWindow::showUserVolumeMenu);
+    connect(m_members, &MemberListPanel::volumeMenuRequested, this, &MainWindow::showPersonMenu);
     rootLayout->addWidget(m_members);
 
     shell->addLayout(rootLayout, 1);
@@ -1151,9 +1152,19 @@ QWidget *MainWindow::buildSidebar(QWidget *parent)
     m_channelList->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_channelList, &QListWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
         QListWidgetItem *item = m_channelList->itemAt(pos);
-        if (!item || item->data(KindRole).toString() != QLatin1String("voicemember"))
+        if (!item)
             return;
-        showUserVolumeMenu(item->data(IdRole).toString(), m_channelList->viewport()->mapToGlobal(pos));
+        const QString kind = item->data(KindRole).toString();
+        const QPoint at = m_channelList->viewport()->mapToGlobal(pos);
+        if (kind == QLatin1String("voicemember")) {
+            showPersonMenu(item->data(IdRole).toString(), at);
+            return;
+        }
+        if (kind == QLatin1String("dm")) {
+            const ChannelInfo channel = m_store->channel(item->data(IdRole).toString());
+            if (channel.type == 1 && channel.recipientIds.size() == 1)
+                showPersonMenu(channel.recipientIds.first(), at);
+        }
     });
 
     return sidebar;
@@ -1580,6 +1591,7 @@ void MainWindow::onGatewayReady(const QJsonObject &payload)
     // socket was open was only remembered, and Discord does not treat the
     // status inside the first sign-in as the one other people should see.
     setPresenceStatus(m_gateway->presenceStatus());
+    ensureClientActivity();
 
     updateUserPanel();
 
@@ -1717,6 +1729,11 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
         const QString userId = user.value(QStringLiteral("id")).toString();
         m_store->rememberUser(user);
         m_store->setPresence(userId, data);
+        if (userId == m_selfUserId) {
+            wlog(QStringLiteral("gateway"),
+                 QStringLiteral("Discord echoed our presence with %1 activities")
+                     .arg(data.value(QStringLiteral("activities")).toArray().size()));
+        }
         return;
     }
 
@@ -5717,6 +5734,146 @@ void MainWindow::refreshVolumePopup()
             mute->setChecked(level.muted);
         }
     }
+}
+
+void MainWindow::showPersonMenu(const QString &userId, const QPoint &globalPos)
+{
+    if (userId.isEmpty())
+        return;
+
+    QMenu menu(this);
+    const bool self = userId == m_selfUserId;
+
+    menu.addAction(QStringLiteral("Profile"), this, [this, userId, globalPos]() {
+        showProfile(userId, globalPos);
+    });
+
+    if (!self) {
+        menu.addAction(QStringLiteral("Message"), this, [this, userId]() { openDirectWith(userId); });
+        menu.addSeparator();
+        menu.addAction(QStringLiteral("User volume"), this, [this, userId, globalPos]() {
+            showUserVolumeMenu(userId, globalPos);
+        });
+    }
+
+    menu.addSeparator();
+    menu.addAction(QStringLiteral("Copy User ID"), this, [userId]() {
+        QApplication::clipboard()->setText(userId);
+    });
+
+    menu.exec(globalPos);
+}
+
+void MainWindow::openDirectWith(const QString &userId)
+{
+    if (!m_rest || userId.isEmpty() || userId == m_selfUserId)
+        return;
+
+    const QString existing = m_store->directChannelWith(userId);
+    if (!existing.isEmpty()) {
+        selectChannelEverywhere(existing);
+        return;
+    }
+
+    m_rest->openDirectMessage(
+        userId,
+        [this](const QJsonObject &channel) {
+            const QString channelId = channel.value(QStringLiteral("id")).toString();
+            if (!channelId.isEmpty())
+                selectChannelEverywhere(channelId);
+        },
+        [](const RestClient::Error &error) {
+            wlog(QStringLiteral("ui"),
+                 QStringLiteral("could not open the direct message: %1").arg(error.message));
+        });
+}
+
+void MainWindow::ensureClientActivity()
+{
+    if (!m_rest)
+        return;
+
+    const auto fail = [](const RestClient::Error &error) {
+        wlog(QStringLiteral("gateway"),
+             QStringLiteral("could not register the Playing card: HTTP %1 %2")
+                 .arg(error.httpStatus)
+                 .arg(error.message));
+    };
+
+    const QString saved = AppConfig::instance().value(QStringLiteral("presence/applicationId")).toString();
+    if (!saved.isEmpty()) {
+        proxyClientLogo(saved);
+        return;
+    }
+
+    m_rest->listApplications(
+        [this, fail](const QJsonArray &apps) {
+            for (const QJsonValue &value : apps) {
+                const QJsonObject app = value.toObject();
+                if (app.value(QStringLiteral("name")).toString() != QLatin1String("Singularity"))
+                    continue;
+                const QString id = app.value(QStringLiteral("id")).toString();
+                if (id.isEmpty())
+                    continue;
+                AppConfig::instance().setValue(QStringLiteral("presence/applicationId"), id);
+                proxyClientLogo(id);
+                return;
+            }
+            m_rest->createApplication(
+                QStringLiteral("Singularity"),
+                [this](const QJsonObject &app) {
+                    const QString id = app.value(QStringLiteral("id")).toString();
+                    if (id.isEmpty())
+                        return;
+                    AppConfig::instance().setValue(QStringLiteral("presence/applicationId"), id);
+                    wlog(QStringLiteral("gateway"),
+                         QStringLiteral("created the Singularity application %1").arg(id));
+                    proxyClientLogo(id);
+                },
+                fail);
+        },
+        fail);
+}
+
+void MainWindow::proxyClientLogo(const QString &applicationId)
+{
+    if (!m_rest || applicationId.isEmpty())
+        return;
+
+    m_rest->proxyApplicationAsset(
+        applicationId, QStringLiteral("https://singularitycord.pages.dev/mark.png"),
+        [this, applicationId](const QJsonArray &assets) {
+            QString key;
+            if (!assets.isEmpty()) {
+                const QString path = assets.first().toObject().value(QStringLiteral("external_asset_path")).toString();
+                if (!path.isEmpty())
+                    key = QStringLiteral("mp:") + path;
+            }
+            wlog(QStringLiteral("gateway"),
+                 QStringLiteral("Playing card image %1").arg(key.isEmpty() ? QStringLiteral("(none)") : key));
+            useClientActivity(applicationId, key);
+        },
+        [this, applicationId](const RestClient::Error &error) {
+            wlog(QStringLiteral("gateway"),
+                 QStringLiteral("could not proxy the logo: HTTP %1 %2")
+                     .arg(error.httpStatus)
+                     .arg(error.message));
+            // The name still shows without the picture.
+            useClientActivity(applicationId, QString());
+        });
+}
+
+void MainWindow::useClientActivity(const QString &applicationId, const QString &imageKey)
+{
+    m_gateway->setClientActivityArt(applicationId, imageKey);
+    m_gateway->publishPresence();
+    if (m_selfUserId.isEmpty())
+        return;
+    m_store->setPresence(m_selfUserId,
+                         QJsonObject{
+                             {QStringLiteral("status"), m_gateway->presenceStatus()},
+                             {QStringLiteral("activities"), m_gateway->clientActivities()},
+                         });
 }
 
 void MainWindow::showUserVolumeMenu(const QString &userId, const QPoint &globalPos)

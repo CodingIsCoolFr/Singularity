@@ -132,6 +132,13 @@ public:
     void updateUserVolume(const QString &userId, int volume, bool muted, ObjectHandler onOk,
                           ErrorHandler onError);
 
+    // The Playing card only shows on the official client when it belongs to
+    // an application this account owns.
+    void listApplications(ArrayHandler onOk, ErrorHandler onError);
+    void createApplication(const QString &name, ObjectHandler onOk, ErrorHandler onError);
+    void proxyApplicationAsset(const QString &applicationId, const QString &url, ArrayHandler onOk,
+                               ErrorHandler onError);
+
     // Private notes you keep about someone. Only you can read them.
     void fetchNote(const QString &userId, ObjectHandler onOk, ErrorHandler onError);
     void saveNote(const QString &userId, const QString &note, ObjectHandler onOk, ErrorHandler onError);

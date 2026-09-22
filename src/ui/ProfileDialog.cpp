@@ -1018,9 +1018,12 @@ void ProfileDialog::rebuildActivity()
         if (!buttonLabel.isEmpty()) {
             auto *button = new QPushButton(buttonLabel, card);
             button->setCursor(Qt::PointingHandCursor);
-            if (!buttonUrl.isEmpty()) {
-                connect(button, &QPushButton::clicked, card, [buttonUrl]() {
-                    QDesktopServices::openUrl(QUrl(buttonUrl));
+            QString url = buttonUrl;
+            if (url.isEmpty() && buttonLabel == QLatin1String("Get Singularity"))
+                url = QStringLiteral("https://singularitycord.pages.dev");
+            if (!url.isEmpty()) {
+                connect(button, &QPushButton::clicked, card, [url]() {
+                    QDesktopServices::openUrl(QUrl(url));
                 });
             }
             cardLayout->addWidget(button);

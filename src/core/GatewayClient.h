@@ -65,6 +65,10 @@ public:
     // Empty while invisible, so appearing offline does not advertise the app.
     QJsonArray clientActivities() const;
 
+    // The application and picture Discord needs before the official client
+    // will show the Playing card. Empty until those are known.
+    void setClientActivityArt(const QString &applicationId, const QString &imageKey);
+
     // Sends the status we are holding, even when it has not changed. Needed
     // after sign-in: Discord does not take the status inside the first
     // identify as the one other people should see.
@@ -195,4 +199,6 @@ private:
     // When this process opened. The activity clock counts from here, so a
     // status change does not reset "how long you have had the client open".
     qint64 m_clientActivityStart = 0;
+    QString m_activityApplicationId;
+    QString m_activityImageKey;
 };

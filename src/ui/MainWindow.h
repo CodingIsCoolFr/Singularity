@@ -379,6 +379,11 @@ private:
     void applyAudioSettingsUpdate(const QJsonObject &data);
     void ingestSettingsProto(const QByteArray &proto, bool partial);
     void showUserVolumeMenu(const QString &userId, const QPoint &globalPos);
+    void showPersonMenu(const QString &userId, const QPoint &globalPos);
+    void openDirectWith(const QString &userId);
+    void ensureClientActivity();
+    void proxyClientLogo(const QString &applicationId);
+    void useClientActivity(const QString &applicationId, const QString &imageKey);
     void refreshVolumePopup();
 
     QHash<QString, UserAudioLevel> m_userAudio;

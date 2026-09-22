@@ -153,6 +153,17 @@ FriendsPage::FriendsPage(MessageStore *store, RestClient *rest, QWidget *parent)
     connect(delegate, &FriendDelegate::messageRequested, this, &FriendsPage::startDirectMessage);
     connect(delegate, &FriendDelegate::profileRequested, this, &FriendsPage::openProfile);
 
+    m_list->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_list, &QListWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+        QListWidgetItem *item = m_list->itemAt(pos);
+        if (!item)
+            return;
+        const QString userId = item->data(SingularityRoles::Id).toString();
+        if (userId.isEmpty())
+            return;
+        emit personMenuRequested(userId, m_list->viewport()->mapToGlobal(pos));
+    });
+
     layout->addWidget(m_list, 1);
 
     m_activity = new QWidget(this);

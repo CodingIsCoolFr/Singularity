@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QPoint>
 #include <QSet>
 #include <QTimer>
 #include <QWidget>
@@ -31,6 +32,7 @@ public:
 signals:
     void openDirectMessage(const QString &channelId);
     void openProfile(const QString &userId);
+    void personMenuRequested(const QString &userId, const QPoint &globalPos);
     // A voice card was clicked. guild id and channel id are enough to join
     // even when that channel has never been opened in the sidebar.
     void joinVoiceChannel(const QString &guildId, const QString &channelId);

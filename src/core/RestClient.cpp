@@ -348,6 +348,35 @@ void RestClient::updateStatus(const QString &status, ObjectHandler onOk, ErrorHa
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+void RestClient::listApplications(ArrayHandler onOk, ErrorHandler onError)
+{
+    QNetworkReply *reply = m_network.get(buildRequest(QStringLiteral("/applications")));
+    dispatch(reply, nullptr, std::move(onOk), std::move(onError));
+}
+
+void RestClient::createApplication(const QString &name, ObjectHandler onOk, ErrorHandler onError)
+{
+    const QJsonObject body{
+        {QStringLiteral("name"), name},
+        {QStringLiteral("description"), QStringLiteral("Singularity, a Discord client")},
+    };
+    QNetworkReply *reply = m_network.post(buildRequest(QStringLiteral("/applications")),
+                                          QJsonDocument(body).toJson(QJsonDocument::Compact));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
+void RestClient::proxyApplicationAsset(const QString &applicationId, const QString &url, ArrayHandler onOk,
+                                       ErrorHandler onError)
+{
+    QJsonArray urls;
+    urls.append(url);
+    const QJsonObject body{{QStringLiteral("urls"), urls}};
+    const QString path = QStringLiteral("/applications/%1/external-assets").arg(applicationId);
+    QNetworkReply *reply = m_network.post(buildRequest(path),
+                                          QJsonDocument(body).toJson(QJsonDocument::Compact));
+    dispatch(reply, nullptr, std::move(onOk), std::move(onError));
+}
+
 void RestClient::updateUserVolume(const QString &userId, int volume, bool muted, ObjectHandler onOk,
                                   ErrorHandler onError)
 {

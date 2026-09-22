@@ -596,32 +596,47 @@ QJsonArray GatewayClient::clientActivities() const
     // Invisible sends nothing, so appearing offline does not advertise it.
     // A game from another session is a separate activity and still shows.
     const QString site = QStringLiteral("https://singularitycord.pages.dev");
-
-    QJsonObject button;
-    button.insert(QStringLiteral("label"), QStringLiteral("Get Singularity"));
-    button.insert(QStringLiteral("url"), site);
+    const QString logo = m_activityImageKey.isEmpty()
+        ? QStringLiteral("https://singularitycord.pages.dev/mark.png")
+        : m_activityImageKey;
 
     QJsonArray buttons;
-    buttons.append(button);
+    buttons.append(QStringLiteral("Get Singularity"));
+
+    QJsonArray buttonUrls;
+    buttonUrls.append(site);
 
     QJsonObject assets;
-    assets.insert(QStringLiteral("large_image"), QStringLiteral("https://singularitycord.pages.dev/mark.png"));
+    assets.insert(QStringLiteral("large_image"), logo);
     assets.insert(QStringLiteral("large_text"), QStringLiteral("Singularity"));
     assets.insert(QStringLiteral("large_url"), site);
 
     QJsonObject activity;
     activity.insert(QStringLiteral("name"), QStringLiteral("Singularity"));
     activity.insert(QStringLiteral("type"), 0);
+    activity.insert(QStringLiteral("platform"), QStringLiteral("desktop"));
     activity.insert(QStringLiteral("details"), QStringLiteral("On the client"));
-    activity.insert(QStringLiteral("created_at"), m_clientActivityStart);
+    if (!m_activityApplicationId.isEmpty())
+        activity.insert(QStringLiteral("application_id"), m_activityApplicationId);
     activity.insert(QStringLiteral("timestamps"),
                     QJsonObject{{QStringLiteral("start"), m_clientActivityStart}});
     activity.insert(QStringLiteral("assets"), assets);
     activity.insert(QStringLiteral("buttons"), buttons);
+    // The labels travel in `buttons`. The links travel here, and Discord
+    // does not send them back. Without an application id the official client
+    // drops the whole card, which is why it only showed up in this one.
+    activity.insert(QStringLiteral("metadata"),
+                    QJsonObject{{QStringLiteral("button_urls"), buttonUrls}});
 
     QJsonArray activities;
     activities.append(activity);
     return activities;
+}
+
+void GatewayClient::setClientActivityArt(const QString &applicationId, const QString &imageKey)
+{
+    m_activityApplicationId = applicationId;
+    m_activityImageKey = imageKey;
 }
 
 void GatewayClient::setPresenceStatus(const QString &status)
