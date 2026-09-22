@@ -130,21 +130,24 @@ Updater *updater()
                              return;
                          }
 
-                         // Above this program only. An application-modal window
-                         // forced to the top of the screen keeps the foreground
-                         // lock, and clicks on the taskbar never land.
+                         // Not modal, and it does not take focus.
+                         //
+                         // A modal progress window holds Windows' foreground
+                         // lock for the whole download. The taskbar still
+                         // records the clicks, and every program you tried to
+                         // open appears at once when the download ends.
                          QWidget *owner = g_owner ? g_owner.data() : QApplication::activeWindow();
                          g_progress = new QProgressDialog(
                              QStringLiteral("Updating to Singularity %1...").arg(version),
                              QString(), 0, 0, owner);
                          g_progress->setWindowTitle(QStringLiteral("Update"));
                          g_progress->setAttribute(Qt::WA_DeleteOnClose);
+                         g_progress->setAttribute(Qt::WA_ShowWithoutActivating);
                          g_progress->setMinimumDuration(0);
-                         g_progress->setWindowModality(owner ? Qt::WindowModal : Qt::NonModal);
+                         g_progress->setWindowModality(Qt::NonModal);
                          g_progress->setValue(0);
                          g_progress->show();
                          g_progress->raise();
-                         g_progress->activateWindow();
 
                          updater()->download();
                      });
