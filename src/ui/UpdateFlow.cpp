@@ -301,6 +301,26 @@ public:
         liftOverApp(this);
     }
 
+    void setStep(const QString &text)
+    {
+        m_step->setText(text);
+        m_step->adjustSize();
+        m_step->move((width() - m_step->width()) / 2, 200);
+    }
+
+    // Real progress while the file is coming down. After that the bar eases
+    // the rest of the way on its own, because the install does not report one.
+    void setFraction(qint64 got, qint64 total)
+    {
+        if (total <= 0)
+            return;
+        m_real = true;
+        const int full = m_track->width();
+        const int filled = static_cast<int>(qBound(qint64(0), got * full / total, qint64(full)));
+        m_filled = qMax(m_filled, filled);
+        m_fill->setGeometry(0, 0, m_filled, 3);
+    }
+
 private:
     void tick()
     {
@@ -310,9 +330,8 @@ private:
             if (!frame.isNull())
                 m_hole->setPixmap(frame);
         }
-        // The bar fills from the left, the way the old installer did. The
-        // installer does not report a percentage, so it eases toward the end
-        // and waits there until the new copy starts.
+        if (m_real)
+            return;
         const int full = m_track->width();
         const int cap = full * 9 / 10;
         if (m_filled < cap)
@@ -328,9 +347,40 @@ private:
     QList<QPixmap> m_frames;
     int m_frame = 0;
     int m_filled = 0;
+    bool m_real = false;
 };
 
 QPointer<InstallScreen> g_install;
+QList<QPointer<QWidget>> g_hidden;
+
+// The open program goes away for the whole update, download included.
+// The hole screen is the only thing left on screen.
+void presentInstallScreen(const QString &step)
+{
+    if (!g_install)
+        g_install = new InstallScreen;
+    g_install->setStep(step);
+    const auto tops = QApplication::topLevelWidgets();
+    for (QWidget *widget : tops) {
+        if (!widget->isWindow() || widget == g_install || !widget->isVisible())
+            continue;
+        g_hidden.append(widget);
+        widget->hide();
+    }
+    g_install->place();
+    releaseForegroundLock();
+}
+
+void restoreHidden()
+{
+    for (const QPointer<QWidget> &widget : g_hidden) {
+        if (widget)
+            widget->show();
+    }
+    g_hidden.clear();
+    if (g_install)
+        g_install->close();
+}
 
 // Trims release notes down to something that fits in a dialog.
 //
@@ -383,7 +433,9 @@ Updater *updater()
     instance = new Updater(qApp);
 
     QObject::connect(instance, &Updater::progress, qApp, [](qint64 got, qint64 total) {
-        if (g_offer)
+        if (g_install)
+            g_install->setFraction(got, total);
+        else if (g_offer)
             g_offer->setProgress(got, total);
     });
 
@@ -394,9 +446,7 @@ Updater *updater()
     });
 
     QObject::connect(instance, &Updater::failed, qApp, [](const QString &reason) {
-        if (g_offer)
-            g_offer->close();
-        releaseForegroundLock();
+        restoreHidden();
         QMessageBox::warning(g_owner, QStringLiteral("Could not check for updates"), reason);
     });
 
@@ -430,9 +480,9 @@ Updater *updater()
                                  g_offer->close();
                          });
                          g_offer->setAccept([]() {
-                             if (!g_offer)
-                                 return;
-                             g_offer->showProgress();
+                             if (g_offer)
+                                 g_offer->close();
+                             presentInstallScreen(QStringLiteral("Downloading..."));
                              updater()->download();
                          });
                          g_offer->place();
@@ -460,15 +510,8 @@ Updater *updater()
 
         if (g_offer)
             g_offer->close();
-        // Hide the open window. The install screen is the only thing on
-        // screen, which is how the old installer looked. This process stays
-        // alive behind that, so the taskbar keeps working.
-        QWidget *owner = g_owner ? g_owner.data() : QApplication::activeWindow();
-        if (owner && owner->window())
-            owner->window()->hide();
-        g_install = new InstallScreen;
-        g_install->place();
-        releaseForegroundLock();
+        // Same screen as the download. The app is already hidden.
+        presentInstallScreen(QStringLiteral("Installing..."));
 
         // Discord writes the new version beside the one that is open and
         // never puts an installer in front. This copy keeps drawing and
@@ -492,8 +535,7 @@ Updater *updater()
                 g_install->close();
             releaseForegroundLock();
             if (code != 0) {
-                if (QWidget *owner = g_owner ? g_owner.data() : QApplication::activeWindow())
-                    owner->window()->show();
+                restoreHidden();
                 QMessageBox::warning(g_owner, QStringLiteral("Could not install the update"),
                                      QStringLiteral("The installer stopped before it finished."));
                 return;
