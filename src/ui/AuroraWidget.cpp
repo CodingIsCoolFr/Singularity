@@ -231,6 +231,169 @@ void main()
 }
 )";
 
+// The rays are fixed. They are marched once, when the window changes size,
+// and every frame after that only turns the disk and twinkles the stars.
+// Marching them again for every pixel is what made the background hitch, and
+// drawing that result small is what made it look nothing like itself.
+constexpr const char *kBake = R"(#version 330 core
+uniform vec2 uResolution;
+uniform float uZoom;
+layout(location = 0) out vec4 oHitA;
+layout(location = 1) out vec4 oHitB;
+layout(location = 2) out vec4 oSky;
+
+const float RS = 0.50;
+const float INNER = RS * 2.45;
+const float OUTER = RS * 11.2;
+
+void main()
+{
+    vec2 uv = (gl_FragCoord.xy - 0.5 * uResolution) / uResolution.y;
+    vec3 ro = vec3(0.0, 0.62, 7.15);
+    vec3 ta = vec3(0.0, 0.02, 0.0);
+    vec3 ww = normalize(ta - ro);
+    vec3 uu = normalize(cross(ww, vec3(0.0, 1.0, 0.0)));
+    vec3 vv = cross(uu, ww);
+    vec3 rd = normalize(uv.x * uu + uv.y * vv + uZoom * ww);
+
+    vec3 pos = ro;
+    vec3 vel = rd;
+    vec4 hitA = vec4(-1.0, 1.0, 0.0, 0.0);
+    vec4 hitB = vec4(-1.0, 1.0, 0.0, 0.0);
+    int found = 0;
+    float photon = 0.0;
+    bool captured = false;
+
+    for (int i = 0; i < 100; ++i) {
+        float r = length(pos);
+        if (r < RS) { captured = true; break; }
+        float dt = 0.036 * max(r, 0.22);
+        vel += -1.50 * RS * pos / (r * r * r * r) * dt;
+        vec3 nxt = pos + vel * dt;
+        photon += smoothstep(0.09, 0.0, abs(r - 1.52 * RS)) * 0.075;
+        if (pos.y * nxt.y < 0.0) {
+            float f = pos.y / (pos.y - nxt.y + 1e-6);
+            vec3 hit = mix(pos, nxt, f);
+            float rho = length(hit.xz);
+            if (rho > INNER && rho < OUTER) {
+                float x = (rho - INNER) / (OUTER - INNER);
+                float ang = atan(hit.z, hit.x);
+                float phase = 2.0 * ang - log(rho + 0.04) * 8.5;
+                vec3 tang = normalize(vec3(-hit.z, 0.0, hit.x));
+                float vkep = 0.50 / sqrt(max(rho, 0.2));
+                float dop = 1.0 + dot(normalize(vel), tang) * vkep * 1.35;
+                vec4 rec = vec4(x, dop, cos(phase), sin(phase));
+                if (found == 0) { hitA = rec; found = 1; }
+                else if (found == 1) { hitB = rec; found = 2; }
+            }
+        }
+        pos = nxt;
+        if (r > 22.0) break;
+    }
+
+    oHitA = hitA;
+    oHitB = hitB;
+    oSky = vec4(captured ? vec3(0.0) : normalize(vel), photon);
+}
+)";
+
+constexpr const char *kDraw = R"(#version 330 core
+uniform sampler2D tHitA;
+uniform sampler2D tHitB;
+uniform sampler2D tSky;
+uniform vec2 uResolution;
+uniform float uTime;
+uniform vec2 uDrift;
+uniform vec3 uAccent;
+uniform vec3 uDisk;
+uniform vec3 uGrade;
+out vec4 fragColor;
+
+float hash12(vec2 p)
+{
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+vec3 starfield(vec3 rd)
+{
+    vec3 col = vec3(0.0015, 0.0022, 0.0060);
+    float band = exp(-11.0 * rd.y * rd.y);
+    col += mix(vec3(0.028, 0.040, 0.070), uAccent * 0.08, 0.55) * band;
+    col += uAccent * 0.04 * band * hash12(rd.xz * 8.0);
+    float az = atan(rd.x, rd.z);
+    float el = asin(clamp(rd.y, -1.0, 1.0));
+    for (int k = 0; k < 5; ++k) {
+        float sc = exp2(float(k) * 1.18 + 4.05);
+        vec2 uv = vec2(az, el) * sc;
+        vec2 id = floor(uv);
+        vec2 f = fract(uv) - 0.5;
+        float h = hash12(id + float(k) * 17.13);
+        if (h > 0.905) {
+            float d = length(f);
+            float br = smoothstep(0.080 + h * 0.035, 0.0, d);
+            float tw = 0.78 + 0.22 * sin(uTime * (0.7 + h * 3.2) + h * 40.0);
+            vec3 tc = mix(mix(vec3(0.75, 0.82, 0.95), uAccent, 0.35), vec3(0.95, 0.97, 1.0), fract(h * 9.1));
+            if (fract(h * 13.7) > 0.82)
+                tc = mix(vec3(0.55, 0.70, 1.0), uAccent, 0.45);
+            col += br * tc * tw * (0.28 + 2.4 * pow(h, 9.0));
+            if (h > 0.988) {
+                vec3 sp = mix(vec3(0.75, 0.88, 1.0), uAccent, 0.4);
+                col += sp * 0.35 * exp(-abs(f.x) * 55.0) * exp(-abs(f.y) * 10.0);
+                col += sp * 0.18 * exp(-abs(f.y) * 55.0) * exp(-abs(f.x) * 10.0);
+            }
+        }
+    }
+    return col;
+}
+
+void disk(vec4 rec, float wt, inout vec3 col, inout float trans)
+{
+    float x = rec.x;
+    if (x < -0.5) return;
+    float s = rec.w * cos(wt) - rec.z * sin(wt);
+    float spir = 0.5 + 0.5 * s;
+    float dens = pow(max(1.0 - x, 0.0), 1.05) * (0.62 + 0.38 * spir);
+    dens *= smoothstep(0.0, 0.08, x) * smoothstep(1.0, 0.72, x);
+    if (dens <= 0.0) return;
+    float dop = rec.y;
+    vec3 outerC = uDisk * 0.42;
+    vec3 midC = uDisk;
+    vec3 hotC = mix(vec3(1.15, 1.25, 1.40), uAccent, 0.55) * 1.25;
+    vec3 dcol = mix(hotC, mix(midC, outerC, smoothstep(0.18, 1.0, x)), smoothstep(0.0, 0.48, x));
+    dcol *= pow(clamp(dop, 0.30, 2.1), 2.4);
+    dcol += uAccent * smoothstep(1.12, 1.55, dop) * 0.40;
+    dcol *= mix(vec3(1.0), vec3(0.55, 0.40, 0.48), smoothstep(1.0, 0.55, dop));
+    col += trans * dcol * dens * 0.72;
+    trans *= 1.0 - clamp(dens * 0.55, 0.0, 0.78);
+}
+
+void main()
+{
+    vec2 q = gl_FragCoord.xy / uResolution;
+    vec2 suv = clamp((q - 0.5) * 0.90 + 0.5 + uDrift, vec2(0.001), vec2(0.999));
+    vec4 a = texture(tHitA, suv);
+    vec4 b = texture(tHitB, suv);
+    vec4 sky = texture(tSky, suv);
+    float wt = uTime * 1.15;
+    vec3 col = sky.w * uAccent;
+    float trans = 1.0;
+    disk(a, wt, col, trans);
+    disk(b, wt, col, trans);
+    if (dot(sky.xyz, sky.xyz) > 0.25)
+        col += trans * starfield(normalize(sky.xyz));
+    col *= uGrade;
+    col = col / (1.0 + col * 0.70);
+    col = pow(clamp(col, 0.0, 1.0), vec3(0.92));
+    float vig = pow(16.0 * q.x * q.y * (1.0 - q.x) * (1.0 - q.y), 0.38);
+    col *= mix(0.22, 1.0, vig);
+    float g = hash12(gl_FragCoord.xy + vec2(fract(uTime) * 73.1, fract(uTime * 0.37) * 19.0));
+    col += (g - 0.5) * 0.012;
+    fragColor = vec4(col, 1.0);
+}
+)";
+
 } // namespace
 
 AuroraWidget::AuroraWidget(QWidget *parent)
@@ -527,90 +690,97 @@ void AuroraWidget::paintGL()
         }
     }
 
-    if (m_program && m_program->isLinked()) {
-        // The ray march is the expensive part. Draw it into a smaller target
-        // and stretch it. The disk is soft, so the stretch does not show, and
-        // the frame time stays even.
-        int rw = w;
-        int rh = h;
-        const int longest = qMax(w, h);
-        if (longest > 1280) {
-            const float scale = 1280.f / float(longest);
-            rw = qMax(1, int(w * scale));
-            rh = qMax(1, int(h * scale));
-        }
-        ensureHoleTarget(rw, rh);
-        if (m_holeFbo == 0) {
-            rw = w;
-            rh = h;
-        }
-        const GLuint windowFbo = defaultFramebufferObject();
-        if (m_holeFbo != 0) {
-            glBindFramebuffer(GL_FRAMEBUFFER, m_holeFbo);
-            glViewport(0, 0, rw, rh);
-        }
+    if (m_program && m_program->isLinked() && m_bakeProgram && m_bakeProgram->isLinked()) {
+        if (m_bakeSize != QSize(w, h))
+            bakeHole(w, h);
 
+        const float drift = m_time * 0.015f;
         m_program->bind();
-        m_program->setUniformValue(m_uResolution, QVector2D(float(rw), float(rh)));
+        m_program->setUniformValue(m_uResolution, QVector2D(float(w), float(h)));
         m_program->setUniformValue(m_uTime, m_time);
-        m_program->setUniformValue("uPointer", QVector2D(0.f, 0.f));
+        m_program->setUniformValue(m_uDrift, QVector2D(0.018f * sin(drift), 0.012f * cos(drift * 0.7f)));
         m_program->setUniformValue(m_uAccent, m_accent);
         m_program->setUniformValue(m_uDisk, m_disk);
         m_program->setUniformValue(m_uGrade, m_grade);
-
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, m_hitA);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, m_hitB);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, m_sky);
         glBindVertexArray(m_vao);
         glDrawArrays(GL_TRIANGLES, 0, 3);
         glBindVertexArray(0);
         m_program->release();
-
-        if (m_holeFbo != 0) {
-            glBindFramebuffer(GL_READ_FRAMEBUFFER, m_holeFbo);
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, windowFbo);
-            glBlitFramebuffer(0, 0, rw, rh, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
-            glBindFramebuffer(GL_FRAMEBUFFER, windowFbo);
-        }
+        glActiveTexture(GL_TEXTURE0);
     }
 }
 
-void AuroraWidget::ensureHoleTarget(int width, int height)
+void AuroraWidget::ensureBakeTargets(int width, int height)
 {
-    if (width <= 0 || height <= 0)
-        return;
-    const QSize wanted(width, height);
-    if (m_holeFbo != 0 && m_holeSize == wanted)
-        return;
-
-    if (m_holeFbo) {
-        glDeleteFramebuffers(1, &m_holeFbo);
-        m_holeFbo = 0;
+    if (m_bakeFbo) {
+        glDeleteFramebuffers(1, &m_bakeFbo);
+        m_bakeFbo = 0;
     }
-    if (m_holeTex) {
-        glDeleteTextures(1, &m_holeTex);
-        m_holeTex = 0;
-    }
+    const GLuint olds[3] = {m_hitA, m_hitB, m_sky};
+    glDeleteTextures(3, olds);
+    m_hitA = m_hitB = m_sky = 0;
 
-    glGenTextures(1, &m_holeTex);
-    glBindTexture(GL_TEXTURE_2D, m_holeTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    auto make = [this](GLuint &name, int w, int h) {
+        glGenTextures(1, &name);
+        glBindTexture(GL_TEXTURE_2D, name);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    };
+    make(m_hitA, width, height);
+    make(m_hitB, width, height);
+    make(m_sky, width, height);
 
-    glGenFramebuffers(1, &m_holeFbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, m_holeFbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_holeTex, 0);
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-        glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
-        glDeleteFramebuffers(1, &m_holeFbo);
-        glDeleteTextures(1, &m_holeTex);
-        m_holeFbo = 0;
-        m_holeTex = 0;
-        m_holeSize = QSize();
-        return;
-    }
+    glGenFramebuffers(1, &m_bakeFbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, m_bakeFbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_hitA, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, m_hitB, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, m_sky, 0);
+    const GLenum bufs[3] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2};
+    glDrawBuffers(3, bufs);
+    const bool ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
     glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
-    m_holeSize = wanted;
+    if (!ok) {
+        const GLuint made[3] = {m_hitA, m_hitB, m_sky};
+        glDeleteFramebuffers(1, &m_bakeFbo);
+        glDeleteTextures(3, made);
+        m_bakeFbo = 0;
+        m_hitA = m_hitB = m_sky = 0;
+        m_bakeSize = QSize();
+    }
+}
+
+void AuroraWidget::bakeHole(int width, int height)
+{
+    if (!m_bakeProgram || !m_bakeProgram->isLinked() || width <= 0 || height <= 0)
+        return;
+    ensureBakeTargets(width, height);
+    if (m_bakeFbo == 0)
+        return;
+
+    const GLuint windowFbo = defaultFramebufferObject();
+    glBindFramebuffer(GL_FRAMEBUFFER, m_bakeFbo);
+    glViewport(0, 0, width, height);
+    glDisable(GL_BLEND);
+    m_bakeProgram->bind();
+    m_bakeProgram->setUniformValue(m_bakeRes, QVector2D(float(width), float(height)));
+    // Wider than the window, so the slow drift has room to slide.
+    m_bakeProgram->setUniformValue(m_bakeZoom, 1.458f);
+    glBindVertexArray(m_vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    m_bakeProgram->release();
+    glBindFramebuffer(GL_FRAMEBUFFER, windowFbo);
+    glViewport(0, 0, width, height);
+    m_bakeSize = QSize(width, height);
 }
 
 void AuroraWidget::refreshOverlay()
@@ -676,26 +846,37 @@ void AuroraWidget::updateOverlayFbo()
 
 bool AuroraWidget::compileProgram()
 {
+    delete m_bakeProgram;
+    m_bakeProgram = new QOpenGLShaderProgram(this);
+    if (!m_bakeProgram->addShaderFromSourceCode(QOpenGLShader::Vertex, kVertex)
+        || !m_bakeProgram->addShaderFromSourceCode(QOpenGLShader::Fragment, kBake)
+        || !m_bakeProgram->link()) {
+        qWarning() << "aurora bake" << m_bakeProgram->log();
+        return false;
+    }
+    m_bakeRes = m_bakeProgram->uniformLocation("uResolution");
+    m_bakeZoom = m_bakeProgram->uniformLocation("uZoom");
+
     delete m_program;
     m_program = new QOpenGLShaderProgram(this);
-    if (!m_program->addShaderFromSourceCode(QOpenGLShader::Vertex, kVertex)) {
-        qWarning() << "aurora vertex" << m_program->log();
-        return false;
-    }
-    if (!m_program->addShaderFromSourceCode(QOpenGLShader::Fragment, kFragment)) {
-        qWarning() << "aurora fragment" << m_program->log();
-        return false;
-    }
-    if (!m_program->link()) {
-        qWarning() << "aurora link" << m_program->log();
+    if (!m_program->addShaderFromSourceCode(QOpenGLShader::Vertex, kVertex)
+        || !m_program->addShaderFromSourceCode(QOpenGLShader::Fragment, kDraw)
+        || !m_program->link()) {
+        qWarning() << "aurora draw" << m_program->log();
         return false;
     }
 
     m_uResolution = m_program->uniformLocation("uResolution");
     m_uTime = m_program->uniformLocation("uTime");
+    m_uDrift = m_program->uniformLocation("uDrift");
     m_uAccent = m_program->uniformLocation("uAccent");
     m_uDisk = m_program->uniformLocation("uDisk");
     m_uGrade = m_program->uniformLocation("uGrade");
+    m_program->bind();
+    m_program->setUniformValue("tHitA", 0);
+    m_program->setUniformValue("tHitB", 1);
+    m_program->setUniformValue("tSky", 2);
+    m_program->release();
     return true;
 }
 
@@ -725,18 +906,20 @@ void AuroraWidget::destroyGl()
     }
     m_pictureSize = QSize();
 
+    delete m_bakeProgram;
+    m_bakeProgram = nullptr;
     delete m_program;
     m_program = nullptr;
+    if (m_bakeFbo)
+        glDeleteFramebuffers(1, &m_bakeFbo);
+    const GLuint baked[3] = {m_hitA, m_hitB, m_sky};
+    glDeleteTextures(3, baked);
+    m_bakeFbo = 0;
+    m_hitA = m_hitB = m_sky = 0;
     if (m_vbo)
         glDeleteBuffers(1, &m_vbo);
     if (m_vao)
         glDeleteVertexArrays(1, &m_vao);
-    if (m_holeFbo)
-        glDeleteFramebuffers(1, &m_holeFbo);
-    if (m_holeTex)
-        glDeleteTextures(1, &m_holeTex);
-    m_holeFbo = 0;
-    m_holeTex = 0;
     if (m_overlayFbo)
         glDeleteFramebuffers(1, &m_overlayFbo);
     if (m_overlayTex)

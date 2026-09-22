@@ -60,6 +60,8 @@ private:
     void paintOverlay();
     void updateOverlayFbo();
     bool compileProgram();
+    void ensureBakeTargets(int width, int height);
+    void bakeHole(int width, int height);
     bool compilePictureProgram();
     void destroyGl();
     QWidget *pickOverlay(const QPoint &pos) const;
@@ -68,6 +70,7 @@ private:
     void uploadFrame(const QImage &frame);
 
     QOpenGLShaderProgram *m_program = nullptr;
+    QOpenGLShaderProgram *m_bakeProgram = nullptr;
     QOpenGLShaderProgram *m_pictureProgram = nullptr;
 
     Background m_background = Background::Hole;
@@ -89,6 +92,14 @@ private:
     int m_uAccent = -1;
     int m_uDisk = -1;
     int m_uGrade = -1;
+    int m_uDrift = -1;
+    int m_bakeRes = -1;
+    int m_bakeZoom = -1;
+    GLuint m_bakeFbo = 0;
+    GLuint m_hitA = 0;
+    GLuint m_hitB = 0;
+    GLuint m_sky = 0;
+    QSize m_bakeSize;
 
     QWidget *m_overlay = nullptr;
     QPointer<QWidget> m_pressTarget;
@@ -102,10 +113,7 @@ private:
     QElapsedTimer m_clock;
     float m_time = 0.f;
     qint64 m_runOffset = 0;
-    GLuint m_holeFbo = 0;
-    GLuint m_holeTex = 0;
-    QSize m_holeSize;
-    void ensureHoleTarget(int width, int height);
+
 
     QVector3D m_accent{0.22f, 0.92f, 0.88f};
     QVector3D m_disk{0.18f, 0.72f, 0.70f};
