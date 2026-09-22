@@ -52,6 +52,27 @@ QPointer<QWidget> g_owner;
 // than a minute later.
 QString summarise(const QString &notes);
 
+// Above this program, not above every other window. A no-activate show was
+// leaving the card behind the main window, which is why Check for updates
+// looked like it had done nothing.
+void liftOverApp(QWidget *panel)
+{
+    if (!panel)
+        return;
+    panel->setAttribute(Qt::WA_ShowWithoutActivating, false);
+    panel->setWindowModality(Qt::NonModal);
+    panel->show();
+    panel->raise();
+    panel->activateWindow();
+#ifdef Q_OS_WIN
+    const HWND hwnd = reinterpret_cast<HWND>(panel->winId());
+    if (hwnd) {
+        SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    }
+#endif
+}
+
 void releaseForegroundLock()
 {
     const auto windows = QApplication::topLevelWidgets();
@@ -79,7 +100,6 @@ public:
     {
         setObjectName(QStringLiteral("UpdateOffer"));
         setAttribute(Qt::WA_DeleteOnClose);
-        setAttribute(Qt::WA_ShowWithoutActivating);
         setWindowModality(Qt::NonModal);
         setFixedWidth(420);
         setStyleSheet(QStringLiteral(
@@ -158,9 +178,7 @@ public:
             area = screen->availableGeometry();
         if (!area.isNull())
             move(area.center() - QPoint(width() / 2, height() / 2));
-        setWindowModality(Qt::NonModal);
-        if (!isVisible())
-            show();
+        liftOverApp(this);
     }
 
     void showProgress()
@@ -231,7 +249,6 @@ public:
     {
         setObjectName(QStringLiteral("InstallScreen"));
         setAttribute(Qt::WA_DeleteOnClose);
-        setAttribute(Qt::WA_ShowWithoutActivating);
         setWindowModality(Qt::NonModal);
         setFixedSize(420, 310);
         setStyleSheet(QStringLiteral(
@@ -280,9 +297,7 @@ public:
             area = screen->availableGeometry();
         if (!area.isNull())
             move(area.center() - QPoint(width() / 2, height() / 2));
-        setWindowModality(Qt::NonModal);
-        show();
-        raise();
+        liftOverApp(this);
     }
 
 private:
