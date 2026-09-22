@@ -13,7 +13,6 @@
 #include <QFontDatabase>
 #include <QIcon>
 #include <QSurfaceFormat>
-#include <QTimer>
 
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
@@ -48,7 +47,7 @@ int main(int argc, char *argv[])
     holdRunningMutex();
     app.setApplicationName(QStringLiteral("Singularity"));
     app.setOrganizationName(QStringLiteral("Singularity"));
-    app.setApplicationVersion(QStringLiteral("0.6.43"));
+    app.setApplicationVersion(QStringLiteral("0.6.44"));
     app.setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
 
     Theme::applySeed(QColor(AppConfig::instance().value(QStringLiteral("appearance/themeSeed"),
@@ -73,19 +72,10 @@ int main(int argc, char *argv[])
     // Touch the log first so the file exists even if startup fails early.
     wlog(QStringLiteral("app"), QStringLiteral("Singularity %1 starting").arg(app.applicationVersion()));
 
-    // A quiet look for a newer version, a few seconds in.
-    //
-    // Started here rather than from the main window, because the main window
-    // is not built at all until somebody signs in. That is exactly the run
-    // that most needs an update: whoever is stuck on the sign-in screen may be
-    // stuck on something a newer version fixes.
-    //
-    // The sign-in window runs its own event loop, so this still fires while it
-    // is open. It is quiet, so a program that is already current says nothing.
-    // An updater that interrupts to report that nothing has happened is one
-    // people learn to dismiss without reading, which is exactly the habit you
-    // do not want when it eventually has something to say.
-    QTimer::singleShot(8000, &app, []() { UpdateFlow::run(true, nullptr); });
+    // A quiet look for a newer version, a few seconds in, and again while the
+    // program stays open. The sign-in window runs its own event loop, so the
+    // first look still fires there. Already being current says nothing.
+    UpdateFlow::watch();
 
     RestClient rest;
     MessageStore store;

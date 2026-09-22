@@ -22,4 +22,9 @@ namespace UpdateFlow {
 // `parent` may be null, because at startup there may be no window yet.
 void run(bool quiet, QWidget *parent);
 
+// Looks once the window is up, then again every couple of minutes. An update
+// published while the program is open still offers itself. Already being
+// current stays silent.
+void watch();
+
 } // namespace UpdateFlow

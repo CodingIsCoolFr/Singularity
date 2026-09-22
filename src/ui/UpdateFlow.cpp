@@ -1,5 +1,6 @@
 #include "ui/UpdateFlow.h"
 
+#include "core/AppConfig.h"
 #include "core/Logger.h"
 #include "core/Updater.h"
 
@@ -8,8 +9,17 @@
 #include <QPointer>
 #include <QProcess>
 #include <QProgressDialog>
+#include <QTimer>
 
 namespace {
+
+// True while the yes/no box is on screen, so a later check does not stack
+// a second one on top of it.
+bool g_asking = false;
+
+// The check that is in flight. A quiet one stays silent when nothing is new
+// and does not ask again about a version that was already declined.
+bool g_quiet = false;
 
 // The window the current check was asked from, if there is one.
 //
@@ -95,7 +105,19 @@ Updater *updater()
 
     QObject::connect(instance, &Updater::updateAvailable, qApp,
                      [](const QString &version, const QString &notes, qint64 bytes) {
-                         QMessageBox box(g_owner);
+                         if (g_asking)
+                             return;
+                         // No on 0.6.43 should not ask about 0.6.43 again.
+                         // A newer tag is a different string, so it still asks.
+                         // The menu check always asks, because that was a request.
+                         if (g_quiet
+                             && AppConfig::instance().value(QStringLiteral("update/declined")).toString()
+                                    == version) {
+                             return;
+                         }
+
+                         QWidget *owner = g_owner ? g_owner.data() : QApplication::activeWindow();
+                         QMessageBox box(owner);
                          box.setWindowTitle(QStringLiteral("Update available"));
                          box.setIcon(QMessageBox::Question);
                          box.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
@@ -124,7 +146,12 @@ Updater *updater()
                              box.setInformativeText(summarise(notes));
                          }
 
-                         if (box.exec() != QMessageBox::Yes) {
+                         g_asking = true;
+                         box.setWindowModality(Qt::ApplicationModal);
+                         const int answer = box.exec();
+                         g_asking = false;
+                         if (answer != QMessageBox::Yes) {
+                             AppConfig::instance().setValue(QStringLiteral("update/declined"), version);
                              wlog(QStringLiteral("update"),
                                   QStringLiteral("%1 offered and declined").arg(version));
                              return;
@@ -136,7 +163,6 @@ Updater *updater()
                          // lock for the whole download. The taskbar still
                          // records the clicks, and every program you tried to
                          // open appears at once when the download ends.
-                         QWidget *owner = g_owner ? g_owner.data() : QApplication::activeWindow();
                          g_progress = new QProgressDialog(
                              QStringLiteral("Updating to Singularity %1...").arg(version),
                              QString(), 0, 0, owner);
@@ -204,5 +230,20 @@ void UpdateFlow::run(bool quiet, QWidget *parent)
         return;
 
     g_owner = parent;
+    g_quiet = quiet;
     u->check(quiet);
+}
+
+void UpdateFlow::watch()
+{
+    // Once the window exists, then every two minutes after that. The first
+    // look is what a launch finds. The repeat is an update published while
+    // the program is already open, which otherwise sits there until somebody
+    // opens the menu.
+    QTimer::singleShot(8000, qApp, []() { UpdateFlow::run(true, nullptr); });
+
+    auto *timer = new QTimer(qApp);
+    timer->setInterval(2 * 60 * 1000);
+    QObject::connect(timer, &QTimer::timeout, qApp, []() { UpdateFlow::run(true, nullptr); });
+    timer->start();
 }
