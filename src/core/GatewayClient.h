@@ -60,6 +60,11 @@ public:
     void setPresenceStatus(const QString &status);
     QString presenceStatus() const { return m_presenceStatus; }
 
+    // Sends the status we are holding, even when it has not changed. Needed
+    // after sign-in: Discord does not take the status inside the first
+    // identify as the one other people should see.
+    void publishPresence();
+
     // Joins or leaves a voice channel.
     //
     // This is the first half of a voice connection: it puts you in the channel

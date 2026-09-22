@@ -1333,6 +1333,14 @@ void MainWindow::startSession(const QString &token)
     m_loading->show();
     m_loading->raise();
 
+    // Chosen before the socket opens, so the sign-in and the later presence
+    // message agree. Applying it only after ready used to skip the send
+    // whenever the saved choice was already "online".
+    const QString saved = AppConfig::instance()
+                              .value(QStringLiteral("presence/status"), QStringLiteral("online"))
+                              .toString();
+    m_gateway->setPresenceStatus(saved);
+
     m_gateway->start(token);
     flashStatus(QStringLiteral("Connecting..."));
 }
@@ -1397,14 +1405,10 @@ void MainWindow::onGatewayReady(const QJsonObject &payload)
     m_store->ingestReady(payload);
     populateGuildRail();
 
-    // The status you last chose, carried across restarts. Discord remembers
-    // this for its own client; nothing in the sign-in carries it back to us,
-    // so it is kept here.
-    const QString saved = AppConfig::instance()
-                              .value(QStringLiteral("presence/status"), QStringLiteral("online"))
-                              .toString();
-    if (saved != QLatin1String("online"))
-        m_gateway->setPresenceStatus(saved);
+    // Say it again now that the session exists. The copy sent before the
+    // socket was open was only remembered, and Discord does not treat the
+    // status inside the first sign-in as the one other people should see.
+    setPresenceStatus(m_gateway->presenceStatus());
 
     updateUserPanel();
 
@@ -3447,7 +3451,34 @@ void MainWindow::setPresenceStatus(const QString &status)
     m_gateway->setPresenceStatus(status);
     AppConfig::instance().setValue(QStringLiteral("presence/status"), status);
 
-    wlog(QStringLiteral("ui"), QStringLiteral("status set to %1").arg(status));
+    // The panel reads the gateway. The member list and everyone else read the
+    // presence store, which only changes when Discord says so. Put the choice
+    // there too, so this client agrees with itself at once.
+    if (!m_selfUserId.isEmpty()) {
+        m_store->setPresence(m_selfUserId,
+                             QJsonObject{{QStringLiteral("status"), m_gateway->presenceStatus()}});
+    }
+
+    // Opcode 3 tells this session. The settings write is what the real client
+    // does, and it is what other people and your other sessions actually use.
+    if (m_rest) {
+        const QString chosen = m_gateway->presenceStatus();
+        m_rest->updateStatus(
+            chosen,
+            [chosen](const QJsonObject &) {
+                wlog(QStringLiteral("gateway"),
+                     QStringLiteral("Discord stored status \"%1\"").arg(chosen));
+            },
+            [chosen](const RestClient::Error &error) {
+                wlog(QStringLiteral("gateway"),
+                     QStringLiteral("Discord refused status \"%1\": HTTP %2 %3")
+                         .arg(chosen)
+                         .arg(error.httpStatus)
+                         .arg(error.message));
+            });
+    }
+
+    wlog(QStringLiteral("ui"), QStringLiteral("status set to %1").arg(m_gateway->presenceStatus()));
     updateUserPanel();
 }
 

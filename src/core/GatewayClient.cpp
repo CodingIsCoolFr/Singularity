@@ -529,25 +529,40 @@ void GatewayClient::subscribeToGuild(const QString &guildId, const QString &chan
 
 void GatewayClient::setPresenceStatus(const QString &status)
 {
-    if (status.isEmpty() || status == m_presenceStatus)
+    if (status != QLatin1String("online") && status != QLatin1String("idle")
+        && status != QLatin1String("dnd") && status != QLatin1String("invisible"))
         return;
 
     m_presenceStatus = status;
     wlog(QStringLiteral("gateway"), QStringLiteral("presence is now \"%1\"").arg(status));
+    publishPresence();
+}
 
-    // A sign-in that has not happened yet will carry the new value on its own.
-    if (m_state != State::Ready)
+void GatewayClient::publishPresence()
+{
+    // A sign-in that has not finished yet cannot carry this. The ready
+    // handler sends it the moment the session exists.
+    if (m_state != State::Ready || m_socket.state() != QAbstractSocket::ConnectedState)
         return;
+
+    // Idle is the only status that carries a time. Everyone else sends 0,
+    // which means "not idle". A missing or wrong `since` is dropped whole,
+    // and the status on screen never leaves this machine.
+    const bool idle = m_presenceStatus == QLatin1String("idle");
+    const QJsonObject body{
+        {QStringLiteral("since"), idle ? QJsonValue(QDateTime::currentMSecsSinceEpoch()) : QJsonValue(0)},
+        {QStringLiteral("activities"), QJsonArray{}},
+        {QStringLiteral("status"), m_presenceStatus},
+        {QStringLiteral("afk"), idle},
+    };
+
+    wlog(QStringLiteral("gateway"),
+         QStringLiteral("telling Discord %1")
+             .arg(QString::fromUtf8(QJsonDocument(body).toJson(QJsonDocument::Compact))));
 
     sendJson(QJsonObject{
         {QStringLiteral("op"), OpPresenceUpdate},
-        {QStringLiteral("d"),
-         QJsonObject{
-             {QStringLiteral("since"), 0},
-             {QStringLiteral("activities"), QJsonArray{}},
-             {QStringLiteral("status"), m_presenceStatus},
-             {QStringLiteral("afk"), false},
-         }},
+        {QStringLiteral("d"), body},
     });
 }
 
@@ -721,6 +736,7 @@ void GatewayClient::handleDispatch(const QString &type, const QJsonObject &data,
         m_subscribedGuilds.clear();
         m_subscribedChannels.clear();
         setState(State::Ready);
+        publishPresence();
         emit logLine(QStringLiteral("ready as %1").arg(m_currentUser.value(QStringLiteral("username")).toString()));
         wlog(QStringLiteral("gateway"),
              QStringLiteral("READY: user=%1 guilds=%2 dms=%3")
@@ -731,6 +747,7 @@ void GatewayClient::handleDispatch(const QString &type, const QJsonObject &data,
     } else if (type == QLatin1String("RESUMED")) {
         m_reconnectAttempts = 0;
         setState(State::Ready);
+        publishPresence();
         emit logLine(QStringLiteral("session resumed"));
     }
 

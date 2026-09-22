@@ -193,6 +193,15 @@ void RestClient::fetchNote(const QString &userId, ObjectHandler onOk, ErrorHandl
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+void RestClient::updateStatus(const QString &status, ObjectHandler onOk, ErrorHandler onError)
+{
+    const QJsonObject body{{QStringLiteral("status"), status}};
+    QNetworkReply *reply = m_network.sendCustomRequest(
+        buildRequest(QStringLiteral("/users/@me/settings")), QByteArrayLiteral("PATCH"),
+        QJsonDocument(body).toJson(QJsonDocument::Compact));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::saveNote(const QString &userId, const QString &note, ObjectHandler onOk, ErrorHandler onError)
 {
     const QJsonObject body{{QStringLiteral("note"), note}};

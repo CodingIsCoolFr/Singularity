@@ -85,6 +85,10 @@ public:
     // itself is the single clearest sign of an automated account.
     void redeemGift(const QString &code, ObjectHandler onOk, ErrorHandler onError);
 
+    // PATCH /users/@me/settings — the status the real client stores, which is
+    // what other people and your other sessions are shown.
+    void updateStatus(const QString &status, ObjectHandler onOk, ErrorHandler onError);
+
     // Private notes you keep about someone. Only you can read them.
     void fetchNote(const QString &userId, ObjectHandler onOk, ErrorHandler onError);
     void saveNote(const QString &userId, const QString &note, ObjectHandler onOk, ErrorHandler onError);
