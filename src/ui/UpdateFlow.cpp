@@ -314,11 +314,10 @@ Updater *updater()
             g_offer->close();
         releaseForegroundLock();
 
-        // No installer window. /SILENT still shows one, and that window is
-        // the foreground while the files unpack. It stops answering for
-        // that stretch, so the taskbar holds every click until it finishes.
+        // /SILENT shows the black hole. It is not topmost and it does not
+        // take focus, so the taskbar keeps working while it turns.
         const QStringList switches{
-            QStringLiteral("/VERYSILENT"),
+            QStringLiteral("/SILENT"),
             QStringLiteral("/SUPPRESSMSGBOXES"),
             QStringLiteral("/NORESTART"),
 

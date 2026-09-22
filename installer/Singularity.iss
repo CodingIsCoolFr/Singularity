@@ -18,7 +18,7 @@
 ;     iscc installer\Singularity.iss
 
 #define AppName       "Singularity"
-#define AppVersion    "0.6.47"
+#define AppVersion    "0.6.48"
 #define AppPublisher  "Singularity"
 #define AppExe        "Singularity.exe"
 
@@ -134,6 +134,8 @@ function CloseHandle(hObject: THandle): Integer;
   external 'CloseHandle@kernel32.dll stdcall';
 procedure WinSleep(dwMilliseconds: Cardinal);
   external 'Sleep@kernel32.dll stdcall';
+function ShowWindow(hWnd: HWND; nCmdShow: Integer): Integer;
+  external 'ShowWindow@user32.dll stdcall';
 
 const
   FrameCount = 24;
@@ -305,33 +307,27 @@ begin
   end;
 end;
 
-function VerySilent: Boolean;
-var
-  I: Integer;
-  S: String;
+// Shown without becoming the foreground window when the program started
+// this itself. A foreground window that stops answering is what made the
+// taskbar hold clicks. The hole still has to be on screen.
+procedure Reveal;
+const
+  SW_SHOW = 5;
+  SW_SHOWNOACTIVATE = 4;
 begin
-  Result := False;
-  for I := 1 to ParamCount do
-  begin
-    S := ParamStr(I);
-    if (CompareText(S, '/VERYSILENT') = 0) or (CompareText(S, '-VERYSILENT') = 0) then
-    begin
-      Result := True;
-      Exit;
-    end;
-  end;
+  if WizardForm = nil then
+    Exit;
+  WizardForm.Visible := True;
+  if WizardSilent then
+    ShowWindow(WizardForm.Handle, SW_SHOWNOACTIVATE)
+  else
+    ShowWindow(WizardForm.Handle, SW_SHOW);
 end;
 
 procedure InitializeWizard;
 var
   W, H: Integer;
 begin
-  // An update the program started itself passes /VERYSILENT. Building the
-  // window anyway would put it in front, and the unpack stops the taskbar
-  // taking clicks until the window goes away.
-  if VerySilent then
-    Exit;
-
   LoadFrames;
   FrameIndex := 0;
   LastPercent := -1;
@@ -440,10 +436,12 @@ begin
   // make one turn - so the hole goes round about once a second, which reads
   // as turning rather than as flashing.
   TimerId := SetTimer(0, 0, 40, CreateCallback(@Advance));
+  Reveal;
 end;
 
 procedure CurPageChanged(CurPageID: Integer);
 begin
+  Reveal;
   Relayout;
 
   if CurPageID = wpInstalling then
