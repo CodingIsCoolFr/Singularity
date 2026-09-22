@@ -418,6 +418,8 @@ public:
 signals:
     void channelHistoryChanged(const QString &channelId);
     void readStateChanged();
+    // A direct chat moved, because a newer message landed in it.
+    void directOrderChanged();
     void messageAdded(const QString &channelId, const MessageInfo &message);
     void messageChanged(const QString &channelId, const QString &messageId);
     void userChanged(const QString &userId);
@@ -427,6 +429,8 @@ signals:
 private:
     void ingestGuild(const QJsonObject &rawGuild);
     void ingestChannel(const QJsonObject &rawChannel, const QString &guildId);
+    // Most recent conversation first, which is the order Discord shows.
+    void bumpDirectChannel(const QString &channelId);
 
     QHash<QString, MemberList> m_memberLists;
     QHash<QString, GuildInfo> m_guilds;

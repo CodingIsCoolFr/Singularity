@@ -311,6 +311,24 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     });
 
     connect(m_store, &MessageStore::readStateChanged, this, &MainWindow::refreshUnreadMarks);
+    connect(m_store, &MessageStore::directOrderChanged, this, [this]() {
+        if (!m_currentGuildId.isEmpty() || !m_channelList)
+            return;
+
+        const int scroll = m_channelList->verticalScrollBar()->value();
+        const QString keep = m_currentChannelId;
+        populateChannelList(false);
+        {
+            QSignalBlocker blocker(m_channelList);
+            for (int row = 0; row < m_channelList->count(); ++row) {
+                if (m_channelList->item(row)->data(IdRole).toString() == keep) {
+                    m_channelList->setCurrentRow(row);
+                    break;
+                }
+            }
+        }
+        m_channelList->verticalScrollBar()->setValue(scroll);
+    });
 
     connect(m_store, &MessageStore::channelHistoryChanged, this, [this](const QString &channelId) {
         // A page of older messages is applied by the scroll itself, which

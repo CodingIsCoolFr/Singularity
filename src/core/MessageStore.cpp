@@ -405,6 +405,13 @@ void MessageStore::ingestReady(const QJsonObject &readyPayload)
             m_directOrder.append(id);
     }
 
+    // READY lists the chats, not in the order the sidebar uses. Discord puts
+    // whoever you spoke to most recently at the top, and a snowflake is that
+    // time.
+    std::sort(m_directOrder.begin(), m_directOrder.end(), [this](const QString &a, const QString &b) {
+        return newerId(m_channels.value(a).lastMessageId, m_channels.value(b).lastMessageId);
+    });
+
     ingestReadState(readyPayload);
 }
 
@@ -873,6 +880,20 @@ QList<ChannelGroup> MessageStore::groupedChannels(const QString &guildId) const
     return result;
 }
 
+void MessageStore::bumpDirectChannel(const QString &channelId)
+{
+    if (!m_channels.value(channelId).isDirect())
+        return;
+
+    const int index = m_directOrder.indexOf(channelId);
+    if (index == 0)
+        return;
+    if (index > 0)
+        m_directOrder.removeAt(index);
+    m_directOrder.prepend(channelId);
+    emit directOrderChanged();
+}
+
 QList<ChannelInfo> MessageStore::directChannels() const
 {
     QList<ChannelInfo> result;
@@ -1136,8 +1157,11 @@ void MessageStore::noteIncoming(const QString &channelId, const QString &message
     if (channelId.isEmpty() || messageId.isEmpty())
         return;
 
+    const QString previous = m_channels.value(channelId).lastMessageId;
     if (m_channels.contains(channelId))
         m_channels[channelId].lastMessageId = messageId;
+    if (newerId(messageId, previous))
+        bumpDirectChannel(channelId);
 
     ReadMark mark = m_reads.value(channelId);
     if (seen) {
