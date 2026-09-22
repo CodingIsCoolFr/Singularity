@@ -15,6 +15,26 @@
 #include <QSurfaceFormat>
 #include <QTimer>
 
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
+// Held until this process exits. The installer waits for the name to
+// disappear and then copies files. It does not ask Windows to close whoever
+// has the program open, because Explorer keeps the shortcut's target open to
+// draw its icon, and closing Explorer is the taskbar not taking clicks.
+static void holdRunningMutex()
+{
+#ifdef Q_OS_WIN
+    static HANDLE held = nullptr;
+    if (!held)
+        held = CreateMutexW(nullptr, FALSE, L"Local\\SingularityRunning");
+#endif
+}
+
 int main(int argc, char *argv[])
 {
     QSurfaceFormat format;
@@ -25,9 +45,10 @@ int main(int argc, char *argv[])
     QSurfaceFormat::setDefaultFormat(format);
 
     QApplication app(argc, argv);
+    holdRunningMutex();
     app.setApplicationName(QStringLiteral("Singularity"));
     app.setOrganizationName(QStringLiteral("Singularity"));
-    app.setApplicationVersion(QStringLiteral("0.6.38"));
+    app.setApplicationVersion(QStringLiteral("0.6.39"));
     app.setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
 
     Theme::applySeed(QColor(AppConfig::instance().value(QStringLiteral("appearance/themeSeed"),

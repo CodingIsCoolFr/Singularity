@@ -19,6 +19,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QSizePolicy>
 #include <QStyle>
 #include <QVBoxLayout>
 
@@ -76,6 +77,47 @@ QPixmap roundedImage(const QImage &image, int size, int radius)
     painter.drawPixmap((size - source.width()) / 2, (size - source.height()) / 2, source);
     return out;
 }
+
+// A label whose width is whatever the card gives it.
+//
+// QLabel's own hint is the text on one line. Inside the Active Now scroller
+// that hint became the width of the page, so the names ran past the window
+// and the only way to read them was to scroll sideways.
+class FittingLabel : public QLabel
+{
+public:
+    explicit FittingLabel(const QString &text, QWidget *parent = nullptr)
+        : QLabel(text, parent)
+    {
+        setWordWrap(true);
+        setMinimumWidth(0);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    }
+
+    QSize minimumSizeHint() const override
+    {
+        return {0, fontMetrics().lineSpacing()};
+    }
+
+    QSize sizeHint() const override
+    {
+        int width = this->width();
+        if (width < 40)
+            width = parentWidget() && parentWidget()->width() > 40 ? parentWidget()->width() - 24 : 280;
+        return {0, heightForWidth(width)};
+    }
+
+    bool hasHeightForWidth() const override { return true; }
+
+    int heightForWidth(int width) const override
+    {
+        if (width < 1)
+            width = 1;
+        return fontMetrics()
+            .boundingRect(QRect(0, 0, width, 10000), Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, text())
+            .height();
+    }
+};
 
 } // namespace
 
@@ -167,10 +209,10 @@ FriendsPage::FriendsPage(MessageStore *store, RestClient *rest, QWidget *parent)
     layout->addWidget(m_list, 1);
 
     m_activity = new QWidget(this);
-    m_activity->setFixedWidth(300);
+    m_activity->setFixedWidth(360);
     m_activity->setObjectName(QStringLiteral("MemberList"));
     auto *activityColumn = new QVBoxLayout(m_activity);
-    activityColumn->setContentsMargins(16, 16, 16, 16);
+    activityColumn->setContentsMargins(16, 16, 12, 16);
     activityColumn->setSpacing(10);
 
     auto *activityTitle = new QLabel(QStringLiteral("Active Now"), m_activity);
@@ -178,18 +220,22 @@ FriendsPage::FriendsPage(MessageStore *store, RestClient *rest, QWidget *parent)
                                      .arg(QLatin1String(Theme::TextPrimary)));
     activityColumn->addWidget(activityTitle);
 
-    auto *scroll = new QScrollArea(m_activity);
-    scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setStyleSheet(QStringLiteral("QScrollArea { background: transparent; border: none; }"));
-    auto *host = new QWidget(scroll);
+    m_activityScroll = new QScrollArea(m_activity);
+    m_activityScroll->setWidgetResizable(true);
+    m_activityScroll->setFrameShape(QFrame::NoFrame);
+    m_activityScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_activityScroll->setStyleSheet(QStringLiteral("QScrollArea { background: transparent; border: none; }"));
+    auto *host = new QWidget(m_activityScroll);
+    host->setMinimumWidth(0);
+    host->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     host->setStyleSheet(QStringLiteral("background: transparent;"));
     m_activityLayout = new QVBoxLayout(host);
-    m_activityLayout->setContentsMargins(0, 0, 0, 0);
+    m_activityLayout->setContentsMargins(0, 0, 4, 0);
     m_activityLayout->setSpacing(8);
     m_activityLayout->addStretch(1);
-    scroll->setWidget(host);
-    activityColumn->addWidget(scroll, 1);
+    m_activityScroll->setWidget(host);
+    m_activityScroll->viewport()->installEventFilter(this);
+    activityColumn->addWidget(m_activityScroll, 1);
     root->addWidget(m_activity);
 
     connect(m_store, &MessageStore::voiceStatesChanged, this, [this]() {
@@ -479,8 +525,7 @@ void FriendsPage::rebuildActivity()
         cards.prepend(card);
     }
 
-    auto *scroll = m_activity->findChild<QScrollArea *>();
-    QScrollBar *bar = scroll ? scroll->verticalScrollBar() : nullptr;
+    QScrollBar *bar = m_activityScroll ? m_activityScroll->verticalScrollBar() : nullptr;
     const int scrollY = bar ? bar->value() : 0;
 
     QStringList keys;
@@ -511,12 +556,18 @@ void FriendsPage::rebuildActivity()
     if (sameCards) {
         for (int i = 0; i < cards.size(); ++i) {
             QFrame *frame = frames.at(i);
-            if (auto *title = frame->findChild<QLabel *>(QStringLiteral("ActivityTitle")))
+            if (auto *title = frame->findChild<QLabel *>(QStringLiteral("ActivityTitle"))) {
                 title->setText(cards.at(i).title);
-            if (auto *subtitle = frame->findChild<QLabel *>(QStringLiteral("ActivitySubtitle")))
+                title->updateGeometry();
+            }
+            if (auto *subtitle = frame->findChild<QLabel *>(QStringLiteral("ActivitySubtitle"))) {
                 subtitle->setText(cards.at(i).subtitle);
-            if (auto *detail = frame->findChild<QLabel *>(QStringLiteral("ActivityDetail")))
+                subtitle->updateGeometry();
+            }
+            if (auto *detail = frame->findChild<QLabel *>(QStringLiteral("ActivityDetail"))) {
                 detail->setText(cards.at(i).detail);
+                detail->updateGeometry();
+            }
         }
         return;
     }
@@ -528,14 +579,14 @@ void FriendsPage::rebuildActivity()
     }
 
     if (cards.isEmpty()) {
-        auto *quiet = new QLabel(QStringLiteral("It's quiet for now.\nWhen a friend is in a call or "
-                                                "playing something, it shows up here."),
-                                 m_activityLayout->parentWidget());
-        quiet->setWordWrap(true);
+        auto *quiet = new FittingLabel(QStringLiteral("It's quiet for now. When a friend is in a call or "
+                                                      "playing something, it shows up here."),
+                                       m_activityLayout->parentWidget());
         quiet->setStyleSheet(QStringLiteral("color: %1; font-size: 13px;")
                                  .arg(QLatin1String(Theme::TextMuted)));
         m_activityLayout->addWidget(quiet);
         m_activityLayout->addStretch(1);
+        fitActivityWidth();
         return;
     }
 
@@ -543,12 +594,17 @@ void FriendsPage::rebuildActivity()
         auto *frame = new QFrame(m_activityLayout->parentWidget());
         frame->setObjectName(QStringLiteral("ChatColumn"));
         frame->setCursor(Qt::PointingHandCursor);
+        frame->setMinimumWidth(0);
+        frame->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         auto *box = new QVBoxLayout(frame);
         box->setContentsMargins(12, 10, 12, 10);
-        box->setSpacing(6);
+        box->setSpacing(4);
 
-        auto *top = new QHBoxLayout;
-        top->setSpacing(8);
+        // Faces on their own row, then the words across the whole card.
+        // Sitting the name beside five avatars left it a few letters wide,
+        // which is why it ran off the edge of the window.
+        auto *facesRow = new QHBoxLayout;
+        facesRow->setSpacing(8);
         auto *faces = new QHBoxLayout;
         faces->setSpacing(-8);
         const int shown = qMin(card.channelId.isEmpty() ? 1 : 5, card.userIds.size());
@@ -557,37 +613,34 @@ void FriendsPage::rebuildActivity()
             const QUrl url = MediaCache::avatarUrl(info.id, info.avatarHash, 64);
             const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
             auto *face = new QLabel(frame);
+            face->setFixedSize(32, 32);
             face->setPixmap(picture.isNull() ? MediaCache::initialsAvatar(displayOf(info.id), 32)
                                              : MediaCache::circular(picture, 32));
             faces->addWidget(face);
         }
-        top->addLayout(faces);
-
-        auto *words = new QVBoxLayout;
-        words->setSpacing(0);
-        auto *title = new QLabel(card.title, frame);
-        title->setObjectName(QStringLiteral("ActivityTitle"));
-        title->setWordWrap(true);
-        title->setStyleSheet(QStringLiteral("color: %1; font-size: 14px; font-weight: 600;")
-                                 .arg(QLatin1String(Theme::TextPrimary)));
-        words->addWidget(title);
-        auto *subtitle = new QLabel(card.subtitle, frame);
-        subtitle->setObjectName(QStringLiteral("ActivitySubtitle"));
-        subtitle->setWordWrap(true);
-        subtitle->setStyleSheet(QStringLiteral("color: %1; font-size: 12px;")
-                                    .arg(QLatin1String(Theme::TextMuted)));
-        words->addWidget(subtitle);
-        top->addLayout(words, 1);
+        facesRow->addLayout(faces);
+        facesRow->addStretch(1);
 
         if (!card.badge.isEmpty()) {
             const QImage badge = MediaCache::instance().image(card.badge);
             if (!badge.isNull()) {
                 auto *mark = new QLabel(frame);
                 mark->setPixmap(roundedImage(badge, 22, 6));
-                top->addWidget(mark, 0, Qt::AlignTop);
+                facesRow->addWidget(mark, 0, Qt::AlignTop);
             }
         }
-        box->addLayout(top);
+        box->addLayout(facesRow);
+
+        auto *title = new FittingLabel(card.title, frame);
+        title->setObjectName(QStringLiteral("ActivityTitle"));
+        title->setStyleSheet(QStringLiteral("color: %1; font-size: 14px; font-weight: 600;")
+                                 .arg(QLatin1String(Theme::TextPrimary)));
+        box->addWidget(title);
+        auto *subtitle = new FittingLabel(card.subtitle, frame);
+        subtitle->setObjectName(QStringLiteral("ActivitySubtitle"));
+        subtitle->setStyleSheet(QStringLiteral("color: %1; font-size: 12px;")
+                                    .arg(QLatin1String(Theme::TextMuted)));
+        box->addWidget(subtitle);
 
         if (!card.art.isEmpty() || !card.detail.isEmpty() || !card.guildIcon.isEmpty()) {
             auto *bottom = new QHBoxLayout;
@@ -596,6 +649,7 @@ void FriendsPage::rebuildActivity()
                 const QImage icon = MediaCache::instance().image(card.guildIcon);
                 if (!icon.isNull()) {
                     auto *mark = new QLabel(frame);
+                    mark->setFixedSize(20, 20);
                     mark->setPixmap(MediaCache::circular(icon, 20));
                     bottom->addWidget(mark, 0, Qt::AlignVCenter);
                 }
@@ -605,17 +659,17 @@ void FriendsPage::rebuildActivity()
                 if (!art.isNull()) {
                     auto *picture = new QLabel(frame);
                     picture->setObjectName(QStringLiteral("ActivityArt"));
+                    picture->setFixedSize(52, 52);
                     picture->setPixmap(roundedImage(art, 52, 8));
-                    bottom->addWidget(picture);
+                    bottom->addWidget(picture, 0, Qt::AlignTop);
                 }
             }
             if (!card.detail.isEmpty()) {
-                auto *detail = new QLabel(card.detail, frame);
+                auto *detail = new FittingLabel(card.detail, frame);
                 detail->setObjectName(QStringLiteral("ActivityDetail"));
-                detail->setWordWrap(true);
                 detail->setStyleSheet(QStringLiteral("color: %1; font-size: 12px;")
                                          .arg(QLatin1String(Theme::TextMuted)));
-                bottom->addWidget(detail, 1);
+                bottom->addWidget(detail, 1, Qt::AlignVCenter);
             }
             box->addLayout(bottom);
         }
@@ -630,12 +684,29 @@ void FriendsPage::rebuildActivity()
         m_activityLayout->addWidget(frame);
     }
     m_activityLayout->addStretch(1);
+    fitActivityWidth();
     if (bar)
         bar->setValue(scrollY);
 }
 
+void FriendsPage::fitActivityWidth()
+{
+    if (!m_activityScroll)
+        return;
+    QWidget *host = m_activityScroll->widget();
+    if (!host)
+        return;
+    const int width = m_activityScroll->viewport()->width();
+    if (width > 0)
+        host->setMaximumWidth(width);
+}
+
 bool FriendsPage::eventFilter(QObject *watched, QEvent *event)
 {
+    if (m_activityScroll && watched == m_activityScroll->viewport() && event->type() == QEvent::Resize) {
+        fitActivityWidth();
+        return false;
+    }
     if (event->type() == QEvent::MouseButtonRelease) {
         const QString channelId = watched->property("joinChannel").toString();
         const QString guildId = watched->property("joinGuild").toString();

@@ -12,6 +12,7 @@ class QLabel;
 class QLineEdit;
 class QListWidget;
 class QPushButton;
+class QScrollArea;
 class QVBoxLayout;
 class QWidget;
 
@@ -44,6 +45,7 @@ private:
     void setTab(Tab tab);
     void startDirectMessage(const QString &userId);
     void rebuildActivity();
+    void fitActivityWidth();
     bool eventFilter(QObject *watched, QEvent *event) override;
 
     MessageStore *m_store = nullptr;
@@ -58,6 +60,7 @@ private:
     QLabel *m_heading = nullptr;
     QListWidget *m_list = nullptr;
     QWidget *m_activity = nullptr;
+    QScrollArea *m_activityScroll = nullptr;
     QVBoxLayout *m_activityLayout = nullptr;
     QSet<QString> m_namesAsked;
 

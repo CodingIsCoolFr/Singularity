@@ -18,7 +18,7 @@
 ;     iscc installer\Singularity.iss
 
 #define AppName       "Singularity"
-#define AppVersion    "0.6.38"
+#define AppVersion    "0.6.39"
 #define AppPublisher  "Singularity"
 #define AppExe        "Singularity.exe"
 
@@ -59,24 +59,15 @@ WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 
-; Let Windows close the running copy rather than failing on a locked file.
+; Do not ask Windows to close programs.
 ;
-; The program updates itself, so the usual case is that Singularity is running
-; when this starts - it is the thing that downloaded and launched this. The
-; Restart Manager asks it to close properly first, which matters: killing it
-; outright would lose settings that Qt writes on the way out.
-;
-; "force" rather than "yes". With "yes" Inno shows a page listing what it
-; needs to close, and the pages are hidden here, so that page is invisible.
-; The installer then sits on "Getting ready" until that unseen question times
-; out, which is the minute the whole machine feels frozen after every update.
-CloseApplications=force
+; Restart Manager treats Explorer as a locker of this exe, because Explorer
+; keeps the shortcut target open to draw its icon, and then shuts Explorer
+; down. That is the taskbar ignoring clicks for the whole install. The running
+; copy quits itself before this copies files, and InitializeSetup waits until
+; that copy is gone. Nothing else has to close.
+CloseApplications=no
 RestartApplications=no
-; Only this program. The default filter is every exe and dll in the folder,
-; and Explorer keeps the shortcut's target open to draw its icon. Restart
-; Manager then stops Explorer for a few seconds, which is the taskbar not
-; taking clicks after every update.
-CloseApplicationsFilter=Singularity.exe
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -130,6 +121,14 @@ function SetTimer(Wnd: HWND; Id: Longint; Interval: Cardinal; Proc: Longint): Lo
   external 'SetTimer@user32.dll stdcall';
 function KillTimer(Wnd: HWND; Id: Longint): Boolean;
   external 'KillTimer@user32.dll stdcall';
+
+// The running program holds Local\SingularityRunning until it exits.
+function OpenMutexW(dwDesiredAccess: Cardinal; bInheritHandle: Integer; lpName: String): THandle;
+  external 'OpenMutexW@kernel32.dll stdcall';
+function CloseHandle(hObject: THandle): Integer;
+  external 'CloseHandle@kernel32.dll stdcall';
+procedure WinSleep(dwMilliseconds: Cardinal);
+  external 'Sleep@kernel32.dll stdcall';
 
 const
   FrameCount = 24;
@@ -249,6 +248,33 @@ begin
   StepLabel.Caption := Text;
   StepLabel.AutoSize := True;
   StepLabel.Left := (WizardForm.ClientWidth - StepLabel.Width) div 2;
+end;
+
+function SingularityStillRunning: Boolean;
+var
+  Held: THandle;
+begin
+  // SYNCHRONIZE. Opening it adds a handle, so it is closed again immediately
+  // or this copy would keep the name alive and wait on itself.
+  Held := OpenMutexW($00100000, 0, 'Local\SingularityRunning');
+  Result := Held <> 0;
+  if Result then
+    CloseHandle(Held);
+end;
+
+function InitializeSetup: Boolean;
+var
+  Tries: Integer;
+begin
+  Result := True;
+  // Thirty seconds is far longer than the program takes to finish writing
+  // settings and exit. Past that, copying anyway is better than sitting here.
+  for Tries := 1 to 150 do
+  begin
+    if not SingularityStillRunning then
+      Exit;
+    WinSleep(200);
+  end;
 end;
 
 procedure InitializeWizard;

@@ -130,16 +130,17 @@ Updater *updater()
                              return;
                          }
 
+                         // Above this program only. An application-modal window
+                         // forced to the top of the screen keeps the foreground
+                         // lock, and clicks on the taskbar never land.
+                         QWidget *owner = g_owner ? g_owner.data() : QApplication::activeWindow();
                          g_progress = new QProgressDialog(
                              QStringLiteral("Updating to Singularity %1...").arg(version),
-                             QString(), 0, 0, g_owner);
+                             QString(), 0, 0, owner);
                          g_progress->setWindowTitle(QStringLiteral("Update"));
                          g_progress->setAttribute(Qt::WA_DeleteOnClose);
                          g_progress->setMinimumDuration(0);
-                         g_progress->setWindowModality(Qt::ApplicationModal);
-                         // A download that slips behind the window you were
-                         // using looks like the update never started.
-                         g_progress->setWindowFlags(g_progress->windowFlags() | Qt::WindowStaysOnTopHint);
+                         g_progress->setWindowModality(owner ? Qt::WindowModal : Qt::NonModal);
                          g_progress->setValue(0);
                          g_progress->show();
                          g_progress->raise();
@@ -162,10 +163,10 @@ Updater *updater()
             QStringLiteral("/SUPPRESSMSGBOXES"),
             QStringLiteral("/NORESTART"),
 
-            // Let Windows close this copy properly rather than the installer
-            // failing on a locked file. Qt writes settings on the way out, so
-            // being closed is meaningfully different from being killed.
-            QStringLiteral("/CLOSEAPPLICATIONS"),
+            // This copy quits on its own, and the installer waits for that.
+            // Asking Windows to close whoever has the exe open shuts Explorer
+            // down with it, which is the taskbar freezing after every update.
+            QStringLiteral("/NOCLOSEAPPLICATIONS"),
 
             // The installer starts Singularity again itself, from its [Run]
             // section. Letting Windows restart it as well would leave two.
