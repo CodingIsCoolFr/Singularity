@@ -353,9 +353,8 @@ QWidget *SettingsDialog::buildVoicePage()
     layout->addWidget(pageTitle(QStringLiteral("Voice & Video"), page));
 
     auto *warning = new QLabel(
-        QStringLiteral("Singularity can join a voice channel, so other people see you there, but it cannot "
-                       "send or receive sound yet. The devices and levels below are real and are "
-                       "saved, and the microphone test works now."),
+        QStringLiteral("Calls send and receive sound. The bar below is the level other people "
+                       "hear, including the input slider."),
         page);
     warning->setWordWrap(true);
     warning->setStyleSheet(QStringLiteral("color: %1; background-color: %2; border: 1px solid %3; "
@@ -413,7 +412,8 @@ QWidget *SettingsDialog::buildVoicePage()
     levels->addRow(QStringLiteral("Screen share volume"), m_streamVolume);
     layout->addLayout(levels);
     layout->addWidget(hint(QStringLiteral("Halfway on input is your microphone as it is. "
-                                          "The rest of that slider makes a quiet mic louder."),
+                                          "The rest of that slider, through to the end, is what makes "
+                                          "a quiet mic loud enough on a call. The test bar includes it."),
                            page));
 
     connect(m_inputVolume, &QSlider::valueChanged, this, [this](int value) {

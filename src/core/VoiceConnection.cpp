@@ -1551,11 +1551,12 @@ void VoiceConnection::onSendTick()
         // rather than whatever the microphone happened to produce.
         //
         // 100 is the microphone as it arrives. The rest of the slider is
-        // boost: the far end is eight times louder, which is what a quiet
-        // headset needs to sit with everyone else. A straight multiply past
-        // full scale turns into a buzz, so the peaks are eased off instead.
+        // boost. At the far end a quiet headset is twelve times louder, which
+        // is what it takes to sit with everyone else when you are close to the
+        // mic and the bar still barely moved. Peaks are eased off so that
+        // boost does not turn into a buzz.
         const double extra = qMax(0, m_inputVolume - 100) / 100.0;
-        const double gain = (m_inputVolume / 100.0) * std::pow(4.0, extra);
+        const double gain = (m_inputVolume / 100.0) * std::pow(6.0, extra);
         for (int i = 0; i < count; ++i) {
             double value = samples[i] * gain;
             const double absValue = std::abs(value);

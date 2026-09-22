@@ -1,5 +1,6 @@
 #include "ui/AudioMeter.h"
 
+#include "core/AppConfig.h"
 #include "core/Logger.h"
 #include "ui/Theme.h"
 
@@ -37,11 +38,16 @@ protected:
         if (count <= 0)
             return length;
 
-        // Root mean square is a fair measure of loudness, and steadier than
-        // simply taking the biggest sample.
+        // The same boost the call applies, or the test bar stays a sliver
+        // while the slider is already at the end and people hear something
+        // else entirely.
+        const int percent = AppConfig::instance().value(QStringLiteral("voice/inputVolume"), 100).toInt();
+        const double extra = qMax(0, percent - 100) / 100.0;
+        const double gain = (percent / 100.0) * std::pow(6.0, extra);
+
         double sum = 0.0;
         for (qint64 i = 0; i < count; ++i) {
-            const double value = samples[i] / 32768.0;
+            const double value = qBound(-1.0, (samples[i] / 32768.0) * gain, 1.0);
             sum += value * value;
         }
 
