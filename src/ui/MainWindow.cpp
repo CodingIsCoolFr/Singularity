@@ -58,6 +58,7 @@
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QPainter>
+#include <QToolTip>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QListWidget>
@@ -241,15 +242,10 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     setWindowTitle(QStringLiteral("Singularity"));
     setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
     resize(1440, 900);
-    // Not frameless. A frameless window can be resized from its edges, and
-    // Windows will not snap it: the drag lands, then the size jumps back
-    // because there is no caption to remember the restore rectangle.
-    // ExpandedClientAreaHint keeps our own top strip painted edge to edge
-    // while the frame underneath stays a normal window.
-    // No system menu. That flag is what makes Windows paint its own minimize,
-    // maximize and close glyphs, and they were landing above the ones we draw.
-    setWindowFlags(Qt::Window | Qt::CustomizeWindowHint | Qt::ExpandedClientAreaHint
-                   | Qt::NoTitleBarBackgroundHint);
+    // A normal window, so Windows will snap it. The caption strip itself is
+    // removed in WM_NCCALCSIZE, otherwise the buttons sit under an empty bar.
+    // No system menu: that flag paints Windows' own minimize, maximize and close.
+    setWindowFlags(Qt::Window | Qt::CustomizeWindowHint);
 
     buildUi();
     buildMenu();
@@ -3895,6 +3891,123 @@ void MainWindow::chooseAttachment()
     refreshComposerContext();
 }
 
+// The emoji page is painted, not a button per face.
+//
+// One widget per custom emoji, each of them fetching its picture the moment
+// the picker opens, is what froze the window on a server with a few thousand
+// of them. Only the rows on screen are drawn, and only those pictures are asked for.
+class EmojiBoard : public QWidget
+{
+public:
+    struct Cell
+    {
+        QString insert;
+        QString filter;
+        QString face;
+        QUrl icon;
+    };
+
+    QList<Cell> cells;
+    std::function<void(const QString &)> onPick;
+
+    explicit EmojiBoard(QWidget *parent)
+        : QWidget(parent)
+    {
+        setMouseTracking(true);
+    }
+
+    void setQuery(const QString &query)
+    {
+        m_shown.clear();
+        for (int index = 0; index < cells.size(); ++index) {
+            if (query.isEmpty() || cells.at(index).filter.contains(query, Qt::CaseInsensitive))
+                m_shown.append(index);
+        }
+        m_hover = -1;
+        const int rows = m_shown.isEmpty() ? 1 : (m_shown.size() + Columns - 1) / Columns;
+        setFixedHeight(rows * CellSize);
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        const QRect clip = event->rect();
+        const int first = qMax(0, clip.top() / CellSize);
+        const int last = qMin((m_shown.size() + Columns - 1) / Columns - 1, clip.bottom() / CellSize);
+        QFont font(QStringLiteral("Segoe UI Emoji"));
+        font.setPixelSize(18);
+        painter.setFont(font);
+        painter.setPen(Qt::white);
+
+        for (int row = first; row <= last; ++row) {
+            for (int column = 0; column < Columns; ++column) {
+                const int slot = row * Columns + column;
+                if (slot < 0 || slot >= m_shown.size())
+                    return;
+                const QRect box(column * CellSize, row * CellSize, CellSize, CellSize);
+                if (slot == m_hover)
+                    painter.fillRect(box.adjusted(2, 2, -2, -2), QColor(255, 255, 255, 28));
+                const Cell &cell = cells.at(m_shown.at(slot));
+                if (!cell.face.isEmpty()) {
+                    painter.drawText(box, Qt::AlignCenter, cell.face);
+                    continue;
+                }
+                const QImage picture = MediaCache::instance().image(cell.icon);
+                if (!picture.isNull())
+                    painter.drawImage(box.adjusted(5, 5, -5, -5), picture);
+            }
+        }
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        const int slot = slotAt(event->position().toPoint());
+        if (slot == m_hover)
+            return;
+        m_hover = slot;
+        if (slot >= 0 && slot < m_shown.size()) {
+            QToolTip::showText(event->globalPosition().toPoint(), cells.at(m_shown.at(slot)).filter,
+                               this);
+        } else {
+            QToolTip::hideText();
+        }
+        update();
+    }
+
+    void leaveEvent(QEvent *) override
+    {
+        m_hover = -1;
+        update();
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (event->button() != Qt::LeftButton || !onPick)
+            return;
+        const int slot = slotAt(event->position().toPoint());
+        if (slot < 0 || slot >= m_shown.size())
+            return;
+        onPick(cells.at(m_shown.at(slot)).insert);
+    }
+
+private:
+    static constexpr int Columns = 8;
+    static constexpr int CellSize = 36;
+
+    QList<int> m_shown;
+    int m_hover = -1;
+
+    int slotAt(const QPoint &pos) const
+    {
+        if (pos.x() < 0 || pos.y() < 0 || pos.x() >= Columns * CellSize)
+            return -1;
+        return (pos.y() / CellSize) * Columns + (pos.x() / CellSize);
+    }
+};
+
 void MainWindow::showEmojiMenu()
 {
     // A grid, the way Discord's picker is. A menu stretches each face to the
@@ -3934,20 +4047,23 @@ void MainWindow::showEmojiMenu()
     scroll->setFixedHeight(292);
     outer->addWidget(scroll);
 
-    auto *body = new QWidget;
-    auto *grid = new QGridLayout(body);
+    auto *page = new QWidget;
+    auto *pageLayout = new QVBoxLayout(page);
+    pageLayout->setContentsMargins(0, 0, 0, 0);
+    pageLayout->setSpacing(0);
+    scroll->setWidget(page);
+
+    auto *board = new EmojiBoard(page);
+    pageLayout->addWidget(board);
+
+    auto *buttonHost = new QWidget(page);
+    auto *grid = new QGridLayout(buttonHost);
     grid->setContentsMargins(0, 0, 0, 0);
     grid->setSpacing(2);
-    scroll->setWidget(body);
+    buttonHost->hide();
+    pageLayout->addWidget(buttonHost);
 
-    struct Cell
-    {
-        QString insert;
-        QString filter;
-        QString face;
-        QUrl icon;
-    };
-    QList<Cell> cells;
+    QList<EmojiBoard::Cell> cells;
 
     const struct {
         const char *face;
@@ -3960,7 +4076,7 @@ void MainWindow::showEmojiMenu()
         {"😎", "cool"},      {"🥳", "party"},      {"😢", "sad"},         {"🤝", "handshake"},
     };
     for (const auto &item : stock) {
-        Cell cell;
+        EmojiBoard::Cell cell;
         cell.insert = QString::fromUtf8(item.face);
         cell.face = cell.insert;
         cell.filter = cell.insert + QLatin1Char(' ') + QString::fromUtf8(item.name);
@@ -3973,7 +4089,7 @@ void MainWindow::showEmojiMenu()
     const QList<GuildInfo> guilds = m_store->guilds();
     for (const GuildInfo &server : guilds) {
         for (const EmojiInfo &emoji : server.emojis) {
-            Cell cell;
+            EmojiBoard::Cell cell;
             cell.insert = emoji.animated ? QStringLiteral("<a:%1:%2>").arg(emoji.name, emoji.id)
                                          : QStringLiteral("<:%1:%2>").arg(emoji.name, emoji.id);
             cell.filter = server.name + QLatin1Char(' ') + emoji.name;
@@ -3985,40 +4101,16 @@ void MainWindow::showEmojiMenu()
     }
 
     constexpr int columns = 8;
-    QList<QToolButton *> buttons;
-    QFont emojiFont(QStringLiteral("Segoe UI Emoji"));
-    emojiFont.setPixelSize(18);
+    board->cells = cells;
+    board->onPick = [this, popup](const QString &token) {
+        m_composer->insertPlainText(token);
+        m_composer->setFocus();
+        popup->close();
+    };
+    board->setQuery(QString());
+    connect(&MediaCache::instance(), &MediaCache::ready, board, [board](const QUrl &) { board->update(); });
 
-    for (const Cell &cell : cells) {
-        auto *button = new QToolButton(body);
-        button->setFixedSize(36, 36);
-        button->setAutoRaise(true);
-        button->setCursor(Qt::PointingHandCursor);
-        button->setToolTip(cell.filter);
-        button->setProperty("insert", cell.insert);
-        button->setProperty("filter", cell.filter);
-        button->setProperty("iconUrl", cell.icon);
-        button->setProperty("kind", QStringLiteral("emoji"));
-        if (!cell.face.isEmpty()) {
-            button->setFont(emojiFont);
-            button->setText(cell.face);
-        } else {
-            const QImage picture = MediaCache::instance().image(cell.icon);
-            if (!picture.isNull()) {
-                button->setIcon(QPixmap::fromImage(picture));
-                button->setIconSize(QSize(26, 26));
-            }
-        }
-        const QString token = cell.insert;
-        connect(button, &QToolButton::clicked, this, [this, popup, token]() {
-            m_composer->insertPlainText(token);
-            m_composer->setFocus();
-            popup->close();
-        });
-        buttons.append(button);
-    }
-
-    auto held = std::make_shared<QList<QToolButton *>>(buttons);
+    auto held = std::make_shared<QList<QToolButton *>>();
     popup->setProperty("kind", QStringLiteral("emoji"));
 
     auto refill = [grid, held, popup](const QString &query) {
@@ -4040,11 +4132,9 @@ void MainWindow::showEmojiMenu()
             ++placed;
         }
     };
-    refill(QString());
-
-    auto addPictureButton = [this, popup, body, held](const QString &kind, const QString &filter,
+    auto addPictureButton = [this, popup, buttonHost, held](const QString &kind, const QString &filter,
                                                       const QUrl &icon, const std::function<void()> &onClick) {
-        auto *button = new QToolButton(body);
+        auto *button = new QToolButton(buttonHost);
         button->setFixedSize(36, 36);
         button->setAutoRaise(true);
         button->setCursor(Qt::PointingHandCursor);
@@ -4061,39 +4151,16 @@ void MainWindow::showEmojiMenu()
         held->append(button);
     };
 
-    for (const GuildInfo &server : m_store->guilds()) {
-        for (const GuildSticker &sticker : server.stickers) {
-            const QString ext = sticker.formatType == 4 ? QStringLiteral("gif") : QStringLiteral("png");
-            const QUrl icon(QStringLiteral("https://media.discordapp.net/stickers/%1.%2?size=160")
-                                .arg(sticker.id, ext));
-            const QString id = sticker.id;
-            const QString filter = server.name + QLatin1Char(' ') + sticker.name;
-            addPictureButton(QStringLiteral("sticker"), filter, icon, [this, popup, id]() {
-                if (m_currentChannelId.isEmpty())
-                    return;
-                m_rest->sendMessage(m_currentChannelId, QString(), QString(), {},
-                                    [](const QJsonObject &) {},
-                                    [this](const RestClient::Error &error) {
-                                        flashStatus(QStringLiteral("Sticker failed (%1).")
-                                                        .arg(error.message.left(120)),
-                                                    5000);
-                                    },
-                                    id);
-                popup->close();
-            });
-        }
-    }
-
     auto *gifTimer = new QTimer(popup);
     gifTimer->setSingleShot(true);
     gifTimer->setInterval(280);
 
-    auto loadGifs = [this, popup, body, held, search, refill]() {
+    auto loadGifs = [this, popup, buttonHost, held, search, refill]() {
         const int ticket = popup->property("gifTicket").toInt() + 1;
         popup->setProperty("gifTicket", ticket);
         const QString query = search->text();
         QPointer<QFrame> alive(popup);
-        m_rest->searchGifs(query, [alive, body, held, refill, ticket, this](const QJsonObject &payload) {
+        m_rest->searchGifs(query, [alive, buttonHost, held, refill, ticket, this](const QJsonObject &payload) {
             if (!alive || alive->property("gifTicket").toInt() != ticket)
                 return;
             QList<QToolButton *> doomed;
@@ -4114,7 +4181,7 @@ void MainWindow::showEmojiMenu()
                     preview = gif.value(QStringLiteral("src")).toString();
                 if (page.isEmpty() || preview.isEmpty())
                     continue;
-                auto *button = new QToolButton(body);
+                auto *button = new QToolButton(buttonHost);
                 button->setFixedSize(72, 72);
                 button->setAutoRaise(true);
                 button->setCursor(Qt::PointingHandCursor);
@@ -4160,12 +4227,44 @@ void MainWindow::showEmojiMenu()
         button->setFixedHeight(28);
         button->setCursor(Qt::PointingHandCursor);
         const QString kind = QString::fromUtf8(tab.kind);
-        connect(button, &QPushButton::clicked, popup, [this, popup, search, refill, loadGifs, kind, body, held]() {
+        connect(button, &QPushButton::clicked, popup,
+                [this, popup, search, refill, loadGifs, kind, buttonHost, board, held, addPictureButton]() {
             popup->setProperty("kind", kind);
+            const bool emojiTab = kind == QLatin1String("emoji");
+            board->setVisible(emojiTab);
+            buttonHost->setVisible(!emojiTab);
+            if (emojiTab)
+                board->setQuery(search->text());
+            if (kind == QLatin1String("sticker") && !popup->property("guildStickers").toBool()) {
+                popup->setProperty("guildStickers", true);
+                for (const GuildInfo &server : m_store->guilds()) {
+                    for (const GuildSticker &sticker : server.stickers) {
+                        const QString ext =
+                            sticker.formatType == 4 ? QStringLiteral("gif") : QStringLiteral("png");
+                        const QUrl icon(QStringLiteral("https://media.discordapp.net/stickers/%1.%2?size=160")
+                                            .arg(sticker.id, ext));
+                        const QString id = sticker.id;
+                        const QString filter = server.name + QLatin1Char(' ') + sticker.name;
+                        addPictureButton(QStringLiteral("sticker"), filter, icon, [this, popup, id]() {
+                            if (m_currentChannelId.isEmpty())
+                                return;
+                            m_rest->sendMessage(m_currentChannelId, QString(), QString(), {},
+                                                [](const QJsonObject &) {},
+                                                [this](const RestClient::Error &error) {
+                                                    flashStatus(QStringLiteral("Sticker failed (%1).")
+                                                                    .arg(error.message.left(120)),
+                                                                5000);
+                                                },
+                                                id);
+                            popup->close();
+                        });
+                    }
+                }
+            }
             if (kind == QLatin1String("sticker") && !popup->property("packs").toBool()) {
                 popup->setProperty("packs", true);
                 QPointer<QFrame> alive(popup);
-                m_rest->fetchStickerPacks([alive, body, held, refill, this](const QJsonObject &payload) {
+                m_rest->fetchStickerPacks([alive, buttonHost, held, refill, this](const QJsonObject &payload) {
                     if (!alive)
                         return;
                     const QJsonArray packs = payload.value(QStringLiteral("sticker_packs")).toArray();
@@ -4183,7 +4282,7 @@ void MainWindow::showEmojiMenu()
                             const QUrl icon(QStringLiteral("https://media.discordapp.net/stickers/%1.%2?size=160")
                                                 .arg(id, ext));
                             const QString name = sticker.value(QStringLiteral("name")).toString();
-                            auto *button = new QToolButton(body);
+                            auto *button = new QToolButton(buttonHost);
                             button->setFixedSize(36, 36);
                             button->setProperty("filter", name);
                             button->setProperty("iconUrl", icon);
@@ -4222,15 +4321,19 @@ void MainWindow::showEmojiMenu()
             } else {
                 search->setPlaceholderText(QStringLiteral("Find an emoji"));
             }
-            refill(search->text());
+            if (!emojiTab)
+                refill(search->text());
         });
         tabs->addWidget(button);
     }
     outer->addLayout(tabs);
 
-    connect(search, &QLineEdit::textChanged, popup, [popup, gifTimer, refill](const QString &text) {
-        if (popup->property("kind").toString() == QLatin1String("gif"))
+    connect(search, &QLineEdit::textChanged, popup, [popup, board, gifTimer, refill](const QString &text) {
+        const QString kind = popup->property("kind").toString();
+        if (kind == QLatin1String("gif"))
             gifTimer->start();
+        else if (kind == QLatin1String("emoji"))
+            board->setQuery(text);
         else
             refill(text);
     });
@@ -5463,10 +5566,9 @@ void MainWindow::layoutTitleRow()
     if (!m_titleLayout)
         return;
 
-    // A few pixels, so the row clears the rounded corner and still sits on
-    // the top line. The sizing-border metric is much taller than that corner
-    // and was pushing the buttons down off the menu.
-    m_titleLayout->setContentsMargins(8, 4, 8, 0);
+    // Flush with the top of the window. Any inset here is the gap the buttons
+    // were sitting under.
+    m_titleLayout->setContentsMargins(8, 0, 4, 0);
 }
 
 void MainWindow::showEvent(QShowEvent *event)
@@ -5522,6 +5624,20 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
         // restore size that comes back when a snapped window is pulled out,
         // both require a caption and a thick frame. The bits are put back
         // before Windows applies the change.
+        // The client area is the whole window. Leaving the standard caption
+        // in place is what left a black band above the buttons.
+        if (msg->message == WM_NCCALCSIZE && msg->wParam) {
+            auto *params = reinterpret_cast<NCCALCSIZE_PARAMS *>(msg->lParam);
+            if (IsZoomed(msg->hwnd)) {
+                MONITORINFO info;
+                info.cbSize = sizeof(info);
+                if (GetMonitorInfo(MonitorFromWindow(msg->hwnd, MONITOR_DEFAULTTONEAREST), &info))
+                    params->rgrc[0] = info.rcWork;
+            }
+            *result = 0;
+            return true;
+        }
+
         if (msg->message == WM_STYLECHANGING && msg->wParam == GWL_STYLE) {
             auto *change = reinterpret_cast<STYLESTRUCT *>(msg->lParam);
             change->styleNew |= WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;

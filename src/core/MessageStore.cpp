@@ -1157,11 +1157,12 @@ void MessageStore::noteIncoming(const QString &channelId, const QString &message
     if (channelId.isEmpty() || messageId.isEmpty())
         return;
 
-    const QString previous = m_channels.value(channelId).lastMessageId;
     if (m_channels.contains(channelId))
         m_channels[channelId].lastMessageId = messageId;
-    if (newerId(messageId, previous))
-        bumpDirectChannel(channelId);
+    // The message is stored just before this runs, so the id already matches
+    // and a "is this newer" check never succeeds. A direct chat still jumps
+    // to the top, including one you just sent yourself.
+    bumpDirectChannel(channelId);
 
     ReadMark mark = m_reads.value(channelId);
     if (seen) {
