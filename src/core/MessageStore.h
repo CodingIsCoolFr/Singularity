@@ -31,6 +31,7 @@ struct ActivityInfo
     QString state;
     QString applicationId;
     QString largeImage;   // raw asset key, may carry an "mp:" prefix
+    QString smallImage;
     QString largeText;
     QString emoji;
     qint64 startMs = 0;

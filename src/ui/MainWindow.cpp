@@ -930,6 +930,7 @@ void MainWindow::buildUi()
     connect(m_friends, &FriendsPage::openProfile, this, [this](const QString &userId) {
         showProfile(userId, QCursor::pos());
     });
+    connect(m_friends, &FriendsPage::joinVoiceChannel, this, &MainWindow::joinVoiceAt);
     m_chatStack->addWidget(m_friends);
 
     m_chatSplitter->addWidget(m_callView);
@@ -5194,6 +5195,17 @@ void MainWindow::joinVoice(const QString &channelId)
     const ChannelInfo channel = m_store->channel(channelId);
     if (!channel.isVoice())
         return;
+    joinVoiceAt(channel.guildId, channelId);
+}
+
+void MainWindow::joinVoiceAt(const QString &guildId, const QString &channelId)
+{
+    if (guildId.isEmpty() || channelId.isEmpty())
+        return;
+
+    const ChannelInfo known = m_store->channel(channelId);
+    if (!known.id.isEmpty() && !known.isVoice())
+        return;
 
     AppConfig &config = AppConfig::instance();
     const bool muted = config.value(QStringLiteral("voice/joinMuted"), false).toBool();
@@ -5213,13 +5225,19 @@ void MainWindow::joinVoice(const QString &channelId)
     m_voiceRetryTimer.stop();
 
     m_voiceChannelId = channelId;
-    m_voiceGuildId = channel.guildId;
+    m_voiceGuildId = guildId;
     m_rejoinVoiceAfterGateway = false;
-    m_gateway->joinVoice(channel.guildId, channelId, muted, deafened, true);
+    m_gateway->joinVoice(guildId, channelId, muted, deafened, true);
     updateVoicePanel();
 
     m_voiceWatchdog.start(10000);
-    flashStatus(QStringLiteral("Joining %1...").arg(channel.name), 4000);
+    const QString name = known.name.isEmpty() ? QStringLiteral("voice") : known.name;
+    flashStatus(QStringLiteral("Joining %1...").arg(name), 4000);
+
+    if (known.isVoice())
+        selectChannelEverywhere(channelId);
+    else if (m_callView)
+        m_callView->setStageSuppressed(false);
 }
 
 void MainWindow::toggleCamera()

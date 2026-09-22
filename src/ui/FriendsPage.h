@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QSet>
 #include <QTimer>
 #include <QWidget>
 
@@ -30,6 +31,9 @@ public:
 signals:
     void openDirectMessage(const QString &channelId);
     void openProfile(const QString &userId);
+    // A voice card was clicked. guild id and channel id are enough to join
+    // even when that channel has never been opened in the sidebar.
+    void joinVoiceChannel(const QString &guildId, const QString &channelId);
 
 private:
     enum class Tab { Online, All, Pending, Blocked };
@@ -53,6 +57,7 @@ private:
     QListWidget *m_list = nullptr;
     QWidget *m_activity = nullptr;
     QVBoxLayout *m_activityLayout = nullptr;
+    QSet<QString> m_namesAsked;
 
     // Pictures arrive one at a time, long after the rows are on screen, and
     // with a few hundred friends that is a few hundred arrivals. Rebuilding on

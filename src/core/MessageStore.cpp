@@ -142,6 +142,7 @@ ActivityInfo MessageStore::parseActivity(const QJsonObject &raw)
 
     const QJsonObject assets = raw.value(QStringLiteral("assets")).toObject();
     activity.largeImage = assets.value(QStringLiteral("large_image")).toString();
+    activity.smallImage = assets.value(QStringLiteral("small_image")).toString();
     activity.largeText = assets.value(QStringLiteral("large_text")).toString();
 
     const QJsonObject emoji = raw.value(QStringLiteral("emoji")).toObject();

@@ -9,6 +9,8 @@
 
 #include <QDateTime>
 #include <QEvent>
+#include <QPainter>
+#include <QPainterPath>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -58,6 +60,23 @@ QString activityLine(const MessageStore &store, const QString &userId)
     return QStringLiteral("Offline");
 }
 
+QPixmap roundedImage(const QImage &image, int size, int radius)
+{
+    if (image.isNull() || size <= 0)
+        return {};
+    const QPixmap source = QPixmap::fromImage(image).scaled(size, size, Qt::KeepAspectRatioByExpanding,
+                                                            Qt::SmoothTransformation);
+    QPixmap out(size, size);
+    out.fill(Qt::transparent);
+    QPainter painter(&out);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    QPainterPath path;
+    path.addRoundedRect(QRectF(0, 0, size, size), radius, radius);
+    painter.setClipPath(path);
+    painter.drawPixmap((size - source.width()) / 2, (size - source.height()) / 2, source);
+    return out;
+}
+
 } // namespace
 
 FriendsPage::FriendsPage(MessageStore *store, RestClient *rest, QWidget *parent)
@@ -97,14 +116,9 @@ FriendsPage::FriendsPage(MessageStore *store, RestClient *rest, QWidget *parent)
         m_list->verticalScrollBar()->setValue(scroll);
     });
 
-    connect(&MediaCache::instance(), &MediaCache::ready, this, [this](const QUrl &url) {
-        if (!isVisible())
-            return;
-        if (!url.path().startsWith(QLatin1String("/avatars/"))
-            && !url.path().startsWith(QLatin1String("/embed/avatars/"))) {
-            return;
-        }
-        m_artworkTimer.start();
+    connect(&MediaCache::instance(), &MediaCache::ready, this, [this](const QUrl &) {
+        if (isVisible())
+            m_artworkTimer.start();
     });
 
     auto *top = new QWidget(this);
@@ -333,14 +347,37 @@ void FriendsPage::rebuildActivity()
         QStringList userIds;
         QString title;
         QString subtitle;
+        QString detail;
+        QString guildId;
+        QString channelId;
+        QUrl art;
+        QUrl badge;
+        QUrl guildIcon;
     };
     QList<Card> cards;
 
-    QHash<QString, QStringList> inVoice;
+    const auto askName = [this](const QString &userId) {
+        if (userId.isEmpty() || m_namesAsked.contains(userId))
+            return;
+        const UserInfo info = m_store->user(userId);
+        if (!info.username.isEmpty())
+            return;
+        m_namesAsked.insert(userId);
+        m_rest->fetchUser(
+            userId,
+            [this](const QJsonObject &user) {
+                m_store->rememberUser(user);
+                if (isVisible())
+                    m_artworkTimer.start();
+            },
+            [](const RestClient::Error &) {});
+    };
+
+    QHash<QString, QString> voiceGuild;
     for (const UserInfo &person : m_store->usersWithRelationship(1)) {
         const VoiceStateInfo state = m_store->voiceState(person.id);
         if (!state.channelId.isEmpty()) {
-            inVoice[state.channelId].append(person.id);
+            voiceGuild.insert(state.channelId, state.guildId);
             continue;
         }
 
@@ -351,29 +388,50 @@ void FriendsPage::rebuildActivity()
             Card card;
             card.userIds = {person.id};
             card.title = displayOf(person.id);
-            QString line = activity.name;
+            card.subtitle = activity.name;
             if (!activity.details.isEmpty())
-                line += QStringLiteral(" — ") + activity.details;
+                card.detail = activity.details;
             else if (!activity.state.isEmpty())
-                line += QStringLiteral(" — ") + activity.state;
+                card.detail = activity.state;
             if (activity.startMs > 0) {
                 const qint64 minutes =
                     (QDateTime::currentMSecsSinceEpoch() - activity.startMs) / 60000;
-                if (minutes > 0)
-                    line += QStringLiteral(" — %1m").arg(minutes);
+                const QString elapsed = minutes > 0 ? QStringLiteral("for %1 minutes").arg(minutes)
+                                                    : QStringLiteral("for less than a minute");
+                card.detail = card.detail.isEmpty() ? elapsed : card.detail + QStringLiteral(" — ") + elapsed;
             }
-            card.subtitle = line;
+            card.art = MediaCache::activityAssetUrl(activity.applicationId, activity.largeImage);
+            card.badge = MediaCache::activityAssetUrl(activity.applicationId, activity.smallImage);
             cards.append(card);
             break;
         }
     }
 
-    for (auto it = inVoice.cbegin(); it != inVoice.cend(); ++it) {
+    for (auto it = voiceGuild.cbegin(); it != voiceGuild.cend(); ++it) {
+        const QString channelId = it.key();
+        QStringList members = m_store->voiceMembers(channelId);
+        if (members.isEmpty())
+            continue;
+
+        QStringList friendsFirst;
+        QStringList rest;
+        for (const QString &id : members) {
+            askName(id);
+            if (m_store->user(id).isFriend())
+                friendsFirst.append(id);
+            else
+                rest.append(id);
+        }
         Card card;
-        card.userIds = it.value();
+        card.userIds = friendsFirst + rest;
         card.title = namesOf(card.userIds);
-        const ChannelInfo channel = m_store->channel(it.key());
-        card.subtitle = channel.name.isEmpty() ? QStringLiteral("In a Voice Channel") : channel.name;
+        card.guildId = it.value();
+        card.channelId = channelId;
+        const ChannelInfo channel = m_store->channel(channelId);
+        const GuildInfo guild = m_store->guild(card.guildId);
+        card.subtitle = QStringLiteral("In a Voice Channel");
+        card.detail = channel.name;
+        card.guildIcon = MediaCache::guildIconUrl(guild.id, guild.iconHash, 32);
         cards.prepend(card);
     }
 
@@ -397,36 +455,81 @@ void FriendsPage::rebuildActivity()
         box->setContentsMargins(12, 10, 12, 10);
         box->setSpacing(6);
 
+        auto *top = new QHBoxLayout;
+        top->setSpacing(8);
         auto *faces = new QHBoxLayout;
-        faces->setSpacing(4);
-        const int shown = qMin(4, card.userIds.size());
+        faces->setSpacing(-8);
+        const int shown = qMin(card.channelId.isEmpty() ? 1 : 5, card.userIds.size());
         for (int i = 0; i < shown; ++i) {
             const UserInfo info = m_store->user(card.userIds.at(i));
             const QUrl url = MediaCache::avatarUrl(info.id, info.avatarHash, 64);
             const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
             auto *face = new QLabel(frame);
-            face->setPixmap(picture.isNull() ? MediaCache::initialsAvatar(displayOf(info.id), 28)
-                                             : MediaCache::circular(picture, 28));
+            face->setPixmap(picture.isNull() ? MediaCache::initialsAvatar(displayOf(info.id), 32)
+                                             : MediaCache::circular(picture, 32));
             faces->addWidget(face);
         }
-        faces->addStretch(1);
-        box->addLayout(faces);
+        top->addLayout(faces);
 
+        auto *words = new QVBoxLayout;
+        words->setSpacing(0);
         auto *title = new QLabel(card.title, frame);
         title->setWordWrap(true);
         title->setStyleSheet(QStringLiteral("color: %1; font-size: 14px; font-weight: 600;")
                                  .arg(QLatin1String(Theme::TextPrimary)));
-        box->addWidget(title);
-
+        words->addWidget(title);
         auto *subtitle = new QLabel(card.subtitle, frame);
         subtitle->setWordWrap(true);
         subtitle->setStyleSheet(QStringLiteral("color: %1; font-size: 12px;")
                                     .arg(QLatin1String(Theme::TextMuted)));
-        box->addWidget(subtitle);
+        words->addWidget(subtitle);
+        top->addLayout(words, 1);
 
-        const QString openId = card.userIds.isEmpty() ? QString() : card.userIds.first();
+        if (!card.badge.isEmpty()) {
+            const QImage badge = MediaCache::instance().image(card.badge);
+            if (!badge.isNull()) {
+                auto *mark = new QLabel(frame);
+                mark->setPixmap(roundedImage(badge, 22, 6));
+                top->addWidget(mark, 0, Qt::AlignTop);
+            }
+        }
+        box->addLayout(top);
+
+        if (!card.art.isEmpty() || !card.detail.isEmpty() || !card.guildIcon.isEmpty()) {
+            auto *bottom = new QHBoxLayout;
+            bottom->setSpacing(8);
+            if (!card.guildIcon.isEmpty()) {
+                const QImage icon = MediaCache::instance().image(card.guildIcon);
+                if (!icon.isNull()) {
+                    auto *mark = new QLabel(frame);
+                    mark->setPixmap(MediaCache::circular(icon, 20));
+                    bottom->addWidget(mark, 0, Qt::AlignVCenter);
+                }
+            }
+            if (!card.art.isEmpty()) {
+                const QImage art = MediaCache::instance().image(card.art);
+                if (!art.isNull()) {
+                    auto *picture = new QLabel(frame);
+                    picture->setPixmap(roundedImage(art, 52, 8));
+                    bottom->addWidget(picture);
+                }
+            }
+            if (!card.detail.isEmpty()) {
+                auto *detail = new QLabel(card.detail, frame);
+                detail->setWordWrap(true);
+                detail->setStyleSheet(QStringLiteral("color: %1; font-size: 12px;")
+                                         .arg(QLatin1String(Theme::TextMuted)));
+                bottom->addWidget(detail, 1);
+            }
+            box->addLayout(bottom);
+        }
+
+        for (QWidget *child : frame->findChildren<QWidget *>())
+            child->setAttribute(Qt::WA_TransparentForMouseEvents);
         frame->installEventFilter(this);
-        frame->setProperty("profileId", openId);
+        frame->setProperty("profileId", card.userIds.isEmpty() ? QString() : card.userIds.first());
+        frame->setProperty("joinGuild", card.guildId);
+        frame->setProperty("joinChannel", card.channelId);
         m_activityLayout->addWidget(frame);
     }
     m_activityLayout->addStretch(1);
@@ -435,6 +538,12 @@ void FriendsPage::rebuildActivity()
 bool FriendsPage::eventFilter(QObject *watched, QEvent *event)
 {
     if (event->type() == QEvent::MouseButtonRelease) {
+        const QString channelId = watched->property("joinChannel").toString();
+        const QString guildId = watched->property("joinGuild").toString();
+        if (!channelId.isEmpty() && !guildId.isEmpty()) {
+            emit joinVoiceChannel(guildId, channelId);
+            return true;
+        }
         const QString id = watched->property("profileId").toString();
         if (!id.isEmpty()) {
             emit openProfile(id);
