@@ -43,6 +43,10 @@
 #include <QCamera>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QGridLayout>
+#include <QLineEdit>
+#include <QScrollArea>
+#include <QToolButton>
 #include <QMediaCaptureSession>
 #include <QMediaDevices>
 #include <QVideoFrame>
@@ -1339,7 +1343,8 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
     m_composerContextText = new QLabel(m_composerContext);
     m_composerContextText->setStyleSheet(QStringLiteral("color: %1;").arg(QLatin1String(Theme::TextMuted)));
     auto *cancelContext = new QPushButton(QStringLiteral("Cancel"), m_composerContext);
-    cancelContext->setFixedHeight(24);
+    cancelContext->setObjectName(QStringLiteral("ComposerTool"));
+    cancelContext->setFixedHeight(28);
     connect(cancelContext, &QPushButton::clicked, this, &MainWindow::clearComposerContext);
     contextLayout->addWidget(m_composerContextText, 1);
     contextLayout->addWidget(cancelContext);
@@ -1356,29 +1361,37 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
     auto *boxLayout = new QVBoxLayout(composerBox);
     boxLayout->setContentsMargins(0, 0, 0, 0);
 
-    auto *tools = new QHBoxLayout;
-    tools->setContentsMargins(6, 4, 6, 0);
-    tools->setSpacing(6);
+    // Attach, the text, and Emoji share one row. A row of their own above
+    // the field, squeezed into 24 pixels, clipped the words and left them
+    // floating off the baseline of the message.
+    auto *row = new QHBoxLayout;
+    row->setContentsMargins(8, 6, 8, 6);
+    row->setSpacing(4);
+
     auto *attach = new QPushButton(QStringLiteral("Attach"), composerBox);
     auto *emoji = new QPushButton(QStringLiteral("Emoji"), composerBox);
-    attach->setFixedHeight(24);
-    emoji->setFixedHeight(24);
+    for (QPushButton *button : {attach, emoji}) {
+        button->setObjectName(QStringLiteral("ComposerTool"));
+        button->setFixedHeight(28);
+        button->setCursor(Qt::PointingHandCursor);
+    }
     attach->setToolTip(QStringLiteral("Add a file or a picture"));
     emoji->setToolTip(QStringLiteral("Insert an emoji"));
     connect(attach, &QPushButton::clicked, this, &MainWindow::chooseAttachment);
     connect(emoji, &QPushButton::clicked, this, &MainWindow::showEmojiMenu);
-    tools->addWidget(attach);
-    tools->addWidget(emoji);
-    tools->addStretch(1);
-    boxLayout->addLayout(tools);
 
     m_composer = new QTextEdit(composerBox);
     m_composer->setObjectName(QStringLiteral("MessageInput"));
     m_composer->setPlaceholderText(QStringLiteral("Write a message"));
-    m_composer->setFixedHeight(52);
+    m_composer->setFixedHeight(32);
+    m_composer->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_composer->installEventFilter(this);
     m_composer->setEnabled(false);
-    boxLayout->addWidget(m_composer);
+
+    row->addWidget(attach, 0, Qt::AlignVCenter);
+    row->addWidget(m_composer, 1);
+    row->addWidget(emoji, 0, Qt::AlignVCenter);
+    boxLayout->addLayout(row);
 
     composerLayout->addWidget(composerBox);
     layout->addWidget(composerWrap);
@@ -3870,39 +3883,158 @@ void MainWindow::chooseAttachment()
 
 void MainWindow::showEmojiMenu()
 {
-    QMenu menu(this);
-    const QStringList faces{
-        QStringLiteral("😀"), QStringLiteral("😂"), QStringLiteral("❤️"), QStringLiteral("👍"),
-        QStringLiteral("👎"), QStringLiteral("🔥"), QStringLiteral("🎉"), QStringLiteral("😭"),
-        QStringLiteral("😮"), QStringLiteral("😡"), QStringLiteral("👀"), QStringLiteral("💯"),
-        QStringLiteral("✅"), QStringLiteral("🙏"), QStringLiteral("💀"), QStringLiteral("🤔"),
-        QStringLiteral("😎"), QStringLiteral("🥳"), QStringLiteral("😢"), QStringLiteral("🤝"),
+    // A grid, the way Discord's picker is. A menu stretches each face to the
+    // height of a text row and prints a server emoji as its raw name, which
+    // is a column of huge pictures and :NUM_1: running off the window.
+    auto *anchor = qobject_cast<QWidget *>(sender());
+    auto *popup = new QFrame(nullptr, Qt::Popup | Qt::FramelessWindowHint);
+    popup->setAttribute(Qt::WA_DeleteOnClose);
+    popup->setObjectName(QStringLiteral("EmojiPicker"));
+    popup->setFixedWidth(328);
+    popup->setStyleSheet(QStringLiteral(
+        "QFrame#EmojiPicker { background-color: %1; border: 1px solid %2; border-radius: 12px; }"
+        "QLineEdit { background: %3; color: %4; border: none; border-radius: 8px; padding: 6px 8px; "
+        "font-family: \"Segoe UI\"; font-size: 13px; }"
+        "QToolButton { background: transparent; border: none; border-radius: 6px; font-size: 18px; }"
+        "QToolButton:hover { background: %5; }"
+        "QScrollArea { background: transparent; border: none; }"
+        "QLabel { color: %6; background: transparent; font-size: 11px; font-weight: 700; "
+        "letter-spacing: 0.6px; }")
+                              .arg(QLatin1String(Theme::SurfaceSidebar), QLatin1String(Theme::Border),
+                                   QLatin1String(Theme::SurfaceInput), QLatin1String(Theme::TextPrimary),
+                                   QLatin1String(Theme::SurfaceHover), QLatin1String(Theme::TextMuted)));
+
+    auto *outer = new QVBoxLayout(popup);
+    outer->setContentsMargins(10, 10, 10, 10);
+    outer->setSpacing(8);
+
+    auto *search = new QLineEdit(popup);
+    search->setPlaceholderText(QStringLiteral("Find an emoji"));
+    search->setClearButtonEnabled(true);
+    outer->addWidget(search);
+
+    auto *scroll = new QScrollArea(popup);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setFixedHeight(292);
+    outer->addWidget(scroll);
+
+    auto *body = new QWidget;
+    auto *grid = new QGridLayout(body);
+    grid->setContentsMargins(0, 0, 0, 0);
+    grid->setSpacing(2);
+    scroll->setWidget(body);
+
+    struct Cell
+    {
+        QString insert;
+        QString filter;
+        QString face;
+        QUrl icon;
     };
-    for (const QString &face : faces) {
-        connect(menu.addAction(face), &QAction::triggered, this, [this, face]() {
-            m_composer->insertPlainText(face);
-            m_composer->setFocus();
-        });
+    QList<Cell> cells;
+
+    const struct {
+        const char *face;
+        const char *name;
+    } stock[] = {
+        {"😀", "grin smile"}, {"😂", "joy laugh"}, {"❤️", "heart love"}, {"👍", "thumb yes"},
+        {"👎", "thumb no"},  {"🔥", "fire"},       {"🎉", "party"},       {"😭", "cry sob"},
+        {"😮", "wow"},       {"😡", "angry"},      {"👀", "eyes"},        {"💯", "hundred"},
+        {"✅", "check yes"}, {"🙏", "pray"},       {"💀", "skull"},       {"🤔", "think"},
+        {"😎", "cool"},      {"🥳", "party"},      {"😢", "sad"},         {"🤝", "handshake"},
+    };
+    for (const auto &item : stock) {
+        Cell cell;
+        cell.insert = QString::fromUtf8(item.face);
+        cell.face = cell.insert;
+        cell.filter = cell.insert + QLatin1Char(' ') + QString::fromUtf8(item.name);
+        cells.append(cell);
     }
 
     const GuildInfo guild = m_store->guild(m_currentGuildId);
-    if (!guild.emojis.isEmpty()) {
-        menu.addSeparator();
-        const int limit = qMin(40, guild.emojis.size());
-        for (int i = 0; i < limit; ++i) {
-            const EmojiInfo &emoji = guild.emojis.at(i);
-            const QString token = emoji.animated
-                ? QStringLiteral("<a:%1:%2>").arg(emoji.name, emoji.id)
-                : QStringLiteral("<:%1:%2>").arg(emoji.name, emoji.id);
-            connect(menu.addAction(QStringLiteral(":%1:").arg(emoji.name)), &QAction::triggered, this,
-                    [this, token]() {
-                        m_composer->insertPlainText(token);
-                        m_composer->setFocus();
-                    });
-        }
+    for (const EmojiInfo &emoji : guild.emojis) {
+        Cell cell;
+        cell.insert = emoji.animated ? QStringLiteral("<a:%1:%2>").arg(emoji.name, emoji.id)
+                                     : QStringLiteral("<:%1:%2>").arg(emoji.name, emoji.id);
+        cell.filter = emoji.name;
+        const QString ext = emoji.animated ? QStringLiteral("gif") : QStringLiteral("png");
+        cell.icon = QUrl(QStringLiteral("https://cdn.discordapp.com/emojis/%1.%2?size=64")
+                             .arg(emoji.id, ext));
+        cells.append(cell);
     }
 
-    menu.exec(QCursor::pos());
+    constexpr int columns = 8;
+    QList<QToolButton *> buttons;
+    QFont emojiFont(QStringLiteral("Segoe UI Emoji"));
+    emojiFont.setPixelSize(18);
+
+    for (const Cell &cell : cells) {
+        auto *button = new QToolButton(body);
+        button->setFixedSize(36, 36);
+        button->setAutoRaise(true);
+        button->setCursor(Qt::PointingHandCursor);
+        button->setToolTip(cell.filter);
+        button->setProperty("insert", cell.insert);
+        button->setProperty("filter", cell.filter);
+        button->setProperty("iconUrl", cell.icon);
+        if (!cell.face.isEmpty()) {
+            button->setFont(emojiFont);
+            button->setText(cell.face);
+        } else {
+            const QImage picture = MediaCache::instance().image(cell.icon);
+            if (!picture.isNull()) {
+                button->setIcon(QPixmap::fromImage(picture));
+                button->setIconSize(QSize(26, 26));
+            }
+        }
+        const QString token = cell.insert;
+        connect(button, &QToolButton::clicked, this, [this, popup, token]() {
+            m_composer->insertPlainText(token);
+            m_composer->setFocus();
+            popup->close();
+        });
+        buttons.append(button);
+    }
+
+    auto refill = [grid, buttons](const QString &query) {
+        while (QLayoutItem *item = grid->takeAt(0))
+            delete item;
+        int placed = 0;
+        for (QToolButton *button : buttons) {
+            const QString key = button->property("filter").toString();
+            const bool show = query.isEmpty() || key.contains(query, Qt::CaseInsensitive);
+            button->setVisible(show);
+            if (!show)
+                continue;
+            grid->addWidget(button, placed / columns, placed % columns);
+            ++placed;
+        }
+    };
+    refill(QString());
+
+    connect(search, &QLineEdit::textChanged, popup, [refill](const QString &text) { refill(text); });
+    connect(&MediaCache::instance(), &MediaCache::ready, popup, [popup](const QUrl &url) {
+        const QImage picture = MediaCache::instance().image(url);
+        if (picture.isNull())
+            return;
+        const auto found = popup->findChildren<QToolButton *>();
+        for (QToolButton *button : found) {
+            if (button->property("iconUrl").toUrl() != url)
+                continue;
+            button->setIcon(QPixmap::fromImage(picture));
+            button->setIconSize(QSize(26, 26));
+        }
+    });
+
+    popup->adjustSize();
+    QPoint topLeft = QCursor::pos();
+    if (anchor)
+        topLeft = anchor->mapToGlobal(QPoint(anchor->width() - popup->width(), -popup->height() - 6));
+    popup->move(topLeft);
+    popup->show();
+    search->setFocus();
 }
 
 void MainWindow::showMessageMenu(const QPoint &pos)

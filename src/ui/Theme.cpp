@@ -482,7 +482,8 @@ QDialog { background-color: @chat; }
 #VoiceChannel { color: @muted; font-size: 11px; background: transparent; }
 
 #VoicePanel QPushButton {
-    padding: 4px 6px;
+    padding: 2px 6px;
+    min-height: 26px;
     font-size: 11px;
     font-weight: 600;
     border-radius: 8px;
@@ -532,10 +533,28 @@ QTextBrowser {
 QTextEdit#MessageInput {
     background-color: transparent;
     border: none;
-    padding: 12px 16px;
+    padding: 4px 2px;
     color: @text;
     font-family: "Lora", Georgia, serif;
     font-size: 14px;
+}
+QPushButton#ComposerTool {
+    background: transparent;
+    border: none;
+    color: @muted;
+    padding: 0 8px;
+    min-width: 64px;
+    min-height: 28px;
+    max-height: 28px;
+    font-family: "Segoe UI", Arial, sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 6px;
+}
+QPushButton#ComposerTool:hover {
+    background-color: @hover;
+    color: @text;
+    border: none;
 }
 
 #TypingLabel {
