@@ -2117,10 +2117,16 @@ QByteArray VoiceConnection::mixWaitingStreams()
             frame.resize(samples * Channels * 2);
         }
 
+        const QString userId = m_ssrcToUser.value(it.key());
+        const bool silenced = !userId.isEmpty() && m_userMuted.contains(userId);
+        const double person = silenced ? 0.0 : (m_userVolume.value(userId, 100) / 100.0);
+
         const auto *samples = reinterpret_cast<const qint16 *>(frame.constData());
         const int count = qMin<int>(frame.size() / 2, FrameSamples * Channels);
-        for (int i = 0; i < count; ++i)
-            mixed[i] += samples[i];
+        if (person != 0.0) {
+            for (int i = 0; i < count; ++i)
+                mixed[i] += static_cast<qint32>(samples[i] * person);
+        }
 
         anyone = true;
     }
@@ -2682,6 +2688,12 @@ void VoiceConnection::setMuted(bool muted)
 void VoiceConnection::setDeafened(bool deafened)
 {
     m_deafened = deafened;
+}
+
+void VoiceConnection::setUserVolumes(const QHash<QString, int> &percent, const QSet<QString> &muted)
+{
+    m_userVolume = percent;
+    m_userMuted = muted;
 }
 
 void VoiceConnection::setOutputVolume(int percent)

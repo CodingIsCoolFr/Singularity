@@ -348,6 +348,20 @@ void RestClient::updateStatus(const QString &status, ObjectHandler onOk, ErrorHa
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+void RestClient::updateUserVolume(const QString &userId, int volume, bool muted, ObjectHandler onOk,
+                                  ErrorHandler onError)
+{
+    const QJsonObject body{
+        {QStringLiteral("volume"), volume},
+        {QStringLiteral("muted"), muted},
+    };
+    const QString path = QStringLiteral("/users/@me/audio-settings/user/%1").arg(userId);
+    QNetworkReply *reply = m_network.sendCustomRequest(
+        buildRequest(path), QByteArrayLiteral("PATCH"),
+        QJsonDocument(body).toJson(QJsonDocument::Compact));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::saveNote(const QString &userId, const QString &note, ObjectHandler onOk, ErrorHandler onError)
 {
     const QJsonObject body{{QStringLiteral("note"), note}};

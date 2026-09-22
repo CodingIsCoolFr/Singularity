@@ -88,6 +88,12 @@ public:
     // 0 to 200, matching the sliders in settings.
     void setInputVolume(int percent) { m_inputVolume = percent; }
     void setOutputVolume(int percent);
+
+    // How loud each person is, on top of the call-wide slider.
+    //
+    // Keys are user ids. A missing id is 100 and not muted. The same numbers
+    // Discord stores, so a change there and a change here are one setting.
+    void setUserVolumes(const QHash<QString, int> &percent, const QSet<QString> &muted);
     void setInputDevice(const QByteArray &deviceId) { m_inputDeviceId = deviceId; }
     void setOutputDevice(const QByteArray &deviceId) { m_outputDeviceId = deviceId; }
     void setSensitivity(int percent) { m_sensitivity = percent; }
@@ -379,6 +385,8 @@ private:
 
     int m_inputVolume = 100;
     int m_outputVolume = 100;
+    QHash<QString, int> m_userVolume;
+    QSet<QString> m_userMuted;
     int m_sensitivity = 15;
     QByteArray m_inputDeviceId;
     QByteArray m_outputDeviceId;

@@ -469,6 +469,11 @@ void CallView::mousePressEvent(QMouseEvent *event)
         return;
     }
 
+    if (event->button() == Qt::RightButton) {
+        emit volumeMenuRequested(tile->userId, event->globalPosition().toPoint());
+        return;
+    }
+
     emit focusRequested(tile->userId, tile->surface);
     if (tile->surface == Surface::Share)
         emit watchAttempted(tile->userId);

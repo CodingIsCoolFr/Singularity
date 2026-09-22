@@ -4,6 +4,7 @@
 #include <QHash>
 #include <QImage>
 #include <QList>
+#include <QPoint>
 #include <QSet>
 #include <QString>
 
@@ -49,6 +50,7 @@ public:
 
 signals:
     void profileRequested(const QString &userId);
+    void volumeMenuRequested(const QString &userId, const QPoint &globalPos);
     void watchAttempted(const QString &userId);
     void focusRequested(const QString &userId, CallView::Surface surface);
     void visibilityChanged(bool visible);

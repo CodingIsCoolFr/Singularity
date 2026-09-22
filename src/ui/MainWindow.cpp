@@ -30,6 +30,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QCursor>
@@ -39,6 +40,7 @@
 #include <QDesktopServices>
 #include <QFrame>
 #include <QInputDialog>
+#include <QJsonDocument>
 #include <QMouseEvent>
 #include <QAbstractTextDocumentLayout>
 #include <QCamera>
@@ -67,7 +69,9 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QStackedWidget>
+#include <QScreen>
 #include <QScrollBar>
+#include <QSignalBlocker>
 #include <QSlider>
 #include <QSplitter>
 #include <QShowEvent>
@@ -841,6 +845,11 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         }
     });
 
+    m_volumePush.setSingleShot(true);
+    m_volumePush.setInterval(400);
+    connect(&m_volumePush, &QTimer::timeout, this, &MainWindow::flushUserAudio);
+    loadUserAudio();
+
     // In place before the first paint, so the hole is never the first thing
     // on screen. startSession only raises it and opens the connection.
     m_loading = new LoadingOverlay(this);
@@ -932,6 +941,7 @@ void MainWindow::buildUi()
     m_callView = new CallView(m_store, m_chatSplitter);
     connect(m_callView, &CallView::profileRequested, this,
             [this](const QString &userId) { showProfile(userId, QCursor::pos()); });
+    connect(m_callView, &CallView::volumeMenuRequested, this, &MainWindow::showUserVolumeMenu);
     connect(m_callView, &CallView::watchAttempted, this, &MainWindow::watchStream);
     connect(m_callView, &CallView::focusRequested, this,
             [this](const QString &userId, CallView::Surface surface) {
@@ -974,6 +984,7 @@ void MainWindow::buildUi()
     m_members = new MemberListPanel(m_store, m_aurora);
     connect(m_members, &MemberListPanel::profileRequested, this,
             [this](const QString &userId) { showProfile(userId, QCursor::pos()); });
+    connect(m_members, &MemberListPanel::volumeMenuRequested, this, &MainWindow::showUserVolumeMenu);
     rootLayout->addWidget(m_members);
 
     shell->addLayout(rootLayout, 1);
@@ -1135,6 +1146,14 @@ QWidget *MainWindow::buildSidebar(QWidget *parent)
         }
 
         showProfile(item->data(IdRole).toString(), QCursor::pos());
+    });
+
+    m_channelList->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_channelList, &QListWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+        QListWidgetItem *item = m_channelList->itemAt(pos);
+        if (!item || item->data(KindRole).toString() != QLatin1String("voicemember"))
+            return;
+        showUserVolumeMenu(item->data(IdRole).toString(), m_channelList->viewport()->mapToGlobal(pos));
     });
 
     return sidebar;
@@ -1551,6 +1570,10 @@ void MainWindow::onGatewayReady(const QJsonObject &payload)
         m_loading->setStep(QStringLiteral("Sorting your servers..."));
 
     m_store->ingestReady(payload);
+    const QByteArray settingsProto = QByteArray::fromBase64(
+        payload.value(QStringLiteral("user_settings_proto")).toString().toLatin1());
+    if (!settingsProto.isEmpty())
+        ingestSettingsProto(settingsProto, false);
     populateGuildRail();
 
     // Say it again now that the session exists. The copy sent before the
@@ -1589,6 +1612,23 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
 {
     // Plugins see every event before the client reacts to it.
     m_plugins->dispatchGatewayEvent(eventType, data);
+
+    if (eventType == QLatin1String("AUDIO_SETTINGS_UPDATE")) {
+        applyAudioSettingsUpdate(data);
+        return;
+    }
+
+    if (eventType == QLatin1String("USER_SETTINGS_PROTO_UPDATE")) {
+        const QJsonObject settings = data.value(QStringLiteral("settings")).toObject();
+        if (settings.contains(QStringLiteral("type"))
+            && settings.value(QStringLiteral("type")).toInt() != 1)
+            return;
+        const QByteArray proto = QByteArray::fromBase64(
+            settings.value(QStringLiteral("proto")).toString().toLatin1());
+        if (!proto.isEmpty())
+            ingestSettingsProto(proto, data.value(QStringLiteral("partial")).toBool());
+        return;
+    }
 
     if (eventType == QLatin1String("RESUMED")) {
         if (!m_voiceChannelId.isEmpty()
@@ -5483,6 +5523,285 @@ void MainWindow::tryStartVoice()
     // Used once, so a later reconnect waits for a fresh pair.
     m_pendingVoiceToken.clear();
     m_pendingVoiceEndpoint.clear();
+}
+
+void MainWindow::loadUserAudio()
+{
+    const QString raw = AppConfig::instance().value(QStringLiteral("voice/userAudio")).toString();
+    const QJsonObject root = QJsonDocument::fromJson(raw.toUtf8()).object();
+    m_userAudio.clear();
+    for (auto it = root.begin(); it != root.end(); ++it) {
+        const QJsonObject one = it.value().toObject();
+        UserAudioLevel level;
+        level.volume = qBound(0, one.value(QStringLiteral("v")).toInt(100), 200);
+        level.muted = one.value(QStringLiteral("m")).toBool();
+        if (level.volume == 100 && !level.muted)
+            continue;
+        m_userAudio.insert(it.key(), level);
+    }
+    syncUserVolumes();
+}
+
+void MainWindow::saveUserAudio()
+{
+    QJsonObject root;
+    for (auto it = m_userAudio.cbegin(); it != m_userAudio.cend(); ++it) {
+        root.insert(it.key(), QJsonObject{
+                                  {QStringLiteral("v"), it->volume},
+                                  {QStringLiteral("m"), it->muted},
+                              });
+    }
+    AppConfig::instance().setValue(
+        QStringLiteral("voice/userAudio"),
+        QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Compact)));
+}
+
+void MainWindow::syncUserVolumes()
+{
+    QHash<QString, int> volumes;
+    QSet<QString> muted;
+    for (auto it = m_userAudio.cbegin(); it != m_userAudio.cend(); ++it) {
+        volumes.insert(it.key(), it->volume);
+        if (it->muted)
+            muted.insert(it.key());
+    }
+    if (m_voice)
+        m_voice->setUserVolumes(volumes, muted);
+    if (m_streamVoice)
+        m_streamVoice->setUserVolumes(volumes, muted);
+}
+
+void MainWindow::rememberUserAudio(const QString &userId, int volume, bool muted, bool publish)
+{
+    if (userId.isEmpty())
+        return;
+
+    volume = qBound(0, volume, 200);
+    if (volume == 100 && !muted)
+        m_userAudio.remove(userId);
+    else
+        m_userAudio.insert(userId, UserAudioLevel{volume, muted});
+
+    syncUserVolumes();
+
+    if (!publish) {
+        saveUserAudio();
+        return;
+    }
+
+    // The slider moves many times a second. Discord gets one write after it
+    // settles, which is the same number the official client ends on.
+    m_volumeDirty.insert(userId);
+    m_volumePush.start(400);
+}
+
+void MainWindow::flushUserAudio()
+{
+    if (!m_rest || m_volumeDirty.isEmpty())
+        return;
+
+    const QSet<QString> dirty = m_volumeDirty;
+    m_volumeDirty.clear();
+    saveUserAudio();
+
+    for (const QString &userId : dirty) {
+        const UserAudioLevel level = m_userAudio.value(userId);
+        m_rest->updateUserVolume(
+            userId, level.volume, level.muted, nullptr,
+            [userId](const RestClient::Error &error) {
+                wlog(QStringLiteral("voice"),
+                     QStringLiteral("could not save %1's volume: %2").arg(userId, error.message));
+            });
+    }
+}
+
+void MainWindow::applyAudioSettingsUpdate(const QJsonObject &data)
+{
+    const QJsonObject users = data.value(QStringLiteral("user")).toObject();
+    if (users.isEmpty())
+        return;
+
+    bool changed = false;
+    for (auto it = users.begin(); it != users.end(); ++it) {
+        const QString userId = it.key();
+        if (m_volumeDirty.contains(userId))
+            continue;
+
+        const QJsonObject one = it.value().toObject();
+        UserAudioLevel level = m_userAudio.value(userId);
+        if (one.contains(QStringLiteral("volume"))) {
+            level.volume = qBound(0, qRound(one.value(QStringLiteral("volume")).toDouble(level.volume)), 200);
+        }
+        if (one.contains(QStringLiteral("muted")))
+            level.muted = one.value(QStringLiteral("muted")).toBool();
+
+        if (level.volume == 100 && !level.muted)
+            m_userAudio.remove(userId);
+        else
+            m_userAudio.insert(userId, level);
+        changed = true;
+    }
+
+    if (!changed)
+        return;
+
+    syncUserVolumes();
+    saveUserAudio();
+    refreshVolumePopup();
+}
+
+void MainWindow::ingestSettingsProto(const QByteArray &proto, bool partial)
+{
+    QHash<QString, UserAudioLevel> parsed;
+    bool present = false;
+    if (!audioContextFromProto(proto, &parsed, &present)) {
+        wlog(QStringLiteral("voice"), QStringLiteral("could not read saved user volumes"));
+        return;
+    }
+    if (partial && !present)
+        return;
+
+    QHash<QString, UserAudioLevel> next = partial ? m_userAudio : QHash<QString, UserAudioLevel>{};
+    if (present) {
+        for (auto it = parsed.cbegin(); it != parsed.cend(); ++it) {
+            if (it->volume == 100 && !it->muted)
+                next.remove(it.key());
+            else
+                next.insert(it.key(), *it);
+        }
+    }
+
+    // A slider that has not been written yet wins over the copy Discord just
+    // echoed, or the drag would jump back.
+    for (const QString &userId : m_volumeDirty) {
+        if (m_userAudio.contains(userId))
+            next.insert(userId, m_userAudio.value(userId));
+        else
+            next.remove(userId);
+    }
+
+    m_userAudio = next;
+    syncUserVolumes();
+    saveUserAudio();
+    refreshVolumePopup();
+    if (!partial) {
+        wlog(QStringLiteral("voice"),
+             QStringLiteral("user volumes loaded: %1").arg(m_userAudio.size()));
+    }
+}
+
+void MainWindow::refreshVolumePopup()
+{
+    if (!m_volumePopup)
+        return;
+
+    const QString userId = m_volumePopup->property("userId").toString();
+    if (userId.isEmpty() || m_volumeDirty.contains(userId))
+        return;
+
+    const UserAudioLevel level = m_userAudio.value(userId);
+    if (auto *slider = m_volumePopup->findChild<QSlider *>(QStringLiteral("VolumeSlider"))) {
+        if (slider->value() != level.volume) {
+            QSignalBlocker blocker(slider);
+            slider->setValue(level.volume);
+        }
+    }
+    if (auto *readout = m_volumePopup->findChild<QLabel *>(QStringLiteral("VolumeReadout")))
+        readout->setText(QStringLiteral("%1%").arg(level.volume));
+    if (auto *mute = m_volumePopup->findChild<QCheckBox *>(QStringLiteral("VolumeMute"))) {
+        if (mute->isChecked() != level.muted) {
+            QSignalBlocker blocker(mute);
+            mute->setChecked(level.muted);
+        }
+    }
+}
+
+void MainWindow::showUserVolumeMenu(const QString &userId, const QPoint &globalPos)
+{
+    if (userId.isEmpty() || userId == m_selfUserId)
+        return;
+
+    if (m_volumePopup)
+        m_volumePopup->close();
+
+    const UserAudioLevel current = m_userAudio.value(userId);
+
+    auto *popup = new QFrame(nullptr, Qt::Popup | Qt::FramelessWindowHint);
+    popup->setObjectName(QStringLiteral("UserVolume"));
+    popup->setAttribute(Qt::WA_DeleteOnClose);
+    popup->setAttribute(Qt::WA_StyledBackground, true);
+    popup->setStyleSheet(QStringLiteral(
+        "QFrame#UserVolume { background-color: %1; border: 1px solid %2; border-radius: 12px; }"
+        "QLabel#VolumeName { color: %3; font-weight: 600; background: transparent; }"
+        "QLabel#VolumeCaption, QLabel#VolumeReadout { color: %4; background: transparent; }"
+        "QCheckBox { color: %3; background: transparent; }")
+                              .arg(QLatin1String(Theme::SurfaceSidebar), QLatin1String(Theme::Border),
+                                   QLatin1String(Theme::TextPrimary), QLatin1String(Theme::TextMuted)));
+
+    auto *layout = new QVBoxLayout(popup);
+    layout->setContentsMargins(14, 12, 14, 12);
+    layout->setSpacing(6);
+
+    QString name = m_store->userName(userId);
+    if (name.isEmpty())
+        name = QStringLiteral("User volume");
+    auto *title = new QLabel(name, popup);
+    title->setObjectName(QStringLiteral("VolumeName"));
+    layout->addWidget(title);
+
+    auto *caption = new QLabel(QStringLiteral("User volume"), popup);
+    caption->setObjectName(QStringLiteral("VolumeCaption"));
+    layout->addWidget(caption);
+
+    auto *row = new QHBoxLayout;
+    row->setSpacing(8);
+    auto *slider = new QSlider(Qt::Horizontal, popup);
+    slider->setObjectName(QStringLiteral("VolumeSlider"));
+    slider->setRange(0, 200);
+    slider->setValue(current.volume);
+    slider->setFixedWidth(188);
+    auto *readout = new QLabel(QStringLiteral("%1%").arg(current.volume), popup);
+    readout->setObjectName(QStringLiteral("VolumeReadout"));
+    readout->setMinimumWidth(44);
+    readout->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    row->addWidget(slider, 1);
+    row->addWidget(readout);
+    layout->addLayout(row);
+
+    auto *mute = new QCheckBox(QStringLiteral("Mute"), popup);
+    mute->setObjectName(QStringLiteral("VolumeMute"));
+    mute->setChecked(current.muted);
+    layout->addWidget(mute);
+
+    popup->setProperty("userId", userId);
+
+    connect(slider, &QSlider::valueChanged, this, [this, userId, readout, mute](int value) {
+        readout->setText(QStringLiteral("%1%").arg(value));
+        rememberUserAudio(userId, value, mute->isChecked(), true);
+    });
+    connect(mute, &QCheckBox::toggled, this, [this, userId, slider](bool on) {
+        rememberUserAudio(userId, slider->value(), on, true);
+    });
+    connect(popup, &QObject::destroyed, this, [this, popup]() {
+        if (m_volumePopup == popup)
+            m_volumePopup = nullptr;
+    });
+
+    popup->adjustSize();
+    QPoint pos = globalPos;
+    QScreen *screen = QApplication::screenAt(globalPos);
+    if (!screen)
+        screen = this->screen();
+    if (screen) {
+        const QRect area = screen->availableGeometry();
+        if (pos.x() + popup->width() > area.right())
+            pos.setX(qMax(area.left(), area.right() - popup->width() - 8));
+        if (pos.y() + popup->height() > area.bottom())
+            pos.setY(qMax(area.top(), globalPos.y() - popup->height() - 4));
+    }
+    popup->move(pos);
+    m_volumePopup = popup;
+    popup->show();
 }
 
 void MainWindow::applyVoiceSettings()

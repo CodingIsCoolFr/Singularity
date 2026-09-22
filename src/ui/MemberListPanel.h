@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QPoint>
 #include <QString>
 #include <QWidget>
 
@@ -42,6 +43,7 @@ public:
 
 signals:
     void profileRequested(const QString &userId);
+    void volumeMenuRequested(const QString &userId, const QPoint &globalPos);
     void collapsedChanged(bool collapsed);
 
 private:

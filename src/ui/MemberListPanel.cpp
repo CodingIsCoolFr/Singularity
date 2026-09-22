@@ -137,6 +137,17 @@ MemberListPanel::MemberListPanel(MessageStore *store, QWidget *parent)
             emit profileRequested(userId);
     });
 
+    m_list->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_list, &QListWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+        QListWidgetItem *item = m_list->itemAt(pos);
+        if (!item || item->data(SingularityRoles::Heading).toBool())
+            return;
+        const QString userId = item->data(SingularityRoles::Id).toString();
+        if (userId.isEmpty())
+            return;
+        emit volumeMenuRequested(userId, m_list->viewport()->mapToGlobal(pos));
+    });
+
     layout->addWidget(m_body, 1);
 
     connect(m_store, &MessageStore::memberListChanged, this, [this](const QString &guildId) {

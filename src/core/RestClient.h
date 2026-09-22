@@ -126,6 +126,12 @@ public:
     // what other people and your other sessions are shown.
     void updateStatus(const QString &status, ObjectHandler onOk, ErrorHandler onError);
 
+    // PATCH /users/@me/audio-settings/user/{id} — how loud this one person is.
+    // Discord keeps it, and every session of the account hears the same number.
+    // Volume is 0 to 200. Mute is separate from the slider.
+    void updateUserVolume(const QString &userId, int volume, bool muted, ObjectHandler onOk,
+                          ErrorHandler onError);
+
     // Private notes you keep about someone. Only you can read them.
     void fetchNote(const QString &userId, ObjectHandler onOk, ErrorHandler onError);
     void saveNote(const QString &userId, const QString &note, ObjectHandler onOk, ErrorHandler onError);

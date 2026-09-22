@@ -2,12 +2,14 @@
 
 #include "core/GatewayClient.h"
 #include "core/MessageStore.h"
+#include "core/SettingsProto.h"
 #include "core/VoiceConnection.h"
 #include "ui/RailLayout.h"
 
 #include <QElapsedTimer>
 #include <QHash>
 #include <QMainWindow>
+#include <QPointer>
 #include <QSet>
 #include <QTimer>
 
@@ -366,6 +368,23 @@ private:
     void tryStartVoice();
     void rejoinVoiceIfNeeded();
     void applyVoiceSettings();
+
+    // Per-person loudness. Discord is the store; the file is only so a call
+    // that starts before READY still uses the last numbers.
+    void loadUserAudio();
+    void saveUserAudio();
+    void syncUserVolumes();
+    void rememberUserAudio(const QString &userId, int volume, bool muted, bool publish);
+    void flushUserAudio();
+    void applyAudioSettingsUpdate(const QJsonObject &data);
+    void ingestSettingsProto(const QByteArray &proto, bool partial);
+    void showUserVolumeMenu(const QString &userId, const QPoint &globalPos);
+    void refreshVolumePopup();
+
+    QHash<QString, UserAudioLevel> m_userAudio;
+    QSet<QString> m_volumeDirty;
+    QTimer m_volumePush;
+    QPointer<QWidget> m_volumePopup;
 
     QString m_currentGuildId;   // empty means direct messages
     QString m_listGuild;
