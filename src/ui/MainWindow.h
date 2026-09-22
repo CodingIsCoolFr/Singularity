@@ -394,6 +394,10 @@ private:
     // coming, because in a busy server it always is.
     void scheduleRender();
     QTimer m_renderTimer;
+    // Names learned for mentions. One redraw after they stop arriving, not
+    // one redraw per person. The welcome channel was laying itself out
+    // twenty-five times.
+    QTimer m_mentionRefresh;
 
     // What a channel shows while it waits for Discord.
     static QString loadingSkeletonHtml();

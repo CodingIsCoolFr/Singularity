@@ -301,6 +301,14 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     m_renderTimer.setInterval(120);
     connect(&m_renderTimer, &QTimer::timeout, this, &MainWindow::renderChannel);
 
+    m_mentionRefresh.setSingleShot(true);
+    m_mentionRefresh.setInterval(400);
+    connect(&m_mentionRefresh, &QTimer::timeout, this, [this]() {
+        if (m_currentChannelId.isEmpty() || !m_store->hasHistory(m_currentChannelId))
+            return;
+        renderChannel();
+    });
+
     connect(m_plugins, &PluginHost::repaintRequested, this, [this]() { scheduleRender(); });
     connect(m_plugins, &PluginHost::pluginLogged, this, [this](const QString &id, const QString &line) {
         flashStatus(QStringLiteral("[%1] %2").arg(id, line), 5000);
@@ -5235,9 +5243,9 @@ void MainWindow::requestUnknownName(const QString &userId)
             m_store->rememberUser(user);
             if (!m_voiceRefreshTimer.isActive())
                 m_voiceRefreshTimer.start(400);
-            // A join line that only had a number can now say the name.
-            if (!m_currentChannelId.isEmpty() && m_store->hasHistory(m_currentChannelId))
-                renderChannel();
+            // Restart, so a channel full of unknown names draws once after
+            // the last one arrives instead of once per person.
+            m_mentionRefresh.start();
         },
         [userId](const RestClient::Error &error) {
             // Deleted accounts and the like. The number stays, which is honest.
