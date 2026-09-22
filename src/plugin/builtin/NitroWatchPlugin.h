@@ -1,11 +1,14 @@
 #pragma once
 
+#include "core/RestClient.h"
 #include "plugin/Plugin.h"
 
 #include <QPointer>
 #include <QSet>
 #include <QString>
 
+class QLabel;
+class QPushButton;
 class QWidget;
 
 // Spots a Nitro gift the moment it is posted and puts a Claim button in front
@@ -62,7 +65,8 @@ private:
     bool m_matcherTrusted = true;
 
     void offer(const QString &code, const QString &fromUserId, const QString &channelId);
-    void claim(const QString &code);
+    void claim(const QString &code, const QString &channelId, QLabel *status, QPushButton *button,
+               const RestClient::CaptchaProof &proof = {});
     void warnAboutFake(const QString &host);
 
     bool watchEnabled() const;

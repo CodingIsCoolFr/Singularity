@@ -120,7 +120,11 @@ public:
     // Only ever called because somebody pressed a button. Nothing in Singularity
     // calls this on its own, and nothing should: a client that redeems by
     // itself is the single clearest sign of an automated account.
-    void redeemGift(const QString &code, ObjectHandler onOk, ErrorHandler onError);
+    // `channelId` is the channel the gift was posted in. Discord refuses a
+    // redeem that does not name it. `captcha` is set only on the retry after
+    // the person finished the check.
+    void redeemGift(const QString &code, const QString &channelId, ObjectHandler onOk,
+                    ErrorHandler onError, const CaptchaProof &captcha = {});
 
     // PATCH /users/@me/settings — the status the real client stores, which is
     // what other people and your other sessions are shown.

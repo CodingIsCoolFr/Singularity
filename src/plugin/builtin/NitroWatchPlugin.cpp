@@ -1,7 +1,7 @@
 #include "plugin/builtin/NitroWatchPlugin.h"
 
 #include "core/Logger.h"
-#include "core/RestClient.h"
+#include "ui/CaptchaDialog.h"
 #include "ui/Theme.h"
 
 #include <QApplication>
@@ -377,6 +377,10 @@ void NitroWatchPlugin::offer(const QString &code, const QString &fromUserId, con
                                           "is what keeps this account looking ordinary."),
                            Theme::TextFaint, 11, false, alert));
 
+    auto *status = line(QString(), Theme::TextMuted, 12, false, alert);
+    status->hide();
+    layout->addWidget(status);
+
     auto *buttons = new QHBoxLayout;
     buttons->setContentsMargins(0, 10, 0, 0);
     buttons->setSpacing(8);
@@ -403,9 +407,8 @@ void NitroWatchPlugin::offer(const QString &code, const QString &fromUserId, con
     buttons->addStretch(1);
     layout->addLayout(buttons);
 
-    QObject::connect(claimButton, &QPushButton::clicked, alert, [this, code, alert]() {
-        claim(code);
-        alert->close();
+    QObject::connect(claimButton, &QPushButton::clicked, alert, [this, code, channelId, status, claimButton]() {
+        claim(code, channelId, status, claimButton);
     });
     QObject::connect(ignore, &QPushButton::clicked, alert, &QWidget::close);
 
@@ -428,30 +431,88 @@ void NitroWatchPlugin::offer(const QString &code, const QString &fromUserId, con
     QTimer::singleShot(60000, alert, &QWidget::close);
 }
 
-void NitroWatchPlugin::claim(const QString &code)
+void NitroWatchPlugin::claim(const QString &code, const QString &channelId, QLabel *status,
+                             QPushButton *button, const RestClient::CaptchaProof &proof)
 {
     if (!context() || !context()->rest())
         return;
 
+    QPointer<QLabel> statusLabel = status;
+    QPointer<QPushButton> claimButton = button;
+    if (claimButton)
+        claimButton->setEnabled(false);
+    if (statusLabel) {
+        statusLabel->setText(QStringLiteral("Claiming..."));
+        statusLabel->show();
+    }
+
     wlog(QStringLiteral("nitro"), QStringLiteral("claiming a gift, because the button was pressed"));
 
     context()->rest()->redeemGift(
-        code,
-        [this](const QJsonObject &) {
+        code, channelId,
+        [this, statusLabel](const QJsonObject &) {
             wlog(QStringLiteral("nitro"), QStringLiteral("gift claimed"));
+            if (statusLabel) {
+                statusLabel->setText(QStringLiteral("Claimed."));
+                statusLabel->show();
+            }
             if (context())
                 context()->log(QStringLiteral("Nitro gift claimed."));
         },
-        [this](const RestClient::Error &error) {
-            // Usually means somebody else was quicker, or the code was never
-            // real in the first place.
+        [this, code, channelId, statusLabel, claimButton, proof](const RestClient::Error &error) {
+            const QJsonArray keys = error.body.value(QStringLiteral("captcha_key")).toArray();
+            bool needsCheck = error.body.contains(QStringLiteral("captcha_sitekey"));
+            for (const QJsonValue &key : keys) {
+                if (key.toString() == QLatin1String("captcha-required"))
+                    needsCheck = true;
+            }
+            // One check, solved by the person at the keyboard, then one retry.
+            // A second demand is reported instead of looping.
+            if (needsCheck && proof.key.isEmpty()) {
+                QWidget *parent = nullptr;
+                for (QWidget *w : QApplication::topLevelWidgets()) {
+                    if (qobject_cast<QMainWindow *>(w) && w->isVisible()) {
+                        parent = w;
+                        break;
+                    }
+                }
+                const QString token = CaptchaDialog::solve(
+                    parent, error.body.value(QStringLiteral("captcha_sitekey")).toString(),
+                    error.body.value(QStringLiteral("captcha_rqdata")).toString());
+                if (token.isEmpty()) {
+                    if (statusLabel) {
+                        statusLabel->setText(QStringLiteral("Discord asked for a check, and it was not finished."));
+                        statusLabel->show();
+                    }
+                    if (claimButton)
+                        claimButton->setEnabled(true);
+                    return;
+                }
+                RestClient::CaptchaProof next;
+                next.key = token;
+                next.rqtoken = error.body.value(QStringLiteral("captcha_rqtoken")).toString();
+                next.sessionId = error.body.value(QStringLiteral("captcha_session_id")).toString();
+                claim(code, channelId, statusLabel, claimButton, next);
+                return;
+            }
+
             wlog(QStringLiteral("nitro"),
                  QStringLiteral("gift could not be claimed: HTTP %1 %2")
                      .arg(error.httpStatus)
                      .arg(error.message));
+            const QString text = error.message.isEmpty()
+                                     ? QStringLiteral("Could not claim it (HTTP %1).").arg(error.httpStatus)
+                                     : QStringLiteral("Could not claim it: %1").arg(error.message);
+            if (statusLabel) {
+                statusLabel->setText(text);
+                statusLabel->show();
+            }
+            if (claimButton)
+                claimButton->setEnabled(true);
             if (context())
-                context()->log(QStringLiteral("Could not claim it: %1").arg(error.message));
-        });
+                context()->log(text);
+        },
+        proof);
 }
 
 QWidget *NitroWatchPlugin::createSettingsWidget(QWidget *parent)

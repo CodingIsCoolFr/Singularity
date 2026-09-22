@@ -324,12 +324,25 @@ void RestClient::createInvite(const QString &channelId, ObjectHandler onOk, Erro
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
-void RestClient::redeemGift(const QString &code, ObjectHandler onOk, ErrorHandler onError)
+void RestClient::redeemGift(const QString &code, const QString &channelId, ObjectHandler onOk,
+                            ErrorHandler onError, const CaptchaProof &captcha)
 {
-    // An empty body is all this endpoint needs. The official client also names
-    // a payment source, which only matters for gifts that cost something.
-    const QString path = QStringLiteral("/entitlements/gift-codes/%1/redeem").arg(code);
-    QNetworkReply *reply = m_network.post(buildRequest(path), QByteArray("{}"));
+    // The same body the official client sends. A free gift has no payment
+    // source. Leaving channel_id out is a 400, and the code is never claimed.
+    QJsonObject body{
+        {QStringLiteral("channel_id"),
+         channelId.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(channelId)},
+        {QStringLiteral("payment_source_id"), QJsonValue(QJsonValue::Null)},
+    };
+    QNetworkRequest request = buildRequest(QStringLiteral("/entitlements/gift-codes/%1/redeem").arg(code));
+    if (!captcha.key.isEmpty()) {
+        request.setRawHeader("X-Captcha-Key", captcha.key.toUtf8());
+        if (!captcha.rqtoken.isEmpty())
+            request.setRawHeader("X-Captcha-Rqtoken", captcha.rqtoken.toUtf8());
+        if (!captcha.sessionId.isEmpty())
+            request.setRawHeader("X-Captcha-Session-Id", captcha.sessionId.toUtf8());
+    }
+    QNetworkReply *reply = m_network.post(request, QJsonDocument(body).toJson(QJsonDocument::Compact));
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
