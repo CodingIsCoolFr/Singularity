@@ -238,6 +238,7 @@ void main()
 constexpr const char *kBake = R"(#version 330 core
 uniform vec2 uResolution;
 uniform float uZoom;
+uniform float uOrbit;
 layout(location = 0) out vec4 oHitA;
 layout(location = 1) out vec4 oHitB;
 layout(location = 2) out vec4 oSky;
@@ -249,7 +250,10 @@ const float OUTER = RS * 11.2;
 void main()
 {
     vec2 uv = (gl_FragCoord.xy - 0.5 * uResolution) / uResolution.y;
+    float cs = cos(uOrbit);
+    float sn = sin(uOrbit);
     vec3 ro = vec3(0.0, 0.62, 7.15);
+    ro.xz = mat2(cs, -sn, sn, cs) * ro.xz;
     vec3 ta = vec3(0.0, 0.02, 0.0);
     vec3 ww = normalize(ta - ro);
     vec3 uu = normalize(cross(ww, vec3(0.0, 1.0, 0.0)));
@@ -691,14 +695,16 @@ void AuroraWidget::paintGL()
     }
 
     if (m_program && m_program->isLinked() && m_bakeProgram && m_bakeProgram->isLinked()) {
-        if (m_bakeSize != QSize(w, h))
+        const qint64 now = m_clock.elapsed();
+        if (m_bakeSize != QSize(w, h) || now - m_lastBakeMs >= 200) {
             bakeHole(w, h);
+            m_lastBakeMs = now;
+        }
 
-        const float drift = m_time * 0.005f;
         m_program->bind();
         m_program->setUniformValue(m_uResolution, QVector2D(float(w), float(h)));
         m_program->setUniformValue(m_uTime, m_time);
-        m_program->setUniformValue(m_uDrift, QVector2D(0.018f * sin(drift), 0.012f * cos(drift * 0.7f)));
+        m_program->setUniformValue(m_uDrift, QVector2D(0.f, 0.f));
         m_program->setUniformValue(m_uAccent, m_accent);
         m_program->setUniformValue(m_uDisk, m_disk);
         m_program->setUniformValue(m_uGrade, m_grade);
@@ -772,8 +778,10 @@ void AuroraWidget::bakeHole(int width, int height)
     glDisable(GL_BLEND);
     m_bakeProgram->bind();
     m_bakeProgram->setUniformValue(m_bakeRes, QVector2D(float(width), float(height)));
-    // Wider than the window, so the slow drift has room to slide.
-    m_bakeProgram->setUniformValue(m_bakeZoom, 1.458f);
+    m_bakeProgram->setUniformValue(m_bakeZoom, 1.22f);
+    // About a third of the original orbit, so the ring moves and a frame of
+    // ray marching is not asked for sixty times a second.
+    m_bakeProgram->setUniformValue(m_bakeOrbit, m_time * 0.02f);
     glBindVertexArray(m_vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
@@ -856,6 +864,7 @@ bool AuroraWidget::compileProgram()
     }
     m_bakeRes = m_bakeProgram->uniformLocation("uResolution");
     m_bakeZoom = m_bakeProgram->uniformLocation("uZoom");
+    m_bakeOrbit = m_bakeProgram->uniformLocation("uOrbit");
 
     delete m_program;
     m_program = new QOpenGLShaderProgram(this);

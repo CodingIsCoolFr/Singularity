@@ -282,10 +282,7 @@ void FriendsPage::refresh()
         break;
     }
 
-    // Filling the list fires a signal per row, which is wasted work here.
-    m_list->setUpdatesEnabled(false);
-    m_list->clear();
-
+    QList<UserInfo> shown;
     for (const UserInfo &person : people) {
         if (m_tab == Tab::Online) {
             const bool around = m_store->presence(person.id).isOnline()
@@ -303,6 +300,43 @@ void FriendsPage::refresh()
             && !person.username.contains(filter, Qt::CaseInsensitive)) {
             continue;
         }
+
+        shown.append(person);
+    }
+
+    bool samePeople = m_list->count() == shown.size();
+    for (int i = 0; samePeople && i < shown.size(); ++i) {
+        if (m_list->item(i)->data(SingularityRoles::Id).toString() != shown.at(i).id)
+            samePeople = false;
+    }
+    if (samePeople) {
+        for (int i = 0; i < shown.size(); ++i) {
+            const UserInfo &person = shown.at(i);
+            QListWidgetItem *item = m_list->item(i);
+            QString name = person.displayName();
+            if (name.isEmpty())
+                name = person.username.isEmpty() ? person.id : person.username;
+            item->setText(name);
+            item->setData(SingularityRoles::Subtitle, activityLine(*m_store, person.id));
+            item->setData(SingularityRoles::Status, m_store->presenceBubble(person.id));
+            const QUrl url = MediaCache::avatarUrl(person.id, person.avatarHash, 80);
+            const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
+            if (!picture.isNull())
+                item->setIcon(MediaCache::circular(picture, AvatarPixels));
+        }
+        m_heading->setText(QStringLiteral("%1 — %2").arg(heading).arg(m_list->count()));
+        rebuildActivity();
+        return;
+    }
+
+    // Filling the list fires a signal per row, which is wasted work here.
+    m_list->setUpdatesEnabled(false);
+    m_list->clear();
+
+    for (const UserInfo &person : shown) {
+        QString name = person.displayName();
+        if (name.isEmpty())
+            name = person.username.isEmpty() ? person.id : person.username;
 
         auto *item = new QListWidgetItem(name);
         item->setData(SingularityRoles::Id, person.id);
@@ -328,12 +362,6 @@ void FriendsPage::rebuildActivity()
 {
     if (!m_activityLayout)
         return;
-
-    while (QLayoutItem *item = m_activityLayout->takeAt(0)) {
-        if (QWidget *widget = item->widget())
-            delete widget;
-        delete item;
-    }
 
     const auto displayOf = [this](const QString &userId) {
         const UserInfo info = m_store->user(userId);
@@ -451,6 +479,54 @@ void FriendsPage::rebuildActivity()
         cards.prepend(card);
     }
 
+    auto *scroll = m_activity->findChild<QScrollArea *>();
+    QScrollBar *bar = scroll ? scroll->verticalScrollBar() : nullptr;
+    const int scrollY = bar ? bar->value() : 0;
+
+    QStringList keys;
+    keys.reserve(cards.size());
+    for (const Card &card : cards) {
+        keys.append(card.channelId.isEmpty()
+                        ? QStringLiteral("game\n%1\n%2").arg(card.userIds.value(0), card.subtitle)
+                        : QStringLiteral("voice\n%1").arg(card.channelId));
+    }
+
+    QList<QFrame *> frames;
+    for (int i = 0; i < m_activityLayout->count(); ++i) {
+        auto *frame = qobject_cast<QFrame *>(m_activityLayout->itemAt(i)->widget());
+        if (frame)
+            frames.append(frame);
+    }
+
+    bool sameCards = !cards.isEmpty() && frames.size() == cards.size();
+    for (int i = 0; sameCards && i < cards.size(); ++i) {
+        if (frames.at(i)->property("cardKey").toString() != keys.at(i))
+            sameCards = false;
+        if (!cards.at(i).art.isEmpty() && !MediaCache::instance().image(cards.at(i).art).isNull()) {
+            auto *picture = frames.at(i)->findChild<QLabel *>(QStringLiteral("ActivityArt"));
+            if (!picture || picture->pixmap().isNull())
+                sameCards = false;
+        }
+    }
+    if (sameCards) {
+        for (int i = 0; i < cards.size(); ++i) {
+            QFrame *frame = frames.at(i);
+            if (auto *title = frame->findChild<QLabel *>(QStringLiteral("ActivityTitle")))
+                title->setText(cards.at(i).title);
+            if (auto *subtitle = frame->findChild<QLabel *>(QStringLiteral("ActivitySubtitle")))
+                subtitle->setText(cards.at(i).subtitle);
+            if (auto *detail = frame->findChild<QLabel *>(QStringLiteral("ActivityDetail")))
+                detail->setText(cards.at(i).detail);
+        }
+        return;
+    }
+
+    while (QLayoutItem *item = m_activityLayout->takeAt(0)) {
+        if (QWidget *widget = item->widget())
+            delete widget;
+        delete item;
+    }
+
     if (cards.isEmpty()) {
         auto *quiet = new QLabel(QStringLiteral("It's quiet for now.\nWhen a friend is in a call or "
                                                 "playing something, it shows up here."),
@@ -490,11 +566,13 @@ void FriendsPage::rebuildActivity()
         auto *words = new QVBoxLayout;
         words->setSpacing(0);
         auto *title = new QLabel(card.title, frame);
+        title->setObjectName(QStringLiteral("ActivityTitle"));
         title->setWordWrap(true);
         title->setStyleSheet(QStringLiteral("color: %1; font-size: 14px; font-weight: 600;")
                                  .arg(QLatin1String(Theme::TextPrimary)));
         words->addWidget(title);
         auto *subtitle = new QLabel(card.subtitle, frame);
+        subtitle->setObjectName(QStringLiteral("ActivitySubtitle"));
         subtitle->setWordWrap(true);
         subtitle->setStyleSheet(QStringLiteral("color: %1; font-size: 12px;")
                                     .arg(QLatin1String(Theme::TextMuted)));
@@ -526,12 +604,14 @@ void FriendsPage::rebuildActivity()
                 const QImage art = MediaCache::instance().image(card.art);
                 if (!art.isNull()) {
                     auto *picture = new QLabel(frame);
+                    picture->setObjectName(QStringLiteral("ActivityArt"));
                     picture->setPixmap(roundedImage(art, 52, 8));
                     bottom->addWidget(picture);
                 }
             }
             if (!card.detail.isEmpty()) {
                 auto *detail = new QLabel(card.detail, frame);
+                detail->setObjectName(QStringLiteral("ActivityDetail"));
                 detail->setWordWrap(true);
                 detail->setStyleSheet(QStringLiteral("color: %1; font-size: 12px;")
                                          .arg(QLatin1String(Theme::TextMuted)));
@@ -543,12 +623,15 @@ void FriendsPage::rebuildActivity()
         for (QWidget *child : frame->findChildren<QWidget *>())
             child->setAttribute(Qt::WA_TransparentForMouseEvents);
         frame->installEventFilter(this);
+        frame->setProperty("cardKey", keys.at(m_activityLayout->count()));
         frame->setProperty("profileId", card.userIds.isEmpty() ? QString() : card.userIds.first());
         frame->setProperty("joinGuild", card.guildId);
         frame->setProperty("joinChannel", card.channelId);
         m_activityLayout->addWidget(frame);
     }
     m_activityLayout->addStretch(1);
+    if (bar)
+        bar->setValue(scrollY);
 }
 
 bool FriendsPage::eventFilter(QObject *watched, QEvent *event)

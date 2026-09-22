@@ -95,6 +95,8 @@ private:
     int m_uDrift = -1;
     int m_bakeRes = -1;
     int m_bakeZoom = -1;
+    int m_bakeOrbit = -1;
+    qint64 m_lastBakeMs = -1000;
     GLuint m_bakeFbo = 0;
     GLuint m_hitA = 0;
     GLuint m_hitB = 0;
