@@ -77,7 +77,7 @@ void main()
 {
     vec2 uv = (gl_FragCoord.xy - 0.5 * uResolution) / uResolution.y;
 
-    float t = uTime * 0.055;
+    float t = uTime * 0.02;
     float cs = cos(t);
     float sn = sin(t);
 
@@ -91,7 +91,7 @@ void main()
     vec3 rd = normalize(uv.x * uu + uv.y * vv + 1.22 * ww);
 
     const float RS = 0.50;
-    const int STEPS = 64;
+    const int STEPS = 100;
 
     vec3 pos = ro;
     vec3 vel = rd;
@@ -125,7 +125,7 @@ void main()
             if (rho > inner && rho < outer) {
                 float x = (rho - inner) / (outer - inner);
                 float ang = atan(hit.z, hit.x);
-                float spir = 0.5 + 0.5 * sin(2.0 * ang - log(rho + 0.04) * 8.5 - uTime * 1.15);
+                float spir = 0.5 + 0.5 * sin(2.0 * ang - log(rho + 0.04) * 8.5 - uTime * 0.38);
                 float dens = pow(1.0 - x, 1.05) * (0.62 + 0.38 * spir);
                 dens *= smoothstep(0.0, 0.08, x) * smoothstep(1.0, 0.72, x);
 
@@ -694,31 +694,18 @@ void AuroraWidget::paintGL()
         }
     }
 
-    if (m_program && m_program->isLinked() && m_bakeProgram && m_bakeProgram->isLinked()) {
-        const qint64 now = m_clock.elapsed();
-        if (m_bakeSize != QSize(w, h) || now - m_lastBakeMs >= 200) {
-            bakeHole(w, h);
-            m_lastBakeMs = now;
-        }
-
+    if (m_program && m_program->isLinked()) {
         m_program->bind();
         m_program->setUniformValue(m_uResolution, QVector2D(float(w), float(h)));
         m_program->setUniformValue(m_uTime, m_time);
-        m_program->setUniformValue(m_uDrift, QVector2D(0.f, 0.f));
+        m_program->setUniformValue("uPointer", QVector2D(0.f, 0.f));
         m_program->setUniformValue(m_uAccent, m_accent);
         m_program->setUniformValue(m_uDisk, m_disk);
         m_program->setUniformValue(m_uGrade, m_grade);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, m_hitA);
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, m_hitB);
-        glActiveTexture(GL_TEXTURE2);
-        glBindTexture(GL_TEXTURE_2D, m_sky);
         glBindVertexArray(m_vao);
         glDrawArrays(GL_TRIANGLES, 0, 3);
         glBindVertexArray(0);
         m_program->release();
-        glActiveTexture(GL_TEXTURE0);
     }
 }
 
@@ -854,22 +841,10 @@ void AuroraWidget::updateOverlayFbo()
 
 bool AuroraWidget::compileProgram()
 {
-    delete m_bakeProgram;
-    m_bakeProgram = new QOpenGLShaderProgram(this);
-    if (!m_bakeProgram->addShaderFromSourceCode(QOpenGLShader::Vertex, kVertex)
-        || !m_bakeProgram->addShaderFromSourceCode(QOpenGLShader::Fragment, kBake)
-        || !m_bakeProgram->link()) {
-        qWarning() << "aurora bake" << m_bakeProgram->log();
-        return false;
-    }
-    m_bakeRes = m_bakeProgram->uniformLocation("uResolution");
-    m_bakeZoom = m_bakeProgram->uniformLocation("uZoom");
-    m_bakeOrbit = m_bakeProgram->uniformLocation("uOrbit");
-
     delete m_program;
     m_program = new QOpenGLShaderProgram(this);
     if (!m_program->addShaderFromSourceCode(QOpenGLShader::Vertex, kVertex)
-        || !m_program->addShaderFromSourceCode(QOpenGLShader::Fragment, kDraw)
+        || !m_program->addShaderFromSourceCode(QOpenGLShader::Fragment, kFragment)
         || !m_program->link()) {
         qWarning() << "aurora draw" << m_program->log();
         return false;
@@ -877,15 +852,9 @@ bool AuroraWidget::compileProgram()
 
     m_uResolution = m_program->uniformLocation("uResolution");
     m_uTime = m_program->uniformLocation("uTime");
-    m_uDrift = m_program->uniformLocation("uDrift");
     m_uAccent = m_program->uniformLocation("uAccent");
     m_uDisk = m_program->uniformLocation("uDisk");
     m_uGrade = m_program->uniformLocation("uGrade");
-    m_program->bind();
-    m_program->setUniformValue("tHitA", 0);
-    m_program->setUniformValue("tHitB", 1);
-    m_program->setUniformValue("tSky", 2);
-    m_program->release();
     return true;
 }
 
