@@ -412,6 +412,9 @@ QWidget *SettingsDialog::buildVoicePage()
     levels->addRow(QStringLiteral("Output volume"), m_outputVolume);
     levels->addRow(QStringLiteral("Screen share volume"), m_streamVolume);
     layout->addLayout(levels);
+    layout->addWidget(hint(QStringLiteral("Halfway on input is your microphone as it is. "
+                                          "The rest of that slider makes a quiet mic louder."),
+                           page));
 
     connect(m_inputVolume, &QSlider::valueChanged, this, [this](int value) {
         AppConfig::instance().setValue(QStringLiteral("voice/inputVolume"), value);

@@ -1549,9 +1549,21 @@ void VoiceConnection::onSendTick()
 
         // The slider first, so a plugin is handed sound at the level you set
         // rather than whatever the microphone happened to produce.
+        //
+        // 100 is the microphone as it arrives. The rest of the slider is
+        // boost: the far end is eight times louder, which is what a quiet
+        // headset needs to sit with everyone else. A straight multiply past
+        // full scale turns into a buzz, so the peaks are eased off instead.
+        const double extra = qMax(0, m_inputVolume - 100) / 100.0;
+        const double gain = (m_inputVolume / 100.0) * std::pow(4.0, extra);
         for (int i = 0; i < count; ++i) {
-            const double value = qBound(-32768.0, samples[i] * (m_inputVolume / 100.0), 32767.0);
-            samples[i] = static_cast<qint16>(value);
+            double value = samples[i] * gain;
+            const double absValue = std::abs(value);
+            if (absValue > 28000.0) {
+                const double sign = value < 0.0 ? -1.0 : 1.0;
+                value = sign * (28000.0 + 4767.0 * std::tanh((absValue - 28000.0) / 8000.0));
+            }
+            samples[i] = static_cast<qint16>(qBound(-32767.0, value, 32767.0));
         }
 
         // Plugins get the sound next, and may rewrite it entirely.
