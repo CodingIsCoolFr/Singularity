@@ -18,7 +18,7 @@
 ;     iscc installer\Singularity.iss
 
 #define AppName       "Singularity"
-#define AppVersion    "0.6.49"
+#define AppVersion    "0.6.50"
 #define AppPublisher  "Singularity"
 #define AppExe        "Singularity.exe"
 
@@ -136,6 +136,16 @@ procedure WinSleep(dwMilliseconds: Cardinal);
   external 'Sleep@kernel32.dll stdcall';
 function ShowWindow(hWnd: HWND; nCmdShow: Integer): Integer;
   external 'ShowWindow@user32.dll stdcall';
+function GetWindowLongW(hWnd: HWND; nIndex: Integer): Longint;
+  external 'GetWindowLongW@user32.dll stdcall';
+function SetWindowLongW(hWnd: HWND; nIndex: Integer; dwNewLong: Longint): Longint;
+  external 'SetWindowLongW@user32.dll stdcall';
+function GetForegroundWindow: HWND;
+  external 'GetForegroundWindow@user32.dll stdcall';
+function SetForegroundWindow(hWnd: HWND): Boolean;
+  external 'SetForegroundWindow@user32.dll stdcall';
+function GetShellWindow: HWND;
+  external 'GetShellWindow@user32.dll stdcall';
 
 const
   FrameCount = 24;
@@ -197,6 +207,11 @@ begin
   FrameIndex := (FrameIndex + 1) mod FrameCount;
   if Spinner <> nil then
     Spinner.Bitmap := Frames[FrameIndex];
+  // The unpack runs on this same thread, so while a large file is extracted
+  // the window stops answering. If it is the foreground window, Windows
+  // saves every taskbar click until the unpack finishes. Never be that window.
+  if WizardSilent and (WizardForm <> nil) and (GetForegroundWindow = WizardForm.Handle) then
+    SetForegroundWindow(GetShellWindow);
 end;
 
 // Puts the wizard's own buttons back where they belong, every time.
@@ -307,18 +322,38 @@ begin
   end;
 end;
 
-// Shown without becoming the foreground window when the program started
-// this itself. A foreground window that stops answering is what made the
-// taskbar hold clicks. The hole still has to be on screen.
+// Shown without ever becoming the foreground window when the program
+// started this itself.
+//
+// Discord does not put a second program in front while an update unpacks.
+// The new files land beside the running app, and the window you are looking
+// at keeps processing clicks. This window has to stay visible, and it has
+// to refuse the foreground, because Singularity closing hands the foreground
+// to whatever is on screen. A foreground window that then stops answering
+// is the taskbar holding every click until the unpack ends.
 procedure Reveal;
+var
+  Style: Longint;
 begin
   if WizardForm = nil then
     Exit;
-  WizardForm.Visible := True;
-  if WizardSilent then
-    ShowWindow(WizardForm.Handle, 4)
-  else
+  if not WizardSilent then
+  begin
+    WizardForm.Visible := True;
     ShowWindow(WizardForm.Handle, SW_SHOW);
+    Exit;
+  end;
+
+  // GWL_EXSTYLE, WS_EX_NOACTIVATE. A window with this style is not chosen
+  // as the foreground when the previous foreground program exits. The style
+  // has to be on before the window is shown, or showing it takes the foreground.
+  Style := GetWindowLongW(WizardForm.Handle, -20);
+  if (Style and $08000000) = 0 then
+    SetWindowLongW(WizardForm.Handle, -20, Style or $08000000);
+  WizardForm.Visible := True;
+  ShowWindow(WizardForm.Handle, 4);
+  if GetForegroundWindow = WizardForm.Handle then
+    SetForegroundWindow(GetShellWindow);
 end;
 
 procedure InitializeWizard;
