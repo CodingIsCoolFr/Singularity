@@ -22,6 +22,8 @@ const QStringList kAllowedSuffixes{
     QStringLiteral(".tenor.com"),
     // Album art for a listening activity. Discord hands the key as "spotify:".
     QStringLiteral(".scdn.co"),
+    // The Singularity mark, used as the Playing card's picture.
+    QStringLiteral("singularitycord.pages.dev"),
 };
 
 // What the cache is allowed to hold, in bytes.
@@ -460,6 +462,9 @@ QUrl MediaCache::activityAssetUrl(const QString &applicationId, const QString &a
         return {};
 
     // "mp:external/..." means Discord is proxying a picture from elsewhere.
+    if (assetKey.startsWith(QStringLiteral("https://")) || assetKey.startsWith(QStringLiteral("http://")))
+        return QUrl(assetKey);
+
     if (assetKey.startsWith(QStringLiteral("mp:")))
         return QUrl(QStringLiteral("https://media.discordapp.net/") + assetKey.mid(3));
 

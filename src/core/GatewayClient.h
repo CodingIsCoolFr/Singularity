@@ -61,7 +61,7 @@ public:
     void setPresenceStatus(const QString &status);
     QString presenceStatus() const { return m_presenceStatus; }
 
-    // The line other people see when this client is open and nothing else is.
+    // The Playing card other people see while this client is open.
     // Empty while invisible, so appearing offline does not advertise the app.
     QJsonArray clientActivities() const;
 
@@ -191,4 +191,8 @@ private:
     // What Discord tells everybody else about you. The Anonymous plugin is
     // the only thing that changes this.
     QString m_presenceStatus{QStringLiteral("online")};
+
+    // When this process opened. The activity clock counts from here, so a
+    // status change does not reset "how long you have had the client open".
+    qint64 m_clientActivityStart = 0;
 };

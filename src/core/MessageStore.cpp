@@ -145,6 +145,17 @@ ActivityInfo MessageStore::parseActivity(const QJsonObject &raw)
     activity.smallImage = assets.value(QStringLiteral("small_image")).toString();
     activity.largeText = assets.value(QStringLiteral("large_text")).toString();
 
+    const QJsonArray buttons = raw.value(QStringLiteral("buttons")).toArray();
+    if (!buttons.isEmpty()) {
+        const QJsonValue first = buttons.first();
+        if (first.isObject()) {
+            activity.buttonLabel = first.toObject().value(QStringLiteral("label")).toString();
+            activity.buttonUrl = first.toObject().value(QStringLiteral("url")).toString();
+        } else {
+            activity.buttonLabel = first.toString();
+        }
+    }
+
     const QJsonObject emoji = raw.value(QStringLiteral("emoji")).toObject();
     activity.emoji = emoji.value(QStringLiteral("name")).toString();
 

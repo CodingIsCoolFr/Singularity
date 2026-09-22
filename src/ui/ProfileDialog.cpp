@@ -11,6 +11,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QClipboard>
+#include <QDesktopServices>
 #include <QFrame>
 #include <QGraphicsDropShadowEffect>
 #include <QHBoxLayout>
@@ -372,8 +373,10 @@ QScrollArea { background: transparent; border: none; }
 
     // Late downloads (avatar, banner, game art) repaint what is on screen.
     connect(&MediaCache::instance(), &MediaCache::ready, this, [this](const QUrl &) {
-        if (isVisible())
-            refreshArtwork();
+        if (!isVisible())
+            return;
+        refreshArtwork();
+        rebuildActivity();
     });
     connect(m_store, &MessageStore::userChanged, this, [this](const QString &userId) {
         if (isVisible() && userId == m_userId) {
@@ -961,7 +964,7 @@ void ProfileDialog::rebuildActivity()
     int shown = 0;
 
     const auto addCard = [this](const QString &heading, const QString &title, const QStringList &lines,
-                                const QUrl &artwork) {
+                                const QUrl &artwork, const QString &buttonLabel, const QString &buttonUrl) {
         auto *card = new QFrame;
         card->setObjectName(QStringLiteral("Card"));
         auto *cardLayout = new QVBoxLayout(card);
@@ -1012,6 +1015,17 @@ void ProfileDialog::rebuildActivity()
         row->addLayout(text, 1);
         cardLayout->addLayout(row);
 
+        if (!buttonLabel.isEmpty()) {
+            auto *button = new QPushButton(buttonLabel, card);
+            button->setCursor(Qt::PointingHandCursor);
+            if (!buttonUrl.isEmpty()) {
+                connect(button, &QPushButton::clicked, card, [buttonUrl]() {
+                    QDesktopServices::openUrl(QUrl(buttonUrl));
+                });
+            }
+            cardLayout->addWidget(button);
+        }
+
         m_activityLayout->insertWidget(m_activityLayout->count() - 1, card);
     };
 
@@ -1021,7 +1035,7 @@ void ProfileDialog::rebuildActivity()
                 ? activity.state
                 : QStringLiteral("%1  %2").arg(activity.emoji, activity.state);
             if (!text.trimmed().isEmpty()) {
-                addCard(QStringLiteral("CUSTOM STATUS"), text, {}, {});
+                addCard(QStringLiteral("CUSTOM STATUS"), text, {}, {}, {}, {});
                 ++shown;
             }
             continue;
@@ -1038,7 +1052,8 @@ void ProfileDialog::rebuildActivity()
             heading = QStringLiteral("COMPETING IN");
 
         addCard(heading, activity.name, {activity.details, activity.state, relativeSince(activity.startMs)},
-                MediaCache::activityAssetUrl(activity.applicationId, activity.largeImage));
+                MediaCache::activityAssetUrl(activity.applicationId, activity.largeImage),
+                activity.buttonLabel, activity.buttonUrl);
         ++shown;
     }
 
@@ -1050,7 +1065,7 @@ void ProfileDialog::rebuildActivity()
         addCard(QStringLiteral("IN VOICE"),
                 channel.name.isEmpty() ? QStringLiteral("Voice channel") : channel.name,
                 {guild.name.isEmpty() ? QString() : QStringLiteral("in %1").arg(guild.name)},
-                MediaCache::guildIconUrl(voice.guildId, guild.iconHash, 96));
+                MediaCache::guildIconUrl(voice.guildId, guild.iconHash, 96), {}, {});
         ++shown;
     }
 

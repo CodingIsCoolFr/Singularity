@@ -107,6 +107,8 @@ GatewayClient::GatewayClient(QObject *parent)
     connect(&m_heartbeatTimer, &QTimer::timeout, this, &GatewayClient::sendHeartbeat);
     connect(&m_reconnectTimer, &QTimer::timeout, this, &GatewayClient::openSocket);
 
+    m_clientActivityStart = QDateTime::currentMSecsSinceEpoch();
+
     m_firstHeartbeatTimer.setSingleShot(true);
     connect(&m_firstHeartbeatTimer, &QTimer::timeout, this, [this]() {
         if (m_socket.state() != QAbstractSocket::ConnectedState)
@@ -587,16 +589,39 @@ QJsonArray GatewayClient::clientActivities() const
     if (m_presenceStatus == QLatin1String("invisible"))
         return {};
 
-    // A custom status, not a game. Sitting in the client is not "Playing".
-    // A real game from another session still wins in the list, because that
-    // line is a different activity and clients show it first.
-    return QJsonArray{
-        QJsonObject{
-            {QStringLiteral("name"), QStringLiteral("Custom Status")},
-            {QStringLiteral("type"), 4},
-            {QStringLiteral("state"), QStringLiteral("On Singularity · singularitycord.pages.dev")},
-        },
-    };
+    // A Playing card, the same shape as a game: the logo, a line, a clock,
+    // and a button to the site. Discord turns the picture URL into its own
+    // media-proxy address before anyone else is shown it.
+    //
+    // Invisible sends nothing, so appearing offline does not advertise it.
+    // A game from another session is a separate activity and still shows.
+    const QString site = QStringLiteral("https://singularitycord.pages.dev");
+
+    QJsonObject button;
+    button.insert(QStringLiteral("label"), QStringLiteral("Get Singularity"));
+    button.insert(QStringLiteral("url"), site);
+
+    QJsonArray buttons;
+    buttons.append(button);
+
+    QJsonObject assets;
+    assets.insert(QStringLiteral("large_image"), QStringLiteral("https://singularitycord.pages.dev/mark.png"));
+    assets.insert(QStringLiteral("large_text"), QStringLiteral("Singularity"));
+    assets.insert(QStringLiteral("large_url"), site);
+
+    QJsonObject activity;
+    activity.insert(QStringLiteral("name"), QStringLiteral("Singularity"));
+    activity.insert(QStringLiteral("type"), 0);
+    activity.insert(QStringLiteral("details"), QStringLiteral("On the client"));
+    activity.insert(QStringLiteral("created_at"), m_clientActivityStart);
+    activity.insert(QStringLiteral("timestamps"),
+                    QJsonObject{{QStringLiteral("start"), m_clientActivityStart}});
+    activity.insert(QStringLiteral("assets"), assets);
+    activity.insert(QStringLiteral("buttons"), buttons);
+
+    QJsonArray activities;
+    activities.append(activity);
+    return activities;
 }
 
 void GatewayClient::setPresenceStatus(const QString &status)
