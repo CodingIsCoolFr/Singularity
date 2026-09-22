@@ -16,6 +16,7 @@
 #include <QRandomGenerator>
 #include <QSet>
 #include <QThread>
+#include <QTransform>
 #include <QUuid>
 
 #include <opus/opus.h>
@@ -298,6 +299,30 @@ int clearHeaderLength(const QByteArray &packet, int *extensionBodyBytes = nullpt
     return length <= packet.size() ? length : -1;
 }
 
+// Discord puts the camera's orientation in the encrypted one-byte extension,
+// the same layout WebRTC uses: the low two bits are quarter-turns clockwise.
+// Leaving them unread draws a phone or a sideways webcam on its side.
+int videoOrientationDegrees(const QByteArray &extension)
+{
+    const auto *bytes = reinterpret_cast<const quint8 *>(extension.constData());
+    int degrees = 0;
+    int index = 0;
+    while (index < extension.size()) {
+        if (bytes[index] == 0) {
+            ++index;
+            continue;
+        }
+        const int id = bytes[index] >> 4;
+        const int length = (bytes[index] & 0x0F) + 1;
+        if (index + 1 + length > extension.size())
+            break;
+        if ((id == 4 || id == 13) && length >= 1)
+            degrees = (bytes[index + 1] & 0x03) * 90;
+        index += 1 + length;
+    }
+    return degrees;
+}
+
 QAudioFormat voiceFormat()
 {
     QAudioFormat format;
@@ -379,12 +404,17 @@ VoiceConnection::VoiceConnection(QObject *parent)
     m_videoWorker->moveToThread(&m_videoThread);
     connect(m_videoWorker, &VideoDecodeWorker::frameReady, this,
             [this](quint32 ssrc, const QString &userId, const QImage &image) {
+                int rotation = 0;
                 if (VideoStream *stream = m_videoStreams.value(ssrc)) {
                     ++stream->frames;
                     stream->hungry = 0;
+                    rotation = stream->rotation;
                 }
+                QImage upright = image;
+                if (rotation != 0 && !upright.isNull())
+                    upright = upright.transformed(QTransform().rotate(rotation), Qt::SmoothTransformation);
                 if (!userId.isEmpty())
-                    emit videoFrame(userId, image);
+                    emit videoFrame(userId, upright);
             });
     connect(m_videoWorker, &VideoDecodeWorker::decodeFailed, this,
             [this](quint32 ssrc, int hungry) {
@@ -1365,7 +1395,7 @@ QByteArray VoiceConnection::encryptFrame(const QByteArray &rtpHeader, const QByt
 }
 
 bool VoiceConnection::decryptFrame(const QByteArray &packet, QByteArray &opusFrame, quint32 &ssrc,
-                                   bool *marker, quint16 *sequence)
+                                   bool *marker, quint16 *sequence, int *rotationDegrees)
 {
     // The top bit of the second byte marks the last packet of a video frame.
     // Sound does not use it, and video cannot be rebuilt without it.
@@ -1412,7 +1442,11 @@ bool VoiceConnection::decryptFrame(const QByteArray &packet, QByteArray &opusFra
     if (extensionBodyBytes > 0) {
         if (opusFrame.size() < extensionBodyBytes)
             return false;
+        if (rotationDegrees)
+            *rotationDegrees = videoOrientationDegrees(opusFrame.left(extensionBodyBytes));
         opusFrame.remove(0, extensionBodyBytes);
+    } else if (rotationDegrees) {
+        *rotationDegrees = 0;
     }
 
     // RTP padding is counted in the last byte and sits after the real payload.
@@ -1773,7 +1807,8 @@ void VoiceConnection::onUdpReadyRead()
         quint32 ssrc = 0;
         bool marker = false;
         quint16 sequence = 0;
-        if (!decryptFrame(packet, payload, ssrc, &marker, &sequence)) {
+        int rotation = 0;
+        if (!decryptFrame(packet, payload, ssrc, &marker, &sequence, isVideo ? &rotation : nullptr)) {
             ++m_statUndecryptable;
             continue;
         }
@@ -1782,7 +1817,7 @@ void VoiceConnection::onUdpReadyRead()
             ++m_statVideoPackets;
             if (m_rtxSsrcs.contains(ssrc))
                 continue;
-            handleVideoPacket(ssrc, payload, marker, sequence);
+            handleVideoPacket(ssrc, payload, marker, sequence, rotation);
             continue;
         }
 
@@ -1827,7 +1862,7 @@ void VoiceConnection::clearVideoStreams()
 }
 
 void VoiceConnection::handleVideoPacket(quint32 ssrc, const QByteArray &payload, bool endOfFrame,
-                                        quint16 sequence)
+                                        quint16 sequence, int rotation)
 {
     if (payload.isEmpty())
         return;
@@ -1846,14 +1881,14 @@ void VoiceConnection::handleVideoPacket(quint32 ssrc, const QByteArray &payload,
     if (!stream.haveSeq) {
         stream.nextSeq = sequence;
         stream.haveSeq = true;
-        ingestVideoPayload(stream, ssrc, userId, payload, endOfFrame);
+        ingestVideoPayload(stream, ssrc, userId, payload, endOfFrame, rotation);
         stream.nextSeq = static_cast<quint16>(sequence + 1);
         return;
     }
 
     const quint16 dist = static_cast<quint16>(sequence - stream.nextSeq);
     if (dist == 0) {
-        ingestVideoPayload(stream, ssrc, userId, payload, endOfFrame);
+        ingestVideoPayload(stream, ssrc, userId, payload, endOfFrame, rotation);
         stream.nextSeq = static_cast<quint16>(stream.nextSeq + 1);
         flushHeldVideo(stream, ssrc, userId);
         return;
@@ -1863,7 +1898,7 @@ void VoiceConnection::handleVideoPacket(quint32 ssrc, const QByteArray &payload,
         // Arrived early. Hold it and wait for the hole — treating this as
         // loss is what dropped a whole busy 1080p picture when two packets
         // swapped places.
-        stream.held.insert(sequence, {payload, endOfFrame});
+        stream.held.insert(sequence, {payload, endOfFrame, rotation});
         bool markerHeld = false;
         for (const HeldPacket &held : stream.held) {
             if (held.endOfFrame) {
@@ -1881,7 +1916,7 @@ void VoiceConnection::handleVideoPacket(quint32 ssrc, const QByteArray &payload,
         stream.gap = true;
         stream.held.clear();
         stream.assembling.clear();
-        ingestVideoPayload(stream, ssrc, userId, payload, endOfFrame);
+        ingestVideoPayload(stream, ssrc, userId, payload, endOfFrame, rotation);
         stream.nextSeq = static_cast<quint16>(sequence + 1);
         return;
     }
@@ -1897,7 +1932,7 @@ void VoiceConnection::flushHeldVideo(VideoStream &stream, quint32 ssrc, const QS
             break;
         const HeldPacket pkt = it.value();
         stream.held.remove(stream.nextSeq);
-        ingestVideoPayload(stream, ssrc, userId, pkt.payload, pkt.endOfFrame);
+        ingestVideoPayload(stream, ssrc, userId, pkt.payload, pkt.endOfFrame, pkt.rotation);
         stream.nextSeq = static_cast<quint16>(stream.nextSeq + 1);
     }
 }
@@ -1925,7 +1960,7 @@ void VoiceConnection::skipLostVideo(VideoStream &stream, quint32 ssrc, const QSt
 }
 
 void VoiceConnection::ingestVideoPayload(VideoStream &stream, quint32 ssrc, const QString &userId,
-                                         const QByteArray &payload, bool endOfFrame)
+                                         const QByteArray &payload, bool endOfFrame, int rotation)
 {
     const auto *bytes = reinterpret_cast<const quint8 *>(payload.constData());
     const int kind = bytes[0] & 0x1F;
@@ -1995,8 +2030,10 @@ void VoiceConnection::ingestVideoPayload(VideoStream &stream, quint32 ssrc, cons
         return;
     }
 
-    if (endOfFrame)
+    if (endOfFrame) {
+        stream.rotation = rotation;
         finishVideoPicture(stream, ssrc, userId);
+    }
 }
 
 void VoiceConnection::finishVideoPicture(VideoStream &stream, quint32 ssrc, const QString &userId)

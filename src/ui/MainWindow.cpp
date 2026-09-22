@@ -55,6 +55,7 @@
 #include <memory>
 #include <QMediaCaptureSession>
 #include <QMediaDevices>
+#include <QTransform>
 #include <QVideoFrame>
 #include <QVideoSink>
 #include <QGridLayout>
@@ -515,9 +516,24 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
             if (!frame.map(QVideoFrame::ReadOnly))
                 return;
             QImage image = frame.toImage();
+            const QtVideo::Rotation rotation = frame.rotation();
+            const bool mirrored = frame.mirrored();
             frame.unmap();
             if (image.isNull())
                 return;
+            // The camera reports which way is up. Drawing the raw frame leaves
+            // a sideways picture, which is what other people were seeing.
+            QTransform turn;
+            switch (rotation) {
+            case QtVideo::Rotation::Clockwise90:  turn.rotate(90); break;
+            case QtVideo::Rotation::Clockwise180: turn.rotate(180); break;
+            case QtVideo::Rotation::Clockwise270: turn.rotate(270); break;
+            default: break;
+            }
+            if (mirrored)
+                turn.scale(-1, 1);
+            if (!turn.isIdentity())
+                image = image.transformed(turn, Qt::SmoothTransformation);
             image = image.scaled(960, 540, Qt::KeepAspectRatio, Qt::FastTransformation)
                         .convertToFormat(QImage::Format_ARGB32);
             m_camera->submit(image);
@@ -1316,6 +1332,9 @@ QWidget *MainWindow::buildVoicePanel(QWidget *parent)
     // Ignored width lets a long server name shrink instead of shoving the
     // button off the edge of the sidebar.
     m_voiceChannelLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    m_voiceChannelLabel->setCursor(Qt::PointingHandCursor);
+    m_voiceChannelLabel->setToolTip(QStringLiteral("Open this channel"));
+    m_voiceChannelLabel->installEventFilter(this);
     text->addWidget(m_voiceChannelLabel);
 
     layout->addLayout(text);
@@ -4900,6 +4919,14 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
     }
 
     // Clicking your own panel offers your status, and your profile under it.
+    if (watched == m_voiceChannelLabel && event->type() == QEvent::MouseButtonRelease) {
+        auto *mouseEvent = static_cast<QMouseEvent *>(event);
+        if (mouseEvent->button() == Qt::LeftButton) {
+            goToConnectedVoice();
+            return true;
+        }
+    }
+
     if (watched == m_userPanel && event->type() == QEvent::MouseButtonRelease) {
         auto *mouseEvent = static_cast<QMouseEvent *>(event);
         if (mouseEvent->button() == Qt::LeftButton && !m_selfUserId.isEmpty()) {
@@ -5502,6 +5529,15 @@ bool MainWindow::voiceChannelFull(const QString &channelId) const
     if (channel.userLimit <= 0 || channelId == m_voiceChannelId)
         return false;
     return m_store->voiceMembers(channelId).size() >= channel.userLimit;
+}
+
+void MainWindow::goToConnectedVoice()
+{
+    if (m_voiceChannelId.isEmpty())
+        return;
+    // The call stays connected. This only opens the channel it belongs to,
+    // which is what clicking the name under "Voice connected" does in Discord.
+    selectChannelEverywhere(m_voiceChannelId);
 }
 
 void MainWindow::joinVoice(const QString &channelId)

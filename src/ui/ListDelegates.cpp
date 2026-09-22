@@ -711,8 +711,13 @@ bool ChannelDelegate::editorEvent(QEvent *event, QAbstractItemModel *model,
     if (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonRelease) {
         auto *mouse = static_cast<QMouseEvent *>(event);
         const Button which = buttonAt(option.rect, mouse->pos());
-        if (which == Button::None)
+        if (which == Button::None) {
+            // A click on the channel itself opens it. Joining stays on a
+            // double click, and leaving stays on the Leave button.
+            if (event->type() == QEvent::MouseButtonRelease)
+                emit openChatRequested(channelId);
             return AnimatedDelegate::editorEvent(event, model, option, index);
+        }
 
         // Swallow the press so the row does not also get selected.
         if (event->type() == QEvent::MouseButtonPress)
@@ -732,7 +737,7 @@ bool ChannelDelegate::editorEvent(QEvent *event, QAbstractItemModel *model,
         auto *mouse = static_cast<QMouseEvent *>(event);
         if (buttonAt(option.rect, mouse->pos()) == Button::None) {
             if (channelId == m_joinedChannelId)
-                emit leaveVoiceRequested(channelId);
+                emit openChatRequested(channelId);
             else
                 emit joinVoiceRequested(channelId);
             return true;

@@ -90,6 +90,7 @@ private:
     // Voice. Joining puts you in the channel so everyone sees you there.
     // Carrying sound is not built yet.
     void joinVoice(const QString &channelId);
+    void goToConnectedVoice();
     void joinVoiceAt(const QString &guildId, const QString &channelId);
     bool voiceChannelFull(const QString &channelId) const;
     void leaveVoice();

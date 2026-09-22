@@ -200,7 +200,8 @@ private:
     // Encryption. Both are the "rtpsize" variants Discord offers today.
     QByteArray encryptFrame(const QByteArray &rtpHeader, const QByteArray &opusFrame);
     bool decryptFrame(const QByteArray &packet, QByteArray &opusFrame, quint32 &ssrc,
-                      bool *marker = nullptr, quint16 *sequence = nullptr);
+                      bool *marker = nullptr, quint16 *sequence = nullptr,
+                      int *rotationDegrees = nullptr);
 
     // One person's pictures on their way to the screen.
     //
@@ -209,6 +210,7 @@ private:
     struct HeldPacket {
         QByteArray payload;
         bool endOfFrame = false;
+        int rotation = 0;
     };
 
     struct VideoStream
@@ -224,12 +226,13 @@ private:
         int frames = 0;
         int dropped = 0;
         int hungry = 0;
+        int rotation = 0;
     };
 
     void handleVideoPacket(quint32 ssrc, const QByteArray &payload, bool endOfFrame,
-                           quint16 sequence);
+                           quint16 sequence, int rotation);
     void ingestVideoPayload(VideoStream &stream, quint32 ssrc, const QString &userId,
-                            const QByteArray &payload, bool endOfFrame);
+                            const QByteArray &payload, bool endOfFrame, int rotation);
     void finishVideoPicture(VideoStream &stream, quint32 ssrc, const QString &userId);
     void flushHeldVideo(VideoStream &stream, quint32 ssrc, const QString &userId);
     void skipLostVideo(VideoStream &stream, quint32 ssrc, const QString &userId);
