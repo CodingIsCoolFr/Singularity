@@ -382,7 +382,7 @@ QDialog { background-color: @chat; }
     max-width: 46px;
     min-height: 28px;
     font-size: 11px;
-    margin: 4px 2px;
+    margin: 0 2px;
 }
 #CaptionMin:hover, #CaptionMax:hover {
     background: @hover;

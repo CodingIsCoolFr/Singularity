@@ -246,8 +246,10 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     // because there is no caption to remember the restore rectangle.
     // ExpandedClientAreaHint keeps our own top strip painted edge to edge
     // while the frame underneath stays a normal window.
-    setWindowFlags(Qt::Window | Qt::CustomizeWindowHint | Qt::WindowSystemMenuHint
-                   | Qt::ExpandedClientAreaHint | Qt::NoTitleBarBackgroundHint);
+    // No system menu. That flag is what makes Windows paint its own minimize,
+    // maximize and close glyphs, and they were landing above the ones we draw.
+    setWindowFlags(Qt::Window | Qt::CustomizeWindowHint | Qt::ExpandedClientAreaHint
+                   | Qt::NoTitleBarBackgroundHint);
 
     buildUi();
     buildMenu();
@@ -824,9 +826,11 @@ void MainWindow::buildUi()
     shell->setContentsMargins(0, 0, 0, 0);
     shell->setSpacing(0);
 
-    auto *titleLayout = new QHBoxLayout();
-    titleLayout->setContentsMargins(8, 4, 0, 0);
+    m_titleLayout = new QHBoxLayout();
+    auto *titleLayout = m_titleLayout;
     titleLayout->setSpacing(0);
+    titleLayout->setAlignment(Qt::AlignVCenter);
+    layoutTitleRow();
 
     m_menuBar = new QMenuBar(m_aurora);
     m_menuBar->setObjectName(QStringLiteral("AppMenu"));
@@ -5433,6 +5437,22 @@ void MainWindow::flashStatus(const QString &text, int ms)
         m_statusClearTimer.stop();
 }
 
+void MainWindow::layoutTitleRow()
+{
+    if (!m_titleLayout)
+        return;
+
+    // Restored, the frame clips the first few pixels, so the row starts
+    // below that and the buttons sit on the menu's line. Maximised, Windows
+    // has already moved the client down off the top of the screen.
+    int top = 8;
+#ifdef Q_OS_WIN
+    if (!isMaximized())
+        top = GetSystemMetrics(SM_CXPADDEDBORDER) + GetSystemMetrics(SM_CYSIZEFRAME);
+#endif
+    m_titleLayout->setContentsMargins(8, top, 8, 0);
+}
+
 void MainWindow::showEvent(QShowEvent *event)
 {
     QMainWindow::showEvent(event);
@@ -5442,7 +5462,8 @@ void MainWindow::showEvent(QShowEvent *event)
     // afterwards, including when a snap changes the window state.
     const HWND hwnd = reinterpret_cast<HWND>(winId());
     LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
-    style |= WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU;
+    style |= WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+    style &= ~WS_SYSMENU;
     SetWindowLongPtr(hwnd, GWL_STYLE, style);
     SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
@@ -5458,6 +5479,7 @@ void MainWindow::changeEvent(QEvent *event)
 
     if (m_captionMax)
         m_captionMax->setText(isMaximized() ? QStringLiteral("❐") : QStringLiteral("□"));
+    layoutTitleRow();
 
 #ifdef Q_OS_WIN
     // Minimised means nobody is looking, so give the pages back.
@@ -5486,32 +5508,13 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
         // before Windows applies the change.
         if (msg->message == WM_STYLECHANGING && msg->wParam == GWL_STYLE) {
             auto *change = reinterpret_cast<STYLESTRUCT *>(msg->lParam);
-            change->styleNew |= WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX
-                                | WS_SYSMENU;
-        }
-
-        // The maximize button has to report as the real one or Windows 11
-        // will not open the snap layout grid on it. A click that did not
-        // pick a layout still maximizes; picking one already changed the size.
-        if (msg->message == WM_NCHITTEST && m_captionMax && !isFullScreen()) {
-            const QPoint global(GET_X_LPARAM(msg->lParam), GET_Y_LPARAM(msg->lParam));
-            if (m_captionMax->isVisible()
-                && m_captionMax->rect().contains(m_captionMax->mapFromGlobal(global))) {
-                *result = HTMAXBUTTON;
-                return true;
-            }
-        }
-
-        if (msg->message == WM_NCLBUTTONDOWN && msg->wParam == HTMAXBUTTON)
-            m_snapClickSize = size();
-
-        if (msg->message == WM_NCLBUTTONUP && msg->wParam == HTMAXBUTTON && size() == m_snapClickSize) {
-            if (isMaximized())
-                showNormal();
-            else
-                showMaximized();
-            *result = 0;
-            return true;
+            change->styleNew |= WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+            // The system menu is what paints Windows' own caption buttons.
+            // Leaving it on put a second set above the ones in the title row,
+            // and reporting the middle one as the real maximize button made
+            // a press-and-drag run Windows' snap tracking until the window
+            // stopped answering.
+            change->styleNew &= ~WS_SYSMENU;
         }
     }
     return QMainWindow::nativeEvent(eventType, message, result);

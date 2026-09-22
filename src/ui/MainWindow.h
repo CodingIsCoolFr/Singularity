@@ -28,6 +28,7 @@ class ProfileDialog;
 class SettingsDialog;
 class QListWidget;
 class QListWidgetItem;
+class QHBoxLayout;
 class QTextEdit;
 class QLabel;
 class QMenuBar;
@@ -188,6 +189,7 @@ private:
     void closeEvent(QCloseEvent *event) override;
     void showEvent(QShowEvent *event) override;
     void changeEvent(QEvent *event) override;
+    void layoutTitleRow();
 #ifdef Q_OS_WIN
     bool nativeEvent(const QByteArray &eventType, void *message, qintptr *result) override;
 #endif
@@ -218,9 +220,7 @@ private:
     QWidget *m_titleBar = nullptr;
 
     QPushButton *m_captionMax = nullptr;
-    // Size at the moment the maximize button was pressed. A snap layout
-    // changes it before the button comes up; a plain click does not.
-    QSize m_snapClickSize;
+    QHBoxLayout *m_titleLayout = nullptr;
     QTimer m_statusClearTimer;
     QLabel *m_selfAvatar = nullptr;
     QLabel *m_selfName = nullptr;
