@@ -262,6 +262,11 @@ private:
     // gateway is Ready. Cleared on a real leave or a confirmed kick.
     bool m_rejoinVoiceAfterGateway = false;
 
+    // The channel we most recently chose to leave, and when, so Discord's
+    // late echo of it is not taken for being moved back in.
+    QString m_leftVoiceChannelId;
+    QElapsedTimer m_leftVoiceAt;
+
     // The second connection, the one that actually carries sound.
     VoiceConnection *m_voice = nullptr;
     QString m_voiceSessionId;

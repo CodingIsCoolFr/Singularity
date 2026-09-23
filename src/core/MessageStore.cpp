@@ -194,9 +194,60 @@ VoiceStateInfo MessageStore::voiceState(const QString &userId) const
 
 void MessageStore::setVoiceState(const QJsonObject &rawState)
 {
-    const QString userId = rawState.value(QStringLiteral("user_id")).toString();
+    const QString userId = applyVoiceState(rawState);
     if (userId.isEmpty())
         return;
+    emit userChanged(userId);
+    emit voiceStatesChanged();
+}
+
+// Many at once, as VOICE_STATE_UPDATE_BATCH delivers them.
+//
+// Big servers do not send a VOICE_STATE_UPDATE per person any more: joins and
+// leaves arrive grouped in this batch event, which Discord's own client feeds
+// through exactly the same path as single updates. This client used to ignore
+// it, so in a large server everyone who came or went in a batch was simply
+// never seen - people who had left stayed listed, and people who had joined
+// were missing.
+void MessageStore::setVoiceStates(const QJsonArray &states)
+{
+    for (const QJsonValue &value : states)
+        applyVoiceState(value.toObject());
+    emit voiceStatesChanged();
+}
+
+// Forgets every voice state, before a complete snapshot replaces them.
+//
+// Discord's client does this when the supplemental half of READY arrives: it
+// is the whole picture, so anything not in it is stale - somebody who left
+// while this client was disconnected, or frozen, or reconnecting.
+void MessageStore::clearVoiceStates()
+{
+    m_voiceStates.clear();
+}
+
+void MessageStore::dropVoiceStatesInChannel(const QString &channelId)
+{
+    if (channelId.isEmpty())
+        return;
+    bool changed = false;
+    for (auto it = m_voiceStates.begin(); it != m_voiceStates.end();) {
+        if (it.value().channelId == channelId) {
+            it = m_voiceStates.erase(it);
+            changed = true;
+        } else {
+            ++it;
+        }
+    }
+    if (changed)
+        emit voiceStatesChanged();
+}
+
+QString MessageStore::applyVoiceState(const QJsonObject &rawState)
+{
+    const QString userId = rawState.value(QStringLiteral("user_id")).toString();
+    if (userId.isEmpty())
+        return {};
 
     // A voice state often carries the person, which is the only name we get
     // for someone who has never typed in a channel we have open.
@@ -231,8 +282,7 @@ void MessageStore::setVoiceState(const QJsonObject &rawState)
         m_voiceStates.insert(userId, state);
     }
 
-    emit userChanged(userId);
-    emit voiceStatesChanged();
+    return userId;
 }
 
 void MessageStore::replaceGuildVoiceStates(const QString &guildId, const QJsonArray &states)
@@ -299,7 +349,7 @@ QDateTime MessageStore::lastSeenActive(const QString &userId) const
 
 void MessageStore::forgetActivity(const QString &userId)
 {
-    if (m_lastSeenActive.remove(userId) > 0)
+    if (m_lastSeenActive.remove(userId))
         emit userChanged(userId);
 }
 
@@ -433,6 +483,12 @@ void MessageStore::ingestReadySupplemental(const QJsonObject &payload)
     // READY. They carry no names, only ids and state.
     const QJsonArray guilds = payload.value(QStringLiteral("guilds")).toArray();
 
+    // A complete snapshot, so start clean, exactly as Discord's VoiceStateStore
+    // does on CONNECTION_OPEN_SUPPLEMENTAL. Adding it on top of what was
+    // already known is what left people listed in channels they had left
+    // while this client was reconnecting.
+    clearVoiceStates();
+
     for (int index = 0; index < guilds.size(); ++index) {
         const QJsonObject entry = guilds.at(index).toObject();
 
@@ -445,9 +501,10 @@ void MessageStore::ingestReadySupplemental(const QJsonObject &payload)
             QJsonObject state = value.toObject();
             if (!state.contains(QStringLiteral("guild_id")) && !guildId.isEmpty())
                 state.insert(QStringLiteral("guild_id"), guildId);
-            setVoiceState(state);
+            applyVoiceState(state);
         }
     }
+    emit voiceStatesChanged();
 
     // Presences arrive in the same shape: one array per guild, in order.
     const QJsonObject merged = payload.value(QStringLiteral("merged_presences")).toObject();

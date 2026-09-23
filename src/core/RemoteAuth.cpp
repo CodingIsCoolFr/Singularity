@@ -8,6 +8,7 @@
 #include <QJsonObject>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QSignalBlocker>
 #include <QUrl>
 
 namespace {
@@ -28,24 +29,36 @@ QString qrAddress(const QString &fingerprint)
 
 RemoteAuth::RemoteAuth(QObject *parent)
     : QObject(parent)
+    // QWebSocket writes its own Origin header from this, and ignores one set
+    // on the request. Left empty, the handshake went out with no Origin at
+    // all and the gateway closed the connection straight away.
+    , m_socket(QStringLiteral("https://discord.com"))
 {
+    connect(&m_socket, &QWebSocket::connected, this,
+            []() { wlog(QStringLiteral("qr"), QStringLiteral("connected to the QR sign-in gateway")); });
+
     connect(&m_socket, &QWebSocket::textMessageReceived, this,
             [this](const QString &text) { handleMessage(text.toUtf8()); });
 
     connect(&m_socket, &QWebSocket::disconnected, this, [this]() {
         m_heartbeat.stop();
+        wlog(QStringLiteral("qr"), QStringLiteral("gateway closed the connection: code %1 %2")
+                                       .arg(int(m_socket.closeCode()))
+                                       .arg(m_socket.closeReason()));
         if (m_started) {
             // 4003 is the gateway's own "the code was never used" timeout.
             if (m_socket.closeCode() == 4003) {
                 emit expired();
             } else {
-                emit failed(QStringLiteral("The QR sign-in connection dropped."));
+                emit failed(QStringLiteral("The QR sign-in connection dropped (code %1).")
+                                .arg(int(m_socket.closeCode())));
             }
             m_started = false;
         }
     });
 
     connect(&m_socket, &QWebSocket::errorOccurred, this, [this](QAbstractSocket::SocketError) {
+        wlog(QStringLiteral("qr"), QStringLiteral("socket error: %1").arg(m_socket.errorString()));
         if (m_started)
             emit failed(QStringLiteral("Could not reach Discord for QR sign-in: %1")
                             .arg(m_socket.errorString()));
@@ -72,7 +85,6 @@ void RemoteAuth::start()
     m_started = true;
 
     QNetworkRequest request((QUrl(QLatin1String(GatewayUrl))));
-    request.setRawHeader("Origin", "https://discord.com");
     request.setHeader(QNetworkRequest::UserAgentHeader, DiscordIdentity::userAgent());
     m_socket.open(request);
     wlog(QStringLiteral("qr"), QStringLiteral("opening the QR sign-in connection"));
@@ -83,8 +95,13 @@ void RemoteAuth::stop()
     m_started = false;
     m_heartbeat.stop();
     m_fingerprint.clear();
-    if (m_socket.state() != QAbstractSocket::UnconnectedState)
-        m_socket.close();
+    if (m_socket.state() != QAbstractSocket::UnconnectedState) {
+        // Quietly: this is us hanging up, not the gateway. Without the blocker
+        // the old connection's "disconnected" could land after a restart and
+        // report the new one as dropped.
+        const QSignalBlocker quiet(&m_socket);
+        m_socket.abort();
+    }
 }
 
 void RemoteAuth::sendJson(const QJsonObject &object)
@@ -101,6 +118,11 @@ void RemoteAuth::handleMessage(const QByteArray &json)
 {
     const QJsonObject message = QJsonDocument::fromJson(json).object();
     const QString op = message.value(QStringLiteral("op")).toString();
+
+    // The op names only. The payloads carry sealed data and the ticket,
+    // none of which belongs in a log.
+    if (op != QLatin1String("heartbeat_ack"))
+        wlog(QStringLiteral("qr"), QStringLiteral("gateway says: %1").arg(op));
 
     if (op == QLatin1String("hello")) {
         const int interval = message.value(QStringLiteral("heartbeat_interval")).toInt(41250);

@@ -49,23 +49,34 @@ void Logger::log(const QString &source, const QString &message)
                              .arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss.zzz")),
                                   source.leftJustified(8), message);
 
-    m_history.append(line);
-    if (m_history.size() > MaxHistoryLines)
-        m_history.remove(0, m_history.size() - MaxHistoryLines);
+    {
+        const QMutexLocker lock(&m_mutex);
 
-    if (m_file.isOpen()) {
-        m_stream << line << '\n';
-        // Voice lines are flushed as they happen, because that tally is how a
-        // broken call gets diagnosed. Everything else is flushed in batches:
-        // forcing the file out on every gateway notice stalled the thread
-        // that plays the call.
-        const bool immediate = source == QLatin1String("voice") || source == QLatin1String("share")
-            || source == QLatin1String("dave");
-        if (immediate || ++m_sinceFlush >= 24) {
-            m_stream.flush();
-            m_sinceFlush = 0;
+        m_history.append(line);
+        if (m_history.size() > MaxHistoryLines)
+            m_history.remove(0, m_history.size() - MaxHistoryLines);
+
+        if (m_file.isOpen()) {
+            m_stream << line << '\n';
+            // Voice lines are flushed as they happen, because that tally is how a
+            // broken call gets diagnosed. Everything else is flushed in batches:
+            // forcing the file out on every gateway notice stalled the thread
+            // that plays the call.
+            const bool immediate = source == QLatin1String("voice") || source == QLatin1String("share")
+                || source == QLatin1String("dave") || source == QLatin1String("hang");
+            if (immediate || ++m_sinceFlush >= 24) {
+                m_stream.flush();
+                m_sinceFlush = 0;
+            }
         }
     }
 
+    // Outside the lock: whoever listens runs on its own thread's time.
     emit lineLogged(line);
+}
+
+QStringList Logger::history() const
+{
+    const QMutexLocker lock(&m_mutex);
+    return m_history;
 }

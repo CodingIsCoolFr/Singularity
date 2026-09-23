@@ -1873,6 +1873,8 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
     }
 
     if (eventType == QLatin1String("CHANNEL_DELETE")) {
+        // Nobody can still be sitting in a channel that no longer exists.
+        m_store->dropVoiceStatesInChannel(data.value(QStringLiteral("id")).toString());
         applyChannelClosed(data.value(QStringLiteral("id")).toString());
         return;
     }
@@ -1932,6 +1934,28 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
         return;
     }
 
+    if (eventType == QLatin1String("VOICE_STATE_UPDATE_BATCH")) {
+        // Big servers group their joins and leaves into this. Discord's own
+        // client sends every entry down the same path as a single update, and
+        // so does this: everyone else in one go, and our own entry, if there
+        // is one, through the full handling below so a move is still noticed.
+        const QJsonArray states = data.value(QStringLiteral("voice_states")).toArray();
+        QJsonArray others;
+        QList<QJsonObject> ours;
+        for (const QJsonValue &value : states) {
+            const QJsonObject state = value.toObject();
+            if (!m_selfUserId.isEmpty()
+                && state.value(QStringLiteral("user_id")).toString() == m_selfUserId)
+                ours.append(state);
+            else
+                others.append(state);
+        }
+        m_store->setVoiceStates(others);
+        for (const QJsonObject &state : ours)
+            onGatewayDispatch(QStringLiteral("VOICE_STATE_UPDATE"), state);
+        return;
+    }
+
     if (eventType == QLatin1String("VOICE_STATE_UPDATE")) {
         m_store->setVoiceState(data);
 
@@ -1973,6 +1997,32 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
             const QString nowIn = data.value(QStringLiteral("channel_id")).toString();
             wlog(QStringLiteral("voice"), QStringLiteral("own state: %1")
                                               .arg(nowIn.isEmpty() ? QStringLiteral("(left)") : nowIn));
+
+            // Our account, but not this program's session: you are in voice on
+            // your phone or in another client. Discord's VoiceStateStore only
+            // treats a state as its own when the session matches, and this
+            // did not check - so joining on a phone made the desktop join the
+            // same call and take the connection away from the phone.
+            const QString stateSession = data.value(QStringLiteral("session_id")).toString();
+            const QString ourSession = m_gateway->sessionId();
+            if (!stateSession.isEmpty() && !ourSession.isEmpty() && stateSession != ourSession) {
+                wlog(QStringLiteral("voice"),
+                     QStringLiteral("that is our account on another device; leaving this program as it is"));
+                return;
+            }
+
+            // A late copy of where we were, sent just before our own "leave"
+            // reached Discord. Taken at face value it looked like being moved
+            // back into the channel we had just left, so the program joined it
+            // again - and the real "you left" that followed was then ignored
+            // because a join was in flight. Anything naming the channel we
+            // left in the last few seconds is that echo.
+            if (!nowIn.isEmpty() && nowIn == m_leftVoiceChannelId && m_leftVoiceAt.isValid()
+                && m_leftVoiceAt.elapsed() < 8000 && !m_voiceWatchdog.isActive()) {
+                wlog(QStringLiteral("voice"),
+                     QStringLiteral("late echo of the channel we just left; ignoring it"));
+                return;
+            }
 
             if (nowIn.isEmpty() && !m_voiceChannelId.isEmpty()) {
                 if (m_voiceWatchdog.isActive()) {
@@ -6152,6 +6202,10 @@ void MainWindow::leaveVoice()
     m_gateway->leaveVoice(guildId);
     m_voice->disconnectFromVoice();
     m_speakingUsers.clear();
+
+    // Remembered briefly, to recognise Discord's late echo of it.
+    m_leftVoiceChannelId = m_voiceChannelId;
+    m_leftVoiceAt.start();
 
     // Clear straight away so the window responds, then let the gateway's own
     // event confirm it.

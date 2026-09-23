@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(Singularity VERSION 0.6.71 LANGUAGES CXX)
+project(Singularity VERSION 0.6.72 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -43,6 +43,8 @@ qt_add_executable(Singularity WIN32
     src/core/RemoteAuthCrypto.cpp
     src/core/RemoteAuth.h
     src/core/RemoteAuth.cpp
+    src/core/HangWatch.h
+    src/core/HangWatch.cpp
     src/core/DaveSession.h
     src/core/DaveSession.cpp
     src/core/MessageStore.h
@@ -136,6 +138,18 @@ set_target_properties(Singularity PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${SINGULARITY_DIST_DIR}"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${SINGULARITY_DIST_DIR}"
 )
+
+# Debug symbols for release builds, kept in the build folder rather than next
+# to the exe so the installer never ships them. A freeze report names our own
+# code as Singularity.exe+offset; release.ps1 files this PDB away per version
+# so those offsets can be turned back into function names later. /Zi adds
+# information only - the generated code is the same - and /OPT:REF,ICF put
+# back the size optimisations that /DEBUG would otherwise switch off.
+if(MSVC)
+    target_compile_options(Singularity PRIVATE $<$<CONFIG:Release>:/Zi>)
+    target_link_options(Singularity PRIVATE
+        $<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF /PDB:${CMAKE_BINARY_DIR}/Singularity.pdb>)
+endif()
 
 qt_add_resources(Singularity brand
     PREFIX "/brand"
@@ -250,6 +264,8 @@ target_link_libraries(Singularity PRIVATE
     # Bcrypt (Windows CNG) does the RSA for signing in by QR code, so there is
     # no extra crypto library to ship for it.
     Bcrypt
+    # Dbghelp names the functions in a freeze report (HangWatch).
+    Dbghelp
     # Dwmapi colours the title bar, which belongs to Windows rather than Qt.
     Dwmapi
     # Avrt puts the media thread in the "Pro Audio" scheduling class, the

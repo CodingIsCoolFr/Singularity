@@ -89,6 +89,19 @@ if (-not (Test-Path $setup)) { throw "No installer at $setup" }
 $size = "{0:N0} MB" -f ((Get-Item $setup).Length / 1MB)
 Write-Host "`nInstaller: $setup ($size)" -ForegroundColor Green
 
+# Keep this build's debug symbols, by version. A freeze report from a user
+# names our own code as Singularity.exe+offset, and only the PDB from the exact
+# build that shipped can turn that back into a function. symbols/ is ignored by
+# git (*.pdb) and never goes into the installer.
+$pdb = Join-Path $root "build\Release\Singularity.pdb"
+if (Test-Path $pdb) {
+    $symbolDir = Join-Path $root "symbols\v$version"
+    New-Item -ItemType Directory -Force $symbolDir | Out-Null
+    Copy-Item $pdb $symbolDir -Force
+    Copy-Item (Join-Path $root "dist\Singularity.exe") $symbolDir -Force
+    Write-Host "Symbols kept in $symbolDir" -ForegroundColor Green
+}
+
 if ($DryRun) {
     Write-Host "Dry run, nothing published." -ForegroundColor Yellow
     return

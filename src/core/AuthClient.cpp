@@ -1,12 +1,20 @@
 #include "core/AuthClient.h"
 
 #include "core/DiscordIdentity.h"
+#include "core/Logger.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QNetworkReply>
 #include <QUrl>
 #include <QtMath>
+
+namespace {
+
+// Discord's own JSON error codes, from the enum in its web client.
+constexpr int PhoneVerificationRequired = 70007;
+
+} // namespace
 
 AuthClient::AuthClient(QObject *parent)
     : QObject(parent)
@@ -56,22 +64,20 @@ void AuthClient::logIn(const QString &login, const QString &password)
          QStringLiteral("password"));
 }
 
-void AuthClient::submitTotp(const QString &ticket, const QString &code)
+void AuthClient::submitCode(const QString &method, const MfaOptions &options, const QString &code)
 {
-    post(QStringLiteral("/auth/mfa/totp"),
-         QJsonObject{
-             {QStringLiteral("code"), code.trimmed()},
-             {QStringLiteral("ticket"), ticket},
-             {QStringLiteral("login_source"), QJsonValue::Null},
-             {QStringLiteral("gift_code_sku_id"), QJsonValue::Null},
-         },
-         QStringLiteral("totp"));
-}
+    // The same request Discord's loginMFAv2 makes: one endpoint per method,
+    // carrying the ticket and the login instance from the password step.
+    QJsonObject body{
+        {QStringLiteral("code"), code.trimmed()},
+        {QStringLiteral("ticket"), options.ticket},
+        {QStringLiteral("login_source"), QJsonValue::Null},
+        {QStringLiteral("gift_code_sku_id"), QJsonValue::Null},
+    };
+    if (!options.loginInstanceId.isEmpty())
+        body.insert(QStringLiteral("login_instance_id"), options.loginInstanceId);
 
-void AuthClient::submitBackupCode(const QString &ticket, const QString &code)
-{
-    // Backup codes go to the same endpoint as the authenticator app.
-    submitTotp(ticket, code);
+    post(QStringLiteral("/auth/mfa/") + method, body, QStringLiteral("mfa"));
 }
 
 void AuthClient::requestSmsCode(const QString &ticket)
@@ -81,16 +87,28 @@ void AuthClient::requestSmsCode(const QString &ticket)
          QStringLiteral("sms-send"));
 }
 
-void AuthClient::submitSmsCode(const QString &ticket, const QString &code)
+void AuthClient::verifyPhoneForDevice(const QString &phone, const QString &code)
 {
-    post(QStringLiteral("/auth/mfa/sms"),
+    post(QStringLiteral("/phone-verifications/verify"),
          QJsonObject{
+             {QStringLiteral("phone"), phone.trimmed()},
              {QStringLiteral("code"), code.trimmed()},
-             {QStringLiteral("ticket"), ticket},
-             {QStringLiteral("login_source"), QJsonValue::Null},
-             {QStringLiteral("gift_code_sku_id"), QJsonValue::Null},
          },
-         QStringLiteral("sms"));
+         QStringLiteral("phone-verify"));
+}
+
+void AuthClient::resendPhoneCode(const QString &phone)
+{
+    post(QStringLiteral("/phone-verifications/resend"),
+         QJsonObject{{QStringLiteral("phone"), phone.trimmed()}},
+         QStringLiteral("phone-resend"));
+}
+
+void AuthClient::authorizeDevice(const QString &token)
+{
+    post(QStringLiteral("/auth/authorize-ip"),
+         QJsonObject{{QStringLiteral("token"), token}},
+         QStringLiteral("authorize-ip"));
 }
 
 bool AuthClient::handleCaptcha(const QJsonObject &body)
@@ -111,18 +129,59 @@ bool AuthClient::handleMfa(const QJsonObject &body)
 
     MfaOptions options;
     options.ticket = body.value(QStringLiteral("ticket")).toString();
-    options.totp = body.value(QStringLiteral("totp")).toBool(false);
-    options.sms = body.value(QStringLiteral("sms")).toBool(false);
-    options.backup = body.value(QStringLiteral("backup")).toBool(false);
-    options.webauthn = !body.value(QStringLiteral("webauthn")).isNull()
-        && body.contains(QStringLiteral("webauthn"));
+    options.loginInstanceId = body.value(QStringLiteral("login_instance_id")).toString();
 
-    // If Discord says MFA but names no method, assume the authenticator app.
-    if (!options.totp && !options.sms && !options.backup)
-        options.totp = true;
+    // Exactly the order Discord's AuthenticationStore builds its list in.
+    const QJsonValue webauthn = body.value(QStringLiteral("webauthn"));
+    if (webauthn.isString() && !webauthn.toString().isEmpty())
+        options.methods << QStringLiteral("webauthn");
+    if (body.value(QStringLiteral("totp")).toBool(false))
+        options.methods << QStringLiteral("totp");
+    if (body.value(QStringLiteral("backup")).toBool(false))
+        options.methods << QStringLiteral("backup");
+    if (body.value(QStringLiteral("sms")).toBool(false))
+        options.methods << QStringLiteral("sms");
+
+    // Which ones, never the ticket. This is the line to read when someone
+    // says the check asked for the wrong thing.
+    wlog(QStringLiteral("login"),
+         QStringLiteral("second factor needed, account offers: %1")
+             .arg(options.methods.isEmpty() ? QStringLiteral("nothing named") : options.methods.join(QStringLiteral(", "))));
 
     emit mfaRequired(options);
     return true;
+}
+
+// Discord sometimes stops a correct password to check the device instead.
+//
+// Signing in with a phone number from somewhere new fails with code 70007 and
+// a text is sent; Discord's client then shows a code box. Signing in by email
+// fails with a field error saying a new login location was detected, and the
+// approval arrives as an emailed link. Neither is a wrong password, and
+// treating them as one left people typing the same password over and over.
+bool AuthClient::handleDeviceCheck(const QJsonObject &body)
+{
+    if (body.value(QStringLiteral("code")).toInt() == PhoneVerificationRequired) {
+        wlog(QStringLiteral("login"), QStringLiteral("Discord wants this device checked by text message"));
+        emit phoneCheckRequired();
+        return true;
+    }
+
+    const QJsonObject errors = body.value(QStringLiteral("errors")).toObject();
+    for (auto field = errors.constBegin(); field != errors.constEnd(); ++field) {
+        const QJsonArray list = field.value().toObject().value(QStringLiteral("_errors")).toArray();
+        for (const QJsonValue &entry : list) {
+            const QString code = entry.toObject().value(QStringLiteral("code")).toString();
+            const QString message = entry.toObject().value(QStringLiteral("message")).toString();
+            if (code.contains(QLatin1String("VERIFICATION_EMAIL"))
+                || message.contains(QLatin1String("new login location"), Qt::CaseInsensitive)) {
+                wlog(QStringLiteral("login"), QStringLiteral("Discord wants this device checked by email"));
+                emit emailCheckRequired(message);
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 QString AuthClient::describeError(int status, const QJsonObject &body, const QString &fallback)
@@ -171,6 +230,26 @@ void AuthClient::handleReply(QNetworkReply *reply, const QString &stepName)
             emit smsCodeSent();
             return;
         }
+        if (stepName == QLatin1String("phone-resend")) {
+            emit smsCodeSent();
+            return;
+        }
+        if (stepName == QLatin1String("phone-verify")) {
+            // A verified phone code comes back as a token that approves the
+            // device, the same kind the emailed link carries.
+            const QString token = body.value(QStringLiteral("token")).toString();
+            if (token.isEmpty()) {
+                emit failed(QStringLiteral("Discord accepted the code but sent nothing back to approve this device."));
+                return;
+            }
+            authorizeDevice(token);
+            return;
+        }
+        if (stepName == QLatin1String("authorize-ip")) {
+            wlog(QStringLiteral("login"), QStringLiteral("this device is approved, signing in again"));
+            emit deviceAuthorized();
+            return;
+        }
 
         // The password step can answer with an MFA challenge instead of a token.
         if (handleMfa(body))
@@ -190,6 +269,9 @@ void AuthClient::handleReply(QNetworkReply *reply, const QString &stepName)
         emit failed(QStringLiteral("Could not reach discord.com: %1").arg(reply->errorString()));
         return;
     }
+
+    if (stepName == QLatin1String("password") && handleDeviceCheck(body))
+        return;
 
     QString fallback = QStringLiteral("Login failed (HTTP %1).").arg(status);
     if (stepName == QLatin1String("password") && status == 400)

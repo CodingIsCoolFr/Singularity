@@ -395,6 +395,11 @@ public:
     // Where someone is sitting in voice.
     VoiceStateInfo voiceState(const QString &userId) const;
     void setVoiceState(const QJsonObject &rawState);
+    void setVoiceStates(const QJsonArray &states);
+    void clearVoiceStates();
+
+    // Everyone sitting in one channel is out of it once the channel is gone.
+    void dropVoiceStatesInChannel(const QString &channelId);
 
     // Replaces every voice state for one server. A large server's first
     // snapshot is partial, and patching later updates onto it leaves people
@@ -440,6 +445,10 @@ signals:
 private:
     void ingestGuild(const QJsonObject &rawGuild);
     void ingestChannel(const QJsonObject &rawChannel, const QString &guildId);
+
+    // Records one voice state without telling anyone; returns whose it was.
+    // The public setters call this and then signal once.
+    QString applyVoiceState(const QJsonObject &rawState);
     // Most recent conversation first, which is the order Discord shows.
     void bumpDirectChannel(const QString &channelId);
 

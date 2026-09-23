@@ -1,5 +1,6 @@
 #include "core/AppConfig.h"
 #include "core/GatewayClient.h"
+#include "core/HangWatch.h"
 #include "core/Logger.h"
 #include "core/MessageStore.h"
 #include "core/RestClient.h"
@@ -48,7 +49,7 @@ int main(int argc, char *argv[])
     holdRunningMutex();
     app.setApplicationName(QStringLiteral("Singularity"));
     app.setOrganizationName(QStringLiteral("Singularity"));
-    app.setApplicationVersion(QStringLiteral("0.6.71"));
+    app.setApplicationVersion(QStringLiteral("0.6.72"));
     app.setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
 
     Theme::applySeed(QColor(AppConfig::instance().value(QStringLiteral("appearance/themeSeed"),
@@ -77,6 +78,9 @@ int main(int argc, char *argv[])
 
     // Touch the log first so the file exists even if startup fails early.
     wlog(QStringLiteral("app"), QStringLiteral("Singularity %1 starting").arg(app.applicationVersion()));
+
+    // Names whatever freezes the window, in the log, the moment it happens.
+    HangWatch::start();
 
     // A quiet look for a newer version, a few seconds in, and again while the
     // program stays open. The sign-in window runs its own event loop, so the
@@ -135,5 +139,7 @@ int main(int argc, char *argv[])
     wlog(QStringLiteral("app"), QStringLiteral("main window show() returned"));
     window.startSession(token);
 
-    return app.exec();
+    const int result = app.exec();
+    HangWatch::stop();
+    return result;
 }

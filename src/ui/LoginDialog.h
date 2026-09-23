@@ -42,19 +42,25 @@ private slots:
     void onAuthFailed(const QString &message);
     void useTokenInstead();
     void useQrInstead();
+    void submitDeviceCheck();
+
+    // Shows one second-factor method, the way Discord does: the account's
+    // preferred one first, the rest as "use something else" links.
+    void selectMfaMethod(const QString &method);
+    void showDeviceCheck(bool byPhone, const QString &message);
 
 private:
-    enum Page { CredentialsPage = 0, MfaPage = 1, TokenPage = 2, QrPage = 3 };
+    enum Page { CredentialsPage = 0, MfaPage = 1, TokenPage = 2, QrPage = 3, DevicePage = 4 };
 
     QWidget *buildCredentialsPage();
     QWidget *buildMfaPage();
     QWidget *buildTokenPage();
     QWidget *buildQrPage();
+    QWidget *buildDevicePage();
     void showPage(Page page);
     void setBusy(bool busy);
     void setStatus(const QString &text, bool isError = false);
     void finishWith(const QString &token);
-    void refreshMfaMethodUi();
 
     RestClient *m_rest = nullptr;
     AuthClient m_auth;
@@ -72,11 +78,21 @@ private:
     QPushButton *m_logInButton = nullptr;
 
     // Second factor page
-    QComboBox *m_methodBox = nullptr;
+    QLabel *m_mfaHeading = nullptr;
     QLineEdit *m_codeEdit = nullptr;
     QPushButton *m_verifyButton = nullptr;
-    QPushButton *m_sendSmsButton = nullptr;
+    QPushButton *m_resendSmsLink = nullptr;
     QLabel *m_codeHint = nullptr;
+    QWidget *m_otherMethods = nullptr;
+    QString m_mfaMethod;
+    bool m_smsSent = false;
+
+    // New-device check page
+    QLabel *m_deviceHint = nullptr;
+    QLineEdit *m_deviceEdit = nullptr;
+    QPushButton *m_deviceButton = nullptr;
+    QPushButton *m_deviceResendLink = nullptr;
+    bool m_deviceByPhone = false;
 
     // Token page
     QLineEdit *m_tokenEdit = nullptr;

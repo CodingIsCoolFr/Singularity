@@ -13,8 +13,10 @@
 #include <QLineEdit>
 #include <QPixmap>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QStackedWidget>
 #include <QUrl>
+#include <QUrlQuery>
 #include <QVBoxLayout>
 
 #include "ui/AuroraWidget.h"
@@ -174,6 +176,7 @@ LoginDialog::LoginDialog(RestClient *rest, QWidget *parent)
     m_pages->addWidget(buildMfaPage());
     m_pages->addWidget(buildTokenPage());
     m_pages->addWidget(buildQrPage());
+    m_pages->addWidget(buildDevicePage());
     layout->addWidget(m_pages);
 
     m_statusLabel = new QLabel(card);
@@ -200,6 +203,15 @@ LoginDialog::LoginDialog(RestClient *rest, QWidget *parent)
     connect(&m_auth, &AuthClient::smsCodeSent, this, [this]() {
         setStatus(QStringLiteral("Text message sent. Type the code above."));
         setBusy(false);
+    });
+
+    // Discord stopped a correct password to check this device.
+    connect(&m_auth, &AuthClient::phoneCheckRequired, this, [this]() { showDeviceCheck(true, QString()); });
+    connect(&m_auth, &AuthClient::emailCheckRequired, this,
+            [this](const QString &message) { showDeviceCheck(false, message); });
+    connect(&m_auth, &AuthClient::deviceAuthorized, this, [this]() {
+        setStatus(QStringLiteral("Device approved. Signing in..."));
+        submitCredentials();
     });
 
     // QR sign-in. No password crosses this window at all; the phone approves.
@@ -277,6 +289,16 @@ QWidget *LoginDialog::buildCredentialsPage()
     return page;
 }
 
+// The second-factor page, laid out the way Discord's is.
+//
+// It used to open with a drop-down of every method the account had, which put
+// the choice on the person - and "Authenticator app" sat on top whether or not
+// they had one to hand. Discord's client does not ask. Its AuthenticationStore
+// lists the methods in a fixed order (security key, authenticator app, backup
+// code, text message), shows the first, and tucks the others behind a "verify
+// with something else" link. This page does the same. The code box also
+// takes a backup code while the authenticator app is showing, so nobody has
+// to switch methods just because they reached for the wrong code.
 QWidget *LoginDialog::buildMfaPage()
 {
     auto *page = new QWidget(this);
@@ -284,41 +306,93 @@ QWidget *LoginDialog::buildMfaPage()
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(8);
 
-    layout->addWidget(makeHeading(QStringLiteral("Two step check"), page));
-
-    m_methodBox = new QComboBox(page);
-    layout->addWidget(m_methodBox);
-
-    m_codeEdit = new QLineEdit(page);
-    m_codeEdit->setPlaceholderText(QStringLiteral("Code"));
-    layout->addWidget(m_codeEdit);
+    m_mfaHeading = makeHeading(QStringLiteral("Two step check"), page);
+    layout->addWidget(m_mfaHeading);
 
     m_codeHint = makeHint(QString(), page);
     layout->addWidget(m_codeHint);
 
-    auto *buttonRow = new QHBoxLayout;
-    m_sendSmsButton = new QPushButton(QStringLiteral("Send text message"), page);
-    m_sendSmsButton->setVisible(false);
-    buttonRow->addWidget(m_sendSmsButton);
-    buttonRow->addStretch(1);
+    m_codeEdit = new QLineEdit(page);
+    m_codeEdit->setPlaceholderText(QStringLiteral("Code"));
+    m_codeEdit->setAlignment(Qt::AlignCenter);
+    layout->addWidget(m_codeEdit);
 
     m_verifyButton = makePrimaryButton(QStringLiteral("Verify"), page);
-    buttonRow->addWidget(m_verifyButton);
-    layout->addLayout(buttonRow);
+    layout->addWidget(m_verifyButton);
+
+    m_resendSmsLink = makeLinkButton(QStringLiteral("Send the text again"), page);
+    m_resendSmsLink->setVisible(false);
+    layout->addWidget(m_resendSmsLink);
+
+    // Filled per account by selectMfaMethod(): one link per other method.
+    m_otherMethods = new QWidget(page);
+    auto *others = new QVBoxLayout(m_otherMethods);
+    others->setContentsMargins(0, 4, 0, 0);
+    others->setSpacing(0);
+    layout->addWidget(m_otherMethods);
+
+    auto *qrLink = makeLinkButton(QStringLiteral("Sign in with a QR code instead"), page);
+    layout->addWidget(qrLink);
 
     auto *backLink = makeLinkButton(QStringLiteral("Back to sign in"), page);
     layout->addWidget(backLink);
 
-    connect(m_methodBox, &QComboBox::currentIndexChanged, this, [this](int) { refreshMfaMethodUi(); });
     connect(m_verifyButton, &QPushButton::clicked, this, &LoginDialog::submitSecondFactor);
     connect(m_codeEdit, &QLineEdit::returnPressed, this, &LoginDialog::submitSecondFactor);
-    connect(m_sendSmsButton, &QPushButton::clicked, this, [this]() {
+    connect(m_resendSmsLink, &QPushButton::clicked, this, [this]() {
         setBusy(true);
         setStatus(QStringLiteral("Asking Discord to send a text..."));
         m_auth.requestSmsCode(m_mfa.ticket);
     });
+    connect(qrLink, &QPushButton::clicked, this, &LoginDialog::useQrInstead);
     connect(backLink, &QPushButton::clicked, this, [this]() {
         m_codeEdit->clear();
+        setStatus(QString());
+        showPage(CredentialsPage);
+    });
+
+    return page;
+}
+
+// Discord checking a device it has not seen, instead of asking for a second
+// factor. Same page for both kinds; only the words and the box change.
+QWidget *LoginDialog::buildDevicePage()
+{
+    auto *page = new QWidget(this);
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(8);
+
+    layout->addWidget(makeHeading(QStringLiteral("Approve this device"), page));
+
+    m_deviceHint = makeHint(QString(), page);
+    layout->addWidget(m_deviceHint);
+
+    m_deviceEdit = new QLineEdit(page);
+    layout->addWidget(m_deviceEdit);
+
+    m_deviceButton = makePrimaryButton(QStringLiteral("Verify"), page);
+    layout->addWidget(m_deviceButton);
+
+    m_deviceResendLink = makeLinkButton(QStringLiteral("Send the text again"), page);
+    layout->addWidget(m_deviceResendLink);
+
+    auto *qrLink = makeLinkButton(QStringLiteral("Sign in with a QR code instead"), page);
+    layout->addWidget(qrLink);
+
+    auto *backLink = makeLinkButton(QStringLiteral("Back to sign in"), page);
+    layout->addWidget(backLink);
+
+    connect(m_deviceButton, &QPushButton::clicked, this, &LoginDialog::submitDeviceCheck);
+    connect(m_deviceEdit, &QLineEdit::returnPressed, this, &LoginDialog::submitDeviceCheck);
+    connect(m_deviceResendLink, &QPushButton::clicked, this, [this]() {
+        setBusy(true);
+        setStatus(QStringLiteral("Asking Discord to send a text..."));
+        m_auth.resendPhoneCode(m_loginEdit->text());
+    });
+    connect(qrLink, &QPushButton::clicked, this, &LoginDialog::useQrInstead);
+    connect(backLink, &QPushButton::clicked, this, [this]() {
+        m_deviceEdit->clear();
         setStatus(QString());
         showPage(CredentialsPage);
     });
@@ -449,6 +523,10 @@ void LoginDialog::showPage(Page page)
         break;
     case QrPage:
         break;
+    case DevicePage:
+        m_deviceButton->setDefault(true);
+        m_deviceEdit->setFocus();
+        break;
     }
 }
 
@@ -459,7 +537,11 @@ void LoginDialog::setBusy(bool busy)
     m_logInButton->setEnabled(!busy);
     m_codeEdit->setEnabled(!busy);
     m_verifyButton->setEnabled(!busy);
-    m_sendSmsButton->setEnabled(!busy);
+    m_resendSmsLink->setEnabled(!busy);
+    m_otherMethods->setEnabled(!busy);
+    m_deviceEdit->setEnabled(!busy);
+    m_deviceButton->setEnabled(!busy);
+    m_deviceResendLink->setEnabled(!busy);
     m_tokenEdit->setEnabled(!busy);
     m_tokenButton->setEnabled(!busy);
 }
@@ -491,60 +573,195 @@ void LoginDialog::submitSecondFactor()
         return;
     }
 
+    // Tell the two kinds of code apart by their shape, so the box takes
+    // whichever one the person has. An authenticator code is six digits; a
+    // backup code is eight letters and digits, shown by Discord as xxxx-xxxx.
+    QString compact = code;
+    compact.remove(QLatin1Char(' ')).remove(QLatin1Char('-'));
+    static const QRegularExpression sixDigits(QStringLiteral("^\\d{6}$"));
+    static const QRegularExpression backupShape(QStringLiteral("^[A-Za-z0-9]{8}$"));
+
+    QString method = m_mfaMethod;
+    if (method == QLatin1String("totp") && m_mfa.has(QStringLiteral("backup"))
+        && backupShape.match(compact).hasMatch())
+        method = QStringLiteral("backup");
+    else if (method == QLatin1String("backup") && m_mfa.has(QStringLiteral("totp"))
+             && sixDigits.match(compact).hasMatch())
+        method = QStringLiteral("totp");
+
     setBusy(true);
     setStatus(QStringLiteral("Checking the code..."));
-
-    const QString method = m_methodBox->currentData().toString();
-    if (method == QLatin1String("sms"))
-        m_auth.submitSmsCode(m_mfa.ticket, code);
-    else if (method == QLatin1String("backup"))
-        m_auth.submitBackupCode(m_mfa.ticket, code);
-    else
-        m_auth.submitTotp(m_mfa.ticket, code);
+    m_auth.submitCode(method, m_mfa, compact);
 }
 
-void LoginDialog::refreshMfaMethodUi()
+void LoginDialog::selectMfaMethod(const QString &method)
 {
-    const QString method = m_methodBox->currentData().toString();
+    m_mfaMethod = method;
+    m_codeEdit->clear();
 
-    m_sendSmsButton->setVisible(method == QLatin1String("sms"));
-
-    if (method == QLatin1String("sms")) {
-        m_codeEdit->setPlaceholderText(QStringLiteral("6 digit code from the text"));
-        m_codeHint->setText(QStringLiteral("Press \"Send text message\" first."));
+    if (method == QLatin1String("totp")) {
+        m_mfaHeading->setText(QStringLiteral("Enter your authenticator code"));
+        m_codeHint->setText(m_mfa.has(QStringLiteral("backup"))
+                                ? QStringLiteral("Type the 6-digit code from your authenticator app. "
+                                                 "A backup code works in this box too.")
+                                : QStringLiteral("Type the 6-digit code from your authenticator app."));
+        m_codeEdit->setPlaceholderText(QStringLiteral("6-digit code"));
     } else if (method == QLatin1String("backup")) {
-        m_codeEdit->setPlaceholderText(QStringLiteral("One backup code"));
-        m_codeHint->setText(QStringLiteral("Each backup code works once."));
-    } else {
-        m_codeEdit->setPlaceholderText(QStringLiteral("6 digit code from your app"));
-        m_codeHint->setText(QStringLiteral("Open your authenticator app and read the current code."));
+        m_mfaHeading->setText(QStringLiteral("Enter a backup code"));
+        m_codeHint->setText(QStringLiteral("One of the 8-character codes Discord gave you when you set up "
+                                           "two-step. Each one works once."));
+        m_codeEdit->setPlaceholderText(QStringLiteral("xxxx-xxxx"));
+    } else if (method == QLatin1String("sms")) {
+        m_mfaHeading->setText(QStringLiteral("Enter the code we texted you"));
+        m_codeHint->setText(QStringLiteral("Discord sends a 6-digit code to the phone on this account."));
+        m_codeEdit->setPlaceholderText(QStringLiteral("6-digit code"));
     }
+
+    // A text has to be asked for; the other codes already exist. Send it the
+    // moment the method is chosen rather than making someone find a button.
+    const bool sms = method == QLatin1String("sms");
+    m_resendSmsLink->setVisible(sms);
+    if (sms && !m_smsSent) {
+        m_smsSent = true;
+        setBusy(true);
+        setStatus(QStringLiteral("Asking Discord to send a text..."));
+        m_auth.requestSmsCode(m_mfa.ticket);
+    }
+
+    // The other ways in, as links, the way Discord's "verify with something
+    // else" offers them. Rebuilt each time so the current one never appears.
+    auto *layout = static_cast<QVBoxLayout *>(m_otherMethods->layout());
+    while (QLayoutItem *item = layout->takeAt(0)) {
+        delete item->widget();
+        delete item;
+    }
+    for (const QString &other : m_mfa.methods) {
+        if (other == method || other == QLatin1String("webauthn"))
+            continue;
+        QString label;
+        if (other == QLatin1String("totp"))
+            label = QStringLiteral("Use my authenticator app instead");
+        else if (other == QLatin1String("backup"))
+            label = QStringLiteral("Use a backup code instead");
+        else if (other == QLatin1String("sms"))
+            label = QStringLiteral("Text me a code instead");
+        if (label.isEmpty())
+            continue;
+        auto *link = makeLinkButton(label, m_otherMethods);
+        layout->addWidget(link);
+        connect(link, &QPushButton::clicked, this, [this, other]() {
+            setStatus(QString());
+            selectMfaMethod(other);
+            m_codeEdit->setFocus();
+        });
+    }
+
+    adjustSize();
 }
 
 void LoginDialog::onMfaRequired(const AuthClient::MfaOptions &options)
 {
     m_mfa = options;
+    m_smsSent = false;
     setBusy(false);
 
-    m_methodBox->clear();
-    if (options.totp)
-        m_methodBox->addItem(QStringLiteral("Authenticator app"), QStringLiteral("totp"));
-    if (options.sms)
-        m_methodBox->addItem(QStringLiteral("Text message"), QStringLiteral("sms"));
-    if (options.backup)
-        m_methodBox->addItem(QStringLiteral("Backup code"), QStringLiteral("backup"));
-
-    m_methodBox->setVisible(m_methodBox->count() > 1);
-    refreshMfaMethodUi();
-
-    if (options.webauthn) {
-        setStatus(QStringLiteral("This account also offers a security key. Singularity does not support "
-                                 "security keys, so use one of the other choices."));
-    } else {
-        setStatus(QStringLiteral("Password accepted. One more step."));
+    // Discord shows the first method in its list. A security key is first
+    // when the account has one, and that needs the browser's WebAuthn, which
+    // this window does not have - so the next method stands in, and an
+    // account with only a security key is sent to the QR code, which the
+    // phone can approve instead.
+    QString first;
+    for (const QString &method : options.methods) {
+        if (method != QLatin1String("webauthn")) {
+            first = method;
+            break;
+        }
     }
 
+    if (first.isEmpty()) {
+        setStatus(options.has(QStringLiteral("webauthn"))
+                      ? QStringLiteral("This account signs in with a security key or passkey. Scan the QR "
+                                       "code with the Discord app on your phone instead.")
+                      : QStringLiteral("Discord asked for a second step but named no method. Scan the QR "
+                                       "code with the Discord app on your phone instead."));
+        useQrInstead();
+        return;
+    }
+
+    setStatus(QStringLiteral("Password accepted. One more step."));
+    selectMfaMethod(first);
     showPage(MfaPage);
+}
+
+void LoginDialog::showDeviceCheck(bool byPhone, const QString &message)
+{
+    setBusy(false);
+    m_deviceByPhone = byPhone;
+    m_deviceEdit->clear();
+    m_deviceResendLink->setVisible(byPhone);
+
+    if (byPhone) {
+        m_deviceHint->setText(QStringLiteral("Discord does not know this device yet, so it texted a code to "
+                                             "%1. Type it here.")
+                                  .arg(m_loginEdit->text().trimmed()));
+        m_deviceEdit->setPlaceholderText(QStringLiteral("6-digit code"));
+        m_deviceButton->setText(QStringLiteral("Verify"));
+    } else {
+        m_deviceHint->setText(QStringLiteral("Discord does not know this device yet, so it emailed you a link "
+                                             "to approve it. Click the link in that email, then press Try "
+                                             "again. You can also paste the link here."));
+        m_deviceEdit->setPlaceholderText(QStringLiteral("Paste the link from the email (optional)"));
+        m_deviceButton->setText(QStringLiteral("Try again"));
+    }
+
+    setStatus(message.isEmpty() ? QString() : message);
+    showPage(DevicePage);
+}
+
+void LoginDialog::submitDeviceCheck()
+{
+    const QString text = m_deviceEdit->text().trimmed();
+
+    if (m_deviceByPhone) {
+        if (text.isEmpty()) {
+            setStatus(QStringLiteral("Type the code from the text first."), true);
+            return;
+        }
+        setBusy(true);
+        setStatus(QStringLiteral("Checking the code..."));
+        m_auth.verifyPhoneForDevice(m_loginEdit->text(), text);
+        return;
+    }
+
+    // Email. Nothing pasted means the link was already clicked in a browser,
+    // which approved the device there; signing in again is all that is left.
+    if (text.isEmpty()) {
+        submitCredentials();
+        return;
+    }
+
+    // The emailed link is discord.com/authorize-ip with the token in the query,
+    // or after a # on older mails. Take it from whichever, or accept a bare
+    // token if that is what was pasted.
+    QString token;
+    const QUrl url(text);
+    if (url.isValid() && !url.host().isEmpty()) {
+        token = QUrlQuery(url).queryItemValue(QStringLiteral("token"));
+        if (token.isEmpty())
+            token = QUrlQuery(url.fragment()).queryItemValue(QStringLiteral("token"));
+    } else {
+        token = text;
+    }
+
+    if (token.isEmpty()) {
+        setStatus(QStringLiteral("That link has no approval code in it. Copy the whole link from the email."),
+                  true);
+        return;
+    }
+
+    setBusy(true);
+    setStatus(QStringLiteral("Approving this device..."));
+    m_auth.authorizeDevice(token);
 }
 
 void LoginDialog::onCaptchaRequired(const QString &service, const QString &siteKey)
