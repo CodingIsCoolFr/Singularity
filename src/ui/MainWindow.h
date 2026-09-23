@@ -49,6 +49,11 @@ public:
     // Stops the media thread, after deleting the voice connections on it.
     ~MainWindow() override;
 
+    // The account switcher.
+    void switchToAccount(const QString &userId);
+    void restartInto(const QStringList &arguments);
+    void manageAccounts();
+
     void startSession(const QString &token);
 
 signals:
@@ -504,6 +509,23 @@ private:
     // How the server rail is arranged, saved on this machine only.
     RailLayout m_rail;
     bool m_rebuildingRail = false;
+
+    // This session's token, for adding it to the account switcher. Never logged.
+    QString m_sessionToken;
+
+    // Folder sync with Discord. Nothing is ever sent until Discord's own
+    // arrangement has been read at sign-in, so an old copy on this machine
+    // can never overwrite the real one.
+    bool m_railSynced = false;
+    bool m_railPushInFlight = false;
+    QTimer m_railPushTimer;
+    void railChangedByUser();
+    void pushRailToDiscord();
+    void applyDiscordFolders(const QByteArray &settingsProto, bool partial);
+
+    // Dropping one server onto another, which makes a folder.
+    int m_railMergeRow = -1;
+    bool handleRailDrag(QEvent *event);
 
     QTimer m_typingClearTimer;
     QTimer m_voiceRefreshTimer;

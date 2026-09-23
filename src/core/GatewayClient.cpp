@@ -3,6 +3,7 @@
 #include "core/DiscordIdentity.h"
 #include "core/Logger.h"
 
+#include <QElapsedTimer>
 #include <QJsonArray>
 #include <QSslError>
 #include <QJsonDocument>
@@ -874,5 +875,15 @@ void GatewayClient::handleDispatch(const QString &type, const QJsonObject &data,
         emit logLine(QStringLiteral("session resumed"));
     }
 
+    // Everything that listens handles the event right here, on the window's
+    // thread. When the window stalls, this line says whether an event did it
+    // and which one, instead of leaving a gap in the log to guess at.
+    QElapsedTimer clock;
+    clock.start();
     emit dispatch(type, data);
+    const qint64 tookMs = clock.elapsed();
+    if (tookMs > 50 && type != QLatin1String("READY") && type != QLatin1String("READY_SUPPLEMENTAL")) {
+        wlog(QStringLiteral("gateway"),
+             QStringLiteral("slow event: %1 took %2 ms to handle").arg(type).arg(tookMs));
+    }
 }

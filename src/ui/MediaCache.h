@@ -6,6 +6,7 @@
 #include <QObject>
 #include <QPixmap>
 #include <QSet>
+#include <QThreadPool>
 #include <QUrl>
 
 // One downloader for every picture the app shows: avatars, server icons and
@@ -101,4 +102,15 @@ private:
     // not a cache, it is a leak with a polite name.
     qint64 m_imageBytes = 0;
     qint64 m_originalBytes = 0;
+
+    void recordFailure(const QString &key, int status, const QString &error, qsizetype bytes,
+                       bool arrivedWhole);
+    void finishDecode(const QUrl &url, const QString &key, const QByteArray &payload, int status,
+                      bool decoded, QImage picture, bool moves, bool shrank, QSize original,
+                      qint64 tookMs);
+
+    // Pictures are unpacked here rather than on the window's thread. Declared
+    // last so it is destroyed first: it waits for any unpacking still running
+    // before the maps those results go into are torn down.
+    QThreadPool m_decoders;
 };

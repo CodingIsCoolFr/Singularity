@@ -5,6 +5,9 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QSaveFile>
 #include <QStandardPaths>
 
@@ -134,6 +137,93 @@ void clear()
         wlog(QStringLiteral("token"), QStringLiteral("could not delete %1: %2")
                                           .arg(filePath(), file.errorString()));
     }
+}
+
+namespace {
+
+constexpr int MaxAccounts = 5;
+
+QString accountsPath()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/accounts.dat");
+}
+
+void writeAccounts(const QList<Account> &list)
+{
+    QJsonArray array;
+    for (const Account &account : list) {
+        array.append(QJsonObject{
+            {QStringLiteral("id"), account.userId},
+            {QStringLiteral("name"), account.username},
+            {QStringLiteral("avatar"), account.avatarHash},
+            {QStringLiteral("token"), account.token},
+        });
+    }
+
+    const QString path = accountsPath();
+    if (list.isEmpty()) {
+        QFile::remove(path);
+        return;
+    }
+
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    const QByteArray sealed = seal(QJsonDocument(array).toJson(QJsonDocument::Compact));
+    if (sealed.isEmpty())
+        return;
+
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) {
+        wlog(QStringLiteral("token"), QStringLiteral("could not save the account list: %1").arg(file.errorString()));
+        return;
+    }
+    file.write(sealed);
+    if (!file.commit())
+        wlog(QStringLiteral("token"), QStringLiteral("could not save the account list: %1").arg(file.errorString()));
+}
+
+} // namespace
+
+QList<Account> accounts()
+{
+    QFile file(accountsPath());
+    if (!file.exists() || !file.open(QIODevice::ReadOnly))
+        return {};
+
+    const QJsonArray array = QJsonDocument::fromJson(unseal(file.readAll())).array();
+    QList<Account> list;
+    for (const QJsonValue &value : array) {
+        const QJsonObject object = value.toObject();
+        Account account;
+        account.userId = object.value(QStringLiteral("id")).toString();
+        account.username = object.value(QStringLiteral("name")).toString();
+        account.avatarHash = object.value(QStringLiteral("avatar")).toString();
+        account.token = object.value(QStringLiteral("token")).toString();
+        if (!account.userId.isEmpty() && !account.token.isEmpty())
+            list.append(account);
+    }
+    return list;
+}
+
+void rememberAccount(const Account &account)
+{
+    if (account.userId.isEmpty() || account.token.isEmpty())
+        return;
+
+    QList<Account> list = accounts();
+    list.removeIf([&account](const Account &other) { return other.userId == account.userId; });
+    list.prepend(account);
+    while (list.size() > MaxAccounts)
+        list.removeLast();
+    writeAccounts(list);
+}
+
+void forgetAccount(const QString &userId)
+{
+    QList<Account> list = accounts();
+    const qsizetype before = list.size();
+    list.removeIf([&userId](const Account &other) { return other.userId == userId; });
+    if (list.size() != before)
+        writeAccounts(list);
 }
 
 } // namespace TokenStore

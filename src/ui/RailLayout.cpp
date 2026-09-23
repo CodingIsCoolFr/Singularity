@@ -3,7 +3,10 @@
 #include "core/AppConfig.h"
 #include "core/Logger.h"
 
-#include <QUuid>
+#include <QHash>
+#include <QJsonObject>
+#include <QRandomGenerator>
+#include <QSet>
 
 namespace {
 
@@ -38,6 +41,10 @@ void RailLayout::load()
         folder.name = fields.at(1);
         folder.open = fields.at(2) == QLatin1String("1");
         folder.guildIds = fields.at(3).split(QLatin1Char(','), Qt::SkipEmptyParts);
+        if (fields.size() > 4 && !fields.at(4).isEmpty()) {
+            folder.hasColor = true;
+            folder.color = fields.at(4).toULongLong();
+        }
         if (!folder.id.isEmpty())
             folders.insert(folder.id, folder);
     }
@@ -79,7 +86,9 @@ void RailLayout::save() const
             order.append(FolderPrefix + entry.folder.id);
             records.append(QStringList{entry.folder.id, entry.folder.name,
                                        entry.folder.open ? QStringLiteral("1") : QStringLiteral("0"),
-                                       entry.folder.guildIds.join(QLatin1Char(','))}
+                                       entry.folder.guildIds.join(QLatin1Char(',')),
+                                       entry.folder.hasColor ? QString::number(entry.folder.color)
+                                                             : QString()}
                                .join(FieldSeparator));
         } else {
             order.append(GuildPrefix + entry.guildId);
@@ -203,8 +212,8 @@ void RailLayout::moveGuildOutOfFolders(const QString &guildId)
 QString RailLayout::createFolder(const QString &name, const QString &firstGuildId)
 {
     Folder folder;
-    folder.id = QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
-    folder.name = name.trimmed().isEmpty() ? QStringLiteral("Folder") : name.trimmed();
+    folder.id = newFolderId();
+    folder.name = name.trimmed();
     folder.open = true;
 
     // The new folder takes the place of the server that started it.
@@ -232,7 +241,8 @@ void RailLayout::renameFolder(const QString &folderId, const QString &name)
 {
     for (Entry &entry : m_entries) {
         if (entry.isFolder && entry.folder.id == folderId) {
-            entry.folder.name = name.trimmed().isEmpty() ? QStringLiteral("Folder") : name.trimmed();
+            // Empty is allowed: Discord has unnamed folders too.
+            entry.folder.name = name.trimmed();
             save();
             return;
         }
@@ -281,4 +291,155 @@ const RailLayout::Folder *RailLayout::folder(const QString &folderId) const
             return &entry.folder;
     }
     return nullptr;
+}
+
+QString RailLayout::newFolderId()
+{
+    // Discord's own client uses a random positive number. So does this, kept
+    // under 2^31 so it survives every JSON reader on the way.
+    return QString::number(QRandomGenerator::global()->bounded(1, 0x7FFFFFFF));
+}
+
+QString RailLayout::folderOf(const QString &guildId) const
+{
+    for (const Entry &entry : m_entries) {
+        if (entry.isFolder && entry.folder.guildIds.contains(guildId))
+            return entry.folder.id;
+    }
+    return {};
+}
+
+void RailLayout::applyFromDiscord(const QList<DiscordFolder> &folders, const QStringList &knownGuildIds)
+{
+    // Open and closed is ours, not Discord's.
+    QHash<QString, bool> wasOpen;
+    for (const Entry &entry : m_entries) {
+        if (entry.isFolder)
+            wasOpen.insert(entry.folder.id, entry.folder.open);
+    }
+
+    QList<Entry> rebuilt;
+    for (const DiscordFolder &source : folders) {
+        if (source.id == 0) {
+            // A loose server, stored by Discord as a folder of one.
+            for (const QString &guildId : source.guildIds) {
+                Entry entry;
+                entry.guildId = guildId;
+                rebuilt.append(entry);
+            }
+            continue;
+        }
+
+        Entry entry;
+        entry.isFolder = true;
+        entry.folder.id = QString::number(source.id);
+        entry.folder.name = source.name;
+        entry.folder.guildIds = source.guildIds;
+        entry.folder.hasColor = source.hasColor;
+        entry.folder.color = source.color;
+        entry.folder.open = wasOpen.value(entry.folder.id, false);
+        rebuilt.append(entry);
+    }
+
+    m_entries = rebuilt;
+    reconcile(knownGuildIds);
+    save();
+}
+
+QJsonArray RailLayout::toDiscordFolders()
+{
+    QJsonArray out;
+    bool renamed = false;
+
+    for (Entry &entry : m_entries) {
+        QJsonObject folder;
+        QJsonArray ids;
+
+        if (!entry.isFolder) {
+            ids.append(entry.guildId);
+            folder.insert(QStringLiteral("guild_ids"), ids);
+            folder.insert(QStringLiteral("id"), QJsonValue::Null);
+            folder.insert(QStringLiteral("name"), QJsonValue::Null);
+            folder.insert(QStringLiteral("color"), QJsonValue::Null);
+            out.append(folder);
+            continue;
+        }
+
+        // Folders made before this version had a short text id, which Discord
+        // cannot store. They get a number the first time they are sent.
+        bool numeric = false;
+        const qint64 id = entry.folder.id.toLongLong(&numeric);
+        if (!numeric || id <= 0) {
+            entry.folder.id = newFolderId();
+            renamed = true;
+        }
+
+        for (const QString &guildId : entry.folder.guildIds)
+            ids.append(guildId);
+        folder.insert(QStringLiteral("guild_ids"), ids);
+        folder.insert(QStringLiteral("id"), double(entry.folder.id.toLongLong()));
+        folder.insert(QStringLiteral("name"),
+                      entry.folder.name.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(entry.folder.name));
+        folder.insert(QStringLiteral("color"),
+                      entry.folder.hasColor ? QJsonValue(double(entry.folder.color)) : QJsonValue(QJsonValue::Null));
+        out.append(folder);
+    }
+
+    if (renamed)
+        save();
+    return out;
+}
+
+QString RailLayout::mergeIntoNewFolder(const QString &targetGuildId, const QString &droppedGuildId)
+{
+    if (targetGuildId.isEmpty() || droppedGuildId.isEmpty() || targetGuildId == droppedGuildId)
+        return {};
+
+    // Onto a server that is already in a folder: join that folder instead.
+    const QString existing = folderOf(targetGuildId);
+    if (!existing.isEmpty()) {
+        insertIntoFolder(droppedGuildId, existing, targetGuildId);
+        return existing;
+    }
+
+    // Take the dropped one out first, so the target's row is counted after
+    // the gap closes.
+    removeGuildEverywhere(droppedGuildId);
+    const int row = rowOfGuild(targetGuildId);
+    if (row < 0)
+        return {};
+
+    Entry entry;
+    entry.isFolder = true;
+    entry.folder.id = newFolderId();
+    entry.folder.guildIds = QStringList{targetGuildId, droppedGuildId};
+    entry.folder.open = true;
+    m_entries[row] = entry;
+
+    save();
+    wlog(QStringLiteral("rail"), QStringLiteral("made a folder from two servers"));
+    return entry.folder.id;
+}
+
+void RailLayout::insertIntoFolder(const QString &guildId, const QString &folderId, const QString &afterGuildId)
+{
+    if (guildId.isEmpty() || folderId.isEmpty() || guildId == afterGuildId)
+        return;
+
+    removeGuildEverywhere(guildId);
+
+    for (Entry &entry : m_entries) {
+        if (!entry.isFolder || entry.folder.id != folderId)
+            continue;
+        const int after = afterGuildId.isEmpty() ? -1 : int(entry.folder.guildIds.indexOf(afterGuildId));
+        entry.folder.guildIds.insert(after < 0 ? entry.folder.guildIds.size() : after + 1, guildId);
+        save();
+        return;
+    }
+
+    // The folder vanished while this was being dragged. Keep the server.
+    Entry entry;
+    entry.guildId = guildId;
+    m_entries.append(entry);
+    save();
 }

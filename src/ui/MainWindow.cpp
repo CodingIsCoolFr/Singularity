@@ -3,6 +3,7 @@
 #include "core/AppConfig.h"
 #include "core/Logger.h"
 #include "core/RestClient.h"
+#include "core/TokenStore.h"
 #include "plugin/PluginHost.h"
 #include "ui/ChatView.h"
 #include "ui/FriendsPage.h"
@@ -35,6 +36,8 @@
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QCursor>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QEvent>
 #include <QIcon>
 #include <QMessageBox>
@@ -1081,7 +1084,19 @@ QWidget *MainWindow::buildGuildRail(QWidget *parent)
         if (m_rebuildingRail)
             return;
         saveRailOrderFromView();
+        railChangedByUser();
     });
+
+    // Dropping onto the middle of a tile, rather than between two, is how a
+    // folder is made. Qt's list only knows "between", so the drop is looked
+    // at first.
+    m_guildRail->viewport()->installEventFilter(this);
+
+    // Changes go to Discord shortly after the last one, so a few quick drags
+    // are one save rather than several racing each other.
+    m_railPushTimer.setSingleShot(true);
+    m_railPushTimer.setInterval(700);
+    connect(&m_railPushTimer, &QTimer::timeout, this, &MainWindow::pushRailToDiscord);
 
     m_rail.load();
     return rail;
@@ -1159,6 +1174,14 @@ QWidget *MainWindow::buildSidebar(QWidget *parent)
             m_uiWorstStallMs = late;
         if (late > 33)
             ++m_uiStalls;
+        // A big one is written down the moment it ends, so it lands in the
+        // log right beside whatever caused it rather than in a summary a
+        // minute later.
+        if (late > 250) {
+            wlog(QStringLiteral("perf"),
+                 QStringLiteral("window thread was blocked for %1 ms just now; the lines above say by what")
+                     .arg(late));
+        }
     });
     m_uiPulse.start();
 
@@ -1630,6 +1653,9 @@ void MainWindow::buildMenu()
 
 void MainWindow::startSession(const QString &token)
 {
+    // Kept for the account switcher. Never logged.
+    m_sessionToken = token;
+
     // In front of everything until the window has something worth showing.
     //
     // Signing in returns in a moment, but the client is not ready then: forty
@@ -1690,6 +1716,14 @@ void MainWindow::onGatewayReady(const QJsonObject &payload)
     if (m_selfDisplayName.isEmpty())
         m_selfDisplayName = user.value(QStringLiteral("username")).toString();
 
+    // Into the account switcher - but only when this session is the one saved
+    // to disk, which is to say "stay signed in" was ticked. An account signed
+    // in without it must not be quietly kept somewhere else instead.
+    if (!m_sessionToken.isEmpty() && AppConfig::instance().token() == m_sessionToken) {
+        TokenStore::rememberAccount(TokenStore::Account{
+            m_selfUserId, user.value(QStringLiteral("username")).toString(), m_selfAvatarHash, m_sessionToken});
+    }
+
     // A new session makes any voice socket built on the old one invalid, but
     // the user did not leave. Keep the channel and join again once the rest
     // of READY has been ingested.
@@ -1718,6 +1752,9 @@ void MainWindow::onGatewayReady(const QJsonObject &payload)
         payload.value(QStringLiteral("user_settings_proto")).toString().toLatin1());
     if (!settingsProto.isEmpty())
         ingestSettingsProto(settingsProto, false);
+
+    // Discord's arrangement of the rail replaces whatever this machine had.
+    applyDiscordFolders(settingsProto, false);
     populateGuildRail();
 
     // Say it again now that the session exists, using the status Discord has
@@ -2219,9 +2256,20 @@ void MainWindow::populateGuildRail()
         item->setData(IdRole, entry.folder.id);
         item->setData(KindRole, QStringLiteral("folder"));
         item->setData(FolderOpenRole, entry.folder.open);
-        item->setToolTip(QStringLiteral("%1 (%2 servers)")
-                             .arg(entry.folder.name)
-                             .arg(entry.folder.guildIds.size()));
+        if (entry.folder.hasColor)
+            item->setData(SingularityRoles::FolderColor, QColor(QRgb(entry.folder.color & 0xFFFFFF)));
+
+        // An unnamed folder is listed by what is in it, as Discord does.
+        QString label = entry.folder.name;
+        if (label.isEmpty()) {
+            QStringList names;
+            for (const QString &guildId : entry.folder.guildIds.mid(0, 3))
+                names.append(m_store->guild(guildId).name);
+            label = names.join(QStringLiteral(", "));
+            if (entry.folder.guildIds.size() > 3)
+                label += QStringLiteral("...");
+        }
+        item->setToolTip(QStringLiteral("%1 (%2 servers)").arg(label).arg(entry.folder.guildIds.size()));
         m_guildRail->addItem(item);
 
         if (!entry.folder.open)
@@ -2331,6 +2379,7 @@ void MainWindow::showRailMenu(const QPoint &where)
             return;
         }
 
+        railChangedByUser();
         populateGuildRail();
         return;
     }
@@ -2375,7 +2424,174 @@ void MainWindow::showRailMenu(const QPoint &where)
         return;
     }
 
+    railChangedByUser();
     populateGuildRail();
+}
+
+bool MainWindow::handleRailDrag(QEvent *event)
+{
+    const auto setTarget = [this](int row) {
+        if (row == m_railMergeRow)
+            return;
+        m_railMergeRow = row;
+        if (auto *delegate = qobject_cast<GuildRailDelegate *>(m_guildRail->itemDelegate()))
+            delegate->setMergeRow(row);
+        m_guildRail->viewport()->update();
+    };
+
+    if (event->type() == QEvent::DragLeave) {
+        setTarget(-1);
+        return false;
+    }
+
+    // DragMove is a kind of drop event, so both read the same way.
+    auto *drop = static_cast<QDropEvent *>(event);
+    const QPoint pos = drop->position().toPoint();
+
+    // The tile being dragged is the one the drag started from.
+    const QList<QListWidgetItem *> picked = m_guildRail->selectedItems();
+    QListWidgetItem *source = picked.isEmpty() ? nullptr : picked.first();
+    const bool sourceIsServer = source && source->data(KindRole).toString() == QLatin1String("guild")
+        && !source->data(IdRole).toString().isEmpty();
+
+    // Over the middle half of a tile is "onto"; the top and bottom quarters
+    // stay "between", so reordering still works exactly as before.
+    QListWidgetItem *target = m_guildRail->itemAt(pos);
+    int mergeRow = -1;
+    if (sourceIsServer && target && target != source && !target->data(IdRole).toString().isEmpty()) {
+        const QRect box = m_guildRail->visualItemRect(target);
+        const bool middle = pos.y() > box.top() + box.height() / 4 && pos.y() < box.bottom() - box.height() / 4;
+        const QString kind = target->data(KindRole).toString();
+        if (middle && (kind == QLatin1String("guild") || kind == QLatin1String("folder")))
+            mergeRow = m_guildRail->row(target);
+    }
+
+    if (event->type() == QEvent::DragMove) {
+        setTarget(mergeRow);
+        if (mergeRow < 0)
+            return false;
+        drop->acceptProposedAction();
+        return true;
+    }
+
+    // The drop itself.
+    setTarget(-1);
+    if (mergeRow < 0)
+        return false;
+
+    const QString draggedId = source->data(IdRole).toString();
+    const QString targetId = target->data(IdRole).toString();
+    const bool ontoFolder = target->data(KindRole).toString() == QLatin1String("folder");
+
+    // Refused as far as Qt's own drag is concerned. Accepting it as a move
+    // would have the list delete the dragged row once the drag ended - after
+    // the rail had already been rebuilt below, taking a tile with it.
+    drop->setDropAction(Qt::IgnoreAction);
+    drop->accept();
+
+    // Changed once the drag is fully over, not in the middle of it.
+    QTimer::singleShot(0, this, [this, draggedId, targetId, ontoFolder]() {
+        if (ontoFolder)
+            m_rail.insertIntoFolder(draggedId, targetId, QString());
+        else
+            m_rail.mergeIntoNewFolder(targetId, draggedId);
+        railChangedByUser();
+        m_rebuildingRail = true;
+        populateGuildRail();
+        m_rebuildingRail = false;
+    });
+    return true;
+}
+
+void MainWindow::railChangedByUser()
+{
+    m_railPushTimer.start();
+}
+
+void MainWindow::pushRailToDiscord()
+{
+    // Never before Discord's own arrangement has been read. Sending first
+    // would replace the folders on every device with whatever this machine
+    // happened to have saved.
+    if (!m_railSynced || !m_rest) {
+        wlog(QStringLiteral("rail"), QStringLiteral("folders not sent: Discord's copy has not been read yet"));
+        return;
+    }
+    if (m_railPushInFlight) {
+        m_railPushTimer.start(); // send again once this one is answered
+        return;
+    }
+
+    const QJsonArray folders = m_rail.toDiscordFolders();
+    int realFolders = 0;
+    for (const QJsonValue &value : folders) {
+        if (!value.toObject().value(QStringLiteral("id")).isNull())
+            ++realFolders;
+    }
+
+    m_railPushInFlight = true;
+    m_rest->updateGuildFolders(
+        folders,
+        [this, realFolders, count = folders.size()](const QJsonObject &) {
+            m_railPushInFlight = false;
+            wlog(QStringLiteral("rail"),
+                 QStringLiteral("Discord stored the server rail: %1 tiles, %2 folders")
+                     .arg(count)
+                     .arg(realFolders));
+        },
+        [this](const RestClient::Error &error) {
+            m_railPushInFlight = false;
+            wlog(QStringLiteral("rail"),
+                 QStringLiteral("Discord refused the server rail: HTTP %1 %2")
+                     .arg(error.httpStatus)
+                     .arg(error.message));
+            flashStatus(QStringLiteral("Your folders changed here but Discord did not save them (%1).")
+                            .arg(error.httpStatus),
+                        6000);
+        });
+}
+
+void MainWindow::applyDiscordFolders(const QByteArray &settingsProto, bool partial)
+{
+    QList<DiscordFolder> folders;
+    bool present = false;
+    if (!guildFoldersFromProto(settingsProto, &folders, &present)) {
+        wlog(QStringLiteral("rail"), QStringLiteral("could not read Discord's server folders"));
+        return;
+    }
+    if (!present) {
+        // A full sign-in with no folders at all means none have ever been
+        // made on this account; the rail is still in step with Discord.
+        if (!partial)
+            m_railSynced = true;
+        return;
+    }
+
+    // A change of ours is waiting to be sent or is on its way. What just
+    // arrived is older than it, so it must not undo it.
+    if (partial && (m_railPushTimer.isActive() || m_railPushInFlight))
+        return;
+
+    QStringList knownIds;
+    for (const GuildInfo &guild : m_store->guilds())
+        knownIds.append(guild.id);
+
+    m_rail.applyFromDiscord(folders, knownIds);
+    m_railSynced = true;
+
+    int realFolders = 0;
+    for (const DiscordFolder &folder : folders) {
+        if (folder.id != 0)
+            ++realFolders;
+    }
+    wlog(QStringLiteral("rail"),
+         QStringLiteral("server rail from Discord: %1 folders").arg(realFolders));
+
+    if (partial) {
+        m_rebuildingRail = true;
+        populateGuildRail();
+        m_rebuildingRail = false;
+    }
 }
 
 void MainWindow::refreshGuildIcons()
@@ -2385,6 +2601,26 @@ void MainWindow::refreshGuildIcons()
         const QString guildId = item->data(IdRole).toString();
         if (guildId.isEmpty())
             continue;
+
+        // A folder shows small pictures of the first four servers inside.
+        if (item->data(KindRole).toString() == QLatin1String("folder")) {
+            const RailLayout::Folder *folder = m_rail.folder(guildId);
+            if (!folder)
+                continue;
+            QVariantList previews;
+            for (const QString &memberId : folder->guildIds.mid(0, 4)) {
+                const GuildInfo member = m_store->guild(memberId);
+                const QUrl url = MediaCache::guildIconUrl(memberId, member.iconHash, 64);
+                const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
+                previews.append(picture.isNull()
+                                    ? MediaCache::initialsAvatar(member.name.isEmpty() ? QStringLiteral("?")
+                                                                                       : member.name,
+                                                                 32)
+                                    : MediaCache::circular(picture, 32));
+            }
+            item->setData(SingularityRoles::FolderIcons, previews);
+            continue;
+        }
 
         const GuildInfo guild = m_store->guild(guildId);
         const QUrl url = MediaCache::guildIconUrl(guildId, guild.iconHash, 96);
@@ -3863,13 +4099,34 @@ QString MainWindow::renderContent(const QString &raw)
 
     // Plain links become clickable, shortened so one long address cannot
     // stretch the column.
-    static const QRegularExpression linkRe(QStringLiteral("(https?://[^\\s<]+)"));
+    //
+    // Only in the words, never inside markup this function wrote. A custom
+    // emoji has already become <img src="https://cdn.discordapp.com/...">
+    // by now, and this used to find that address inside the tag and wrap it in
+    // a link - which broke the tag open, so the message showed a broken
+    // picture followed by the rest of the tag as text.
+    //
+    // Telling the two apart is safe because the message was escaped at the
+    // very top: every '<' still in the text is one written here, so anything
+    // between a '<' and the next '>' is ours, and so is anything inside an
+    // <a> this function opened.
+    static const QRegularExpression linkRe(QStringLiteral("(https?://[^\\s<\"]+)"));
+    const auto insideMarkup = [&text](int pos) {
+        const int tagOpen = text.lastIndexOf(QLatin1Char('<'), pos);
+        if (tagOpen >= 0 && text.lastIndexOf(QLatin1Char('>'), pos) < tagOpen)
+            return true; // inside a tag's attributes
+        const int anchorOpen = text.lastIndexOf(QLatin1String("<a "), pos);
+        return anchorOpen >= 0 && text.lastIndexOf(QLatin1String("</a>"), pos) < anchorOpen;
+    };
     {
         QString rebuilt;
         int last = 0;
         auto it = linkRe.globalMatch(text);
         while (it.hasNext()) {
             const QRegularExpressionMatch match = it.next();
+            // Left exactly as it is; the next piece of text copied carries it.
+            if (insideMarkup(int(match.capturedStart())))
+                continue;
             const QString url = match.captured(1);
             QString label = url;
             if (label.size() > 64)
@@ -3949,10 +4206,124 @@ void MainWindow::showStatusMenu()
         showProfile(m_selfUserId, corner);
     });
 
+    // Switch Accounts, as in the official client's profile menu.
+    menu.addSeparator();
+    QMenu *switcher = menu.addMenu(QStringLiteral("Switch Accounts"));
+    const QList<TokenStore::Account> saved = TokenStore::accounts();
+    for (const TokenStore::Account &account : saved) {
+        const QUrl url = MediaCache::avatarUrl(account.userId, account.avatarHash, 64);
+        const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
+        const QIcon icon(picture.isNull() ? MediaCache::initialsAvatar(account.username, 20)
+                                          : MediaCache::circular(picture, 20));
+        QAction *pick = switcher->addAction(icon, account.username.isEmpty() ? account.userId
+                                                                            : account.username);
+        const bool current = account.userId == m_selfUserId;
+        pick->setCheckable(true);
+        pick->setChecked(current);
+        pick->setEnabled(!current);
+        const QString userId = account.userId;
+        connect(pick, &QAction::triggered, this, [this, userId]() { switchToAccount(userId); });
+    }
+    if (!saved.isEmpty())
+        switcher->addSeparator();
+    connect(switcher->addAction(QStringLiteral("Add an account...")), &QAction::triggered, this,
+            [this]() { restartInto({QStringLiteral("--add-account")}); });
+    if (!saved.isEmpty()) {
+        connect(switcher->addAction(QStringLiteral("Manage accounts...")), &QAction::triggered, this,
+                &MainWindow::manageAccounts);
+    }
+
     // Opened upwards from the panel, which sits at the very bottom of the
     // sidebar: a menu dropped downwards from there would be off the screen.
     const QPoint at = m_userPanel->mapToGlobal(QPoint(8, 0));
     menu.exec(QPoint(at.x(), at.y() - menu.sizeHint().height() - 4));
+}
+
+// Switching is a restart into the other account, which is what the official
+// client does too - it reloads. Every piece of state belongs to one account:
+// the gateway session, the voice connections, the message store, the caches.
+// Starting clean is the only way to be sure none of it carries across.
+void MainWindow::switchToAccount(const QString &userId)
+{
+    for (const TokenStore::Account &account : TokenStore::accounts()) {
+        if (account.userId != userId)
+            continue;
+        if (!AppConfig::instance().setToken(account.token)) {
+            flashStatus(QStringLiteral("Could not switch: the session file could not be written."), 6000);
+            return;
+        }
+        wlog(QStringLiteral("app"), QStringLiteral("switching accounts"));
+        restartInto({});
+        return;
+    }
+}
+
+void MainWindow::restartInto(const QStringList &arguments)
+{
+    if (!QProcess::startDetached(QCoreApplication::applicationFilePath(), arguments)) {
+        flashStatus(QStringLiteral("Could not restart Singularity."), 6000);
+        return;
+    }
+    m_gateway->stop();
+    qApp->quit();
+}
+
+void MainWindow::manageAccounts()
+{
+    const QList<TokenStore::Account> saved = TokenStore::accounts();
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("Manage accounts"));
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(16, 16, 16, 16);
+    layout->setSpacing(10);
+
+    auto *note = new QLabel(QStringLiteral("Accounts that can be switched to from this machine. "
+                                           "Removing one signs it out here and forgets its session."),
+                            &dialog);
+    note->setWordWrap(true);
+    layout->addWidget(note);
+
+    QString removeId;
+    for (const TokenStore::Account &account : saved) {
+        auto *row = new QHBoxLayout;
+        const QUrl url = MediaCache::avatarUrl(account.userId, account.avatarHash, 64);
+        const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
+        auto *face = new QLabel(&dialog);
+        face->setPixmap(picture.isNull() ? MediaCache::initialsAvatar(account.username, 28)
+                                         : MediaCache::circular(picture, 28));
+        row->addWidget(face);
+
+        const bool current = account.userId == m_selfUserId;
+        auto *name = new QLabel(account.username + (current ? QStringLiteral("   (signed in now)") : QString()),
+                                &dialog);
+        row->addWidget(name, 1);
+
+        auto *remove = new QPushButton(current ? QStringLiteral("Log out") : QStringLiteral("Remove"), &dialog);
+        const QString userId = account.userId;
+        connect(remove, &QPushButton::clicked, &dialog, [&dialog, &removeId, userId]() {
+            removeId = userId;
+            dialog.accept();
+        });
+        row->addWidget(remove);
+        layout->addLayout(row);
+    }
+
+    auto *close = new QPushButton(QStringLiteral("Close"), &dialog);
+    close->setObjectName(QStringLiteral("PrimaryButton"));
+    connect(close, &QPushButton::clicked, &dialog, &QDialog::reject);
+    layout->addWidget(close, 0, Qt::AlignRight);
+
+    if (dialog.exec() != QDialog::Accepted || removeId.isEmpty())
+        return;
+
+    if (removeId == m_selfUserId) {
+        logOut(); // forgets it too
+        return;
+    }
+    TokenStore::forgetAccount(removeId);
+    wlog(QStringLiteral("app"), QStringLiteral("removed a saved account"));
+    flashStatus(QStringLiteral("Account removed from this machine."), 4000);
 }
 
 void MainWindow::setSelfMuted(bool on)
@@ -4997,6 +5368,15 @@ void MainWindow::sendCurrentMessage()
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 {
+    // A server dragged onto the middle of another tile makes or fills a
+    // folder. Anything else is an ordinary reorder, left to the list.
+    if (m_guildRail && watched == m_guildRail->viewport()
+        && (event->type() == QEvent::DragMove || event->type() == QEvent::Drop
+            || event->type() == QEvent::DragLeave)) {
+        if (handleRailDrag(event))
+            return true;
+    }
+
     // A person scrolling the conversation, told apart from the document
     // moving on its own. Watched, never swallowed.
     if (m_messageView
@@ -5964,6 +6344,9 @@ void MainWindow::ingestSettingsProto(const QByteArray &proto, bool partial)
         const QString status = statusFromProto(proto);
         if (!status.isEmpty() && status != m_gateway->presenceStatus())
             setPresenceStatus(status, /*storeOnDiscord*/ false);
+
+        // Folders rearranged on another device, or the echo of our own save.
+        applyDiscordFolders(proto, true);
     }
 
     QHash<QString, UserAudioLevel> parsed;
@@ -6589,6 +6972,9 @@ void MainWindow::openLog()
 void MainWindow::logOut()
 {
     m_gateway->stop();
+    // Out of the switcher as well, or it could be switched straight back to.
+    if (!m_selfUserId.isEmpty())
+        TokenStore::forgetAccount(m_selfUserId);
     AppConfig::instance().clearToken();
     m_store->clear();
     emit loggedOut();

@@ -6,6 +6,7 @@
 #include "ui/Theme.h"
 
 #include <QCryptographicHash>
+#include <QElapsedTimer>
 #include <QNetworkReply>
 #include <QPainter>
 #include <QPainterPath>
@@ -62,7 +63,12 @@ const QStringList kFallbackColours{
 
 } // namespace
 
-MediaCache::MediaCache() = default;
+MediaCache::MediaCache()
+{
+    // Two is enough to keep up with a channel full of pictures, and leaves the
+    // rest of the processor to the game the user is probably also running.
+    m_decoders.setMaxThreadCount(2);
+}
 
 MediaCache &MediaCache::instance()
 {
@@ -244,81 +250,138 @@ void MediaCache::fetch(const QUrl &url)
     QNetworkReply *reply = m_network.get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply, url, key]() {
         reply->deleteLater();
-        m_inFlight.remove(key);
 
         const QByteArray payload = reply->readAll();
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 
-        QImage picture;
-        if (reply->error() != QNetworkReply::NoError || !picture.loadFromData(payload)) {
-            // Only give up for good when trying again could not possibly help.
-            //
-            // A rate limit or a dropped connection deserves another try later,
-            // otherwise one bad moment leaves a grey circle forever. But a
-            // file that arrived whole and simply is not a picture will never
-            // become one, and that case was being treated as temporary.
-            //
-            // The cost of that was not small. Every repaint asked again, the
-            // request succeeded again, the decode failed again, and with half
-            // a dozen videos in a channel the client spent the rest of the
-            // session downloading the same few megabytes over and over, many
-            // times a second. That is what made everything feel slow.
-            const bool arrivedWhole = reply->error() == QNetworkReply::NoError
-                && status >= 200 && status < 300 && !payload.isEmpty();
-
-            const bool permanent = arrivedWhole || status == 403 || status == 404
-                || status == 410 || status == 400 || status == 401;
-
-            if (permanent)
-                m_failed.insert(key);
-
-            wlog(QStringLiteral("media"), QStringLiteral("failed %1: HTTP %2 %3 (%4 bytes,%5 retryable)")
-                                              .arg(key)
-                                              .arg(status)
-                                              .arg(reply->errorString())
-                                              .arg(payload.size())
-                                              .arg(permanent ? QStringLiteral(" not") : QString()));
+        if (reply->error() != QNetworkReply::NoError || payload.isEmpty()) {
+            m_inFlight.remove(key);
+            recordFailure(key, status, reply->errorString(), payload.size(),
+                          /*arrivedWhole*/ false);
             return;
         }
 
-        // imageCount() is 0 for a GIF until its frames are walked, so the old
-        // "count > 1" test stored every animation as a single still frame.
-        const bool moves = AnimatedImage::isAnimatedData(payload);
-
-        // Shrunk here, once, rather than at full size for ever.
+        // Unpacked off the window's thread.
         //
-        // The old code stored whatever arrived. A photo from a phone is
-        // 4032 by 3024, which is 48 MB of memory to draw a thumbnail 340
-        // across, and it was kept at that size for the rest of the session.
-        const int longEdge = qMax(picture.width(), picture.height());
-        const bool shrank = longEdge > StoreLongEdge;
-        if (shrank) {
-            picture = longEdge == picture.width()
-                ? picture.scaledToWidth(StoreLongEdge, Qt::SmoothTransformation)
-                : picture.scaledToHeight(StoreLongEdge, Qt::SmoothTransformation);
-        }
+        // This ran right here, on the thread that draws everything: unpack
+        // the file, walk every frame of it to see whether it moves, then
+        // shrink it smoothly. A phone photo is 60 to 150 ms of that and a
+        // large screenshot several hundred, so opening a channel with a few
+        // pictures in it froze the window for most of a second - and it
+        // looked random, because it happened whenever pictures landed. The
+        // official client does this work off its main thread too.
+        //
+        // The address stays "in flight" until it is done, so nobody asks for
+        // it again meanwhile.
+        m_decoders.start([this, url, key, payload, status]() {
+            QElapsedTimer clock;
+            clock.start();
 
-        forget(key);
+            QImage picture;
+            const bool decoded = picture.loadFromData(payload);
+            bool moves = false;
+            bool shrank = false;
+            QSize original;
 
-        m_images.insert(key, picture);
-        m_imageBytes += picture.sizeInBytes();
+            if (decoded) {
+                original = picture.size();
+                // imageCount() is 0 for a GIF until its frames are walked, so
+                // the old "count > 1" test stored every animation as a single
+                // still frame.
+                moves = AnimatedImage::isAnimatedData(payload);
 
-        // The bytes as they arrived are kept for two reasons: anything that
-        // moves needs them to play, and anything that was shrunk needs them so
-        // the viewer can still open it at full quality. They are compressed,
-        // so this is a fraction of what holding the decoded picture cost.
-        if (moves || shrank) {
-            m_originals.insert(key, payload);
-            m_originalBytes += payload.size();
-            if (moves)
-                m_animated.insert(key);
-        }
+                // Shrunk here, once, rather than at full size for ever. A
+                // phone photo is 4032 by 3024, which is 48 MB of memory to
+                // draw a thumbnail 340 across.
+                const int longEdge = qMax(picture.width(), picture.height());
+                shrank = longEdge > StoreLongEdge;
+                if (shrank) {
+                    picture = longEdge == picture.width()
+                        ? picture.scaledToWidth(StoreLongEdge, Qt::SmoothTransformation)
+                        : picture.scaledToHeight(StoreLongEdge, Qt::SmoothTransformation);
+                }
+            }
+            const qint64 tookMs = clock.elapsed();
 
-        touch(key);
-        evictIfNeeded();
-
-        emit ready(url);
+            QMetaObject::invokeMethod(
+                this,
+                [this, url, key, payload, status, decoded, picture, moves, shrank, original, tookMs]() {
+                    finishDecode(url, key, payload, status, decoded, picture, moves, shrank, original,
+                                 tookMs);
+                },
+                Qt::QueuedConnection);
+        });
     });
+}
+
+void MediaCache::recordFailure(const QString &key, int status, const QString &error, qsizetype bytes,
+                               bool arrivedWhole)
+{
+    // Only give up for good when trying again could not possibly help.
+    //
+    // A rate limit or a dropped connection deserves another try later,
+    // otherwise one bad moment leaves a grey circle forever. But a file that
+    // arrived whole and simply is not a picture will never become one, and
+    // that case was being treated as temporary.
+    //
+    // The cost of that was not small. Every repaint asked again, the request
+    // succeeded again, the decode failed again, and with half a dozen videos
+    // in a channel the client spent the rest of the session downloading the
+    // same few megabytes over and over, many times a second.
+    const bool permanent = arrivedWhole || status == 403 || status == 404 || status == 410
+        || status == 400 || status == 401;
+
+    if (permanent)
+        m_failed.insert(key);
+
+    wlog(QStringLiteral("media"), QStringLiteral("failed %1: HTTP %2 %3 (%4 bytes,%5 retryable)")
+                                      .arg(key)
+                                      .arg(status)
+                                      .arg(error)
+                                      .arg(bytes)
+                                      .arg(permanent ? QStringLiteral(" not") : QString()));
+}
+
+void MediaCache::finishDecode(const QUrl &url, const QString &key, const QByteArray &payload, int status,
+                              bool decoded, QImage picture, bool moves, bool shrank, QSize original,
+                              qint64 tookMs)
+{
+    m_inFlight.remove(key);
+
+    if (!decoded) {
+        recordFailure(key, status, QStringLiteral("not a picture"), payload.size(), /*arrivedWhole*/ true);
+        return;
+    }
+
+    // Worth knowing which pictures are heavy, now that the cost is paid
+    // somewhere it cannot freeze anything.
+    if (tookMs > 80) {
+        wlog(QStringLiteral("media"), QStringLiteral("unpacked a %1x%2 picture in %3 ms, off the window's thread")
+                                          .arg(original.width())
+                                          .arg(original.height())
+                                          .arg(tookMs));
+    }
+
+    forget(key);
+
+    m_images.insert(key, picture);
+    m_imageBytes += picture.sizeInBytes();
+
+    // The bytes as they arrived are kept for two reasons: anything that
+    // moves needs them to play, and anything that was shrunk needs them so
+    // the viewer can still open it at full quality. They are compressed,
+    // so this is a fraction of what holding the decoded picture cost.
+    if (moves || shrank) {
+        m_originals.insert(key, payload);
+        m_originalBytes += payload.size();
+        if (moves)
+            m_animated.insert(key);
+    }
+
+    touch(key);
+    evictIfNeeded();
+
+    emit ready(url);
 }
 
 QPixmap MediaCache::circular(const QImage &source, int size)

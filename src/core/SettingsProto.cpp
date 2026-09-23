@@ -178,6 +178,129 @@ bool findMessage(const uchar *data, int size, int wanted, const uchar **body, in
 
 } // namespace
 
+namespace {
+
+// The value inside a wrapper message (Int64Value, UInt64Value): field 1, a
+// varint. An absent field 1 is zero, which is how protobuf writes a zero.
+bool readWrappedVarint(const uchar *data, int size, quint64 *out)
+{
+    *out = 0;
+    int index = 0;
+    while (index < size) {
+        quint64 tag = 0;
+        if (!readVarint(data, size, index, tag))
+            return false;
+        if ((tag >> 3) == 1 && (tag & 7) == 0)
+            return readVarint(data, size, index, *out);
+        if (!skipField(data, size, index, int(tag & 7)))
+            return false;
+    }
+    return true;
+}
+
+bool parseFolder(const uchar *data, int size, DiscordFolder *folder)
+{
+    int index = 0;
+    while (index < size) {
+        quint64 tag = 0;
+        if (!readVarint(data, size, index, tag))
+            return false;
+        const int field = int(tag >> 3);
+        const int wire = int(tag & 7);
+
+        if (field == 1 && wire == 1) {
+            // One id on its own.
+            if (index + 8 > size)
+                return false;
+            quint64 id = 0;
+            std::memcpy(&id, data + index, 8);
+            index += 8;
+            folder->guildIds.append(QString::number(id));
+        } else if (field == 1 && wire == 2) {
+            // Several ids packed together, eight bytes each - the proto3
+            // default for a repeated number. Read either way.
+            quint64 length = 0;
+            if (!readVarint(data, size, index, length) || length > quint64(size - index) || length % 8)
+                return false;
+            for (quint64 at = 0; at < length; at += 8) {
+                quint64 id = 0;
+                std::memcpy(&id, data + index + at, 8);
+                folder->guildIds.append(QString::number(id));
+            }
+            index += int(length);
+        } else if ((field == 2 || field == 3 || field == 4) && wire == 2) {
+            quint64 length = 0;
+            if (!readVarint(data, size, index, length) || length > quint64(size - index))
+                return false;
+            const uchar *body = data + index;
+            const int bodySize = int(length);
+            index += bodySize;
+
+            if (field == 2) {
+                quint64 id = 0;
+                if (!readWrappedVarint(body, bodySize, &id))
+                    return false;
+                folder->id = qint64(id);
+            } else if (field == 4) {
+                quint64 color = 0;
+                if (!readWrappedVarint(body, bodySize, &color))
+                    return false;
+                folder->hasColor = true;
+                folder->color = color;
+            } else {
+                // StringValue: field 1, the text.
+                const uchar *text = nullptr;
+                int textSize = 0;
+                if (findMessage(body, bodySize, 1, &text, &textSize))
+                    folder->name = QString::fromUtf8(reinterpret_cast<const char *>(text), textSize);
+            }
+        } else if (!skipField(data, size, index, wire)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+} // namespace
+
+bool guildFoldersFromProto(const QByteArray &bytes, QList<DiscordFolder> *folders, bool *present)
+{
+    folders->clear();
+    *present = false;
+    if (bytes.isEmpty())
+        return true;
+
+    const auto *data = reinterpret_cast<const uchar *>(bytes.constData());
+    const uchar *body = nullptr;
+    int bodySize = 0;
+    if (!findMessage(data, bytes.size(), 14, &body, &bodySize))
+        return true; // not in this blob
+    *present = true;
+
+    int index = 0;
+    while (index < bodySize) {
+        quint64 tag = 0;
+        if (!readVarint(body, bodySize, index, tag))
+            return false;
+        const int field = int(tag >> 3);
+        const int wire = int(tag & 7);
+        if (field == 1 && wire == 2) {
+            quint64 length = 0;
+            if (!readVarint(body, bodySize, index, length) || length > quint64(bodySize - index))
+                return false;
+            DiscordFolder folder;
+            if (!parseFolder(body + index, int(length), &folder))
+                return false;
+            index += int(length);
+            if (!folder.guildIds.isEmpty())
+                folders->append(folder);
+        } else if (!skipField(body, bodySize, index, wire)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 QString statusFromProto(const QByteArray &bytes)
 {
     if (bytes.isEmpty())

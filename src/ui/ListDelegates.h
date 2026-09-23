@@ -44,6 +44,12 @@ constexpr int Mentions = Qt::UserRole + 15;
 // no limit. A count at the cap is full.
 constexpr int VoiceCount = Qt::UserRole + 16;
 constexpr int VoiceLimit = Qt::UserRole + 17;
+
+// Folder tiles on the server rail: small pictures of the first four servers
+// inside (a QVariantList of QPixmap), and the folder's colour (a QColor,
+// invalid when it has none).
+constexpr int FolderIcons = Qt::UserRole + 18;
+constexpr int FolderColor = Qt::UserRole + 19;
 } // namespace SingularityRoles
 
 // Shared easing used by both delegates below.
@@ -87,9 +93,14 @@ public:
     void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override;
     QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override;
 
+    // The tile a dragged server would be dropped onto, lit so it is clear a
+    // folder is about to be made. -1 for none.
+    void setMergeRow(int row) { m_mergeRow = row; }
+
 private:
     mutable QHash<int, qreal> m_hover;
     mutable QHash<int, qreal> m_select;
+    int m_mergeRow = -1;
 };
 
 // One row of the friends list: picture, name, what they are doing, and two

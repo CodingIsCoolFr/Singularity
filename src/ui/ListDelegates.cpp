@@ -313,27 +313,68 @@ void GuildRailDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
     const QRect iconRect(cell.center().x() - iconSize / 2 + nudge, cell.center().y() - iconSize / 2,
                          iconSize, iconSize);
 
+    // The tile a server is being dragged onto: a ring, so it is plain that
+    // letting go here makes a folder rather than moving the server.
+    const bool mergeTarget = row == m_mergeRow;
+    const auto drawMergeRing = [&]() {
+        if (!mergeTarget)
+            return;
+        painter->save();
+        QPen ring{QColor(Theme::Accent)};
+        ring.setWidthF(2.5);
+        painter->setPen(ring);
+        painter->setBrush(withAlpha(Theme::Accent, 0.18));
+        painter->drawRoundedRect(QRectF(iconRect).adjusted(-4, -4, 4, 4), 18, 18);
+        painter->restore();
+    };
+
     if (isFolder) {
         const bool open = index.data(SingularityRoles::FolderOpen).toBool();
+        const QColor tint = index.data(SingularityRoles::FolderColor).value<QColor>();
         const QRectF box(iconRect);
 
+        // The folder's own colour, when Discord has one for it - the same one
+        // the official client paints it with.
+        QColor plate = tint.isValid() ? tint : QColor(Theme::SurfaceHover);
+        plate.setAlphaF(tint.isValid() ? 0.30 + 0.15 * lift : 0.6 + 0.4 * lift);
         painter->setPen(Qt::NoPen);
-        painter->setBrush(withAlpha(Theme::SurfaceHover, 0.6 + 0.4 * lift));
+        painter->setBrush(plate);
         painter->drawRoundedRect(box, 14, 14);
 
-        // A simple folder shape: a body with a tab on its top left.
-        QPainterPath shape;
-        const qreal x = box.center().x() - 11;
-        const qreal y = box.center().y() - 8;
-        shape.addRoundedRect(QRectF(x, y + 3, 22, 13), 2.5, 2.5);
-        shape.addRoundedRect(QRectF(x, y, 9, 5), 1.5, 1.5);
+        const QVariantList previews = index.data(SingularityRoles::FolderIcons).toList();
 
-        painter->setBrush(QColor(open ? Theme::Accent : Theme::TextMuted));
-        painter->drawPath(shape);
+        if (!open && !previews.isEmpty()) {
+            // Closed: the first four servers inside, two by two, which is how
+            // Discord shows a folder you have not opened.
+            const qreal pad = 5.0;
+            const qreal gap = 3.0;
+            const qreal cellSize = (box.width() - 2 * pad - gap) / 2.0;
+            for (int i = 0; i < qMin(4, int(previews.size())); ++i) {
+                const QPixmap pixmap = previews.at(i).value<QPixmap>();
+                if (pixmap.isNull())
+                    continue;
+                const QRectF slot(box.left() + pad + (i % 2) * (cellSize + gap),
+                                  box.top() + pad + (i / 2) * (cellSize + gap), cellSize, cellSize);
+                painter->drawPixmap(slot, pixmap, QRectF(pixmap.rect()));
+            }
+        } else {
+            // Open, or nothing to preview yet: the folder shape, in the
+            // folder's colour.
+            QPainterPath shape;
+            const qreal x = box.center().x() - 11;
+            const qreal y = box.center().y() - 8;
+            shape.addRoundedRect(QRectF(x, y + 3, 22, 13), 2.5, 2.5);
+            shape.addRoundedRect(QRectF(x, y, 9, 5), 1.5, 1.5);
+            painter->setBrush(tint.isValid() ? tint : QColor(open ? Theme::Accent : Theme::TextMuted));
+            painter->drawPath(shape);
+        }
 
+        drawMergeRing();
         painter->restore();
         return;
     }
+
+    drawMergeRing();
 
     // A circle when idle, a rounded square when lit up. The spring can
     // overshoot 1.0, which punches the morph a little past the rest pose.

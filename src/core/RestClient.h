@@ -136,6 +136,10 @@ public:
     // what other people and your other sessions are shown.
     void updateStatus(const QString &status, ObjectHandler onOk, ErrorHandler onError);
 
+    // The whole server rail, in order: every loose server as a folder of one
+    // with no id, every real folder with its id, name and colour.
+    void updateGuildFolders(const QJsonArray &folders, ObjectHandler onOk, ErrorHandler onError);
+
     // PATCH /users/@me/audio-settings/user/{id} — how loud this one person is.
     // Discord keeps it, and every session of the account hears the same number.
     // Volume is 0 to 200. Mute is separate from the slider.

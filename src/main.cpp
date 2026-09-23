@@ -3,6 +3,7 @@
 #include "core/Logger.h"
 #include "core/MessageStore.h"
 #include "core/RestClient.h"
+#include "core/TokenStore.h"
 #include "plugin/PluginHost.h"
 #include "ui/LoginDialog.h"
 #include "ui/MainWindow.h"
@@ -47,7 +48,7 @@ int main(int argc, char *argv[])
     holdRunningMutex();
     app.setApplicationName(QStringLiteral("Singularity"));
     app.setOrganizationName(QStringLiteral("Singularity"));
-    app.setApplicationVersion(QStringLiteral("0.6.67"));
+    app.setApplicationVersion(QStringLiteral("0.6.68"));
     app.setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
 
     Theme::applySeed(QColor(AppConfig::instance().value(QStringLiteral("appearance/themeSeed"),
@@ -87,14 +88,34 @@ int main(int argc, char *argv[])
     // the main window says so and offers Log out.
     QString token = AppConfig::instance().token();
 
+    // Signed out of one account but others are still remembered: carry on as
+    // the most recent of them, the way the official client does, rather than
+    // asking for a password that is not needed.
     if (token.isEmpty()) {
-        wlog(QStringLiteral("app"), QStringLiteral("no saved token, showing sign-in"));
+        const QList<TokenStore::Account> saved = TokenStore::accounts();
+        if (!saved.isEmpty()) {
+            token = saved.first().token;
+            AppConfig::instance().setToken(token);
+            wlog(QStringLiteral("app"), QStringLiteral("no current session, using the most recent saved account"));
+        }
+    }
+
+    // "Add an account" restarts with this flag. The sign-in window shows even
+    // though a session is saved; cancelling it goes back to that session.
+    const bool addingAccount = app.arguments().contains(QStringLiteral("--add-account"));
+
+    if (token.isEmpty() || addingAccount) {
+        wlog(QStringLiteral("app"), addingAccount ? QStringLiteral("adding an account, showing sign-in")
+                                                  : QStringLiteral("no saved token, showing sign-in"));
         LoginDialog login(&rest);
         if (login.exec() != QDialog::Accepted) {
             wlog(QStringLiteral("app"), QStringLiteral("sign-in cancelled"));
-            return 0;
+            if (token.isEmpty())
+                return 0;
+            rest.setToken(token);
+        } else {
+            token = login.token();
         }
-        token = login.token();
         wlog(QStringLiteral("app"), QStringLiteral("signed in, remembered=%1")
                                         .arg(!AppConfig::instance().token().isEmpty()));
     } else {

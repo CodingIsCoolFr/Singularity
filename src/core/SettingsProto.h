@@ -2,7 +2,9 @@
 
 #include <QByteArray>
 #include <QHash>
+#include <QList>
 #include <QString>
+#include <QStringList>
 
 // One person's loudness, as Discord stores it.
 //
@@ -29,3 +31,24 @@ bool audioContextFromProto(const QByteArray &bytes, QHash<QString, UserAudioLeve
 // Empty when the blob does not carry it, which on a partial update means the
 // status did not change.
 QString statusFromProto(const QByteArray &bytes);
+
+// One entry of the server rail as Discord stores it. A server on its own is
+// stored as a "folder" with no id holding just that server; a real folder has
+// an id, and may have a name and a colour.
+struct DiscordFolder
+{
+    QStringList guildIds;
+    qint64 id = 0;          // 0: not a real folder, just one loose server
+    QString name;           // empty: unnamed
+    bool hasColor = false;
+    quint64 color = 0;      // 0xRRGGBB
+};
+
+// Field 14 of the settings blob, GuildFolders, in rail order. Numbers checked
+// against discord-protos' PreloadedUserSettings.proto:
+//   GuildFolders { repeated GuildFolder folders = 1; repeated fixed64 guild_positions = 2; }
+//   GuildFolder  { repeated fixed64 guild_ids = 1; Int64Value id = 2;
+//                  StringValue name = 3; UInt64Value color = 4; }
+// `present` is false when the blob does not carry field 14, which on a partial
+// update means the folders did not change.
+bool guildFoldersFromProto(const QByteArray &bytes, QList<DiscordFolder> *folders, bool *present);

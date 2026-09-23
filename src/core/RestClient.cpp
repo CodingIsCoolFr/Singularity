@@ -368,6 +368,18 @@ void RestClient::updateStatus(const QString &status, ObjectHandler onOk, ErrorHa
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+void RestClient::updateGuildFolders(const QJsonArray &folders, ObjectHandler onOk, ErrorHandler onError)
+{
+    // The same endpoint the status goes through. Discord keeps it in step with
+    // the settings blob, so this change arrives on every other device as a
+    // settings update - which is how the official client picks it up.
+    const QJsonObject body{{QStringLiteral("guild_folders"), folders}};
+    QNetworkReply *reply = m_network.sendCustomRequest(
+        buildRequest(QStringLiteral("/users/@me/settings")), QByteArrayLiteral("PATCH"),
+        QJsonDocument(body).toJson(QJsonDocument::Compact));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::listApplications(ArrayHandler onOk, ErrorHandler onError, const CaptchaProof &captcha)
 {
     QNetworkRequest request = buildRequest(QStringLiteral("/applications"));
