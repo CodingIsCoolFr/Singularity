@@ -3,6 +3,7 @@
 #include "core/Logger.h"
 #include "core/MessageStore.h"
 #include "core/RestClient.h"
+#include "ui/CaptchaDialog.h"
 #include "ui/ListDelegates.h"
 #include "ui/MediaCache.h"
 #include "ui/Theme.h"
@@ -59,6 +60,19 @@ QString activityLine(const MessageStore &store, const QString &userId)
     if (presence.isOnline())
         return QStringLiteral("Online");
     return QStringLiteral("Offline");
+}
+
+// The second line of a row. Requests say which way they go, as Discord does;
+// everyone else says what they are doing.
+QString subtitleFor(const MessageStore &store, const UserInfo &person)
+{
+    if (person.relationship == 3)
+        return QStringLiteral("Incoming friend request");
+    if (person.relationship == 4)
+        return QStringLiteral("Outgoing friend request");
+    if (person.relationship == 2)
+        return QStringLiteral("Blocked");
+    return activityLine(store, person.id);
 }
 
 QPixmap roundedImage(const QImage &image, int size, int radius)
@@ -194,6 +208,8 @@ FriendsPage::FriendsPage(MessageStore *store, RestClient *rest, QWidget *parent)
 
     connect(delegate, &FriendDelegate::messageRequested, this, &FriendsPage::startDirectMessage);
     connect(delegate, &FriendDelegate::profileRequested, this, &FriendsPage::openProfile);
+    connect(delegate, &FriendDelegate::acceptRequested, this, &FriendsPage::acceptRequest);
+    connect(delegate, &FriendDelegate::removeRequested, this, &FriendsPage::removeRelationship);
 
     m_list->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_list, &QListWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
@@ -363,7 +379,8 @@ void FriendsPage::refresh()
             if (name.isEmpty())
                 name = person.username.isEmpty() ? person.id : person.username;
             item->setText(name);
-            item->setData(SingularityRoles::Subtitle, activityLine(*m_store, person.id));
+            item->setData(SingularityRoles::Relationship, person.relationship);
+            item->setData(SingularityRoles::Subtitle, subtitleFor(*m_store, person));
             item->setData(SingularityRoles::Status, m_store->presenceBubble(person.id));
             const QUrl url = MediaCache::avatarUrl(person.id, person.avatarHash, 80);
             const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
@@ -386,7 +403,8 @@ void FriendsPage::refresh()
 
         auto *item = new QListWidgetItem(name);
         item->setData(SingularityRoles::Id, person.id);
-        item->setData(SingularityRoles::Subtitle, activityLine(*m_store, person.id));
+        item->setData(SingularityRoles::Relationship, person.relationship);
+        item->setData(SingularityRoles::Subtitle, subtitleFor(*m_store, person));
         item->setData(SingularityRoles::Status, m_store->presenceBubble(person.id));
 
         // The plain round picture. The status bubble is painted on top by the
@@ -721,6 +739,80 @@ bool FriendsPage::eventFilter(QObject *watched, QEvent *event)
         }
     }
     return QWidget::eventFilter(watched, event);
+}
+
+void FriendsPage::acceptRequest(const QString &userId)
+{
+    if (userId.isEmpty() || m_busy.contains(userId))
+        return;
+    m_busy.insert(userId);
+
+    const auto accepted = [this, userId](const QJsonObject &) {
+        m_busy.remove(userId);
+        m_store->setRelationship(userId, 1);
+        refresh();
+    };
+    const auto failed = [this, userId](const RestClient::Error &error) {
+        m_busy.remove(userId);
+        wlog(QStringLiteral("friends"), QStringLiteral("accepting a request failed: HTTP %1 %2")
+                                            .arg(error.httpStatus).arg(error.message));
+        emit statusMessage(error.message.isEmpty() ? QStringLiteral("Could not accept that request.")
+                                                   : error.message.left(180));
+    };
+
+    // Accepting is the same call as sending a request. Discord sometimes
+    // asks for a check first; the person solves it, exactly as in its own
+    // client, and the same call goes again with the answer.
+    m_rest->addFriend(userId, accepted, [this, userId, accepted, failed](const RestClient::Error &error) {
+        bool needsCheck = false;
+        for (const QJsonValue &key : error.body.value(QStringLiteral("captcha_key")).toArray())
+            needsCheck = needsCheck || key.toString() == QLatin1String("captcha-required");
+        if (!needsCheck) {
+            failed(error);
+            return;
+        }
+        const QString token = CaptchaDialog::solve(
+            this, error.body.value(QStringLiteral("captcha_sitekey")).toString(),
+            error.body.value(QStringLiteral("captcha_rqdata")).toString());
+        if (token.isEmpty()) {
+            m_busy.remove(userId);
+            emit statusMessage(QStringLiteral("Discord asked for a check, and it was not finished."));
+            return;
+        }
+        RestClient::CaptchaProof proof;
+        proof.key = token;
+        proof.rqtoken = error.body.value(QStringLiteral("captcha_rqtoken")).toString();
+        proof.sessionId = error.body.value(QStringLiteral("captcha_session_id")).toString();
+        m_rest->addFriend(userId, accepted, failed, proof);
+    });
+}
+
+void FriendsPage::removeRelationship(const QString &userId)
+{
+    if (userId.isEmpty() || m_busy.contains(userId))
+        return;
+    m_busy.insert(userId);
+
+    const int was = m_store->user(userId).relationship;
+    m_rest->removeRelationship(
+        userId,
+        [this, userId](const QJsonObject &) {
+            m_busy.remove(userId);
+            m_store->setRelationship(userId, 0);
+            refresh();
+        },
+        [this, userId, was](const RestClient::Error &error) {
+            m_busy.remove(userId);
+            wlog(QStringLiteral("friends"), QStringLiteral("removing relationship (type %1) failed: HTTP %2 %3")
+                                                .arg(was).arg(error.httpStatus).arg(error.message));
+            const QString what = was == 3   ? QStringLiteral("ignore that request")
+                                 : was == 4 ? QStringLiteral("cancel that request")
+                                 : was == 2 ? QStringLiteral("unblock them")
+                                            : QStringLiteral("do that");
+            emit statusMessage(QStringLiteral("Could not %1: %2")
+                                   .arg(what, error.message.isEmpty() ? QStringLiteral("no reason given")
+                                                                      : error.message.left(160)));
+        });
 }
 
 void FriendsPage::startDirectMessage(const QString &userId)

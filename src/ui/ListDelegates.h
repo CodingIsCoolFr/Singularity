@@ -2,6 +2,7 @@
 
 #include <QElapsedTimer>
 #include <QHash>
+#include <QList>
 #include <QSet>
 #include <QStyledItemDelegate>
 
@@ -50,6 +51,10 @@ constexpr int VoiceLimit = Qt::UserRole + 17;
 // invalid when it has none).
 constexpr int FolderIcons = Qt::UserRole + 18;
 constexpr int FolderColor = Qt::UserRole + 19;
+
+// Friends list only: Discord's relationship type. 1 friend, 2 blocked,
+// 3 a request sent to you, 4 a request you sent.
+constexpr int Relationship = Qt::UserRole + 20;
 } // namespace SingularityRoles
 
 // Shared easing used by both delegates below.
@@ -120,12 +125,17 @@ public:
 signals:
     void messageRequested(const QString &userId);
     void profileRequested(const QString &userId);
+    // A pending request: accept one sent to you, or remove (ignore an incoming
+    // one, cancel an outgoing one, unblock a blocked person).
+    void acceptRequested(const QString &userId);
+    void removeRequested(const QString &userId);
 
 private:
-    enum class Button { Message, Profile, None };
+    enum class Button { Message, Profile, Accept, Remove, None };
 
-    static QRect buttonRect(const QRect &row, Button button);
-    static Button buttonAt(const QRect &row, const QPoint &point);
+    static QList<Button> buttonsFor(const QModelIndex &index);
+    static QRect buttonRect(const QRect &row, int slotFromRight);
+    static Button buttonAt(const QRect &row, const QModelIndex &index, const QPoint &point);
 
     mutable QHash<int, qreal> m_hover;
     mutable QHash<int, qreal> m_select;

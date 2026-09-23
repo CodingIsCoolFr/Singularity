@@ -1024,6 +1024,8 @@ void MainWindow::buildUi()
     });
     connect(m_friends, &FriendsPage::personMenuRequested, this, &MainWindow::showPersonMenu);
     connect(m_friends, &FriendsPage::joinVoiceChannel, this, &MainWindow::joinVoiceAt);
+    connect(m_friends, &FriendsPage::statusMessage, this,
+            [this](const QString &text) { flashStatus(text, 6000); });
     m_chatStack->addWidget(m_friends);
 
     m_chatSplitter->addWidget(m_callView);
@@ -2219,6 +2221,15 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
 
     if (eventType == QLatin1String("RELATIONSHIP_REMOVE")) {
         m_store->setRelationship(data.value(QStringLiteral("id")).toString(), 0);
+        return;
+    }
+
+    // A change made on another device that keeps the person, such as a
+    // request turning into a friendship. Only the type matters here.
+    if (eventType == QLatin1String("RELATIONSHIP_UPDATE")) {
+        const QJsonValue type = data.value(QStringLiteral("type"));
+        if (type.isDouble())
+            m_store->setRelationship(data.value(QStringLiteral("id")).toString(), type.toInt());
         return;
     }
 

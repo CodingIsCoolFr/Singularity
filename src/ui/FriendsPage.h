@@ -37,6 +37,8 @@ signals:
     // A voice card was clicked. guild id and channel id are enough to join
     // even when that channel has never been opened in the sidebar.
     void joinVoiceChannel(const QString &guildId, const QString &channelId);
+    // Something short for the status line, such as why a request failed.
+    void statusMessage(const QString &text);
 
 private:
     enum class Tab { Online, All, Pending, Blocked };
@@ -44,6 +46,14 @@ private:
     QWidget *buildTabBar();
     void setTab(Tab tab);
     void startDirectMessage(const QString &userId);
+
+    // The pending and blocked buttons. Both go to Discord first and change
+    // the list only when it agrees, so what shows here is what the official
+    // client shows too. Discord then sends RELATIONSHIP_ADD / _REMOVE to
+    // every session, which keeps the other devices in step.
+    void acceptRequest(const QString &userId);
+    void removeRelationship(const QString &userId);
+    QSet<QString> m_busy;
     void rebuildActivity();
     void fitActivityWidth();
     bool eventFilter(QObject *watched, QEvent *event) override;

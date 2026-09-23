@@ -156,6 +156,34 @@ void drawPersonGlyph(QPainter *painter, const QRectF &box, const QColor &colour)
     painter->drawArc(QRectF(centre.x() - 6.0, centre.y() + 0.5, 12.0, 11.0), 0, 180 * 16);
 }
 
+void drawCheckGlyph(QPainter *painter, const QRectF &box, const QColor &colour)
+{
+    QPen pen(colour);
+    pen.setWidthF(1.6);
+    pen.setCapStyle(Qt::RoundCap);
+    pen.setJoinStyle(Qt::RoundJoin);
+    painter->setPen(pen);
+    painter->setBrush(Qt::NoBrush);
+
+    const QPointF c = box.center();
+    QPolygonF tick;
+    tick << QPointF(c.x() - 5.0, c.y() + 0.5) << QPointF(c.x() - 1.5, c.y() + 4.0)
+         << QPointF(c.x() + 5.0, c.y() - 4.0);
+    painter->drawPolyline(tick);
+}
+
+void drawCrossGlyph(QPainter *painter, const QRectF &box, const QColor &colour)
+{
+    QPen pen(colour);
+    pen.setWidthF(1.6);
+    pen.setCapStyle(Qt::RoundCap);
+    painter->setPen(pen);
+
+    const QPointF c = box.center();
+    painter->drawLine(QPointF(c.x() - 4.5, c.y() - 4.5), QPointF(c.x() + 4.5, c.y() + 4.5));
+    painter->drawLine(QPointF(c.x() + 4.5, c.y() - 4.5), QPointF(c.x() - 4.5, c.y() + 4.5));
+}
+
 void drawGearGlyph(QPainter *painter, const QRectF &box, const QColor &colour)
 {
     QPen pen(colour);
@@ -472,19 +500,35 @@ QSize FriendDelegate::sizeHint(const QStyleOptionViewItem &option, const QModelI
     return QSize(option.rect.width(), FriendRowHeight);
 }
 
-QRect FriendDelegate::buttonRect(const QRect &row, Button button)
+// Which buttons a row carries, left to right, the way Discord lays them out:
+// a request someone sent you can be accepted or ignored, one you sent can be
+// cancelled, a blocked person can be unblocked, and a friend gets message and
+// profile.
+QList<FriendDelegate::Button> FriendDelegate::buttonsFor(const QModelIndex &index)
 {
-    const int index = button == Button::Profile ? 0 : 1;
-    const int right = row.right() - 14 - index * (FriendButton + 6);
+    switch (index.data(SingularityRoles::Relationship).toInt()) {
+    case 3:  return {Button::Accept, Button::Remove};
+    case 4:  return {Button::Remove};
+    case 2:  return {Button::Remove};
+    default: return {Button::Message, Button::Profile};
+    }
+}
+
+// Slot 0 is the rightmost; the last button in the list sits there.
+QRect FriendDelegate::buttonRect(const QRect &row, int slotFromRight)
+{
+    const int right = row.right() - 14 - slotFromRight * (FriendButton + 6);
     return QRect(right - FriendButton, row.center().y() - FriendButton / 2, FriendButton, FriendButton);
 }
 
-FriendDelegate::Button FriendDelegate::buttonAt(const QRect &row, const QPoint &point)
+FriendDelegate::Button FriendDelegate::buttonAt(const QRect &row, const QModelIndex &index,
+                                                const QPoint &point)
 {
-    if (buttonRect(row, Button::Message).contains(point))
-        return Button::Message;
-    if (buttonRect(row, Button::Profile).contains(point))
-        return Button::Profile;
+    const QList<Button> buttons = buttonsFor(index);
+    for (int i = 0; i < buttons.size(); ++i) {
+        if (buttonRect(row, buttons.size() - 1 - i).contains(point))
+            return buttons.at(i);
+    }
     return Button::None;
 }
 
@@ -617,30 +661,44 @@ void FriendDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     drawStatusBubble(painter, avatarRect, index.data(SingularityRoles::Status).toString(),
                      QColor(Theme::SurfaceChat));
 
-    // Buttons appear on hover, the way the real client does it.
+    // A friend's buttons appear on hover, the way the real client does it. A
+    // request's buttons are always there: they are the whole point of the row.
+    const QList<Button> buttons = buttonsFor(index);
+    const bool always = index.data(SingularityRoles::Relationship).toInt() != 1;
+    const qreal shown = always ? 1.0 : hoverAmount;
     int textRight = 20;
-    if (hoverAmount > 0.15) {
+    if (shown > 0.15) {
         const QPoint cursor = m_view ? m_view->viewport()->mapFromGlobal(QCursor::pos()) : QPoint(-1, -1);
 
-        for (const Button which : {Button::Message, Button::Profile}) {
-            const QRect box = buttonRect(cell, which);
+        for (int i = 0; i < buttons.size(); ++i) {
+            const Button which = buttons.at(i);
+            const QRect box = buttonRect(cell, buttons.size() - 1 - i);
             const bool lit = box.contains(cursor);
 
             painter->setPen(Qt::NoPen);
-            painter->setBrush(withAlpha(lit ? Theme::SurfaceRail : Theme::SurfaceInput,
-                                        hoverAmount));
+            painter->setBrush(withAlpha(lit ? Theme::SurfaceRail : Theme::SurfaceInput, shown));
             painter->drawEllipse(box);
 
-            const QColor glyph(lit ? Theme::TextPrimary : Theme::TextMuted);
+            // Green and red only on hover, where they mean "this will accept"
+            // and "this will remove"; at rest the row stays grey.
+            QColor glyph(lit ? Theme::TextPrimary : Theme::TextMuted);
+            if (lit && which == Button::Accept)
+                glyph = QColor(Theme::Green);
+            else if (lit && which == Button::Remove)
+                glyph = QColor(Theme::Red);
+
             painter->save();
-            if (which == Button::Message)
-                drawChatGlyph(painter, box, glyph);
-            else
-                drawPersonGlyph(painter, box, glyph);
+            switch (which) {
+            case Button::Message: drawChatGlyph(painter, box, glyph); break;
+            case Button::Profile: drawPersonGlyph(painter, box, glyph); break;
+            case Button::Accept:  drawCheckGlyph(painter, box, glyph); break;
+            case Button::Remove:  drawCrossGlyph(painter, box, glyph); break;
+            case Button::None:    break;
+            }
             painter->restore();
         }
 
-        textRight = 2 * (FriendButton + 6) + 22;
+        textRight = int(buttons.size()) * (FriendButton + 6) + 22;
     }
 
     // Name and the line under it.
@@ -676,7 +734,7 @@ bool FriendDelegate::editorEvent(QEvent *event, QAbstractItemModel *model,
 {
     if (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonRelease) {
         auto *mouse = static_cast<QMouseEvent *>(event);
-        const Button which = buttonAt(option.rect, mouse->pos());
+        const Button which = buttonAt(option.rect, index, mouse->pos());
         if (which == Button::None)
             return AnimatedDelegate::editorEvent(event, model, option, index);
 
@@ -684,10 +742,13 @@ bool FriendDelegate::editorEvent(QEvent *event, QAbstractItemModel *model,
             return true;   // swallow, so the row is not also selected
 
         const QString userId = index.data(SingularityRoles::Id).toString();
-        if (which == Button::Message)
-            emit messageRequested(userId);
-        else
-            emit profileRequested(userId);
+        switch (which) {
+        case Button::Message: emit messageRequested(userId); break;
+        case Button::Profile: emit profileRequested(userId); break;
+        case Button::Accept:  emit acceptRequested(userId); break;
+        case Button::Remove:  emit removeRequested(userId); break;
+        case Button::None:    break;
+        }
         return true;
     }
 
