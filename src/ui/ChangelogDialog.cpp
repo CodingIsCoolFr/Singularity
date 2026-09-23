@@ -331,7 +331,11 @@ void ChangelogDialog::showRelease(int row)
 QString ChangelogDialog::readableNotes(const QString &body)
 {
     QStringList kept;
-    const QStringList lines = body.split(QLatin1Char('\n'));
+    // A byte-order mark before the first "##" (release notes written by the
+    // release script carried one) stops that heading being recognised.
+    QString clean = body;
+    clean.remove(QChar(0xFEFF));
+    const QStringList lines = clean.split(QLatin1Char('\n'));
     for (int i = 0; i < lines.size(); ++i) {
         const QString line = lines.at(i).trimmed();
 

@@ -68,7 +68,9 @@ void liftOverApp(QWidget *panel)
 #ifdef Q_OS_WIN
     const HWND hwnd = reinterpret_cast<HWND>(panel->winId());
     if (hwnd) {
-        SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0,
+        // Top of the always-on-top band: above Singularity and every other
+        // program, so an update is never waiting where nobody can see it.
+        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
     }
 #endif
@@ -95,9 +97,16 @@ void releaseForegroundLock()
 class UpdateOffer : public QWidget
 {
 public:
+    // A window of its own that stays above everything, Singularity and every
+    // other program alike. It used to be a tool window owned by whichever
+    // Singularity window was active - and with none active it had no owner at
+    // all, so it could open underneath the program where nobody saw it. It
+    // also went away whenever its owner was minimised. The owner is kept only
+    // to centre the box over it.
     UpdateOffer(const QString &version, const QString &notes, qint64 bytes, QWidget *owner)
-        : QWidget(owner, Qt::Tool | Qt::FramelessWindowHint)
+        : QWidget(nullptr, Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint)
         , m_version(version)
+        , m_owner(owner)
     {
         setObjectName(QStringLiteral("UpdateOffer"));
         setAttribute(Qt::WA_DeleteOnClose);
@@ -179,7 +188,7 @@ public:
     {
         adjustSize();
         QRect area;
-        if (QWidget *owner = parentWidget(); owner && owner->isVisible())
+        if (QWidget *owner = m_owner.data(); owner && owner->isVisible() && !owner->isMinimized())
             area = QRect(owner->mapToGlobal(QPoint(0, 0)), owner->size());
         else if (QScreen *screen = QGuiApplication::primaryScreen())
             area = screen->availableGeometry();
@@ -226,13 +235,14 @@ public:
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override
     {
-        if (watched == parentWidget() && event->type() == QEvent::Resize)
+        if (watched == m_owner.data() && event->type() == QEvent::Resize)
             place();
         return QWidget::eventFilter(watched, event);
     }
 
 private:
     QString m_version;
+    QPointer<QWidget> m_owner;
     QLabel *m_title = nullptr;
     QLabel *m_body = nullptr;
     QLabel *m_notes = nullptr;
@@ -252,7 +262,7 @@ class InstallScreen : public QWidget
 {
 public:
     InstallScreen()
-        : QWidget(nullptr, Qt::Window | Qt::FramelessWindowHint)
+        : QWidget(nullptr, Qt::Window | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint)
     {
         setObjectName(QStringLiteral("InstallScreen"));
         setAttribute(Qt::WA_DeleteOnClose);
@@ -410,6 +420,11 @@ QString summarise(const QString &notes)
     QString text = notes;
     text.remove(QLatin1Char('<'));
     text.remove(QLatin1Char('>'));
+    // A byte-order mark at the front of the notes (the release script's text
+    // files carried one) sits before the first "##", so the heading was not
+    // recognised and showed as raw symbols.
+    text.remove(QChar(0xFEFF));
+    text.replace(QLatin1String("\r\n"), QLatin1String("\n"));
     text = text.trimmed();
 
     constexpr int Limit = 700;

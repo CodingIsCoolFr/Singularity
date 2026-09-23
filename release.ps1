@@ -127,6 +127,14 @@ Discord does not permit third party clients on a normal user account, and using 
     Write-Host "Wrote placeholder notes to $notesFile - edit it and re-run to say more." -ForegroundColor Yellow
 }
 
+# Windows PowerShell writes UTF-8 with a byte-order mark. GitHub keeps it at
+# the front of the release body, where it sits before the first "##" and the
+# heading shows up in the app as raw symbols. Take it off before publishing.
+$noteBytes = [IO.File]::ReadAllBytes($notesFile)
+if ($noteBytes.Length -ge 3 -and $noteBytes[0] -eq 0xEF -and $noteBytes[1] -eq 0xBB -and $noteBytes[2] -eq 0xBF) {
+    [IO.File]::WriteAllBytes($notesFile, $noteBytes[3..($noteBytes.Length - 1)])
+}
+
 git -C $root tag -a $tag -m "Singularity $version"
 git -C $root push -q origin $tag
 

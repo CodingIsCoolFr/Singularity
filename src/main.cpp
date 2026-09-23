@@ -12,6 +12,7 @@
 #include "ui/UpdateFlow.h"
 
 #include <QApplication>
+#include <QEventLoop>
 #include <QFontDatabase>
 #include <QIcon>
 #include <QSurfaceFormat>
@@ -49,7 +50,7 @@ int main(int argc, char *argv[])
     holdRunningMutex();
     app.setApplicationName(QStringLiteral("Singularity"));
     app.setOrganizationName(QStringLiteral("Singularity"));
-    app.setApplicationVersion(QStringLiteral("0.6.76"));
+    app.setApplicationVersion(QStringLiteral("0.6.77"));
     app.setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
 
     Theme::applySeed(QColor(AppConfig::instance().value(QStringLiteral("appearance/themeSeed"),
@@ -117,20 +118,27 @@ int main(int argc, char *argv[])
         wlog(QStringLiteral("app"), addingAccount ? QStringLiteral("adding an account, showing sign-in")
                                                   : QStringLiteral("no saved token, showing sign-in"));
         LoginDialog login(&rest);
-        int answer = login.exec();
 
-        // Pressing Update hides every window to show the install screen, and
-        // a hidden sign-in window ends as if it had been closed. That is not
-        // somebody cancelling: wait for the update instead of exiting in the
-        // middle of the download. A good install quits the program itself so
-        // the new copy can start; a failed one brings the window back.
-        while (answer != QDialog::Accepted && UpdateFlow::updating()) {
-            wlog(QStringLiteral("app"), QStringLiteral("sign-in window hidden by the updater; waiting for it"));
-            UpdateFlow::waitForUpdate();
-            if (UpdateFlow::updating())
-                return 0;   // installed; the new copy starts on its own
-            answer = login.exec();
-        }
+        // Shown as an ordinary window and waited for, not run with exec().
+        //
+        // exec() makes a dialog application-modal: while it is open Qt throws
+        // away every click on any other window of the program. The update box
+        // is another window, so its Update button did nothing while the
+        // sign-in window was up. exec() also ends the moment the dialog is
+        // hidden, and the updater hides every window to show its install
+        // screen - which read as "cancelled" and quit halfway through the
+        // download. Waiting on finished() has neither problem: the dialog
+        // only finishes when it is accepted or really closed.
+        QEventLoop waiting;
+        QObject::connect(&login, &QDialog::finished, &waiting, &QEventLoop::quit);
+        login.show();
+        waiting.exec();
+        const int answer = login.result();
+
+        // The loop also ends when a finished update quits the program so the
+        // new copy can start. That is not a cancelled sign-in either.
+        if (answer != QDialog::Accepted && UpdateFlow::updating())
+            return 0;
 
         if (answer != QDialog::Accepted) {
             wlog(QStringLiteral("app"), QStringLiteral("sign-in cancelled"));
