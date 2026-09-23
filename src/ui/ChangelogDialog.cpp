@@ -154,6 +154,10 @@ ChangelogDialog::ChangelogDialog(QWidget *parent)
     layout->addLayout(buttons);
 
     connect(m_list, &QListWidget::currentRowChanged, this, &ChangelogDialog::showRelease);
+    connect(m_list, &QListWidget::currentRowChanged, this, [this](int) {
+        if (!m_choosing)
+            m_userPicked = true;
+    });
 
     loadSaved();
     fetchPage(1, QJsonArray());
@@ -225,8 +229,14 @@ void ChangelogDialog::display(const QJsonArray &releases, bool fromNetwork)
         return versionOf(a) > versionOf(b);
     });
 
-    const QString keep = m_list->currentItem() ? m_list->currentItem()->data(Qt::UserRole).toString()
-                                               : QString();
+    // Only a release the person chose is kept across a refresh. The first
+    // showing comes from the copy saved last time, which may not list the
+    // version just installed yet; whatever that showing selected by itself
+    // must not survive the fresh list, or the window opens a few releases
+    // below the one you have.
+    const QString keep = (m_userPicked && m_list->currentItem())
+        ? m_list->currentItem()->data(Qt::UserRole).toString()
+        : QString();
 
     m_releases = QJsonArray();
     m_list->blockSignals(true);
@@ -265,7 +275,9 @@ void ChangelogDialog::display(const QJsonArray &releases, bool fromNetwork)
     // for opening this - unless somebody was already reading something else.
     const int row = keepRow >= 0 ? keepRow : (runningRow >= 0 ? runningRow : 0);
     if (m_list->count() > 0) {
+        m_choosing = true;
         m_list->setCurrentRow(row);
+        m_choosing = false;
         showRelease(row);
     }
 

@@ -35,6 +35,11 @@ private:
     QNetworkAccessManager m_network;
     QJsonArray m_releases;
 
+    // Whether the selected release was clicked by the person, as opposed to
+    // chosen by the window, and a guard while the window chooses.
+    bool m_userPicked = false;
+    bool m_choosing = false;
+
     QLabel *m_status = nullptr;
     QListWidget *m_list = nullptr;
     QLabel *m_title = nullptr;
