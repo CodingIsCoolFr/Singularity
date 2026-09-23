@@ -148,11 +148,20 @@ set_target_properties(Singularity PROPERTIES
 # Debug symbols for release builds, kept in the build folder rather than next
 # to the exe so the installer never ships them. A freeze report names our own
 # code as Singularity.exe+offset; release.ps1 files this PDB away per version
-# so those offsets can be turned back into function names later. /Zi adds
-# information only - the generated code is the same - and /OPT:REF,ICF put
-# back the size optimisations that /DEBUG would otherwise switch off.
+# so those offsets can be turned back into function names later. /OPT:REF,ICF
+# put back the size optimisations that /DEBUG would otherwise switch off.
+#
+# /Z7 rather than /Zi, and the difference is not cosmetic. /Zi has every
+# compiler process write its debug information through one shared helper,
+# mspdbsrv.exe, which outlives the build and keeps the file open. When a build
+# then fails on a half-written database the linker says LNK1201 and the file
+# cannot be deleted either, because mspdbsrv still holds it - which is exactly
+# what happened here, three times. /Z7 puts the debug information in the object
+# files instead and the linker writes the database once, at the end, with no
+# helper involved and nothing left holding it afterwards. Object files are
+# larger; the produced code and the final PDB are the same.
 if(MSVC)
-    target_compile_options(Singularity PRIVATE $<$<CONFIG:Release>:/Zi>)
+    target_compile_options(Singularity PRIVATE $<$<CONFIG:Release>:/Z7>)
     target_link_options(Singularity PRIVATE
         $<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF /PDB:${CMAKE_BINARY_DIR}/Singularity.pdb>)
 endif()
