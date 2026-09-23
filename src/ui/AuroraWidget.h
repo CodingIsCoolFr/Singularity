@@ -69,6 +69,12 @@ private:
     void loadPicture();
     void uploadFrame(const QImage &frame);
 
+    // Frame pacing, anchored to the screen rather than to a timer.
+    void armNextFrame();
+    double framePeriodMs() const;
+    qint64 m_lastFrameMs = -1;
+    QTimer m_frameWatchdog;
+
     QOpenGLShaderProgram *m_program = nullptr;
     QOpenGLShaderProgram *m_bakeProgram = nullptr;
     QOpenGLShaderProgram *m_pictureProgram = nullptr;

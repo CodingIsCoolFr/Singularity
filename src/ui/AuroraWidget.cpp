@@ -8,6 +8,7 @@
 #include <QOpenGLShaderProgram>
 #include <QPainter>
 #include <QResizeEvent>
+#include <QScreen>
 #include <QVector2D>
 
 namespace {
@@ -411,10 +412,65 @@ AuroraWidget::AuroraWidget(QWidget *parent)
     setStyleSheet(QStringLiteral("background:none;border:none;"));
 
     m_clock.start();
+
+    // Each frame is timed from the moment the previous one reached the screen.
+    //
+    // This was a repeating 16 ms timer, and on a 240 Hz screen that is the
+    // bug. A frame there lasts 4.17 ms, so sixty frames a second is exactly
+    // four refreshes - 16.67 ms. A 16 ms timer runs 0.67 ms ahead of that
+    // every frame, and after twenty five frames it has gained a whole refresh:
+    // one frame is shown twice or skipped. That is the small hitch roughly
+    // every half second that looked like the background lagging, with nothing
+    // else going on at all.
+    //
+    // frameSwapped fires just after a frame is handed to the screen, which is
+    // on a refresh. Measuring from there, and asking for the next frame a
+    // little before the target refresh, lands every frame on the same beat
+    // and cannot drift, because each one is re-anchored to the last.
     m_overlayTimer.setTimerType(Qt::PreciseTimer);
-    m_overlayTimer.setInterval(16);
+    m_overlayTimer.setSingleShot(true);
     connect(&m_overlayTimer, &QTimer::timeout, this, QOverload<>::of(&QWidget::update));
-    m_overlayTimer.start();
+    connect(this, &QOpenGLWidget::frameSwapped, this, &AuroraWidget::armNextFrame);
+
+    // If a frame is ever missed - hidden, minimised, a lost context - nothing
+    // would swap and nothing would ask again. This restarts the chain.
+    m_frameWatchdog.setInterval(250);
+    connect(&m_frameWatchdog, &QTimer::timeout, this, [this]() {
+        if (m_running && isVisible() && m_clock.elapsed() - m_lastFrameMs > 200)
+            update();
+    });
+    m_frameWatchdog.start();
+}
+
+double AuroraWidget::framePeriodMs() const
+{
+    // About sixty a second, rounded to a whole number of the screen's own
+    // refreshes: four on 240 Hz, two on 120 Hz, one on 60 Hz. A period that
+    // is not a whole number of refreshes is uneven by construction.
+    double refresh = 60.0;
+    if (QScreen *s = screen())
+        refresh = s->refreshRate() > 1.0 ? s->refreshRate() : 60.0;
+    const int refreshesPerFrame = qMax(1, qRound(refresh / 60.0));
+    return 1000.0 * refreshesPerFrame / refresh;
+}
+
+void AuroraWidget::armNextFrame()
+{
+    if (!m_running || m_overlayTimer.isActive())
+        return;
+
+    // Something else in the window can cause a swap too. Timing from our own
+    // last frame rather than from this swap keeps those from pushing ours
+    // back, and ignoring swaps while a frame is already booked keeps them from
+    // restarting it.
+    const double period = framePeriodMs();
+    const qint64 sinceOurs = m_lastFrameMs < 0 ? 0 : m_clock.elapsed() - m_lastFrameMs;
+
+    // Ask a little early. The request is served, drawn and handed over before
+    // the refresh it is aimed at, and then waits for that refresh.
+    constexpr double Margin = 3.0;
+    const int delay = qBound(0, int(period - double(sinceOurs) - Margin), int(period));
+    m_overlayTimer.start(delay);
 }
 
 AuroraWidget::~AuroraWidget()
@@ -459,7 +515,7 @@ void AuroraWidget::setRunning(bool on)
         return;
     if (on) {
         m_runOffset = m_clock.elapsed() - qint64(m_time * 1000.f);
-        m_overlayTimer.start();
+        // One frame starts the chain; every swap after it books the next.
     } else {
         m_overlayTimer.stop();
     }
@@ -659,8 +715,9 @@ void AuroraWidget::paintGL()
 
     // Wall clock, not a capped step. A late frame used to slow the disk, which
     // is the hitch that reads as the background stuttering.
+    m_lastFrameMs = m_clock.elapsed();
     if (m_running)
-        m_time = float(m_clock.elapsed() - m_runOffset) * 0.001f;
+        m_time = float(m_lastFrameMs - m_runOffset) * 0.001f;
 
     // A picture of your own, when there is one to show.
     //

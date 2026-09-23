@@ -4,10 +4,12 @@
 
 #include <QAudioFormat>
 #include <QByteArray>
+#include <QElapsedTimer>
 #include <QHash>
 #include <QImage>
 #include <QJsonObject>
 #include <QList>
+#include <QMutex>
 #include <QObject>
 #include <QSet>
 #include <QStringList>
@@ -16,7 +18,9 @@
 #include <QUdpSocket>
 #include <QWebSocket>
 
+#include <atomic>
 #include <functional>
+#include <utility>
 
 class DaveSession;
 class QAudioSource;
@@ -52,6 +56,19 @@ public:
     explicit VoiceConnection(QObject *parent = nullptr);
     ~VoiceConnection() override;
 
+    // Every connection lives on one thread of its own - the media thread -
+    // and never on the one that draws the window.
+    //
+    // This is how Discord's own engine is built. Its voice module names its
+    // threads discord_audio_playout and discord_audio_capture, and asks
+    // Windows for "Pro Audio" scheduling on them. Here everything ran on the
+    // window's thread instead, so a busy window made the 20 ms audio beat
+    // late: in a twenty person call the five second tally took ten, which is
+    // the beat running at half speed, heard as lag and chop.
+    //
+    // Call this once, from the media thread itself, when it starts.
+    static void prepareMediaThread();
+
     // Called once both halves have arrived from the main gateway.
     //
     // `daveGroupId` is the MLS group the call uses. Voice channels use the
@@ -77,16 +94,26 @@ public:
     void setAudioHost(VoiceConnection *host) { m_audioHost = host; }
     void offerExternalPcm(const QByteArray &pcm);
 
-    State state() const { return m_state; }
-    QString channelId() const { return m_channelId; }
+    // Safe to ask from any thread. These read copies the connection keeps up
+    // to date for the window, because the real fields belong to the media
+    // thread and change while it works.
+    State state() const { return static_cast<State>(m_publicState.load()); }
+    QString channelId() const
+    {
+        QMutexLocker lock(&m_publicMutex);
+        return m_publicChannelId;
+    }
 
+    // Every setter below may be called from the window. Each one posts itself
+    // to the media thread and returns at once, so the order of calls is kept
+    // and nothing is ever changed underneath the audio while it runs.
     void setMuted(bool muted);
     void setDeafened(bool deafened);
     bool isMuted() const { return m_muted; }
     bool isDeafened() const { return m_deafened; }
 
     // 0 to 200, matching the sliders in settings.
-    void setInputVolume(int percent) { m_inputVolume = percent; }
+    void setInputVolume(int percent);
     void setOutputVolume(int percent);
 
     // How loud each person is, on top of the call-wide slider.
@@ -94,9 +121,9 @@ public:
     // Keys are user ids. A missing id is 100 and not muted. The same numbers
     // Discord stores, so a change there and a change here are one setting.
     void setUserVolumes(const QHash<QString, int> &percent, const QSet<QString> &muted);
-    void setInputDevice(const QByteArray &deviceId) { m_inputDeviceId = deviceId; }
-    void setOutputDevice(const QByteArray &deviceId) { m_outputDeviceId = deviceId; }
-    void setSensitivity(int percent) { m_sensitivity = percent; }
+    void setInputDevice(const QByteArray &deviceId);
+    void setOutputDevice(const QByteArray &deviceId);
+    void setSensitivity(int percent);
 
     // Sending a picture of our own.
     //
@@ -105,7 +132,7 @@ public:
     // after it, every call to sendPicture() puts one on the wire.
     void startSendingVideo(int width, int height);
     void stopSendingVideo();
-    bool isSendingVideo() const { return m_sendingVideo; }
+    bool isSendingVideo() const { return m_publicSending.load(); }
 
     // One complete picture, already split into NAL units by the encoder.
     //
@@ -122,7 +149,7 @@ public:
     // the next slice arrives. It is also why core does not include the plugin
     // headers — the window hands this in, so the layering stays one way.
     using MicrophoneProcessor = std::function<void(qint16 *samples, int frames, int channels, int sampleRate)>;
-    void setMicrophoneProcessor(MicrophoneProcessor processor) { m_micProcessor = std::move(processor); }
+    void setMicrophoneProcessor(MicrophoneProcessor processor);
 
 signals:
     void stateChanged(VoiceConnection::State state);
@@ -152,6 +179,35 @@ private slots:
     void onSendTick();
 
 private:
+    // True when called from anywhere but the media thread, in which case the
+    // work has been posted there and the caller should return. Posting keeps
+    // calls in the order they were made, which a setter followed by a connect
+    // depends on.
+    template <typename Work>
+    bool postToOwnThread(Work &&work)
+    {
+        if (QThread::currentThread() == thread())
+            return false;
+        QMetaObject::invokeMethod(this, std::forward<Work>(work), Qt::QueuedConnection);
+        return true;
+    }
+
+    // The copies the window reads. Written only on the media thread.
+    std::atomic<int> m_publicState{static_cast<int>(State::Idle)};
+    std::atomic<bool> m_publicSending{false};
+    mutable QMutex m_publicMutex;
+    QString m_publicChannelId;
+    void publishChannel(const QString &channelId);
+
+    // How late the 20 ms playback beat has been since the last tally. This is
+    // the number that says whether a stutter is ours, and it is the one that
+    // was missing: the tally counted ticks, so when ticks ran late the tally
+    // itself stretched from five seconds to ten and nothing else looked wrong.
+    QElapsedTimer m_beatClock;
+    qint64 m_lastBeatMs = -1;
+    qint64 m_worstBeatLateMs = 0;
+    int m_beatsLate = 0;
+
     void setState(State state);
     void sendJson(const QJsonObject &payload);
     void sendIdentify();

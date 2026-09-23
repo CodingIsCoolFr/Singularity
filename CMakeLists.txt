@@ -1,5 +1,5 @@
 ﻿cmake_minimum_required(VERSION 3.21)
-project(Singularity VERSION 0.6.64 LANGUAGES CXX)
+project(Singularity VERSION 0.6.65 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -241,6 +241,9 @@ target_link_libraries(Singularity PRIVATE
     Crypt32
     # Dwmapi colours the title bar, which belongs to Windows rather than Qt.
     Dwmapi
+    # Avrt puts the media thread in the "Pro Audio" scheduling class, the
+    # same request Discord's own voice engine makes.
+    Avrt
     # Desktop Duplication, for sharing a screen. This is the API the Windows
     # compositor already feeds, so a still desktop costs nothing and hardware
     # overlays - video players, most games - are actually in the picture.

@@ -264,7 +264,9 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     , m_gateway(gateway)
     , m_store(store)
     , m_plugins(plugins)
-    , m_voice(new VoiceConnection(this))
+    // No parent: an object with one cannot be moved to another thread, and
+    // this one lives on the media thread. The destructor deletes it there.
+    , m_voice(new VoiceConnection)
 {
     setWindowTitle(QStringLiteral("Singularity"));
     setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
@@ -404,7 +406,7 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
             });
 
     // The second connection, used only for watching somebody's shared screen.
-    m_streamVoice = new VoiceConnection(this);
+    m_streamVoice = new VoiceConnection;
     m_streamVoice->setViewerOnly(true);
     m_streamVoice->setAudioHost(m_voice);
     m_streamVoice->setOutputVolume(
@@ -428,17 +430,24 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     // Viewer-only for the same reason the watching one is: the microphone is
     // already being carried by the call underneath, and opening a second one
     // here would send everything twice.
-    m_shareVoice = new VoiceConnection(this);
+    m_shareVoice = new VoiceConnection;
     m_shareVoice->setViewerOnly(true);
+
+    // All three onto the media thread, now that the settings that must be in
+    // place before anything runs have been given.
+    startMediaThread();
 
     m_share = new ScreenShare(this);
 
     // Capture and encoding run on their own thread and hand finished pictures
-    // back here, where the keys and the socket are.
-    connect(m_share, &ScreenShare::picture, this,
-            [this](const QList<QByteArray> &units, bool) {
-                if (m_shareVoice)
-                    m_shareVoice->sendPicture(units);
+    // straight to the media thread, where the keys and the socket are.
+    //
+    // The connection is made against the voice connection itself rather than
+    // the window, so pictures never wait in the window's queue. A share used
+    // to stall for as long as the window was busy drawing.
+    connect(m_share, &ScreenShare::picture, m_shareVoice,
+            [voice = m_shareVoice](const QList<QByteArray> &units, bool) {
+                voice->sendPicture(units);
             });
 
     // Our own tile, filled from our own capture. Nothing comes back off the
@@ -485,10 +494,9 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     });
 
     m_camera = new CameraShare(this);
-    connect(m_camera, &CameraShare::picture, this, [this](const QList<QByteArray> &units, bool) {
-        if (m_voice)
-            m_voice->sendPicture(units);
-    });
+    // Same as the share: straight to the media thread, past the window.
+    connect(m_camera, &CameraShare::picture, m_voice,
+            [voice = m_voice](const QList<QByteArray> &units, bool) { voice->sendPicture(units); });
     connect(m_camera, &CameraShare::started, this, [this](int width, int height, const QString &encoder) {
         wlog(QStringLiteral("camera"), QStringLiteral("encoding with %1").arg(encoder));
         if (m_voice)
@@ -1134,6 +1142,25 @@ QWidget *MainWindow::buildSidebar(QWidget *parent)
     connect(&m_memoryTimer, &QTimer::timeout, this, &MainWindow::reportMemory);
     m_memoryTimer.start();
 
+    // A pulse on the window's own thread, to measure how long it is ever too
+    // busy to answer. Everything the window draws - the black hole included -
+    // waits behind whatever the thread is doing, so this is the number that
+    // says whether a dropped frame was ours.
+    m_uiPulse.setTimerType(Qt::PreciseTimer);
+    m_uiPulse.setInterval(50);
+    connect(&m_uiPulse, &QTimer::timeout, this, [this]() {
+        if (!m_uiPulseClock.isValid()) {
+            m_uiPulseClock.start();
+            return;
+        }
+        const qint64 late = m_uiPulseClock.restart() - 50;
+        if (late > m_uiWorstStallMs)
+            m_uiWorstStallMs = late;
+        if (late > 33)
+            ++m_uiStalls;
+    });
+    m_uiPulse.start();
+
     connect(m_channelDelegate, &ChannelDelegate::joinVoiceRequested, this, &MainWindow::joinVoice);
     connect(m_channelDelegate, &ChannelDelegate::leaveVoiceRequested, this,
             [this](const QString &) { leaveVoice(); });
@@ -1684,10 +1711,19 @@ void MainWindow::onGatewayReady(const QJsonObject &payload)
         ingestSettingsProto(settingsProto, false);
     populateGuildRail();
 
-    // Say it again now that the session exists. The copy sent before the
-    // socket was open was only remembered, and Discord does not treat the
-    // status inside the first sign-in as the one other people should see.
-    setPresenceStatus(m_gateway->presenceStatus());
+    // Say it again now that the session exists, using the status Discord has
+    // stored for the account rather than the one this machine last saw.
+    //
+    // The copy sent before the socket was open was only remembered, and
+    // Discord does not treat the status inside the first sign-in as the one
+    // other people should see - so it does need saying. But what it says has
+    // to be the account's, not ours: another device may have changed it
+    // since, and saying ours back overwrote that.
+    {
+        const QString stored = statusFromProto(settingsProto);
+        setPresenceStatus(stored.isEmpty() ? m_gateway->presenceStatus() : stored,
+                          /*storeOnDiscord*/ false);
+    }
     ensureClientActivity();
 
     updateUserPanel();
@@ -2961,6 +2997,43 @@ void MainWindow::pumpPrefetch()
         });
 }
 
+void MainWindow::startMediaThread()
+{
+    // Runs on the new thread itself, before anything else does, so the
+    // priority is in place by the time the first beat is scheduled.
+    connect(&m_mediaThread, &QThread::started, []() { VoiceConnection::prepareMediaThread(); });
+
+    m_mediaThread.setObjectName(QStringLiteral("singularity_media"));
+    for (VoiceConnection *voice : {m_voice, m_streamVoice, m_shareVoice}) {
+        if (voice)
+            voice->moveToThread(&m_mediaThread);
+    }
+    m_mediaThread.start(QThread::TimeCriticalPriority);
+}
+
+MainWindow::~MainWindow()
+{
+    // Each connection is deleted on the thread it lives on - its sockets and
+    // timers belong to that thread and cannot be torn down from this one -
+    // and only then is the thread stopped. The share connection goes first
+    // because the watching one hands its sound to the main one.
+    const bool running = m_mediaThread.isRunning();
+    for (VoiceConnection *voice : {m_shareVoice, m_streamVoice, m_voice}) {
+        if (!voice)
+            continue;
+        if (running)
+            QMetaObject::invokeMethod(voice, [voice]() { delete voice; }, Qt::BlockingQueuedConnection);
+        else
+            delete voice;
+    }
+    m_shareVoice = nullptr;
+    m_streamVoice = nullptr;
+    m_voice = nullptr;
+
+    m_mediaThread.quit();
+    m_mediaThread.wait(3000);
+}
+
 void MainWindow::reportMemory()
 {
     // The working set is what the task manager shows, so the log and the task
@@ -2984,6 +3057,15 @@ void MainWindow::reportMemory()
         privateMb = qint64(counters.PrivateUsage) / (1024 * 1024);
     }
 #endif
+
+    // Printed beside memory because it is read the same way: once a minute,
+    // as a number rather than a feeling. Over 33 ms is two frames at sixty.
+    wlog(QStringLiteral("ui"),
+         QStringLiteral("window thread: worst stall %1 ms, %2 stalls over 33 ms in the last minute")
+             .arg(m_uiWorstStallMs)
+             .arg(m_uiStalls));
+    m_uiWorstStallMs = 0;
+    m_uiStalls = 0;
 
     wlog(QStringLiteral("mem"),
          QStringLiteral("%1 MB in use (%2 MB ours); media: %3; store: %4")
@@ -3922,7 +4004,7 @@ void MainWindow::setActivityShared(bool on)
     }
 }
 
-void MainWindow::setPresenceStatus(const QString &status)
+void MainWindow::setPresenceStatus(const QString &status, bool storeOnDiscord)
 {
     m_gateway->setPresenceStatus(status);
     AppConfig::instance().setValue(QStringLiteral("presence/status"), status);
@@ -3940,7 +4022,13 @@ void MainWindow::setPresenceStatus(const QString &status)
 
     // Opcode 3 tells this session. The settings write is what the real client
     // does, and it is what other people and your other sessions actually use.
-    if (m_rest) {
+    //
+    // Only for a choice somebody made. This used to run on every sign-in with
+    // whatever status was saved on this machine, so an old copy of the
+    // program, or one started from a stale settings file, quietly set the
+    // whole account back to what it had last seen - Do Not Disturb turned
+    // into Online by nothing more than opening it.
+    if (m_rest && storeOnDiscord) {
         const QString chosen = m_gateway->presenceStatus();
         m_rest->updateStatus(
             chosen,
@@ -5860,6 +5948,15 @@ void MainWindow::applyAudioSettingsUpdate(const QJsonObject &data)
 
 void MainWindow::ingestSettingsProto(const QByteArray &proto, bool partial)
 {
+    // Status changed on another device. Follow it, the way the official
+    // client does, without writing it back. The first sign-in handles its
+    // own copy in onGatewayReady.
+    if (partial) {
+        const QString status = statusFromProto(proto);
+        if (!status.isEmpty() && status != m_gateway->presenceStatus())
+            setPresenceStatus(status, /*storeOnDiscord*/ false);
+    }
+
     QHash<QString, UserAudioLevel> parsed;
     bool present = false;
     if (!audioContextFromProto(proto, &parsed, &present)) {

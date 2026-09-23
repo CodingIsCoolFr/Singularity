@@ -12,6 +12,7 @@
 #include <QMainWindow>
 #include <QPointer>
 #include <QSet>
+#include <QThread>
 #include <QTimer>
 
 class PluginHost;
@@ -44,6 +45,9 @@ class MainWindow : public QMainWindow
 public:
     MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *store, PluginHost *plugins,
                QWidget *parent = nullptr);
+
+    // Stops the media thread, after deleting the voice connections on it.
+    ~MainWindow() override;
 
     void startSession(const QString &token);
 
@@ -300,7 +304,11 @@ private:
     // Online, idle, do not disturb, invisible - from your own panel at the
     // bottom of the sidebar, which is where people look for it.
     void showStatusMenu();
-    void setPresenceStatus(const QString &status);
+    // `storeOnDiscord` is true only when the person picked it from the menu.
+    // Anything else - signing in, another device changing it - adopts what
+    // Discord already has and must never write back, or an old copy of this
+    // program overwrites the status someone set somewhere else.
+    void setPresenceStatus(const QString &status, bool storeOnDiscord = true);
 
     void startScreenShare();
     void stopScreenShare();
@@ -329,6 +337,12 @@ private:
     int m_shareBitrate = 0;
 
     VoiceConnection *m_streamVoice = nullptr;
+
+    // Where all three voice connections live: sound, network and video
+    // assembly for calls, never on the thread that draws the window.
+    QThread m_mediaThread;
+    void startMediaThread();
+
     QString m_watchingUserId;
     QString m_streamKey;
     QString m_streamServerId;
@@ -462,6 +476,12 @@ private:
     QSet<QString> m_prefetchAsked;
     QTimer m_prefetchTimer;
     QTimer m_memoryTimer;
+
+    // How often, and by how much, the window's thread was too busy to answer.
+    QTimer m_uiPulse;
+    QElapsedTimer m_uiPulseClock;
+    qint64 m_uiWorstStallMs = 0;
+    int m_uiStalls = 0;
 
     // Which channel is being fetched ahead right now. Clicking that same
     // channel must wait for the request already on its way rather than

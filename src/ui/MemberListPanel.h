@@ -4,6 +4,8 @@
 #include <QString>
 #include <QWidget>
 
+class QTimer;
+
 class MessageStore;
 class QLabel;
 class QListWidget;
@@ -48,6 +50,9 @@ signals:
 
 private:
     void rebuild();
+
+    // Batches rebuilds triggered by the gateway. See the constructor.
+    QTimer *m_rebuildTimer = nullptr;
     void refreshAvatar(const QString &userId);
 
     MessageStore *m_store = nullptr;

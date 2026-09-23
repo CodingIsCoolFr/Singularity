@@ -112,11 +112,14 @@ void PluginHost::setEnabled(const QString &pluginId, bool enabled)
     if (!entry || entry->enabled == enabled)
         return;
 
-    entry->enabled = enabled;
-    if (enabled)
-        entry->plugin->onLoad(entry->context.get());
-    else
-        entry->plugin->onUnload();
+    {
+        QMutexLocker gate(&m_audioGate);
+        entry->enabled = enabled;
+        if (enabled)
+            entry->plugin->onLoad(entry->context.get());
+        else
+            entry->plugin->onUnload();
+    }
 
     AppConfig::instance().setPluginEnabled(pluginId, enabled);
     AppConfig::instance().sync();
@@ -186,10 +189,17 @@ void PluginHost::runMicrophoneFrame(qint16 *samples, int frames, int channels, i
 {
     // No logging and nothing clever in this loop. It runs fifty times a second
     // inside the audio path, and anything slow here is heard rather than read.
+    //
+    // It runs on the media thread now, not the window's, so a plugin being
+    // switched on or off at the same moment would be changed underneath it.
+    // Tried rather than waited for: audio never blocks on a click.
+    if (!m_audioGate.tryLock())
+        return;
     for (Entry *entry : m_entries) {
         if (entry->enabled)
             entry->plugin->onMicrophoneFrame(samples, frames, channels, sampleRate);
     }
+    m_audioGate.unlock();
 }
 
 QString PluginHost::runDecorateGutter(const MessageInfo &message)

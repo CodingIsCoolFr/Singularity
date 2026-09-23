@@ -10,6 +10,7 @@
 #include <QListWidget>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QTimer>
 #include <QVBoxLayout>
 
 namespace {
@@ -175,13 +176,26 @@ MemberListPanel::MemberListPanel(MessageStore *store, QWidget *parent)
 
     layout->addWidget(m_body, 1);
 
+    // Changes are collected and applied a few times a second at most.
+    //
+    // A server with 1.4 million members sends a member list change every one
+    // to four seconds for the whole session, and a busy voice channel sends
+    // voice state changes faster than that. Each one rebuilt the list on the
+    // window's thread - the same thread that plays the black hole - so the
+    // list was a steady source of dropped frames while nobody was looking at
+    // it change. Nobody can read a list that changes faster than this anyway.
+    m_rebuildTimer = new QTimer(this);
+    m_rebuildTimer->setSingleShot(true);
+    m_rebuildTimer->setInterval(350);
+    connect(m_rebuildTimer, &QTimer::timeout, this, [this]() { rebuild(); });
+
     connect(m_store, &MessageStore::memberListChanged, this, [this](const QString &guildId) {
-        if (guildId == m_guildId && !m_focusIsVoice)
-            rebuild();
+        if (guildId == m_guildId && !m_focusIsVoice && !m_rebuildTimer->isActive())
+            m_rebuildTimer->start();
     });
     connect(m_store, &MessageStore::voiceStatesChanged, this, [this]() {
-        if (m_focusIsVoice)
-            rebuild();
+        if (m_focusIsVoice && !m_rebuildTimer->isActive())
+            m_rebuildTimer->start();
     });
 
     // Pictures arrive later than the list does, so a face that was a grey

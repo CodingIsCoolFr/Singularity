@@ -21,3 +21,11 @@ struct UserAudioLevel
 // A missing volume inside an entry is 0, not "unchanged". Protobuf does not
 // write a zero, so the absence is the value.
 bool audioContextFromProto(const QByteArray &bytes, QHash<QString, UserAudioLevel> *levels, bool *present);
+
+// Field 11 of the same blob, StatusSettings, and inside it field 1, the
+// status as a StringValue: "online", "idle", "dnd" or "invisible". Numbers
+// checked against discord-protos' PreloadedUserSettings.proto, not counted.
+//
+// Empty when the blob does not carry it, which on a partial update means the
+// status did not change.
+QString statusFromProto(const QByteArray &bytes);

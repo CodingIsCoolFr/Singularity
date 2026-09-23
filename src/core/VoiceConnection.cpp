@@ -29,6 +29,14 @@
 #include <cmath>
 #include <cstring>
 
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <avrt.h>
+#endif
+
 namespace {
 
 // Voice gateway opcodes.
@@ -369,6 +377,22 @@ VoiceConnection::VoiceConnection(QObject *parent)
     if (sodium_init() < 0)
         wlog(QStringLiteral("voice"), QStringLiteral("libsodium refused to start"));
 
+    // Parented, so they follow this object onto the media thread.
+    //
+    // moveToThread carries an object's children and nothing else. These are
+    // plain members, and left alone they would stay on the window's thread:
+    // the sockets would deliver there and the timers would refuse to start
+    // from here, silently. The same trap once stopped a screen share from
+    // sending a single frame. Each member unregisters itself from the parent
+    // when it is destroyed, which happens before the parent's own cleanup, so
+    // nothing is deleted twice.
+    m_socket.setParent(this);
+    m_udp.setParent(this);
+    m_heartbeatTimer.setParent(this);
+    m_sendTimer.setParent(this);
+    m_playTimer.setParent(this);
+    m_handshakeWatchdog.setParent(this);
+
     m_heartbeatTimer.setSingleShot(false);
     m_sendTimer.setSingleShot(false);
     m_sendTimer.setTimerType(Qt::PreciseTimer);
@@ -450,11 +474,43 @@ VoiceConnection::~VoiceConnection()
     m_videoWorker = nullptr;
 }
 
+void VoiceConnection::prepareMediaThread()
+{
+    QThread::currentThread()->setObjectName(QStringLiteral("singularity_media"));
+
+#ifdef Q_OS_WIN
+    // The same request Discord's voice engine makes of Windows.
+    //
+    // "Pro Audio" puts this thread in the Multimedia Class Scheduler, which
+    // gives it priority over ordinary work for the few milliseconds each beat
+    // needs. Without it a game or a browser tab can push the beat late even
+    // when this program is idle. Failing is not fatal - the thread still runs,
+    // just without the guarantee - so it is written down and ignored.
+    DWORD taskIndex = 0;
+    HANDLE task = AvSetMmThreadCharacteristicsW(L"Pro Audio", &taskIndex);
+    if (task) {
+        AvSetMmThreadPriority(task, AVRT_PRIORITY_HIGH);
+        wlog(QStringLiteral("voice"), QStringLiteral("media thread running with Pro Audio priority"));
+    } else {
+        wlog(QStringLiteral("voice"),
+             QStringLiteral("media thread could not get Pro Audio priority (error %1)")
+                 .arg(GetLastError()));
+    }
+#endif
+}
+
+void VoiceConnection::publishChannel(const QString &channelId)
+{
+    QMutexLocker lock(&m_publicMutex);
+    m_publicChannelId = channelId;
+}
+
 void VoiceConnection::setState(State state)
 {
     if (m_state == state)
         return;
     m_state = state;
+    m_publicState.store(static_cast<int>(state));
     emit stateChanged(state);
 }
 
@@ -463,10 +519,16 @@ void VoiceConnection::connectToVoice(const QString &guildId, const QString &chan
                                      const QString &token, const QString &endpoint,
                                      quint64 daveGroupId)
 {
+    if (postToOwnThread([=, this]() {
+            connectToVoice(guildId, channelId, userId, sessionId, token, endpoint, daveGroupId);
+        }))
+        return;
+
     disconnectFromVoice();
 
     m_guildId = guildId;
     m_channelId = channelId;
+    publishChannel(channelId);
     m_userId = userId;
     m_sessionId = sessionId;
     m_token = token;
@@ -508,9 +570,13 @@ void VoiceConnection::connectToVoice(const QString &guildId, const QString &chan
 
 void VoiceConnection::disconnectFromVoice()
 {
+    if (postToOwnThread([this]() { disconnectFromVoice(); }))
+        return;
+
     if (m_state == State::Idle)
         return;
     teardown();
+    publishChannel(QString());
     setState(State::Idle);
 }
 
@@ -1507,6 +1573,9 @@ void VoiceConnection::startAudio()
     m_rtpTimestamp = QRandomGenerator::global()->generate();
     m_nonceCounter = 0;
 
+    m_lastBeatMs = -1;
+    m_worstBeatLateMs = 0;
+    m_beatsLate = 0;
     m_sendTimer.start();
     m_playTimer.start();
 
@@ -1728,6 +1797,14 @@ void VoiceConnection::reportAudioStats()
         m_statVideoSent = 0;
         m_statVideoSealFailed = 0;
     }
+
+    // The beat, always printed. A clean call should read "worst 1 ms"; a call
+    // that stutters will say by how much, and whether it is us.
+    line += QStringLiteral(", beat late worst %1 ms (%2 over 10 ms)")
+                .arg(m_worstBeatLateMs)
+                .arg(m_beatsLate);
+    m_worstBeatLateMs = 0;
+    m_beatsLate = 0;
 
     wlog(QStringLiteral("voice"), line);
 
@@ -2122,6 +2199,11 @@ void VoiceConnection::catchUpQueues()
 
 void VoiceConnection::offerExternalPcm(const QByteArray &pcm)
 {
+    // Always called by the stream connection, which lives on the same thread,
+    // so this is normally direct. Posted anyway if that ever stops being true.
+    if (postToOwnThread([this, pcm]() { offerExternalPcm(pcm); }))
+        return;
+
     if (pcm.size() == FrameBytes)
         m_externalPcm = pcm;
 }
@@ -2203,6 +2285,20 @@ QByteArray VoiceConnection::mixWaitingStreams()
 //     it would have been, so a late packet is a soft blur instead of a click.
 void VoiceConnection::onPlayTick()
 {
+    // How late this beat is. A beat that arrives late plays late, and one
+    // that is late by more than the cushion plays nothing at all.
+    if (!m_beatClock.isValid())
+        m_beatClock.start();
+    const qint64 now = m_beatClock.elapsed();
+    if (m_lastBeatMs >= 0) {
+        const qint64 late = now - m_lastBeatMs - FrameMs;
+        if (late > m_worstBeatLateMs)
+            m_worstBeatLateMs = late;
+        if (late > 10)
+            ++m_beatsLate;
+    }
+    m_lastBeatMs = now;
+
     sweepSpeaking();
     catchUpQueues();
 
@@ -2349,6 +2445,9 @@ void VoiceConnection::sendVideoState()
 
 void VoiceConnection::startSendingVideo(int width, int height)
 {
+    if (postToOwnThread([this, width, height]() { startSendingVideo(width, height); }))
+        return;
+
     if (m_ssrc == 0) {
         wlog(QStringLiteral("share"),
              QStringLiteral("asked to send video before the server gave us an ssrc"));
@@ -2375,6 +2474,7 @@ void VoiceConnection::startSendingVideo(int width, int height)
     m_videoSequence = 0;
     m_videoTimestamp = 0;
     m_sendingVideo = true;
+    m_publicSending.store(true);
 
     wlog(QStringLiteral("share"),
          QStringLiteral("sending video: %1x%2, ssrc %3").arg(width).arg(height).arg(m_videoSsrc));
@@ -2388,10 +2488,14 @@ void VoiceConnection::startSendingVideo(int width, int height)
 
 void VoiceConnection::stopSendingVideo()
 {
+    if (postToOwnThread([this]() { stopSendingVideo(); }))
+        return;
+
     if (!m_sendingVideo)
         return;
 
     m_sendingVideo = false;
+    m_publicSending.store(false);
     m_videoSsrc = 0;
     m_rtxSsrc = 0;
     m_sendWidth = m_sendHeight = 0;
@@ -2404,6 +2508,12 @@ void VoiceConnection::stopSendingVideo()
 
 void VoiceConnection::sendPicture(const QList<QByteArray> &units)
 {
+    // Normally already here: the encoder's signal is connected straight to
+    // this object, so pictures go encoder thread to media thread and never
+    // wait behind the window.
+    if (postToOwnThread([this, units]() { sendPicture(units); }))
+        return;
+
     if (!m_sendingVideo || units.isEmpty() || m_secretKey.isEmpty())
         return;
 
@@ -2715,6 +2825,9 @@ void VoiceConnection::sendSpeaking(bool speaking)
 
 void VoiceConnection::setMuted(bool muted)
 {
+    if (postToOwnThread([this, muted]() { setMuted(muted); }))
+        return;
+
     m_muted = muted;
     if (muted && m_speaking) {
         m_speaking = false;
@@ -2724,17 +2837,61 @@ void VoiceConnection::setMuted(bool muted)
 
 void VoiceConnection::setDeafened(bool deafened)
 {
+    if (postToOwnThread([this, deafened]() { setDeafened(deafened); }))
+        return;
+
     m_deafened = deafened;
 }
 
 void VoiceConnection::setUserVolumes(const QHash<QString, int> &percent, const QSet<QString> &muted)
 {
+    if (postToOwnThread([this, percent, muted]() { setUserVolumes(percent, muted); }))
+        return;
+
     m_userVolume = percent;
     m_userMuted = muted;
 }
 
+void VoiceConnection::setInputVolume(int percent)
+{
+    if (postToOwnThread([this, percent]() { setInputVolume(percent); }))
+        return;
+    m_inputVolume = percent;
+}
+
+void VoiceConnection::setInputDevice(const QByteArray &deviceId)
+{
+    if (postToOwnThread([this, deviceId]() { setInputDevice(deviceId); }))
+        return;
+    m_inputDeviceId = deviceId;
+}
+
+void VoiceConnection::setOutputDevice(const QByteArray &deviceId)
+{
+    if (postToOwnThread([this, deviceId]() { setOutputDevice(deviceId); }))
+        return;
+    m_outputDeviceId = deviceId;
+}
+
+void VoiceConnection::setSensitivity(int percent)
+{
+    if (postToOwnThread([this, percent]() { setSensitivity(percent); }))
+        return;
+    m_sensitivity = percent;
+}
+
+void VoiceConnection::setMicrophoneProcessor(MicrophoneProcessor processor)
+{
+    if (postToOwnThread([this, processor]() { setMicrophoneProcessor(processor); }))
+        return;
+    m_micProcessor = std::move(processor);
+}
+
 void VoiceConnection::setOutputVolume(int percent)
 {
+    if (postToOwnThread([this, percent]() { setOutputVolume(percent); }))
+        return;
+
     // Remembered, not just handed to the speaker.
     //
     // This used to set the volume and keep nothing. Settings are applied just

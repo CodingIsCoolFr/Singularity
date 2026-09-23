@@ -1,5 +1,6 @@
 #include "core/SettingsProto.h"
 
+#include <QStringList>
 #include <QtNumeric>
 
 #include <cstring>
@@ -148,6 +149,61 @@ bool parseAudioSettings(const uchar *data, int size, QHash<QString, UserAudioLev
 }
 
 } // namespace
+
+namespace {
+
+// The body of a length-delimited field with this number, or false.
+bool findMessage(const uchar *data, int size, int wanted, const uchar **body, int *bodySize)
+{
+    int index = 0;
+    while (index < size) {
+        quint64 tag = 0;
+        if (!readVarint(data, size, index, tag))
+            return false;
+        const int field = int(tag >> 3);
+        const int wire = int(tag & 7);
+        if (field == wanted && wire == 2) {
+            quint64 length = 0;
+            if (!readVarint(data, size, index, length) || length > quint64(size - index))
+                return false;
+            *body = data + index;
+            *bodySize = int(length);
+            return true;
+        }
+        if (!skipField(data, size, index, wire))
+            return false;
+    }
+    return false;
+}
+
+} // namespace
+
+QString statusFromProto(const QByteArray &bytes)
+{
+    if (bytes.isEmpty())
+        return {};
+
+    const auto *data = reinterpret_cast<const uchar *>(bytes.constData());
+    const uchar *statusSettings = nullptr;
+    int statusSize = 0;
+    if (!findMessage(data, bytes.size(), 11, &statusSettings, &statusSize))
+        return {};
+
+    const uchar *wrapper = nullptr;
+    int wrapperSize = 0;
+    if (!findMessage(statusSettings, statusSize, 1, &wrapper, &wrapperSize))
+        return {};
+
+    const uchar *text = nullptr;
+    int textSize = 0;
+    if (!findMessage(wrapper, wrapperSize, 1, &text, &textSize))
+        return {};
+
+    const QString status = QString::fromUtf8(reinterpret_cast<const char *>(text), textSize);
+    static const QStringList known{QStringLiteral("online"), QStringLiteral("idle"),
+                                   QStringLiteral("dnd"), QStringLiteral("invisible")};
+    return known.contains(status) ? status : QString();
+}
 
 bool audioContextFromProto(const QByteArray &bytes, QHash<QString, UserAudioLevel> *levels, bool *present)
 {

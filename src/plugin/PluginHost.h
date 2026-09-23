@@ -3,6 +3,7 @@
 #include "plugin/Plugin.h"
 
 #include <QList>
+#include <QMutex>
 #include <QObject>
 #include <QString>
 
@@ -63,4 +64,10 @@ private:
     GatewayClient *m_gateway = nullptr;
     MessageStore *m_store = nullptr;
     QList<Entry *> m_entries;
+
+    // Held while a plugin is switched on or off, and tried - never waited
+    // on - by the microphone path, which runs on the media thread. If the
+    // window holds it, that one 20 ms slice goes out unprocessed rather than
+    // the audio stopping to wait for a click to finish.
+    QMutex m_audioGate;
 };
