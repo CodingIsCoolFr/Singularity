@@ -653,6 +653,7 @@ QPushButton#TabButton {
     border-radius: 8px;
 }
 QPushButton#TabButton:hover { color: @text; background-color: @hover; }
+QPushButton#TabButton[active="true"] { color: @text; background-color: @hover; font-weight: 600; }
 
 QLineEdit {
     background-color: @input;

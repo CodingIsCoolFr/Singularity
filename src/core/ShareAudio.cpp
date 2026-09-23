@@ -148,7 +148,7 @@ ShareAudio::~ShareAudio()
     stop();
 }
 
-QList<ShareAudio::App> ShareAudio::apps()
+QList<ShareAudio::App> ShareAudio::apps(bool onePerProgram)
 {
     QList<App> found;
 #ifdef Q_OS_WIN
@@ -156,7 +156,8 @@ QList<ShareAudio::App> ShareAudio::apps()
         QList<App> *apps;
         QSet<quint32> seen;
         DWORD self;
-    } collect{&found, {}, GetCurrentProcessId()};
+        bool onePerProgram;
+    } collect{&found, {}, GetCurrentProcessId(), onePerProgram};
 
     // Top of the stack first, so the window you were just in leads the list.
     EnumWindows(
@@ -194,11 +195,11 @@ QList<ShareAudio::App> ShareAudio::apps()
             const QString name = QString::fromWCharArray(title, length);
             if (name == QLatin1String("Program Manager"))
                 return TRUE;
-            if (c->seen.contains(pid))
+            if (c->onePerProgram && c->seen.contains(pid))
                 return TRUE;
             c->seen.insert(pid);
 
-            c->apps->append(App{pid, name, exe});
+            c->apps->append(App{pid, name, exe, reinterpret_cast<quintptr>(window)});
             return TRUE;
         },
         reinterpret_cast<LPARAM>(&collect));

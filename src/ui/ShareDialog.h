@@ -9,6 +9,7 @@
 
 class QComboBox;
 class QListWidget;
+class QPushButton;
 
 // Picks what to share, and how well.
 //
@@ -34,12 +35,21 @@ public:
     quint32 soundProcessId() const;
     QString soundName() const;
 
-    // False when Windows reported no screen that can be captured at all,
-    // which is worth saying rather than showing an empty list.
-    bool hasScreens() const { return !m_monitors.isEmpty(); }
+    // False when Windows reported nothing that can be captured at all, which
+    // is worth saying rather than showing an empty list.
+    bool hasScreens() const { return !m_monitors.isEmpty() || !m_windows.isEmpty(); }
 
 private:
+    void showWindows(bool windows);
+    const QList<ScreenCapture::Monitor> &currentList() const;
+
     QList<ScreenCapture::Monitor> m_monitors;
+    QList<ScreenCapture::Monitor> m_windows;
+    bool m_showingWindows = false;
+    QPushButton *m_screensTab = nullptr;
+    QPushButton *m_windowsTab = nullptr;
+    QPushButton *m_goLive = nullptr;
+    int m_savedSound = 1;
     QListWidget *m_list = nullptr;
     QComboBox *m_quality = nullptr;
     QList<ShareAudio::App> m_apps;

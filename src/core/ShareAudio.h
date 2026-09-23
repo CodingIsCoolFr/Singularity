@@ -34,6 +34,7 @@ public:
         quint32 processId = 0;
         QString title;   // its main window's title
         QString exeName; // e.g. "chrome.exe"
+        quintptr window = 0; // the HWND the title came from
     };
 
     enum class Source {
@@ -45,9 +46,10 @@ public:
     explicit ShareAudio(QObject *parent = nullptr);
     ~ShareAudio() override;
 
-    // Programs with a window someone could recognise, one entry per program.
-    // Safe to call without starting anything.
-    static QList<App> apps();
+    // Programs with a window someone could recognise, one entry per program
+    // (or one per window, for picking a window to share). Safe to call
+    // without starting anything.
+    static QList<App> apps(bool onePerProgram = true);
 
     // Called on the capture thread for every piece of sound. Set before start.
     using Sink = std::function<void(const QByteArray &pcm)>;

@@ -1,6 +1,8 @@
 #include "core/ScreenCapture.h"
 
 #include "core/Logger.h"
+#include "core/ShareAudio.h"
+#include "core/WindowCapture.h"
 
 #include <windows.h>
 
@@ -69,8 +71,45 @@ QList<ScreenCapture::Monitor> ScreenCapture::monitors()
     return found;
 }
 
+QList<ScreenCapture::Monitor> ScreenCapture::windows()
+{
+    QList<Monitor> found;
+    for (const ShareAudio::App &app : ShareAudio::apps(false)) {
+        Monitor m;
+        m.id = QStringLiteral("window:%1").arg(quint64(app.window), 0, 16);
+        const QString title = app.title.size() > 60 ? app.title.left(59) + QChar(0x2026) : app.title;
+        m.name = app.exeName.isEmpty() ? title : QStringLiteral("%1  ·  %2").arg(title, app.exeName);
+        m.processId = app.processId;
+
+        RECT rect{};
+        if (GetClientRect(reinterpret_cast<HWND>(app.window), &rect)) {
+            m.width = rect.right - rect.left;
+            m.height = rect.bottom - rect.top;
+        }
+        found.append(m);
+    }
+    return found;
+}
+
 bool ScreenCapture::build(const QString &monitorId)
 {
+    if (isWindowId(monitorId)) {
+        bool ok = false;
+        const quintptr window = quintptr(monitorId.mid(7).toULongLong(&ok, 16));
+        if (!ok)
+            return false;
+        m_window = new WindowCapture;
+        if (!m_window->start(window)) {
+            delete m_window;
+            m_window = nullptr;
+            return false;
+        }
+        m_width = m_window->width();
+        m_height = m_window->height();
+        m_monitorId = monitorId;
+        return true;
+    }
+
     const QStringList parts = monitorId.split(QLatin1Char(':'));
     if (parts.size() != 2)
         return false;
@@ -186,6 +225,9 @@ void ScreenCapture::release()
     m_lastData = nullptr;
     m_lastStride = 0;
 
+    delete m_window;
+    m_window = nullptr;
+
     releaseCom(m_staging);
     releaseCom(m_duplication);
     releaseCom(m_context);
@@ -201,6 +243,19 @@ void ScreenCapture::stop()
 
 ScreenCapture::Result ScreenCapture::grab(int timeoutMs, const uchar **data, int *stride)
 {
+    if (m_window) {
+        const WindowCapture::Result result = m_window->grab(data, stride);
+        m_width = m_window->width();
+        m_height = m_window->height();
+        switch (result) {
+        case WindowCapture::Result::Frame:    return Result::Frame;
+        case WindowCapture::Result::NoChange: return Result::NoChange;
+        case WindowCapture::Result::Lost:     return Result::Lost;
+        case WindowCapture::Result::Failed:   return Result::Failed;
+        }
+        return Result::Failed;
+    }
+
     if (!m_duplication || !m_staging || !m_context)
         return Result::Failed;
 

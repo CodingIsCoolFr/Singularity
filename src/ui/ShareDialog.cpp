@@ -5,6 +5,8 @@
 
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QHBoxLayout>
+#include <QStyle>
 #include <QLabel>
 #include <QListWidget>
 #include <QPushButton>
@@ -39,31 +41,38 @@ constexpr Quality kQualities[] = {
 ShareDialog::ShareDialog(QWidget *parent)
     : QDialog(parent)
 {
-    setWindowTitle(QStringLiteral("Share your screen"));
+    setWindowTitle(QStringLiteral("Share"));
     setModal(true);
-    setMinimumWidth(420);
+    setMinimumWidth(460);
 
     m_monitors = ScreenCapture::monitors();
+    m_windows = ScreenCapture::windows();
 
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(20, 18, 20, 16);
     layout->setSpacing(12);
 
-    auto *heading = new QLabel(QStringLiteral("Which screen?"), this);
+    // Discord's two tabs: a whole screen, or one application's window.
+    auto *headingRow = new QHBoxLayout;
+    headingRow->setSpacing(14);
+    auto *heading = new QLabel(QStringLiteral("What to share?"), this);
     heading->setStyleSheet(QStringLiteral("font-size: 15px; font-weight: 500;"));
-    layout->addWidget(heading);
+    headingRow->addWidget(heading);
+    headingRow->addStretch(1);
+    const auto makeTab = [this, headingRow](const QString &text) {
+        auto *tab = new QPushButton(text, this);
+        tab->setObjectName(QStringLiteral("TabButton"));
+        tab->setFlat(true);
+        tab->setCursor(Qt::PointingHandCursor);
+        headingRow->addWidget(tab);
+        return tab;
+    };
+    m_screensTab = makeTab(QStringLiteral("Screens"));
+    m_windowsTab = makeTab(QStringLiteral("Windows"));
+    layout->addLayout(headingRow);
 
     m_list = new QListWidget(this);
-    m_list->setFixedHeight(m_monitors.isEmpty() ? 60 : qMin(4, m_monitors.size()) * 34 + 8);
-    for (const ScreenCapture::Monitor &monitor : std::as_const(m_monitors))
-        m_list->addItem(monitor.name);
-
-    if (m_monitors.isEmpty()) {
-        m_list->addItem(QStringLiteral("Windows reported no screen that can be shared."));
-        m_list->setEnabled(false);
-    } else {
-        m_list->setCurrentRow(0);
-    }
+    m_list->setFixedHeight(6 * 34 + 8);
     layout->addWidget(m_list);
 
     auto *qualityLabel = new QLabel(QStringLiteral("How good?"), this);
@@ -114,6 +123,7 @@ ShareDialog::ShareDialog(QWidget *parent)
         }
     }
     m_sound->setCurrentIndex(pick);
+    m_savedSound = pick;
     layout->addWidget(m_sound);
 
     // Said once, plainly, rather than discovered afterwards.
@@ -127,10 +137,14 @@ ShareDialog::ShareDialog(QWidget *parent)
     layout->addWidget(note);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
-    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Go live"));
-    buttons->button(QDialogButtonBox::Ok)->setEnabled(!m_monitors.isEmpty());
+    m_goLive = buttons->button(QDialogButtonBox::Ok);
+    m_goLive->setText(QStringLiteral("Go live"));
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(this, &QDialog::accepted, this, [this]() {
+        // A window share picks its own program's sound, so it says nothing
+        // about what a screen share should default to next time.
+        if (m_showingWindows)
+            return;
         QString remember = QStringLiteral("all");
         if (soundSource() == ShareAudio::Source::Nothing)
             remember = QStringLiteral("none");
@@ -143,17 +157,72 @@ ShareDialog::ShareDialog(QWidget *parent)
 
     // Double clicking a screen is the obvious way to pick it.
     connect(m_list, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *) {
-        if (!m_monitors.isEmpty())
+        if (!currentList().isEmpty())
             accept();
     });
+
+    connect(m_screensTab, &QPushButton::clicked, this, [this]() { showWindows(false); });
+    connect(m_windowsTab, &QPushButton::clicked, this, [this]() { showWindows(true); });
+
+    // Picking a window picks its sound too, as Discord does. The sound box
+    // can still be changed afterwards.
+    connect(m_list, &QListWidget::currentRowChanged, this, [this](int row) {
+        if (!m_showingWindows || row < 0 || row >= m_windows.size())
+            return;
+        for (int i = 0; i < m_apps.size(); ++i) {
+            if (m_apps.at(i).processId == m_windows.at(row).processId) {
+                m_sound->setCurrentIndex(m_sound->findData(i));
+                return;
+            }
+        }
+    });
+
+    showWindows(false);
+}
+
+const QList<ScreenCapture::Monitor> &ShareDialog::currentList() const
+{
+    return m_showingWindows ? m_windows : m_monitors;
+}
+
+void ShareDialog::showWindows(bool windows)
+{
+    m_showingWindows = windows;
+
+    for (QPushButton *tab : {m_screensTab, m_windowsTab}) {
+        tab->setProperty("active", tab == (windows ? m_windowsTab : m_screensTab));
+        tab->style()->unpolish(tab);
+        tab->style()->polish(tab);
+    }
+
+    m_list->clear();
+    const QList<ScreenCapture::Monitor> &list = currentList();
+    for (const ScreenCapture::Monitor &source : list)
+        m_list->addItem(source.name);
+
+    if (list.isEmpty()) {
+        m_list->addItem(windows ? QStringLiteral("No windows are open that can be shared.")
+                                : QStringLiteral("Windows reported no screen that can be shared."));
+        m_list->setEnabled(false);
+    } else {
+        m_list->setEnabled(true);
+    }
+    m_goLive->setEnabled(!list.isEmpty());
+
+    // Back on screens, the sound goes back to what screen shares use.
+    if (!windows)
+        m_sound->setCurrentIndex(m_savedSound);
+    if (!list.isEmpty())
+        m_list->setCurrentRow(0);
 }
 
 QString ShareDialog::monitorId() const
 {
+    const QList<ScreenCapture::Monitor> &list = currentList();
     const int row = m_list->currentRow();
-    if (row < 0 || row >= m_monitors.size())
+    if (row < 0 || row >= list.size())
         return {};
-    return m_monitors.at(row).id;
+    return list.at(row).id;
 }
 
 int ShareDialog::width() const

@@ -56,8 +56,11 @@ void ScreenShareWorker::begin(const QString &monitorId, int width, int height, i
     end();
 
     if (!m_capture.start(monitorId)) {
-        emit failed(QStringLiteral("Windows would not let this screen be captured. "
-                                   "Another program may already be sharing it."));
+        emit failed(ScreenCapture::isWindowId(monitorId)
+                        ? QStringLiteral("Windows would not let that window be captured. "
+                                         "It may have closed, or be minimised.")
+                        : QStringLiteral("Windows would not let this screen be captured. "
+                                         "Another program may already be sharing it."));
         return;
     }
 
@@ -134,8 +137,10 @@ void ScreenShareWorker::tick()
 
     if (result == ScreenCapture::Result::Failed) {
         wlog(QStringLiteral("share"), QStringLiteral("capture failed, stopping the share"));
+        const bool window = m_capture.isWindow();
         end();
-        emit failed(QStringLiteral("The screen capture stopped working."));
+        emit failed(window ? QStringLiteral("The shared window was closed, so the share ended.")
+                           : QStringLiteral("The screen capture stopped working."));
         return;
     }
 

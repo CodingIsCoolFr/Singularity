@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(Singularity VERSION 0.6.81 LANGUAGES CXX)
+project(Singularity VERSION 0.6.82 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -99,6 +99,8 @@ qt_add_executable(Singularity WIN32
     src/core/ScreenShare.cpp
     src/core/ShareAudio.h
     src/core/ShareAudio.cpp
+    src/core/WindowCapture.h
+    src/core/WindowCapture.cpp
     src/core/CameraShare.h
     src/core/CameraShare.cpp
     src/core/Updater.h
@@ -284,6 +286,9 @@ target_link_libraries(Singularity PRIVATE
     # one program's sound (or everything but ours) without a driver.
     Mmdevapi
     ole32
+    # WindowsApp carries the Windows Runtime entry points that
+    # Windows.Graphics.Capture needs, for sharing a single window.
+    windowsapp
 )
 
 # ---------------------------------------------------------------------------

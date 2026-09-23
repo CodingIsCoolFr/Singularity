@@ -8,6 +8,7 @@ struct ID3D11Device;
 struct ID3D11DeviceContext;
 struct ID3D11Texture2D;
 struct IDXGIOutputDuplication;
+class WindowCapture;
 
 // Grabs the contents of a monitor, the way Windows itself wants it grabbed.
 //
@@ -29,12 +30,14 @@ struct IDXGIOutputDuplication;
 class ScreenCapture
 {
 public:
+    // Something that can be shared: a whole monitor, or one window.
     struct Monitor {
-        QString id;        // stable, from the adapter and output index
+        QString id;        // "adapter:output", or "window:<hwnd>" for a window
         QString name;      // what to show a person
         int width = 0;
         int height = 0;
         bool primary = false;
+        quint32 processId = 0;   // windows only: whose it is, to match its sound
     };
 
     ScreenCapture() = default;
@@ -46,9 +49,16 @@ public:
     // What there is to share. Safe to call without starting anything.
     static QList<Monitor> monitors();
 
+    // Every window someone could pick, top of the stack first. A window is
+    // captured through WindowCapture rather than Desktop Duplication; start()
+    // tells the two apart by the id.
+    static QList<Monitor> windows();
+    static bool isWindowId(const QString &id) { return id.startsWith(QLatin1String("window:")); }
+
     bool start(const QString &monitorId);
     void stop();
-    bool isRunning() const { return m_duplication != nullptr; }
+    bool isRunning() const { return m_duplication != nullptr || m_window != nullptr; }
+    bool isWindow() const { return m_window != nullptr; }
 
     int width() const { return m_width; }
     int height() const { return m_height; }
@@ -75,6 +85,9 @@ private:
     ID3D11DeviceContext *m_context = nullptr;
     IDXGIOutputDuplication *m_duplication = nullptr;
     ID3D11Texture2D *m_staging = nullptr;
+
+    // Set instead of the four above when a single window is being shared.
+    WindowCapture *m_window = nullptr;
 
     QString m_monitorId;
     int m_width = 0;
