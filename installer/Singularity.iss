@@ -1,4 +1,4 @@
-﻿; Installer for Singularity.
+; Installer for Singularity.
 ;
 ; Built from whatever is in dist\, so the thing that ships is the thing that
 ; was tested rather than a second list of files that has to be kept in step.
@@ -18,7 +18,7 @@
 ;     iscc installer\Singularity.iss
 
 #define AppName       "Singularity"
-#define AppVersion    "0.6.68"
+#define AppVersion    "0.6.69"
 #define AppPublisher  "Singularity"
 #define AppExe        "Singularity.exe"
 

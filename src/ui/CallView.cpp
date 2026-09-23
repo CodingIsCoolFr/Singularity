@@ -4,8 +4,12 @@
 #include "ui/MediaCache.h"
 #include "ui/Theme.h"
 
+#include <QCursor>
 #include <QEvent>
 #include <QMouseEvent>
+#include <QWheelEvent>
+
+#include <algorithm>
 #include <QPainter>
 #include <QPainterPath>
 #include <QResizeEvent>
@@ -18,6 +22,19 @@ constexpr int StripHeight = 148;
 constexpr int StripMinTile = 168;
 constexpr int FeaturedAvatar = 128;
 constexpr int StripAvatar = 56;
+constexpr int ArrowSize = 34;
+
+// Above this many people the strip shows only those with a camera or a
+// stream, until the user asks for everyone. Discord hides non-video
+// participants in big calls for the same reason: a row of forty avatars is
+// not something anyone is looking for.
+constexpr int BigCall = 12;
+
+// What a tile asks the server for. A strip tile is about 300 by 170, so the
+// small copy Discord sends alongside the full one is plenty; only the stage
+// gets full quality.
+constexpr int SmallViewPixels = 320 * 180;
+constexpr int LargeViewPixels = 1280 * 720;
 
 QColor withAlpha(const char *hex, int alpha)
 {
@@ -74,8 +91,10 @@ void CallView::setChannel(const QString &channelId)
     m_hoverSurface = Surface::Camera;
     m_cameraFrames.clear();
     m_shareFrames.clear();
+    m_stripOffset = 0;
     if (channelId.isEmpty()) {
         m_tiles.clear();
+        publishViews();
         if (isVisible()) {
             setVisible(false);
             emit visibilityChanged(false);
@@ -136,6 +155,8 @@ void CallView::dropFrames(const QString &userId, Surface surface)
 void CallView::refresh()
 {
     if (m_channelId.isEmpty() || !m_store) {
+        m_tiles.clear();
+        publishViews();
         if (isVisible()) {
             setVisible(false);
             emit visibilityChanged(false);
@@ -147,6 +168,17 @@ void CallView::refresh()
 
     m_tiles.clear();
     m_tiles.reserve(members.size() * 2);
+
+    m_peopleInCall = int(members.size());
+    m_peopleWithVideo = 0;
+    for (const QString &userId : members) {
+        const VoiceStateInfo state = m_store->voiceState(userId);
+        if (state.video || state.streaming)
+            ++m_peopleWithVideo;
+    }
+    // With nobody on camera, "video only" would leave an empty stage, so
+    // everyone shows regardless.
+    const bool onlyVideo = videoOnly() && m_peopleWithVideo > 0;
 
     for (const QString &userId : members) {
         const UserInfo user = m_store->user(userId);
@@ -161,7 +193,9 @@ void CallView::refresh()
         person.muted = state.muted;
         person.deafened = state.deafened;
         person.speaking = m_speaking.contains(userId);
-        m_tiles.append(person);
+        // Someone the user clicked stays, camera or not.
+        if (!onlyVideo || state.video || userId == m_focusedUser)
+            m_tiles.append(person);
 
         // A share is its own tile so it never overwrites the camera.
         if (state.streaming) {
@@ -176,6 +210,17 @@ void CallView::refresh()
             m_tiles.append(share);
         }
     }
+
+    // Streams first, then cameras, then everyone else, each group in the
+    // order Discord gave. Not by who is talking: tiles that jump around
+    // every time somebody speaks are impossible to follow.
+    const auto rank = [](const Tile &tile) {
+        if (tile.surface == Surface::Share)
+            return 0;
+        return tile.video ? 1 : 2;
+    };
+    std::stable_sort(m_tiles.begin(), m_tiles.end(),
+                     [&rank](const Tile &a, const Tile &b) { return rank(a) < rank(b); });
 
     const bool show = !m_tiles.isEmpty() && !m_stageSuppressed;
     const bool wasVisible = isVisible();
@@ -241,17 +286,37 @@ CallView::Focus CallView::pickFocus() const
     return {m_tiles.first().userId, m_tiles.first().surface};
 }
 
+bool CallView::videoOnly() const
+{
+    if (m_videoOnlyChoice >= 0)
+        return m_videoOnlyChoice == 1;
+    return m_peopleInCall > BigCall;
+}
+
+// The stage on top, one row underneath.
+//
+// This used to fit every other tile into the strip by adding rows. With
+// forty people that meant eight rows in 150 pixels, each one a sliver too
+// thin to show a face. Discord never shrinks a tile below a size you can
+// read: it keeps one row of 16:9 tiles and lets it scroll, and so does this.
 void CallView::layoutTiles()
 {
-    if (m_tiles.isEmpty())
+    m_stripRect = {};
+    m_leftArrow = {};
+    m_rightArrow = {};
+    m_stripMaxOffset = 0;
+
+    if (m_tiles.isEmpty()) {
+        publishViews();
         return;
+    }
 
     const Focus focus = pickFocus();
     m_focusedUser = focus.userId;
     m_focusedSurface = focus.surface;
 
     const bool many = m_tiles.size() > 1;
-    const int stripH = many ? qBound(120, qMin(StripHeight, height() / 4), 170) : 0;
+    const int stripH = many ? qBound(110, qMin(StripHeight, height() / 4), 170) : 0;
     const QRect featured(Pad, Pad, qMax(1, width() - Pad * 2),
                          qMax(1, height() - Pad * 2 - (many ? stripH + Gap : 0)));
 
@@ -260,37 +325,91 @@ void CallView::layoutTiles()
     for (int i = 0; i < m_tiles.size(); ++i) {
         m_tiles[i].featured = (m_tiles[i].userId == focus.userId
                                && m_tiles[i].surface == focus.surface);
+        m_tiles[i].visible = m_tiles[i].featured;
         if (!m_tiles[i].featured)
             others.append(i);
         else
             m_tiles[i].box = featured;
     }
 
-    if (others.isEmpty())
-        return;
+    if (!others.isEmpty()) {
+        const int usable = qMax(1, width() - Pad * 2);
+        m_stripRect = QRect(Pad, featured.bottom() + Gap + 1, usable, stripH);
 
-    const int stripY = featured.bottom() + Gap + 1;
-    const int usable = qMax(StripMinTile, width() - Pad * 2);
-    const int count = others.size();
-    int columns = qMax(1, (usable + Gap) / (StripMinTile + Gap));
-    columns = qMin(columns, count);
-    const int rows = (count + columns - 1) / columns;
-    const int tileW = (usable - Gap * (columns - 1)) / columns;
-    const int tileH = rows > 0 ? (stripH - Gap * (rows - 1)) / rows : stripH;
+        const int tileH = stripH;
+        const int tileW = qMax(StripMinTile, tileH * 16 / 9);
+        m_stripStep = tileW + Gap;
 
-    for (int n = 0; n < others.size(); ++n) {
-        const int row = n / columns;
-        const int col = n % columns;
-        m_tiles[others[n]].box = QRect(Pad + col * (tileW + Gap), stripY + row * (tileH + Gap),
-                                       tileW, tileH);
+        const int count = int(others.size());
+        const int content = count * tileW + (count - 1) * Gap;
+        m_stripMaxOffset = qMax(0, content - usable);
+        m_stripOffset = qBound(0, m_stripOffset, m_stripMaxOffset);
+
+        // A row that fits sits in the middle, like Discord's.
+        const int startX = content <= usable ? m_stripRect.left() + (usable - content) / 2
+                                             : m_stripRect.left() - m_stripOffset;
+
+        for (int n = 0; n < count; ++n) {
+            Tile &tile = m_tiles[others[n]];
+            tile.box = QRect(startX + n * m_stripStep, m_stripRect.top(), tileW, tileH);
+            tile.visible = tile.box.intersects(m_stripRect);
+        }
+
+        if (m_stripOffset > 0) {
+            m_leftArrow = QRect(m_stripRect.left() + 6, m_stripRect.center().y() - ArrowSize / 2,
+                                ArrowSize, ArrowSize);
+        }
+        if (m_stripOffset < m_stripMaxOffset) {
+            m_rightArrow = QRect(m_stripRect.right() - 6 - ArrowSize,
+                                 m_stripRect.center().y() - ArrowSize / 2, ArrowSize, ArrowSize);
+        }
     }
+
+    publishViews();
+}
+
+void CallView::scrollStrip(int pixels)
+{
+    const int next = qBound(0, m_stripOffset + pixels, m_stripMaxOffset);
+    if (next == m_stripOffset)
+        return;
+    m_stripOffset = next;
+    layoutTiles();
+    update();
+}
+
+// Tells the voice connection which cameras are worth downloading.
+//
+// The server sends only what it is asked for. Asking for every camera at full
+// size in a call of forty is forty video streams to receive and decode, most
+// of them for tiles nobody can see. Discord asks for the ones on screen, at
+// the size they are drawn, and this does the same.
+void CallView::publishViews()
+{
+    QHash<QString, int> views;
+    if (!m_stageSuppressed && !isHidden()) {
+        for (const Tile &tile : m_tiles) {
+            if (tile.surface != Surface::Camera || !tile.video || !tile.visible)
+                continue;
+            views.insert(tile.userId, tile.featured ? LargeViewPixels : SmallViewPixels);
+        }
+    }
+
+    if (m_viewsPublished && views == m_lastViews)
+        return;
+    m_viewsPublished = true;
+    m_lastViews = views;
+    emit videoViewsChanged(views);
 }
 
 const CallView::Tile *CallView::tileAt(const QPoint &pos) const
 {
     for (const Tile &tile : m_tiles) {
-        if (tile.box.contains(pos))
-            return &tile;
+        if (!tile.visible || !tile.box.contains(pos))
+            continue;
+        if (!tile.featured && !m_stripRect.contains(pos))
+            continue;
+        return &tile;
     }
     return nullptr;
 }
@@ -304,10 +423,88 @@ void CallView::paintEvent(QPaintEvent *event)
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
 
     for (const Tile &tile : m_tiles) {
-        if (!tile.box.intersects(event->rect()))
+        if (!tile.visible || !tile.box.intersects(event->rect()))
             continue;
+        painter.save();
+        // Strip tiles are cut off at the strip's edges as they scroll past.
+        if (!tile.featured)
+            painter.setClipRect(m_stripRect);
         paintTile(painter, tile);
+        painter.restore();
     }
+
+    paintStripControls(painter);
+}
+
+void CallView::paintStripControls(QPainter &painter) const
+{
+    const auto arrow = [&painter](const QRect &box, bool left) {
+        if (box.isNull())
+            return;
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(0, 0, 0, 170));
+        painter.drawEllipse(box);
+        QPen chevron{QColor(Theme::Light)};
+        chevron.setWidthF(2.2);
+        chevron.setCapStyle(Qt::RoundCap);
+        chevron.setJoinStyle(Qt::RoundJoin);
+        painter.setPen(chevron);
+        painter.setBrush(Qt::NoBrush);
+        const QPointF c = QRectF(box).center();
+        const qreal d = left ? 3.0 : -3.0;
+        QPolygonF line;
+        line << QPointF(c.x() + d, c.y() - 6) << QPointF(c.x() - d, c.y())
+             << QPointF(c.x() + d, c.y() + 6);
+        painter.drawPolyline(line);
+    };
+    arrow(m_leftArrow, true);
+    arrow(m_rightArrow, false);
+
+    // The filter, only where it matters: a call big enough to have one.
+    QRect &chip = m_filterChip;
+    chip = {};
+    if (m_tiles.isEmpty() || m_peopleWithVideo == 0
+        || (m_peopleInCall <= BigCall && m_videoOnlyChoice < 0))
+        return;
+
+    const bool only = videoOnly();
+    const QString text = only ? QStringLiteral("Video only · show all %1").arg(m_peopleInCall)
+                              : QStringLiteral("Everyone · show video only");
+    QFont chipFont = font();
+    chipFont.setPixelSize(12);
+    chipFont.setWeight(QFont::DemiBold);
+    painter.setFont(chipFont);
+    const int w = painter.fontMetrics().horizontalAdvance(text) + 22;
+    chip = QRect(Pad + 12, Pad + 12, w, 24);
+
+    const bool hovered = chip.contains(mapFromGlobal(QCursor::pos()));
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(0, 0, 0, hovered ? 210 : 160));
+    painter.drawRoundedRect(chip, 12, 12);
+    painter.setPen(QColor(hovered ? Theme::Light : Theme::LightGray));
+    painter.drawText(chip, Qt::AlignCenter, text);
+}
+
+void CallView::wheelEvent(QWheelEvent *event)
+{
+    if (m_stripMaxOffset <= 0 || !m_stripRect.contains(event->position().toPoint())) {
+        QFrame::wheelEvent(event);
+        return;
+    }
+
+    // A touchpad gives pixels; a mouse wheel gives notches of 120, and one
+    // notch moves one tile.
+    const QPoint pixels = event->pixelDelta();
+    int move = 0;
+    if (!pixels.isNull()) {
+        move = -(qAbs(pixels.x()) > qAbs(pixels.y()) ? pixels.x() : pixels.y());
+    } else {
+        const QPoint angle = event->angleDelta();
+        const int notches = qAbs(angle.x()) > qAbs(angle.y()) ? angle.x() : angle.y();
+        move = -notches * m_stripStep / 120;
+    }
+    scrollStrip(move);
+    event->accept();
 }
 
 void CallView::paintTile(QPainter &painter, const Tile &tile) const
@@ -317,7 +514,7 @@ void CallView::paintTile(QPainter &painter, const Tile &tile) const
     clip.addRoundedRect(QRectF(tile.box), radius, radius);
 
     painter.save();
-    painter.setClipPath(clip);
+    painter.setClipPath(clip, painter.hasClipping() ? Qt::IntersectClip : Qt::ReplaceClip);
     painter.fillPath(clip, withAlpha(Theme::SurfaceChat, 230));
 
     const QImage live = framesFor(tile.surface).value(tile.userId);
@@ -463,6 +660,24 @@ void CallView::paintMarks(QPainter &painter, const Tile &tile) const
 
 void CallView::mousePressEvent(QMouseEvent *event)
 {
+    if (event->button() == Qt::LeftButton) {
+        const QPoint pos = event->pos();
+        if (m_filterChip.contains(pos)) {
+            m_videoOnlyChoice = videoOnly() ? 0 : 1;
+            m_stripOffset = 0;
+            refresh();
+            return;
+        }
+        if (m_leftArrow.contains(pos)) {
+            scrollStrip(-qMax(m_stripStep, m_stripRect.width() - m_stripStep));
+            return;
+        }
+        if (m_rightArrow.contains(pos)) {
+            scrollStrip(qMax(m_stripStep, m_stripRect.width() - m_stripStep));
+            return;
+        }
+    }
+
     const Tile *tile = tileAt(event->pos());
     if (!tile) {
         QFrame::mousePressEvent(event);
@@ -483,14 +698,20 @@ void CallView::mousePressEvent(QMouseEvent *event)
 
 void CallView::mouseMoveEvent(QMouseEvent *event)
 {
-    const Tile *tile = tileAt(event->pos());
+    const QPoint pos = event->pos();
+    const bool onControl = m_filterChip.contains(pos) || m_leftArrow.contains(pos)
+        || m_rightArrow.contains(pos);
+    const Tile *tile = onControl ? nullptr : tileAt(pos);
+    setCursor(tile || onControl ? Qt::PointingHandCursor : Qt::ArrowCursor);
+    if (!m_filterChip.isNull())
+        update(m_filterChip);
+
     const QString id = tile ? tile->userId : QString();
     const Surface surface = tile ? tile->surface : Surface::Camera;
     if (id == m_hoverUserId && surface == m_hoverSurface)
         return;
     m_hoverUserId = id;
     m_hoverSurface = surface;
-    setCursor(tile ? Qt::PointingHandCursor : Qt::ArrowCursor);
     update();
 }
 

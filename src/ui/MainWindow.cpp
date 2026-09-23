@@ -974,6 +974,11 @@ void MainWindow::buildUi()
             [this](const QString &userId) { showProfile(userId, QCursor::pos()); });
     connect(m_callView, &CallView::volumeMenuRequested, this, &MainWindow::showPersonMenu);
     connect(m_callView, &CallView::watchAttempted, this, &MainWindow::watchStream);
+    // Only the cameras on screen are downloaded, at the size they are drawn.
+    connect(m_callView, &CallView::videoViewsChanged, this, [this](const QHash<QString, int> &views) {
+        if (m_voice)
+            m_voice->setVideoViews(views);
+    });
     connect(m_callView, &CallView::focusRequested, this,
             [this](const QString &userId, CallView::Surface surface) {
                 m_callView->setFocusedUser(userId, surface);

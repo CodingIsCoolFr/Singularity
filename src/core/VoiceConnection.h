@@ -95,6 +95,11 @@ public:
     void setAudioHost(VoiceConnection *host) { m_audioHost = host; }
     void offerExternalPcm(const QByteArray &pcm);
 
+    // Which cameras the window is showing, and how many pixels each tile has.
+    // Anyone missing is not downloaded; a small tile gets the small copy.
+    // Until this is first called, every camera is wanted at its best.
+    void setVideoViews(const QHash<QString, int> &pixelsByUser);
+
     // Safe to ask from any thread. These read copies the connection keeps up
     // to date for the window, because the real fields belong to the media
     // thread and change while it works.
@@ -308,6 +313,12 @@ private:
 
     // Picks the highest-quality layer we were offered and asks only for that.
     void refreshVideoWants();
+
+    // The one layer of this person's camera to receive, or 0 for none.
+    quint32 chosenVideoSsrc(const QString &userId) const;
+    QHash<QString, int> m_videoViews;
+    bool m_videoViewsKnown = false;
+    QSet<quint32> m_lastWantedVideo;
 
     // Held by pointer because a decoder cannot be copied, and a QHash copies
     // what it stores.

@@ -49,6 +49,11 @@ public:
     QSize minimumSizeHint() const override;
 
 signals:
+    // Which cameras are on screen, and how big. The voice connection asks
+    // Discord only for those, and for a small copy when the tile is small.
+    // A camera missing from the list is not downloaded at all.
+    void videoViewsChanged(const QHash<QString, int> &pixelsByUser);
+
     void profileRequested(const QString &userId);
     void volumeMenuRequested(const QString &userId, const QPoint &globalPos);
     void watchAttempted(const QString &userId);
@@ -61,6 +66,7 @@ protected:
     void mouseMoveEvent(QMouseEvent *event) override;
     void leaveEvent(QEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
+    void wheelEvent(QWheelEvent *event) override;
 
 private:
     struct Tile
@@ -75,6 +81,7 @@ private:
         bool muted = false;
         bool deafened = false;
         bool speaking = false;
+        bool visible = false;
     };
 
     struct Focus
@@ -90,8 +97,31 @@ private:
     const Tile *tileAt(const QPoint &pos) const;
     void paintTile(QPainter &painter, const Tile &tile) const;
     void paintMarks(QPainter &painter, const Tile &tile) const;
+    void paintStripControls(QPainter &painter) const;
+    void scrollStrip(int pixels);
+    void publishViews();
+    bool videoOnly() const;
 
     MessageStore *m_store = nullptr;
+
+    // The row under the stage. It scrolls sideways instead of squeezing
+    // everyone in: forty people in a 150 pixel strip is forty slivers.
+    QRect m_stripRect;
+    int m_stripOffset = 0;
+    int m_stripMaxOffset = 0;
+    int m_stripStep = 0;
+    QRect m_leftArrow;
+    QRect m_rightArrow;
+
+    // Big calls show only the people with video, the way Discord does.
+    // -1 follows the size of the call; 0 and 1 are the user's own choice.
+    int m_videoOnlyChoice = -1;
+    int m_peopleInCall = 0;
+    int m_peopleWithVideo = 0;
+    mutable QRect m_filterChip;   // placed while painting, where its text is measured
+
+    QHash<QString, int> m_lastViews;
+    bool m_viewsPublished = false;
     QString m_channelId;
     bool m_stageSuppressed = false;
     QString m_focusedUser;

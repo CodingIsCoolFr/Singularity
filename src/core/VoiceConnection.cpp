@@ -1963,6 +1963,7 @@ void VoiceConnection::clearVideoStreams()
     m_videoRid.clear();
     m_bestVideoSsrc.clear();
     m_rtxSsrcs.clear();
+    m_lastWantedVideo.clear();
 }
 
 void VoiceConnection::handleVideoPacket(quint32 ssrc, const QByteArray &payload, bool endOfFrame,
@@ -1974,10 +1975,14 @@ void VoiceConnection::handleVideoPacket(quint32 ssrc, const QByteArray &payload,
     const QString userId = m_videoSsrcToUser.value(ssrc);
 
     // Simulcast sends the same picture several times. Drawing every layer is
-    // wasted work and two decoders fighting over one tile.
-    const quint32 best = userId.isEmpty() ? 0 : m_bestVideoSsrc.value(userId);
-    if (best != 0 && best != ssrc)
-        return;
+    // wasted work and two decoders fighting over one tile. And a camera that
+    // is off screen is not decoded at all, even if a few packets still arrive
+    // after the server was told to stop.
+    if (!userId.isEmpty() && m_bestVideoSsrc.contains(userId)) {
+        const quint32 chosen = chosenVideoSsrc(userId);
+        if (chosen != ssrc)
+            return;
+    }
 
     VideoStream &stream = *videoStreamFor(ssrc);
     ++stream.packets;
@@ -2662,6 +2667,54 @@ void VoiceConnection::sendVideoWants()
     refreshVideoWants();
 }
 
+void VoiceConnection::setVideoViews(const QHash<QString, int> &pixelsByUser)
+{
+    if (postToOwnThread([this, pixelsByUser]() { setVideoViews(pixelsByUser); }))
+        return;
+
+    if (m_videoViewsKnown && m_videoViews == pixelsByUser)
+        return;
+    m_videoViews = pixelsByUser;
+    m_videoViewsKnown = true;
+
+    if (m_state != State::Idle && !m_videoSsrcToUser.isEmpty())
+        refreshVideoWants();
+}
+
+// Which of a person's layers to take.
+//
+// A camera is usually sent two or three times at once - full size, half and
+// sometimes quarter - and the server forwards whichever one each viewer asks
+// for. Discord's own client asks for the big one only for the tile on the
+// stage, the small one for the row underneath, and nothing at all for tiles
+// scrolled out of view. A call of forty cameras is then a handful of small
+// streams rather than forty full ones.
+quint32 VoiceConnection::chosenVideoSsrc(const QString &userId) const
+{
+    const quint32 best = m_bestVideoSsrc.value(userId);
+    if (!m_videoViewsKnown || m_viewerOnly || best == 0)
+        return best;
+
+    const int pixels = m_videoViews.value(userId, 0);
+    if (pixels <= 0)
+        return 0;
+    if (pixels >= 640 * 360)
+        return best;
+
+    quint32 smallest = best;
+    int smallestRid = m_videoRid.value(best, 100);
+    for (auto it = m_videoSsrcToUser.constBegin(); it != m_videoSsrcToUser.constEnd(); ++it) {
+        if (it.value() != userId)
+            continue;
+        const int rid = m_videoRid.value(it.key(), 100);
+        if (rid < smallestRid) {
+            smallestRid = rid;
+            smallest = it.key();
+        }
+    }
+    return smallest;
+}
+
 void VoiceConnection::refreshVideoWants()
 {
     QJsonObject wants;
@@ -2669,16 +2722,21 @@ void VoiceConnection::refreshVideoWants()
 
     QJsonObject pixelCounts;
     QSet<quint32> wanted;
-    for (auto it = m_bestVideoSsrc.constBegin(); it != m_bestVideoSsrc.constEnd(); ++it)
-        wanted.insert(it.value());
-
-    const int pixels = m_viewerOnly ? (1920 * 1080) : (640 * 360);
+    for (auto it = m_bestVideoSsrc.constBegin(); it != m_bestVideoSsrc.constEnd(); ++it) {
+        const quint32 chosen = chosenVideoSsrc(it.key());
+        if (chosen != 0)
+            wanted.insert(chosen);
+    }
 
     for (auto it = m_videoSsrcToUser.constBegin(); it != m_videoSsrcToUser.constEnd(); ++it) {
-        const bool best = wanted.contains(it.key());
-        wants.insert(QString::number(it.key()), best ? 100 : 0);
-        if (best)
-            pixelCounts.insert(QString::number(it.key()), pixels);
+        const bool take = wanted.contains(it.key());
+        wants.insert(QString::number(it.key()), take ? 100 : 0);
+        if (!take)
+            continue;
+        int pixels = m_viewerOnly ? (1920 * 1080) : (640 * 360);
+        if (m_videoViewsKnown && !m_viewerOnly)
+            pixels = m_videoViews.value(it.value(), pixels);
+        pixelCounts.insert(QString::number(it.key()), pixels);
     }
     if (!pixelCounts.isEmpty())
         wants.insert(QStringLiteral("pixelCounts"), pixelCounts);
@@ -2689,13 +2747,32 @@ void VoiceConnection::refreshVideoWants()
     });
 
     wlog(QStringLiteral("video"),
-         QStringLiteral("asked for everyone's pictures (%1 named)")
-             .arg(wanted.size()));
+         QStringLiteral("asked for %1 of %2 cameras%3")
+             .arg(wanted.size())
+             .arg(m_bestVideoSsrc.size())
+             .arg(m_videoViewsKnown && !m_viewerOnly ? QStringLiteral(", the ones on screen")
+                                                     : QString()));
 
-    if (!m_secretKey.isEmpty()) {
-        for (quint32 ssrc : wanted)
+    // A layer that was not being received has no picture to build on, so ask
+    // its sender for a fresh one. Layers already flowing need nothing: asking
+    // every camera for a full picture on every scroll is a burst of the
+    // largest packets there are.
+    for (quint32 ssrc : wanted) {
+        if (m_lastWantedVideo.contains(ssrc))
+            continue;
+        // Whatever this layer left half-built when it was last dropped
+        // belongs to a picture that will never finish.
+        if (VideoStream *stream = m_videoStreams.value(ssrc)) {
+            stream->assembling.clear();
+            stream->held.clear();
+            stream->haveSeq = false;
+            stream->gap = false;
+            stream->lastPliMs = 0;
+        }
+        if (!m_secretKey.isEmpty())
             sendPictureLossIndication(ssrc);
     }
+    m_lastWantedVideo = wanted;
 }
 
 void VoiceConnection::sendPictureLossIndication(quint32 mediaSsrc)
