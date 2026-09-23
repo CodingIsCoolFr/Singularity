@@ -61,7 +61,18 @@ cmake -S "$root" -B "$buildDir" -G Ninja -DCMAKE_BUILD_TYPE=$config -DCMAKE_PREF
 if errorlevel 1 exit /b 1
 
 cmake --build "$buildDir"
-if errorlevel 1 exit /b 1
+if errorlevel 1 (
+  rem LNK1201: the linker could not write the debug database. It is a 50 MB
+  rem file that another tool - a debugger, a symbol server, an antivirus scan -
+  rem can still be holding, and once it is half written the linker cannot
+  rem recover it. Deleting it and linking once more fixes it every time, and
+  rem costs nothing when the real failure was a compile error, because then the
+  rem second pass stops in the same place.
+  echo Build failed. Removing the debug database and trying once more.
+  del /q "$buildDir\$config\Singularity.pdb" 2>nul
+  cmake --build "$buildDir"
+  if errorlevel 1 exit /b 1
+)
 
 "$qtRoot\bin\windeployqt.exe" --$($config.ToLower()) --no-translations --no-system-d3d-compiler --no-opengl-sw --no-compiler-runtime --plugindir "$distDir\plugins" "$distDir\Singularity.exe"
 if errorlevel 1 exit /b 1

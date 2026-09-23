@@ -12,8 +12,10 @@
 #include <QLabel>
 #include <QMainWindow>
 #include <QPushButton>
+#include <QDateTime>
 #include <QRegularExpression>
 #include <QScreen>
+#include <QShortcut>
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -277,6 +279,11 @@ bool NitroWatchPlugin::warnFakes() const
     return !context() || context()->setting(QStringLiteral("warnFakes"), true).toBool();
 }
 
+bool NitroWatchPlugin::checkFirst() const
+{
+    return !context() || context()->setting(QStringLiteral("checkFirst"), true).toBool();
+}
+
 void NitroWatchPlugin::onGatewayEvent(const QString &eventType, const QJsonObject &data)
 {
     if (eventType != QLatin1String("MESSAGE_CREATE") && eventType != QLatin1String("MESSAGE_UPDATE"))
@@ -301,7 +308,7 @@ void NitroWatchPlugin::onGatewayEvent(const QString &eventType, const QJsonObjec
             continue;
         m_seen.insert(code);
 
-        offer(code, authorId, channelId);
+        inspect(code, authorId, channelId);
     }
 
     if (!codes.isEmpty() || !warnFakes())
@@ -327,7 +334,97 @@ void NitroWatchPlugin::warnAboutFake(const QString &host)
         context()->log(QStringLiteral("Ignored a fake Nitro link on %1").arg(host));
 }
 
-void NitroWatchPlugin::offer(const QString &code, const QString &fromUserId, const QString &channelId)
+// Turns Discord's answer into the two things worth knowing: what it is, and
+// whether pressing Claim could possibly work.
+NitroWatchPlugin::Gift NitroWatchPlugin::readGift(const QJsonObject &body)
+{
+    Gift gift;
+
+    // The plan names it properly ("Nitro Monthly"). Without it there is still
+    // a SKU id, which is at least honest about being unknown.
+    const QJsonObject plan = body.value(QStringLiteral("subscription_plan")).toObject();
+    const QString planName = plan.value(QStringLiteral("name")).toString();
+    gift.what = planName.isEmpty() ? QStringLiteral("a gift") : planName;
+
+    const int uses = body.value(QStringLiteral("uses")).toInt();
+    const int maxUses = body.value(QStringLiteral("max_uses")).toInt();
+    gift.left = maxUses > 0 ? qMax(0, maxUses - uses) : 1;
+
+    // Already ours. Claiming again does nothing but put another redeem on the
+    // account, which is the one thing worth not doing.
+    if (body.value(QStringLiteral("redeemed")).toBool()) {
+        gift.whyNot = QStringLiteral("you already claimed this one");
+        return gift;
+    }
+
+    if (maxUses > 0 && uses >= maxUses) {
+        gift.whyNot = QStringLiteral("someone else got there first");
+        return gift;
+    }
+
+    const QString expires = body.value(QStringLiteral("expires_at")).toString();
+    if (!expires.isEmpty()) {
+        const QDateTime when = QDateTime::fromString(expires, Qt::ISODateWithMs);
+        if (when.isValid() && when < QDateTime::currentDateTimeUtc()) {
+            gift.whyNot = QStringLiteral("it expired");
+            return gift;
+        }
+    }
+
+    gift.claimable = true;
+    return gift;
+}
+
+void NitroWatchPlugin::inspect(const QString &code, const QString &fromUserId,
+                               const QString &channelId)
+{
+    // Asking first is off only if somebody turns it off. Then every link that
+    // looks right is offered, exactly as before.
+    if (!checkFirst() || !context() || !context()->rest()) {
+        offer(code, fromUserId, channelId, Gift{QStringLiteral("a gift"), true, QString(), 1});
+        return;
+    }
+
+    wlog(QStringLiteral("nitro"), QStringLiteral("a gift link appeared in channel %1, asking Discord "
+                                                "what it is").arg(channelId));
+
+    context()->rest()->lookupGift(
+        code,
+        [this, code, fromUserId, channelId](const QJsonObject &body) {
+            const Gift gift = readGift(body);
+
+            if (!gift.claimable) {
+                // The whole point: a spent or expired code never reaches the
+                // screen, and nothing was pressed to find that out.
+                wlog(QStringLiteral("nitro"),
+                     QStringLiteral("that gift is not claimable (%1), so it is not being offered")
+                         .arg(gift.whyNot));
+                if (context())
+                    context()->log(QStringLiteral("Skipped a dead gift link — %1.").arg(gift.whyNot));
+                return;
+            }
+
+            wlog(QStringLiteral("nitro"),
+                 QStringLiteral("Discord says it is live: %1, %2 left").arg(gift.what).arg(gift.left));
+            offer(code, fromUserId, channelId, gift);
+        },
+        [this](const RestClient::Error &error) {
+            // 404 is the ordinary answer for a code somebody made up, and it
+            // is the common case, so it is not shouted about.
+            if (error.httpStatus == 404) {
+                wlog(QStringLiteral("nitro"),
+                     QStringLiteral("that gift code does not exist, ignoring it"));
+                if (context())
+                    context()->log(QStringLiteral("Skipped a gift link that is not a real code."));
+                return;
+            }
+            wlog(QStringLiteral("nitro"), QStringLiteral("could not check a gift code: HTTP %1 %2")
+                                              .arg(error.httpStatus).arg(error.message));
+        });
+}
+
+void NitroWatchPlugin::offer(const QString &code, const QString &fromUserId,
+                             const QString &channelId, const Gift &gift)
 {
     wlog(QStringLiteral("nitro"), QStringLiteral("gift spotted in channel %1").arg(channelId));
 
@@ -371,10 +468,19 @@ void NitroWatchPlugin::offer(const QString &code, const QString &fromUserId, con
     layout->setContentsMargins(16, 14, 16, 14);
     layout->setSpacing(4);
 
-    layout->addWidget(line(QStringLiteral("Nitro gift"), Theme::TextPrimary, 15, true, alert));
+    layout->addWidget(line(gift.what, Theme::TextPrimary, 15, true, alert));
     layout->addWidget(line(QStringLiteral("%1 posted one%2").arg(who, where), Theme::TextMuted, 12, false, alert));
-    layout->addWidget(line(QStringLiteral("Claim it yourself. Singularity will not do it for you, and that "
-                                          "is what keeps this account looking ordinary."),
+
+    // Said in green, because this is the line that means the press is worth
+    // making: Discord was asked, and it answered.
+    if (checkFirst()) {
+        const QString left = gift.left > 1 ? QStringLiteral(", %1 left").arg(gift.left) : QString();
+        layout->addWidget(line(QStringLiteral("Checked with Discord — still unclaimed%1").arg(left),
+                               Theme::Green, 12, true, alert));
+    }
+
+    layout->addWidget(line(QStringLiteral("Press Enter to claim. Singularity will not press it for you, "
+                                          "and that is what keeps this account looking ordinary."),
                            Theme::TextFaint, 11, false, alert));
 
     auto *status = line(QString(), Theme::TextMuted, 12, false, alert);
@@ -411,6 +517,24 @@ void NitroWatchPlugin::offer(const QString &code, const QString &fromUserId, con
         claim(code, channelId, status, claimButton);
     });
     QObject::connect(ignore, &QPushButton::clicked, alert, &QWidget::close);
+
+    // Enter claims, Escape dismisses. The seconds this saves are the ones
+    // that actually decide a gift, and reaching for a mouse is most of them.
+    // setDefault alone is not enough: the panel is frameless, so it has no
+    // dialog to give a default button meaning.
+    claimButton->setFocus();
+    auto *claimKey = new QShortcut(QKeySequence(Qt::Key_Return), alert);
+    QObject::connect(claimKey, &QShortcut::activated, claimButton, [claimButton]() {
+        if (claimButton->isEnabled())
+            claimButton->click();
+    });
+    auto *enterKey = new QShortcut(QKeySequence(Qt::Key_Enter), alert);
+    QObject::connect(enterKey, &QShortcut::activated, claimButton, [claimButton]() {
+        if (claimButton->isEnabled())
+            claimButton->click();
+    });
+    auto *closeKey = new QShortcut(QKeySequence(Qt::Key_Escape), alert);
+    QObject::connect(closeKey, &QShortcut::activated, alert, &QWidget::close);
 
     // Sit on the Singularity window if we have one, otherwise the primary screen.
     alert->adjustSize();
@@ -526,12 +650,26 @@ QWidget *NitroWatchPlugin::createSettingsWidget(QWidget *parent)
     watch->setChecked(watchEnabled());
     layout->addWidget(watch);
 
+    auto *check = new QCheckBox(QStringLiteral("Check each gift with Discord before alerting me"), page);
+    check->setChecked(checkFirst());
+    layout->addWidget(check);
+
     auto *fakes = new QCheckBox(QStringLiteral("Tell me when a fake gift link is going around"), page);
     fakes->setChecked(warnFakes());
     layout->addWidget(fakes);
 
     layout->addWidget(line(QStringLiteral(
-        "Why there is no automatic claim.\n\n"
+        "What the check does.\n\n"
+        "Every code found is looked up with Discord before anything appears. Codes that do not "
+        "exist, codes already claimed by someone else, expired ones, and ones you have claimed "
+        "yourself are dropped without a word, so the only thing that ever interrupts you is a gift "
+        "that is really still there. The alert then names it and says how many are left.\n\n"
+        "This is safe to do automatically because it is the same lookup Discord's own client makes "
+        "to draw a gift card. It reads; it does not claim. Nothing is spent by checking."),
+        Theme::TextFaint, 11, false, page));
+
+    layout->addWidget(line(QStringLiteral(
+        "Why there is still no automatic claim.\n\n"
         "Discord does not catch automated accounts by timing your click. It catches them on the "
         "shape of the account: a redeem arriving from a session that never opened the channel, "
         "never scrolled, never moved a pointer, and that does it again next week at four in the "
@@ -539,10 +677,13 @@ QWidget *NitroWatchPlugin::createSettingsWidget(QWidget *parent)
         "Dead codes are also posted on purpose to see who bites. A person glances at a suspicious "
         "link and moves on. Anything claiming on its own takes the bait every time, and marks "
         "itself doing it.\n\n"
-        "So this automates the slow part, which is noticing. Singularity watches every channel at once, "
-        "including the ones you are not looking at, and gets you from \"a gift exists\" to one "
-        "button straight away. You are still faster than anyone reading their messages. The press "
-        "stays yours, which is the part that keeps the account ordinary."),
+        "Discord also asks for a captcha on most redeems, so anything claiming on its own stops "
+        "dead at the exact moment it mattered and waits for you anyway.\n\n"
+        "So this automates the slow parts, which are noticing and checking. Singularity watches every "
+        "channel at once, including the ones you are not looking at, throws away the dead codes, "
+        "and gets you from \"a gift exists\" to one keypress. You are still faster than anyone "
+        "reading their messages. The press stays yours, which is the part that keeps the account "
+        "ordinary."),
         Theme::TextFaint, 11, false, page));
 
     layout->addStretch(1);
@@ -550,6 +691,10 @@ QWidget *NitroWatchPlugin::createSettingsWidget(QWidget *parent)
     QObject::connect(watch, &QCheckBox::toggled, page, [this](bool on) {
         if (context())
             context()->setSetting(QStringLiteral("watch"), on);
+    });
+    QObject::connect(check, &QCheckBox::toggled, page, [this](bool on) {
+        if (context())
+            context()->setSetting(QStringLiteral("checkFirst"), on);
     });
     QObject::connect(fakes, &QCheckBox::toggled, page, [this](bool on) {
         if (context())

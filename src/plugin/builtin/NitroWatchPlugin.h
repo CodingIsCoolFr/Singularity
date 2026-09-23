@@ -11,8 +11,15 @@ class QLabel;
 class QPushButton;
 class QWidget;
 
-// Spots a Nitro gift the moment it is posted and puts a Claim button in front
-// of you. It does not claim anything by itself, and that is the whole design.
+// Spots a Nitro gift the moment it is posted, asks Discord whether it is still
+// live, and puts a Claim button in front of you if it is. It does not claim
+// anything by itself, and that is the whole design.
+//
+// The check is the half that makes this useful rather than annoying. A code is
+// looked up through GET /entitlements/gift-codes/{code}, which reads and does
+// not redeem, and is the same call the official client makes to draw a gift
+// card. Made-up codes come back 404, spent ones have uses == max_uses, and
+// neither ever reaches the screen. Nothing is consumed by asking.
 //
 // Why it stops short of claiming. Discord does not catch automated accounts by
 // measuring how fast you click. It catches them on the shape of the account:
@@ -37,8 +44,9 @@ public:
     QString name() const override { return QStringLiteral("Nitro watch"); }
     QString description() const override
     {
-        return QStringLiteral("Spots gift links the instant they are posted and offers a Claim "
-                              "button. Never claims on its own.");
+        return QStringLiteral("Spots gift links the instant they are posted, checks each one with "
+                              "Discord, and offers a Claim button for the real ones. Never claims "
+                              "on its own.");
     }
     bool enabledByDefault() const override { return false; }
 
@@ -64,13 +72,30 @@ private:
     void selfCheck();
     bool m_matcherTrusted = true;
 
-    void offer(const QString &code, const QString &fromUserId, const QString &channelId);
+    // What Discord says a spotted code actually is.
+    struct Gift {
+        QString what;       // "Nitro, 1 month", or a plain description
+        bool claimable = false;
+        QString whyNot;     // when it is not: spent, expired, already yours
+        int left = 0;       // uses remaining
+    };
+
+    // Asks Discord about the code and only then decides whether to raise an
+    // alert. This is the whole of the "skip the fakes" job: a made-up code is
+    // a 404, a spent one has uses == max_uses, and neither ever reaches the
+    // screen. Nothing here claims anything.
+    void inspect(const QString &code, const QString &fromUserId, const QString &channelId);
+    static Gift readGift(const QJsonObject &body);
+
+    void offer(const QString &code, const QString &fromUserId, const QString &channelId,
+               const Gift &gift);
     void claim(const QString &code, const QString &channelId, QLabel *status, QPushButton *button,
                const RestClient::CaptchaProof &proof = {});
     void warnAboutFake(const QString &host);
 
     bool watchEnabled() const;
     bool warnFakes() const;
+    bool checkFirst() const;
 
     // Codes already put in front of you. A gift posted in two channels, or
     // edited, must not raise two alerts.

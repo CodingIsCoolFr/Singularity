@@ -121,6 +121,19 @@ public:
     // POST /channels/{id}/invites - makes a share link for a channel.
     void createInvite(const QString &channelId, ObjectHandler onOk, ErrorHandler onError);
 
+    // GET /entitlements/gift-codes/{code} - says what a gift is, WITHOUT
+    // claiming it.
+    //
+    // This is the call Discord's own client makes to draw the gift card, so
+    // making it is ordinary client traffic rather than a sign of automation.
+    // The answer carries `uses`, `max_uses`, `expires_at`, `redeemed` and the
+    // subscription plan, which is everything needed to tell a live gift from
+    // one that is spent, expired, already yours, or not Nitro at all.
+    //
+    // A code that does not exist comes back 404, which is how a made-up link
+    // is told apart from a real one without pressing anything.
+    void lookupGift(const QString &code, ObjectHandler onOk, ErrorHandler onError);
+
     // POST /entitlements/gift-codes/{code}/redeem - claims a gift.
     //
     // Only ever called because somebody pressed a button. Nothing in Singularity

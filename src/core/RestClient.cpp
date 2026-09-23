@@ -331,6 +331,18 @@ void RestClient::createInvite(const QString &channelId, ObjectHandler onOk, Erro
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+void RestClient::lookupGift(const QString &code, ObjectHandler onOk, ErrorHandler onError)
+{
+    // The same query the official client sends when it renders a gift card.
+    // with_subscription_plan is what names the gift ("Nitro, 1 month") rather
+    // than leaving it as a bare SKU id.
+    const QString path = QStringLiteral("/entitlements/gift-codes/%1"
+                                        "?with_application=false&with_subscription_plan=true")
+                             .arg(code);
+    QNetworkReply *reply = m_network.get(buildRequest(path));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::redeemGift(const QString &code, const QString &channelId, ObjectHandler onOk,
                             ErrorHandler onError, const CaptchaProof &captcha)
 {
