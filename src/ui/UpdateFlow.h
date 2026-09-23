@@ -27,4 +27,15 @@ void run(bool quiet, QWidget *parent);
 // current stays silent.
 void watch();
 
+// True from the moment somebody presses Update until the update either fails
+// or finishes. The sign-in window uses this: the updater hides every window to
+// show its install screen, and hiding the sign-in window ends it exactly as
+// if the person had closed it - so the program took that for "cancelled" and
+// exited halfway through the download.
+bool updating();
+
+// Waits, with the event loop running, until the update fails (the windows
+// come back) or finishes (the program quits so the new copy can start).
+void waitForUpdate();
+
 } // namespace UpdateFlow

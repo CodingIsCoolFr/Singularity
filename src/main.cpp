@@ -49,7 +49,7 @@ int main(int argc, char *argv[])
     holdRunningMutex();
     app.setApplicationName(QStringLiteral("Singularity"));
     app.setOrganizationName(QStringLiteral("Singularity"));
-    app.setApplicationVersion(QStringLiteral("0.6.73"));
+    app.setApplicationVersion(QStringLiteral("0.6.74"));
     app.setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
 
     Theme::applySeed(QColor(AppConfig::instance().value(QStringLiteral("appearance/themeSeed"),
@@ -117,7 +117,22 @@ int main(int argc, char *argv[])
         wlog(QStringLiteral("app"), addingAccount ? QStringLiteral("adding an account, showing sign-in")
                                                   : QStringLiteral("no saved token, showing sign-in"));
         LoginDialog login(&rest);
-        if (login.exec() != QDialog::Accepted) {
+        int answer = login.exec();
+
+        // Pressing Update hides every window to show the install screen, and
+        // a hidden sign-in window ends as if it had been closed. That is not
+        // somebody cancelling: wait for the update instead of exiting in the
+        // middle of the download. A good install quits the program itself so
+        // the new copy can start; a failed one brings the window back.
+        while (answer != QDialog::Accepted && UpdateFlow::updating()) {
+            wlog(QStringLiteral("app"), QStringLiteral("sign-in window hidden by the updater; waiting for it"));
+            UpdateFlow::waitForUpdate();
+            if (UpdateFlow::updating())
+                return 0;   // installed; the new copy starts on its own
+            answer = login.exec();
+        }
+
+        if (answer != QDialog::Accepted) {
             wlog(QStringLiteral("app"), QStringLiteral("sign-in cancelled"));
             if (token.isEmpty())
                 return 0;

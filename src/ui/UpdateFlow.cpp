@@ -15,6 +15,7 @@
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QEventLoop>
 #include <QMessageBox>
 #include <QPointer>
 #include <QProcess>
@@ -126,7 +127,13 @@ public:
                             .arg(version, QApplication::applicationVersion())
                             .arg(qMax(qint64(1), bytes / (1024 * 1024))));
 
-        m_notes = new QLabel(summarise(notes), this);
+        m_notes = new QLabel(this);
+        // Release notes are written in Markdown; shown as Markdown, so "##"
+        // and "**" become a heading and bold rather than sitting there as
+        // symbols. summarise() has already taken out every angle bracket, so
+        // nothing in them can be HTML.
+        m_notes->setTextFormat(Qt::MarkdownText);
+        m_notes->setText(summarise(notes));
         m_notes->setWordWrap(true);
         m_notes->setVisible(!m_notes->text().isEmpty());
         m_notes->setStyleSheet(QStringLiteral("color: %1;").arg(QLatin1String(Theme::MidGray)));
@@ -352,6 +359,7 @@ private:
 
 QPointer<InstallScreen> g_install;
 QList<QPointer<QWidget>> g_hidden;
+bool g_updating = false;
 
 // The open program goes away for the whole update, download included.
 // The hole screen is the only thing left on screen.
@@ -373,6 +381,8 @@ void presentInstallScreen(const QString &step)
 
 void restoreHidden()
 {
+    // Every way an update can fail comes through here.
+    g_updating = false;
     for (const QPointer<QWidget> &widget : g_hidden) {
         if (widget)
             widget->show();
@@ -480,6 +490,7 @@ Updater *updater()
                                  g_offer->close();
                          });
                          g_offer->setAccept([]() {
+                             g_updating = true;
                              if (g_offer)
                                  g_offer->close();
                              presentInstallScreen(QStringLiteral("Downloading..."));
@@ -544,6 +555,7 @@ Updater *updater()
             qApp->quit();
         });
         QObject::connect(install, &QProcess::errorOccurred, qApp, [install](QProcess::ProcessError) {
+            restoreHidden();
             QMessageBox::warning(g_owner, QStringLiteral("Could not start the installer"),
                                  install->errorString());
             install->deleteLater();
@@ -570,6 +582,27 @@ void UpdateFlow::run(bool quiet, QWidget *parent)
     g_owner = parent;
     g_quiet = quiet;
     u->check(quiet);
+}
+
+bool UpdateFlow::updating()
+{
+    return g_updating;
+}
+
+void UpdateFlow::waitForUpdate()
+{
+    // A plain event loop, checked a few times a second. qApp->quit() at the
+    // end of a good install ends this loop too, along with every other one.
+    QEventLoop loop;
+    QTimer poll;
+    poll.setInterval(250);
+    QObject::connect(&poll, &QTimer::timeout, &loop, [&loop]() {
+        if (!g_updating)
+            loop.quit();
+    });
+    poll.start();
+    if (g_updating)
+        loop.exec();
 }
 
 void UpdateFlow::watch()
