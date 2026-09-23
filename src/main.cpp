@@ -48,7 +48,7 @@ int main(int argc, char *argv[])
     holdRunningMutex();
     app.setApplicationName(QStringLiteral("Singularity"));
     app.setOrganizationName(QStringLiteral("Singularity"));
-    app.setApplicationVersion(QStringLiteral("0.6.70"));
+    app.setApplicationVersion(QStringLiteral("0.6.71"));
     app.setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
 
     Theme::applySeed(QColor(AppConfig::instance().value(QStringLiteral("appearance/themeSeed"),
@@ -69,6 +69,11 @@ int main(int argc, char *argv[])
     // The title bar belongs to Windows, not to Qt, so it has to be coloured
     // separately or it sits above the app as a paler strip.
     Theme::installDarkTitleBars();
+
+    // Every drop-down list gets a solid background. Without this the Windows 11
+    // style leaves them see-through under our style sheet, and their items
+    // float over whatever is behind the window.
+    Theme::installPopupFix();
 
     // Touch the log first so the file exists even if startup fails early.
     wlog(QStringLiteral("app"), QStringLiteral("Singularity %1 starting").arg(app.applicationVersion()));
