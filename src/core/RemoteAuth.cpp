@@ -45,27 +45,59 @@ RemoteAuth::RemoteAuth(QObject *parent)
         wlog(QStringLiteral("qr"), QStringLiteral("gateway closed the connection: code %1 %2")
                                        .arg(int(m_socket.closeCode()))
                                        .arg(m_socket.closeReason()));
-        if (m_started) {
-            // 4003 is the gateway's own "the code was never used" timeout.
-            if (m_socket.closeCode() == 4003) {
-                emit expired();
-            } else {
-                emit failed(QStringLiteral("The QR sign-in connection dropped (code %1).")
-                                .arg(int(m_socket.closeCode())));
-            }
-            m_started = false;
+        if (!m_started)
+            return;
+        if (m_socket.closeCode() == 4003) {
+            // The gateway's own "this code was never used" timeout.
+            emit expired();
+            renewSoon(0);
+        } else {
+            emit failed(QStringLiteral("Lost the connection to Discord. Getting a new code..."));
+            renewSoon(m_retryDelayMs);
         }
     });
 
     connect(&m_socket, &QWebSocket::errorOccurred, this, [this](QAbstractSocket::SocketError) {
         wlog(QStringLiteral("qr"), QStringLiteral("socket error: %1").arg(m_socket.errorString()));
-        if (m_started)
-            emit failed(QStringLiteral("Could not reach Discord for QR sign-in: %1")
-                            .arg(m_socket.errorString()));
+        if (!m_started)
+            return;
+        emit failed(QStringLiteral("Could not reach Discord. Trying again..."));
+        renewSoon(m_retryDelayMs);
     });
 
     connect(&m_heartbeat, &QTimer::timeout, this,
             [this]() { sendJson(QJsonObject{{QStringLiteral("op"), QStringLiteral("heartbeat")}}); });
+
+    // A code only lives as long as the gateway said it would in its hello.
+    // It does not always hang up when that time is over, so the old code
+    // could sit on the screen long after it had stopped working, and a phone
+    // scanning it was told it was invalid. Discord's page swaps in a new code
+    // before the old one runs out; this does the same.
+    m_lifetime.setSingleShot(true);
+    connect(&m_lifetime, &QTimer::timeout, this, [this]() {
+        // Not while a phone has scanned it and the person may be pressing
+        // Approve this very second; the gateway ends that session itself.
+        if (m_scanned)
+            return;
+        wlog(QStringLiteral("qr"), QStringLiteral("the code is about to expire; fetching a fresh one"));
+        emit expired();
+        start();
+    });
+
+    m_retry.setSingleShot(true);
+    connect(&m_retry, &QTimer::timeout, this, [this]() { start(); });
+}
+
+void RemoteAuth::renewSoon(int delayMs)
+{
+    if (m_retry.isActive())
+        return;
+    m_heartbeat.stop();
+    m_lifetime.stop();
+    m_retry.start(delayMs);
+    // Each failure in a row waits longer, up to half a minute, so a machine
+    // that is offline does not hammer the gateway.
+    m_retryDelayMs = qMin(m_retryDelayMs * 2, 30000);
 }
 
 RemoteAuth::~RemoteAuth()
@@ -83,6 +115,7 @@ void RemoteAuth::start()
     }
 
     m_started = true;
+    m_scanned = false;
 
     QNetworkRequest request((QUrl(QLatin1String(GatewayUrl))));
     request.setHeader(QNetworkRequest::UserAgentHeader, DiscordIdentity::userAgent());
@@ -94,6 +127,8 @@ void RemoteAuth::stop()
 {
     m_started = false;
     m_heartbeat.stop();
+    m_lifetime.stop();
+    m_retry.stop();
     m_fingerprint.clear();
     if (m_socket.state() != QAbstractSocket::UnconnectedState) {
         // Quietly: this is us hanging up, not the gateway. Without the blocker
@@ -127,6 +162,12 @@ void RemoteAuth::handleMessage(const QByteArray &json)
     if (op == QLatin1String("hello")) {
         const int interval = message.value(QStringLiteral("heartbeat_interval")).toInt(41250);
         m_heartbeat.start(interval);
+
+        // How long this code will be good for. Renew a little before the end
+        // so the one on screen is never already dead.
+        const int lifetime = message.value(QStringLiteral("timeout_ms")).toInt(120000);
+        m_lifetime.start(qMax(10000, lifetime - 5000));
+        wlog(QStringLiteral("qr"), QStringLiteral("this code lasts %1 s").arg(lifetime / 1000));
         // Our public key, as the gateway wants it: plain base64 of the DER.
         sendJson(QJsonObject{
             {QStringLiteral("op"), QStringLiteral("init")},
@@ -163,6 +204,7 @@ void RemoteAuth::handleMessage(const QByteArray &json)
         const QString url = qrAddress(m_fingerprint);
         const QImage code = QrCode::render(QrCode::encode(url.toUtf8()), 8);
         wlog(QStringLiteral("qr"), QStringLiteral("QR ready, waiting for a phone to scan it"));
+        m_retryDelayMs = 2000;   // a good connection resets the back-off
         emit qrCodeReady(code, url);
         return;
     }
@@ -181,6 +223,7 @@ void RemoteAuth::handleMessage(const QByteArray &json)
         QString avatar = parts.size() >= 3 ? QString::fromUtf8(parts.at(2)) : QString();
         if (avatar == QLatin1String("0"))
             avatar.clear();   // no picture set
+        m_scanned = true;
         emit scanned(userId, avatar, username);
         return;
     }

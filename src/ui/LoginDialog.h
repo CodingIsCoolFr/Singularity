@@ -73,6 +73,10 @@ private:
     QStackedWidget *m_pages = nullptr;
 
     // Credentials page
+    QPushButton *m_countryButton = nullptr;
+    QString m_countryAlpha2;
+    void refreshCountryButton();
+    QString loginText() const;
     QLineEdit *m_loginEdit = nullptr;
     QLineEdit *m_passwordEdit = nullptr;
     QCheckBox *m_rememberBox = nullptr;

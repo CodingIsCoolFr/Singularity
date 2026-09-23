@@ -79,9 +79,17 @@ protected:
 private:
     void sendJson(const QJsonObject &object);
 
+    // Starts over after `delayMs`, once, however many things report the same
+    // failure.
+    void renewSoon(int delayMs);
+
     QWebSocket m_socket;
     QNetworkAccessManager m_network;
     QTimer m_heartbeat;
+    QTimer m_lifetime;   // renews the code before the gateway's timeout
+    QTimer m_retry;      // reconnects after a dropped connection
+    int m_retryDelayMs = 2000;
+    bool m_scanned = false;   // a phone is showing this code's approval
     bool m_started = false;
     QString m_fingerprint;
 };

@@ -2,6 +2,7 @@
 
 #include "core/AppConfig.h"
 #include "core/Logger.h"
+#include "core/PhoneCountries.h"
 #include "core/RestClient.h"
 #include "ui/CaptchaDialog.h"
 #include "ui/MediaCache.h"
@@ -13,6 +14,8 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLocale>
+#include <QMenu>
 #include <QPixmap>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -252,10 +255,12 @@ LoginDialog::LoginDialog(RestClient *rest, QWidget *parent)
         if (m_pages->currentIndex() == CredentialsPage)
             m_remote.start();
     });
+    // RemoteAuth fetches the fresh code itself; this only puts the screen
+    // back to "scan me" while it arrives.
     connect(&m_remote, &RemoteAuth::expired, this, [this]() {
         m_scannedAvatar.clear();
-        if (m_pages->currentIndex() == CredentialsPage)
-            m_remote.start();
+        m_qrTitle->setText(QStringLiteral("Log in with QR code"));
+        m_qrStatus->setText(QStringLiteral("Getting a fresh code..."));
     });
     connect(&m_remote, &RemoteAuth::failed, this, [this](const QString &reason) {
         m_qrStatus->setText(reason);
@@ -267,6 +272,24 @@ LoginDialog::LoginDialog(RestClient *rest, QWidget *parent)
 // ---------------------------------------------------------------------------
 // Pages
 // ---------------------------------------------------------------------------
+
+using PhoneCountries::looksLikePhone;
+
+static const PhoneCountries::Country *countryFor(const QString &alpha2)
+{
+    return PhoneCountries::find(alpha2);
+}
+
+void LoginDialog::refreshCountryButton()
+{
+    if (const PhoneCountries::Country *country = countryFor(m_countryAlpha2))
+        m_countryButton->setText(QStringLiteral("%1 %2").arg(m_countryAlpha2, QLatin1String(country->code)));
+}
+
+QString LoginDialog::loginText() const
+{
+    return PhoneCountries::toLogin(m_loginEdit->text(), m_countryAlpha2);
+}
 
 // A small upper-case caption over a field, the way Discord labels its form.
 static QLabel *makeFieldLabel(const QString &text, QWidget *parent)
@@ -297,10 +320,57 @@ QWidget *LoginDialog::buildCredentialsPage()
     form->addSpacing(14);
 
     form->addWidget(makeFieldLabel(QStringLiteral("EMAIL OR PHONE NUMBER *"), page));
+
+    // The country code, shown in front of the box as soon as what is typed
+    // looks like a phone number - as Discord's form does. Discord only knows
+    // a number in full international form.
+    auto *loginRow = new QHBoxLayout;
+    loginRow->setSpacing(6);
+    m_countryButton = new QPushButton(page);
+    m_countryButton->setCursor(Qt::PointingHandCursor);
+    m_countryButton->setMinimumHeight(40);
+    m_countryButton->setToolTip(QStringLiteral("Country code for your phone number"));
+    m_countryButton->setStyleSheet(QStringLiteral(
+        "QPushButton { background: %1; color: %2; border: none; border-radius: 8px; padding: 0 10px; "
+        "font-weight: 600; } QPushButton:hover { background: %3; }")
+                                       .arg(QLatin1String(Theme::SurfaceInput), QLatin1String(Theme::TextPrimary),
+                                            QLatin1String(Theme::SurfaceHover)));
+    m_countryButton->setVisible(false);
+    loginRow->addWidget(m_countryButton);
+
     m_loginEdit = new QLineEdit(page);
+    m_loginEdit->setObjectName(QStringLiteral("LoginEdit"));
     m_loginEdit->setMinimumHeight(40);
-    form->addWidget(m_loginEdit);
+    loginRow->addWidget(m_loginEdit, 1);
+    form->addLayout(loginRow);
     form->addSpacing(10);
+
+    // Where the person is, from Windows, unless they picked one before.
+    m_countryAlpha2 = AppConfig::instance().value(QStringLiteral("login/phoneCountry")).toString();
+    if (m_countryAlpha2.isEmpty())
+        m_countryAlpha2 = QLocale::territoryToCode(QLocale::system().territory());
+    if (!countryFor(m_countryAlpha2))
+        m_countryAlpha2 = QStringLiteral("US");
+    refreshCountryButton();
+
+    connect(m_loginEdit, &QLineEdit::textChanged, this,
+            [this](const QString &text) { m_countryButton->setVisible(looksLikePhone(text) && !text.trimmed().startsWith(QLatin1Char('+'))); });
+    connect(m_countryButton, &QPushButton::clicked, this, [this]() {
+        QMenu menu(this);
+        menu.setStyleSheet(QStringLiteral("QMenu { menu-scrollable: 1; }"));
+        for (const PhoneCountries::Country &country : PhoneCountries::All) {
+            QAction *action = menu.addAction(QStringLiteral("%1   %2")
+                                                 .arg(QString::fromUtf8(country.name), QLatin1String(country.code)));
+            action->setData(QLatin1String(country.alpha2));
+            action->setCheckable(true);
+            action->setChecked(m_countryAlpha2 == QLatin1String(country.alpha2));
+        }
+        if (QAction *picked = menu.exec(m_countryButton->mapToGlobal(QPoint(0, m_countryButton->height())))) {
+            m_countryAlpha2 = picked->data().toString();
+            AppConfig::instance().setValue(QStringLiteral("login/phoneCountry"), m_countryAlpha2);
+            refreshCountryButton();
+        }
+    });
 
     form->addWidget(makeFieldLabel(QStringLiteral("PASSWORD *"), page));
     m_passwordEdit = new QLineEdit(page);
@@ -372,7 +442,7 @@ QWidget *LoginDialog::buildCredentialsPage()
     connect(forgotLink, &QPushButton::clicked, this, [this]() {
         setBusy(true);
         setStatus(QStringLiteral("Asking Discord for a reset email..."));
-        m_auth.forgotPassword(m_loginEdit->text());
+        m_auth.forgotPassword(loginText());
     });
 
     return page;
@@ -479,7 +549,7 @@ QWidget *LoginDialog::buildDevicePage()
     connect(m_deviceResendLink, &QPushButton::clicked, this, [this]() {
         setBusy(true);
         setStatus(QStringLiteral("Asking Discord to send a text..."));
-        m_auth.resendPhoneCode(m_loginEdit->text());
+        m_auth.resendPhoneCode(loginText());
     });
     connect(qrLink, &QPushButton::clicked, this, &LoginDialog::useQrInstead);
     connect(backLink, &QPushButton::clicked, this, [this]() {
@@ -614,8 +684,10 @@ void LoginDialog::setBusy(bool busy)
 void LoginDialog::setStatus(const QString &text, bool isError)
 {
     m_statusLabel->setText(text);
-    m_statusLabel->setStyleSheet(QStringLiteral("color: %1;")
-                                     .arg(QLatin1String(isError ? Theme::Accent : Theme::TextFaint)));
+    // Red for a problem, as Discord does. It used the theme's accent colour,
+    // which with a grey theme is grey - an error that looked like a hint.
+    m_statusLabel->setStyleSheet(isError ? QStringLiteral("color: %1; font-weight: 600;").arg(QLatin1String(Theme::Red))
+                                         : QStringLiteral("color: %1;").arg(QLatin1String(Theme::TextFaint)));
 }
 
 bool LoginDialog::shouldRemember() const
@@ -627,7 +699,14 @@ void LoginDialog::submitCredentials()
 {
     setBusy(true);
     setStatus(QStringLiteral("Signing in..."));
-    m_auth.logIn(m_loginEdit->text(), m_passwordEdit->text());
+    const QString login = loginText();
+    // Logged so a "wrong login" can be told apart from a wrong password: the
+    // shape only, never the number or address itself.
+    wlog(QStringLiteral("login"), looksLikePhone(login)
+                                      ? QStringLiteral("signing in with a phone number (%1 digits, international form)")
+                                            .arg(login.size() - 1)
+                                      : QStringLiteral("signing in with an email address"));
+    m_auth.logIn(login, m_passwordEdit->text());
 }
 
 void LoginDialog::submitSecondFactor()
@@ -768,7 +847,7 @@ void LoginDialog::showDeviceCheck(bool byPhone, const QString &message)
     if (byPhone) {
         m_deviceHint->setText(QStringLiteral("Discord does not know this device yet, so it texted a code to "
                                              "%1. Type it here.")
-                                  .arg(m_loginEdit->text().trimmed()));
+                                  .arg(loginText()));
         m_deviceEdit->setPlaceholderText(QStringLiteral("6-digit code"));
         m_deviceButton->setText(QStringLiteral("Verify"));
     } else {
@@ -794,7 +873,7 @@ void LoginDialog::submitDeviceCheck()
         }
         setBusy(true);
         setStatus(QStringLiteral("Checking the code..."));
-        m_auth.verifyPhoneForDevice(m_loginEdit->text(), text);
+        m_auth.verifyPhoneForDevice(loginText(), text);
         return;
     }
 
