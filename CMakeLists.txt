@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(Singularity VERSION 0.6.77 LANGUAGES CXX)
+project(Singularity VERSION 0.6.78 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -45,6 +45,8 @@ qt_add_executable(Singularity WIN32
     src/core/RemoteAuth.cpp
     src/core/HangWatch.h
     src/core/HangWatch.cpp
+    src/core/SingleInstance.h
+    src/core/SingleInstance.cpp
     src/core/DaveSession.h
     src/core/DaveSession.cpp
     src/core/MessageStore.h

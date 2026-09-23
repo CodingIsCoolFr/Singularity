@@ -4315,7 +4315,11 @@ void MainWindow::switchToAccount(const QString &userId)
 
 void MainWindow::restartInto(const QStringList &arguments)
 {
-    if (!QProcess::startDetached(QCoreApplication::applicationFilePath(), arguments)) {
+    // --replace tells the new copy that this one is on its way out, so it
+    // waits for it rather than handing itself back to it as a duplicate.
+    QStringList withReplace = arguments;
+    withReplace << QStringLiteral("--replace");
+    if (!QProcess::startDetached(QCoreApplication::applicationFilePath(), withReplace)) {
         flashStatus(QStringLiteral("Could not restart Singularity."), 6000);
         return;
     }

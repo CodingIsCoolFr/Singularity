@@ -4,6 +4,7 @@
 #include "core/Logger.h"
 #include "core/MessageStore.h"
 #include "core/RestClient.h"
+#include "core/SingleInstance.h"
 #include "core/TokenStore.h"
 #include "plugin/PluginHost.h"
 #include "ui/LoginDialog.h"
@@ -50,7 +51,7 @@ int main(int argc, char *argv[])
     holdRunningMutex();
     app.setApplicationName(QStringLiteral("Singularity"));
     app.setOrganizationName(QStringLiteral("Singularity"));
-    app.setApplicationVersion(QStringLiteral("0.6.77"));
+    app.setApplicationVersion(QStringLiteral("0.6.78"));
     app.setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
 
     Theme::applySeed(QColor(AppConfig::instance().value(QStringLiteral("appearance/themeSeed"),
@@ -79,6 +80,14 @@ int main(int argc, char *argv[])
 
     // Touch the log first so the file exists even if startup fails early.
     wlog(QStringLiteral("app"), QStringLiteral("Singularity %1 starting").arg(app.applicationVersion()));
+
+    // One copy at a time. A second launch brings the running copy forward and
+    // leaves; a newer version (from the updater) or a restart for an account
+    // switch asks the running copy to close and takes over.
+    const bool addingAccount = app.arguments().contains(QStringLiteral("--add-account"));
+    const bool replaceRunning = addingAccount || app.arguments().contains(QStringLiteral("--replace"));
+    if (!SingleInstance::claim(app.applicationVersion(), replaceRunning))
+        return 0;
 
     // Names whatever freezes the window, in the log, the moment it happens.
     HangWatch::start();
@@ -110,9 +119,17 @@ int main(int argc, char *argv[])
         }
     }
 
-    // "Add an account" restarts with this flag. The sign-in window shows even
-    // though a session is saved; cancelling it goes back to that session.
-    const bool addingAccount = app.arguments().contains(QStringLiteral("--add-account"));
+    // "Add an account" restarts with --add-account. The sign-in window shows
+    // even though a session is saved; cancelling it goes back to that session.
+    const auto bringForward = [](QWidget *window) {
+        if (!window)
+            return;
+        if (window->isMinimized())
+            window->showNormal();
+        window->show();
+        window->raise();
+        window->activateWindow();
+    };
 
     if (token.isEmpty() || addingAccount) {
         wlog(QStringLiteral("app"), addingAccount ? QStringLiteral("adding an account, showing sign-in")
@@ -131,9 +148,15 @@ int main(int argc, char *argv[])
         // only finishes when it is accepted or really closed.
         QEventLoop waiting;
         QObject::connect(&login, &QDialog::finished, &waiting, &QEventLoop::quit);
+        SingleInstance::setShowHandler([&login, bringForward]() { bringForward(&login); });
         login.show();
         waiting.exec();
+        SingleInstance::setShowHandler(nullptr);
         const int answer = login.result();
+
+        // A newer copy took over while this one sat at sign-in.
+        if (SingleInstance::replaced())
+            return 0;
 
         // The loop also ends when a finished update quits the program so the
         // new copy can start. That is not a cancelled sign-in either.
@@ -158,11 +181,13 @@ int main(int argc, char *argv[])
 
     MainWindow window(&rest, &gateway, &store, &plugins);
     wlog(QStringLiteral("app"), QStringLiteral("main window constructed"));
+    SingleInstance::setShowHandler([&window, bringForward]() { bringForward(&window); });
     window.show();
     wlog(QStringLiteral("app"), QStringLiteral("main window show() returned"));
     window.startSession(token);
 
     const int result = app.exec();
+    SingleInstance::setShowHandler(nullptr);
     HangWatch::stop();
     return result;
 }
