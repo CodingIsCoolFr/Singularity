@@ -19,6 +19,7 @@
 #include <QProcess>
 
 #include "ui/CallView.h"
+#include "ui/ChangelogDialog.h"
 #include "ui/ListDelegates.h"
 #include "ui/LogDialog.h"
 #include "ui/MediaCache.h"
@@ -1608,6 +1609,14 @@ void MainWindow::buildMenu()
 
     auto *updateAction = fileMenu->addAction(QStringLiteral("Check for updates..."));
     connect(updateAction, &QAction::triggered, this, [this]() { UpdateFlow::run(false, this); });
+
+    // Every release and what it changed, newest first.
+    auto *changelogAction = fileMenu->addAction(QStringLiteral("What's new..."));
+    connect(changelogAction, &QAction::triggered, this, [this]() {
+        auto *dialog = new ChangelogDialog(this);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->show();
+    });
 
     fileMenu->addSeparator();
 

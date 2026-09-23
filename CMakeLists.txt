@@ -1,5 +1,5 @@
 ﻿cmake_minimum_required(VERSION 3.21)
-project(Singularity VERSION 0.6.65 LANGUAGES CXX)
+project(Singularity VERSION 0.6.66 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -36,6 +36,7 @@ qt_add_executable(Singularity WIN32
     src/core/GatewayClient.cpp
     src/core/VoiceConnection.h
     src/core/VoiceConnection.cpp
+    src/core/JitterBuffer.cpp
     src/core/DaveSession.h
     src/core/DaveSession.cpp
     src/core/MessageStore.h
@@ -73,6 +74,7 @@ qt_add_executable(Singularity WIN32
     src/ui/PluginsDialog.cpp
     src/ui/LogDialog.h
     src/ui/LogDialog.cpp
+    src/ui/ChangelogDialog.cpp
     src/ui/ChatView.h
     src/ui/ChatView.cpp
     src/ui/CallView.h

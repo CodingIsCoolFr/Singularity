@@ -23,6 +23,7 @@
 #include <utility>
 
 class DaveSession;
+class JitterBuffer;
 class QAudioSource;
 class QAudioSink;
 class QIODevice;
@@ -346,26 +347,21 @@ private:
     int m_statVideoSealFailed = 0;
     qint64 m_lastKeyframeRequestMs = 0;
 
-    void playDecoded(quint32 ssrc, const QByteArray &frame);
+    // One packet of somebody's sound, opened and handed to their buffer.
+    void receiveAudio(quint32 ssrc, quint16 sequence, quint32 timestamp, const QByteArray &frame);
 
-    // One person's sound on its way to the speakers.
-    //
-    // Packets do not arrive evenly spaced, so each person's frames wait in a
-    // short queue and are taken out at a steady rate. Playing them the instant
-    // they land is what makes a call sound broken up.
-    struct IncomingStream {
-        OpusDecoder *decoder = nullptr;
-        QList<QByteArray> waiting;   // decoded sound, one 20 ms frame each
-        bool started = false;        // false until enough has built up to begin
-    };
-
-    IncomingStream *streamFor(quint32 ssrc);
+    // One person's sound on its way to the speakers: a NetEq-style buffer
+    // that orders packets, rebuilds lost ones, and picks its own cushion.
+    // Held by pointer because a buffer owns a decoder and cannot be copied.
+    JitterBuffer *bufferFor(quint32 ssrc);
     void onPlayTick();
-    void catchUpQueues();
     QByteArray mixWaitingStreams();
 
-    QHash<quint32, IncomingStream> m_streams;
+    QHash<quint32, JitterBuffer *> m_buffers;
     QTimer m_playTimer;
+
+    // The one clock packets are stamped and pulled against.
+    QElapsedTimer m_mediaClock;
 
     QWebSocket m_socket;
     QUdpSocket m_udp;

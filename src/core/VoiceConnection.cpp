@@ -1,6 +1,7 @@
 #include "core/VoiceConnection.h"
 
 #include "core/DaveSession.h"
+#include "core/JitterBuffer.h"
 #include "core/Logger.h"
 
 #include <QAudioDevice>
@@ -95,21 +96,11 @@ constexpr int NonceTailSize = 4;
 // How long to keep sending after you stop talking, so words are not clipped.
 constexpr int SilenceFramesBeforeStop = 10;   // 200 ms
 
-// How much of someone's sound to hold back before starting to play it.
-//
-// The internet does not deliver packets evenly. Playing each one the moment it
-// lands means every late arrival is a gap. Two frames is 40 milliseconds of
-// cushion: Discord's own jitter buffer sits in this range, and four frames
-// (80 ms) plus the speaker buffer stacked into a delay you talk over.
-constexpr int JitterFrames = 2;
-
-// The most that may ever pile up for one person. Anything past this is delay
-// that will not catch up on its own, so the oldest frames are thrown away.
-constexpr int MaxQueuedFrames = 4;
-
-// Start dropping once the queue is this far past the cushion, so a burst of
-// packets becomes a short skip instead of a lag that lasts the rest of the call.
-constexpr int CatchupFrames = 3;
+// How much of someone's sound is held back before it plays is no longer a
+// constant here. It used to be two frames to start and three at most, with
+// whole frames thrown away past that - fixed, so it chopped on a bad line and
+// clicked every time it caught up. Each person now has a JitterBuffer that
+// measures their line and picks its own cushion; see JitterBuffer.h.
 
 QByteArray buildRtpHeader(quint16 sequence, quint32 timestamp, quint32 ssrc)
 {
@@ -1605,11 +1596,8 @@ void VoiceConnection::stopAudio()
         opus_encoder_destroy(m_encoder);
         m_encoder = nullptr;
     }
-    for (IncomingStream &stream : m_streams) {
-        if (stream.decoder)
-            opus_decoder_destroy(stream.decoder);
-    }
-    m_streams.clear();
+    qDeleteAll(m_buffers);
+    m_buffers.clear();
     m_captureBuffer.clear();
     m_externalPcm.clear();
 }
@@ -1798,6 +1786,39 @@ void VoiceConnection::reportAudioStats()
         m_statVideoSealFailed = 0;
     }
 
+    // What the buffers did, summed over everyone. "rebuilt" is a lost packet
+    // recovered from the next one's FEC copy; "guessed" is one there was no
+    // copy of. A clean line reads zero for both.
+    {
+        JitterBuffer::Stats sum;
+        int cushionTotal = 0;
+        int talking = 0;
+        for (JitterBuffer *buffer : std::as_const(m_buffers)) {
+            const JitterBuffer::Stats s = buffer->takeStats();
+            sum.concealed += s.concealed;
+            sum.recovered += s.recovered;
+            sum.late += s.late;
+            sum.reordered += s.reordered;
+            sum.shortened += s.shortened;
+            sum.lengthened += s.lengthened;
+            if (!buffer->isIdle()) {
+                cushionTotal += s.targetMs;
+                ++talking;
+            }
+        }
+        if (!m_buffers.isEmpty()) {
+            line += QStringLiteral(", buffer: cushion %1 ms, rebuilt %2, guessed %3, late %4, "
+                                   "reordered %5, stretched -%6/+%7")
+                        .arg(talking ? cushionTotal / talking : 0)
+                        .arg(sum.recovered)
+                        .arg(sum.concealed)
+                        .arg(sum.late)
+                        .arg(sum.reordered)
+                        .arg(sum.shortened)
+                        .arg(sum.lengthened);
+        }
+    }
+
     // The beat, always printed. A clean call should read "worst 1 ms"; a call
     // that stutters will say by how much, and whether it is us.
     line += QStringLiteral(", beat late worst %1 ms (%2 over 10 ms)")
@@ -1902,7 +1923,13 @@ void VoiceConnection::onUdpReadyRead()
         if (payload.size() < 3)
             continue;
 
-        playDecoded(ssrc, payload);
+        // The RTP timestamp, bytes 4 to 7, which is in the clear. The buffer
+        // needs it to tell a slow network from a person who paused.
+        const auto *raw = reinterpret_cast<const quint8 *>(packet.constData());
+        const quint32 timestamp = (quint32(raw[4]) << 24) | (quint32(raw[5]) << 16)
+            | (quint32(raw[6]) << 8) | quint32(raw[7]);
+
+        receiveAudio(ssrc, sequence, timestamp, payload);
     }
 }
 
@@ -2173,28 +2200,18 @@ void VoiceConnection::finishVideoPicture(VideoStream &stream, quint32 ssrc, cons
     }, Qt::QueuedConnection);
 }
 
-VoiceConnection::IncomingStream *VoiceConnection::streamFor(quint32 ssrc)
+JitterBuffer *VoiceConnection::bufferFor(quint32 ssrc)
 {
-    const auto it = m_streams.find(ssrc);
-    if (it != m_streams.end())
-        return &it.value();
+    if (JitterBuffer *existing = m_buffers.value(ssrc))
+        return existing;
 
-    int error = 0;
-    OpusDecoder *decoder = opus_decoder_create(SampleRate, Channels, &error);
-    if (error != OPUS_OK || !decoder)
+    auto *buffer = new JitterBuffer;
+    if (!buffer->isValid()) {
+        delete buffer;
         return nullptr;
-
-    IncomingStream stream;
-    stream.decoder = decoder;
-    return &m_streams.insert(ssrc, stream).value();
-}
-
-void VoiceConnection::catchUpQueues()
-{
-    for (IncomingStream &stream : m_streams) {
-        while (stream.waiting.size() > CatchupFrames)
-            stream.waiting.removeFirst();
     }
+    m_buffers.insert(ssrc, buffer);
+    return buffer;
 }
 
 void VoiceConnection::offerExternalPcm(const QByteArray &pcm)
@@ -2213,28 +2230,18 @@ QByteArray VoiceConnection::mixWaitingStreams()
     qint32 mixed[FrameSamples * Channels] = {0};
     bool anyone = false;
 
-    for (auto it = m_streams.begin(); it != m_streams.end(); ++it) {
-        IncomingStream &stream = it.value();
+    if (!m_mediaClock.isValid())
+        m_mediaClock.start();
+    const qint64 now = m_mediaClock.elapsed();
 
-        if (!stream.started) {
-            if (stream.waiting.size() < JitterFrames)
-                continue;
-            stream.started = true;
-        }
-
-        QByteArray frame;
-        if (!stream.waiting.isEmpty()) {
-            frame = stream.waiting.takeFirst();
-        } else {
-            frame = QByteArray(FrameBytes, '\0');
-            const int samples = opus_decode(stream.decoder, nullptr, 0,
-                                            reinterpret_cast<qint16 *>(frame.data()), FrameSamples, 0);
-            if (samples <= 0) {
-                stream.started = false;
-                continue;
-            }
-            frame.resize(samples * Channels * 2);
-        }
+    for (auto it = m_buffers.begin(); it != m_buffers.end(); ++it) {
+        // Empty when this person is quiet, which in a twenty person call is
+        // almost everyone almost all the time. The old queue kept inventing
+        // sound for everybody who had ever spoken, every 20 ms, for the rest
+        // of the call.
+        const QByteArray frame = it.value()->pull(now);
+        if (frame.isEmpty())
+            continue;
 
         const QString userId = m_ssrcToUser.value(it.key());
         const bool silenced = !userId.isEmpty() && m_userMuted.contains(userId);
@@ -2300,7 +2307,6 @@ void VoiceConnection::onPlayTick()
     m_lastBeatMs = now;
 
     sweepSpeaking();
-    catchUpQueues();
 
     if (m_audioHost) {
         const QByteArray mixed = mixWaitingStreams();
@@ -2335,7 +2341,8 @@ void VoiceConnection::onPlayTick()
     }
 }
 
-void VoiceConnection::playDecoded(quint32 ssrc, const QByteArray &frame)
+void VoiceConnection::receiveAudio(quint32 ssrc, quint16 sequence, quint32 timestamp,
+                                   const QByteArray &frame)
 {
     // Somebody's ring goes on because sound is arriving from them, and off
     // when it stops.
@@ -2349,8 +2356,8 @@ void VoiceConnection::playDecoded(quint32 ssrc, const QByteArray &frame)
     // sending, so silence is the signal.
     noteSpeaking(ssrc);
 
-    IncomingStream *stream = streamFor(ssrc);
-    if (!stream)
+    JitterBuffer *buffer = bufferFor(ssrc);
+    if (!buffer)
         return;
     if (!m_outputStream && !m_audioHost)
         return;
@@ -2373,25 +2380,12 @@ void VoiceConnection::playDecoded(quint32 ssrc, const QByteArray &frame)
         }
     }
 
-    QByteArray pcm(FrameBytes, '\0');
-    const int samples = opus_decode(stream->decoder,
-                                    reinterpret_cast<const unsigned char *>(opusFrame.constData()),
-                                    opusFrame.size(), reinterpret_cast<qint16 *>(pcm.data()),
-                                    FrameSamples, 0);
-    if (samples <= 0)
-        return;
-
-    pcm.resize(samples * Channels * 2);
-
-    // Queued, not played. The steady tick takes it from here.
-    //
-    // A queue that keeps growing means sound arriving faster than it is
-    // played, which would turn into a delay that never recovers. Past a
-    // half second the oldest is dropped: a small gap now beats talking to
-    // someone who hears you late for the rest of the call.
-    stream->waiting.append(pcm);
-    while (stream->waiting.size() > MaxQueuedFrames)
-        stream->waiting.removeFirst();
+    // Held, not decoded. The buffer decodes in sequence order when each packet
+    // is due, which is the only way a lost packet can be rebuilt from the one
+    // after it: Opus has to see them in order.
+    if (!m_mediaClock.isValid())
+        m_mediaClock.start();
+    buffer->insert(sequence, timestamp, opusFrame, m_mediaClock.elapsed());
 }
 
 // ---------------------------------------------------------------------------
