@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/AuthClient.h"
+#include "core/RemoteAuth.h"
 
 #include <QDialog>
 
@@ -40,13 +41,15 @@ private slots:
     void onCaptchaRequired(const QString &service, const QString &siteKey);
     void onAuthFailed(const QString &message);
     void useTokenInstead();
+    void useQrInstead();
 
 private:
-    enum Page { CredentialsPage = 0, MfaPage = 1, TokenPage = 2 };
+    enum Page { CredentialsPage = 0, MfaPage = 1, TokenPage = 2, QrPage = 3 };
 
     QWidget *buildCredentialsPage();
     QWidget *buildMfaPage();
     QWidget *buildTokenPage();
+    QWidget *buildQrPage();
     void showPage(Page page);
     void setBusy(bool busy);
     void setStatus(const QString &text, bool isError = false);
@@ -55,6 +58,7 @@ private:
 
     RestClient *m_rest = nullptr;
     AuthClient m_auth;
+    RemoteAuth m_remote;
 
     // The black hole behind everything, the same one the main window uses.
     AuroraWidget *m_aurora = nullptr;
@@ -77,6 +81,10 @@ private:
     // Token page
     QLineEdit *m_tokenEdit = nullptr;
     QPushButton *m_tokenButton = nullptr;
+
+    // QR page
+    QLabel *m_qrImage = nullptr;
+    QLabel *m_qrStatus = nullptr;
 
     QLabel *m_statusLabel = nullptr;
 

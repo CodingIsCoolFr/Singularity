@@ -184,7 +184,57 @@ protected:
     }
 };
 
+// Makes every drop-down list solid.
+//
+// The Windows 11 style gives a combo box's list a see-through window so it can
+// round the corners, and then draws the background itself. With a style sheet
+// on top, that drawing is skipped, so the list came out with no background at
+// all: its items floated over whatever was underneath, and on the sign-in
+// screen "Backup code" sat on top of the code field's placeholder text.
+//
+// Caught at Polish, which comes before the list's window exists, so the
+// window is created solid rather than changed afterwards.
+class PopupFix : public QObject
+{
+public:
+    using QObject::QObject;
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (event->type() == QEvent::Polish || event->type() == QEvent::Show) {
+            auto *widget = qobject_cast<QWidget *>(watched);
+            if (widget && widget->inherits("QComboBoxPrivateContainer")
+                && widget->styleSheet().isEmpty()) {
+                // The Windows 11 style makes this window see-through so it can
+                // round its own corners, then paints the background itself.
+                // With a style sheet on the application that painting is
+                // skipped, so nothing fills the window and the items float.
+                // A palette colour will not show for the same reason - a
+                // styled widget ignores it - so the background is set the one
+                // way a style sheet honours, with a rule of its own.
+                widget->setAttribute(Qt::WA_TranslucentBackground, false);
+                widget->setStyleSheet(
+                    QStringLiteral("QComboBoxPrivateContainer { background-color: %1; "
+                                   "border: 1px solid %2; }")
+                        .arg(QLatin1String(SurfaceSidebar), QLatin1String(Border)));
+            }
+        }
+        return QObject::eventFilter(watched, event);
+    }
+};
+
 } // namespace
+
+void installPopupFix()
+{
+    static bool installed = false;
+    if (installed || !qApp)
+        return;
+
+    installed = true;
+    qApp->installEventFilter(new PopupFix(qApp));
+}
 
 void applySeed(const QColor &seedIn)
 {

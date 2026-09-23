@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(Singularity VERSION 0.6.69 LANGUAGES CXX)
+project(Singularity VERSION 0.6.70 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -37,6 +37,12 @@ qt_add_executable(Singularity WIN32
     src/core/VoiceConnection.h
     src/core/VoiceConnection.cpp
     src/core/JitterBuffer.cpp
+    src/core/QrCode.h
+    src/core/QrCode.cpp
+    src/core/RemoteAuthCrypto.h
+    src/core/RemoteAuthCrypto.cpp
+    src/core/RemoteAuth.h
+    src/core/RemoteAuth.cpp
     src/core/DaveSession.h
     src/core/DaveSession.cpp
     src/core/MessageStore.h
@@ -241,6 +247,9 @@ target_link_libraries(Singularity PRIVATE
     "${SODIUM_ROOT}/x64/Release/v143/static/libsodium.lib"
     # Crypt32 seals the saved session with the Windows account's own key.
     Crypt32
+    # Bcrypt (Windows CNG) does the RSA for signing in by QR code, so there is
+    # no extra crypto library to ship for it.
+    Bcrypt
     # Dwmapi colours the title bar, which belongs to Windows rather than Qt.
     Dwmapi
     # Avrt puts the media thread in the "Pro Audio" scheduling class, the

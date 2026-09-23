@@ -11,6 +11,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPixmap>
 #include <QPushButton>
 #include <QStackedWidget>
 #include <QUrl>
@@ -172,6 +173,7 @@ LoginDialog::LoginDialog(RestClient *rest, QWidget *parent)
     m_pages->addWidget(buildCredentialsPage());
     m_pages->addWidget(buildMfaPage());
     m_pages->addWidget(buildTokenPage());
+    m_pages->addWidget(buildQrPage());
     layout->addWidget(m_pages);
 
     m_statusLabel = new QLabel(card);
@@ -198,6 +200,33 @@ LoginDialog::LoginDialog(RestClient *rest, QWidget *parent)
     connect(&m_auth, &AuthClient::smsCodeSent, this, [this]() {
         setStatus(QStringLiteral("Text message sent. Type the code above."));
         setBusy(false);
+    });
+
+    // QR sign-in. No password crosses this window at all; the phone approves.
+    connect(&m_remote, &RemoteAuth::qrCodeReady, this, [this](const QImage &code, const QString &) {
+        m_qrImage->setPixmap(QPixmap::fromImage(code).scaled(220, 220, Qt::KeepAspectRatio,
+                                                             Qt::FastTransformation));
+        m_qrStatus->setText(QStringLiteral("Open Discord on your phone, go to Settings and Scan QR Code, "
+                                           "then point it here."));
+    });
+    connect(&m_remote, &RemoteAuth::scanned, this, [this](const QString &username) {
+        m_qrStatus->setText(QStringLiteral("Confirm on your phone to sign in as %1.").arg(username));
+    });
+    connect(&m_remote, &RemoteAuth::succeeded, this, [this](const QString &token) {
+        m_qrStatus->setText(QStringLiteral("Approved. Loading..."));
+        m_rest->setToken(token);
+        finishWith(token);
+    });
+    connect(&m_remote, &RemoteAuth::declined, this, [this]() {
+        m_qrStatus->setText(QStringLiteral("The sign-in was declined on the phone."));
+    });
+    connect(&m_remote, &RemoteAuth::expired, this, [this]() {
+        m_qrStatus->setText(QStringLiteral("This code timed out. Fetching a fresh one..."));
+        if (m_pages->currentIndex() == QrPage)
+            m_remote.start();
+    });
+    connect(&m_remote, &RemoteAuth::failed, this, [this](const QString &reason) {
+        m_qrStatus->setText(reason);
     });
 
     showPage(CredentialsPage);
@@ -233,12 +262,16 @@ QWidget *LoginDialog::buildCredentialsPage()
     m_logInButton->setDefault(true);
     layout->addWidget(m_logInButton);
 
+    auto *qrLink = makeLinkButton(QStringLiteral("Sign in with a QR code (scan with your phone)"), page);
+    layout->addWidget(qrLink);
+
     auto *tokenLink = makeLinkButton(QStringLiteral("Use a token instead"), page);
     layout->addWidget(tokenLink);
 
     connect(m_logInButton, &QPushButton::clicked, this, &LoginDialog::submitCredentials);
     connect(m_passwordEdit, &QLineEdit::returnPressed, this, &LoginDialog::submitCredentials);
     connect(m_loginEdit, &QLineEdit::returnPressed, this, &LoginDialog::submitCredentials);
+    connect(qrLink, &QPushButton::clicked, this, &LoginDialog::useQrInstead);
     connect(tokenLink, &QPushButton::clicked, this, &LoginDialog::useTokenInstead);
 
     return page;
@@ -350,12 +383,54 @@ QWidget *LoginDialog::buildTokenPage()
     return page;
 }
 
+QWidget *LoginDialog::buildQrPage()
+{
+    auto *page = new QWidget(this);
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(10);
+
+    layout->addWidget(makeHeading(QStringLiteral("Scan to sign in"), page));
+
+    // The code itself. White quiet zone kept, on a small white plate, because a
+    // camera needs the light border and a dark QR on the dark hole would not
+    // read. Placed on its own so it sits centred whatever the code's size.
+    m_qrImage = new QLabel(page);
+    m_qrImage->setAlignment(Qt::AlignCenter);
+    m_qrImage->setFixedSize(240, 240);
+    m_qrImage->setStyleSheet(QStringLiteral("background: white; border-radius: 10px;"));
+    m_qrImage->setText(QStringLiteral("..."));
+    auto *imageRow = new QHBoxLayout;
+    imageRow->addStretch(1);
+    imageRow->addWidget(m_qrImage);
+    imageRow->addStretch(1);
+    layout->addLayout(imageRow);
+
+    m_qrStatus = makeHint(QStringLiteral("Getting a code..."), page);
+    layout->addWidget(m_qrStatus);
+
+    auto *backLink = makeLinkButton(QStringLiteral("Back to sign in"), page);
+    layout->addWidget(backLink);
+    connect(backLink, &QPushButton::clicked, this, [this]() {
+        m_remote.stop();
+        setStatus(QString());
+        showPage(CredentialsPage);
+    });
+
+    return page;
+}
+
 // ---------------------------------------------------------------------------
 // Flow
 // ---------------------------------------------------------------------------
 
 void LoginDialog::showPage(Page page)
 {
+    // Leaving the QR page tears the connection down, so a code is never left
+    // live behind a screen nobody is looking at.
+    if (m_pages->currentIndex() == QrPage && page != QrPage)
+        m_remote.stop();
+
     m_pages->setCurrentIndex(page);
     adjustSize();
 
@@ -371,6 +446,8 @@ void LoginDialog::showPage(Page page)
     case TokenPage:
         m_tokenButton->setDefault(true);
         m_tokenEdit->setFocus();
+        break;
+    case QrPage:
         break;
     }
 }
@@ -474,8 +551,9 @@ void LoginDialog::onCaptchaRequired(const QString &service, const QString &siteK
 {
     Q_UNUSED(siteKey)
     setBusy(false);
-    setStatus(QStringLiteral("Discord asked for a %1 captcha. Singularity cannot answer one. "
-                             "Log in at discord.com in a browser, then use a token here.")
+    setStatus(QStringLiteral("Discord asked for a %1 captcha, which Singularity cannot answer. "
+                             "The easiest way in is the QR code: go back and choose \"Sign in with a "
+                             "QR code\". Or paste a token below.")
                   .arg(service),
               true);
     showPage(TokenPage);
@@ -498,6 +576,15 @@ void LoginDialog::useTokenInstead()
 {
     setStatus(QString());
     showPage(TokenPage);
+}
+
+void LoginDialog::useQrInstead()
+{
+    setStatus(QString());
+    m_qrImage->setText(QStringLiteral("..."));
+    m_qrStatus->setText(QStringLiteral("Getting a code..."));
+    showPage(QrPage);
+    m_remote.start();
 }
 
 void LoginDialog::finishWith(const QString &token)

@@ -79,4 +79,8 @@ void applyDarkTitleBar(QWidget *window);
 // later, so nobody has to remember to call it.
 void installDarkTitleBars();
 
+// Gives every drop-down list a solid background. See Theme.cpp for why the
+// Windows 11 style leaves them see-through under a style sheet.
+void installPopupFix();
+
 } // namespace Theme
