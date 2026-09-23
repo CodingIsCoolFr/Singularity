@@ -147,6 +147,13 @@ public:
     // only object that holds the keys and the socket.
     void sendPicture(const QList<QByteArray> &units);
 
+    // Sound that goes out with a shared screen: 48 kHz, stereo, 16 bit, in
+    // any size of piece. Safe to call from any thread - it comes straight from
+    // the capture thread - and only the connection carrying a share sends it.
+    // It goes out marked as SOUNDSHARE, the flag Discord gives context audio,
+    // so nobody gets a green speaking ring for your game.
+    void offerSharedSound(const QByteArray &pcm);
+
     // Handed each slice of microphone sound just before it is encoded, so a
     // plugin can change how you sound to other people.
     //
@@ -367,6 +374,12 @@ private:
     JitterBuffer *bufferFor(quint32 ssrc);
     void onPlayTick();
     QByteArray mixWaitingStreams();
+
+    // Encodes and sends whatever shared sound has arrived since the last beat.
+    void sendSharedSound();
+    QMutex m_sharedSoundMutex;
+    QByteArray m_sharedSound;
+    bool m_saidSharedSound = false;
 
     QHash<quint32, JitterBuffer *> m_buffers;
     QTimer m_playTimer;

@@ -1,5 +1,6 @@
 #include "ui/ShareDialog.h"
 
+#include "core/AppConfig.h"
 #include "ui/Theme.h"
 
 #include <QComboBox>
@@ -70,16 +71,55 @@ ShareDialog::ShareDialog(QWidget *parent)
     layout->addWidget(qualityLabel);
 
     m_quality = new QComboBox(this);
+    // UTF-8, not Latin-1: the labels hold a dash, and reading its three bytes
+    // as three Latin-1 letters is what put "â" and two boxes in this list.
     for (const Quality &quality : kQualities)
-        m_quality->addItem(QString::fromLatin1(quality.label));
+        m_quality->addItem(QString::fromUtf8(quality.label));
     m_quality->setCurrentIndex(0);
     layout->addWidget(m_quality);
 
-    // Said once, plainly, rather than discovered afterwards. Discord's own
-    // client is no different and does not mention it either.
+    auto *soundLabel = new QLabel(QStringLiteral("Which sound?"), this);
+    soundLabel->setStyleSheet(QStringLiteral("font-size: 15px; font-weight: 500;"));
+    layout->addWidget(soundLabel);
+
+    // Like Discord: the whole computer, or one program and nothing else.
+    // Item data is -1 for none, -2 for everything, otherwise an index into
+    // m_apps.
+    m_apps = ShareAudio::apps();
+    m_sound = new QComboBox(this);
+    m_sound->addItem(QStringLiteral("No sound"), -1);
+    m_sound->addItem(QStringLiteral("Everything on this computer (not the call)"), -2);
+    if (!m_apps.isEmpty())
+        m_sound->insertSeparator(m_sound->count());
+    for (int i = 0; i < m_apps.size(); ++i) {
+        const ShareAudio::App &app = m_apps.at(i);
+        const QString title = app.title.size() > 48 ? app.title.left(47) + QChar(0x2026) : app.title;
+        m_sound->addItem(app.exeName.isEmpty() ? QStringLiteral("Only %1").arg(title)
+                                               : QStringLiteral("Only %1  ·  %2").arg(title, app.exeName),
+                         i);
+    }
+
+    const QString saved =
+        AppConfig::instance().value(QStringLiteral("share/sound"), QStringLiteral("all")).toString();
+    int pick = 1;
+    if (saved == QLatin1String("none")) {
+        pick = 0;
+    } else if (saved.startsWith(QLatin1String("app:"))) {
+        const QString exe = saved.mid(4);
+        for (int i = 0; i < m_apps.size(); ++i) {
+            if (m_apps.at(i).exeName.compare(exe, Qt::CaseInsensitive) == 0) {
+                pick = m_sound->findData(i);
+                break;
+            }
+        }
+    }
+    m_sound->setCurrentIndex(pick);
+    layout->addWidget(m_sound);
+
+    // Said once, plainly, rather than discovered afterwards.
     auto *note = new QLabel(
-        QStringLiteral("Your screen is sent encrypted, and only to the people in this call. "
-                       "Sound from the screen is not shared — only your microphone."),
+        QStringLiteral("Your screen and its sound are sent encrypted, and only to the people "
+                       "in this call. The call itself is never sent back to them."),
         this);
     note->setWordWrap(true);
     note->setStyleSheet(QStringLiteral("color: %1; font-size: 12.5px;")
@@ -90,6 +130,14 @@ ShareDialog::ShareDialog(QWidget *parent)
     buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Go live"));
     buttons->button(QDialogButtonBox::Ok)->setEnabled(!m_monitors.isEmpty());
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(this, &QDialog::accepted, this, [this]() {
+        QString remember = QStringLiteral("all");
+        if (soundSource() == ShareAudio::Source::Nothing)
+            remember = QStringLiteral("none");
+        else if (soundSource() == ShareAudio::Source::OneApp)
+            remember = QStringLiteral("app:") + m_apps.at(m_sound->currentData().toInt()).exeName;
+        AppConfig::instance().setValue(QStringLiteral("share/sound"), remember);
+    });
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     layout->addWidget(buttons);
 
@@ -126,4 +174,28 @@ int ShareDialog::frameRate() const
 int ShareDialog::bitrate() const
 {
     return kQualities[qBound(0, m_quality->currentIndex(), int(std::size(kQualities)) - 1)].bitrate;
+}
+
+ShareAudio::Source ShareDialog::soundSource() const
+{
+    const int data = m_sound->currentData().toInt();
+    if (data == -2)
+        return ShareAudio::Source::EverythingButUs;
+    if (data >= 0 && data < m_apps.size())
+        return ShareAudio::Source::OneApp;
+    return ShareAudio::Source::Nothing;
+}
+
+quint32 ShareDialog::soundProcessId() const
+{
+    const int data = m_sound->currentData().toInt();
+    return data >= 0 && data < m_apps.size() ? m_apps.at(data).processId : 0;
+}
+
+QString ShareDialog::soundName() const
+{
+    const int data = m_sound->currentData().toInt();
+    if (data >= 0 && data < m_apps.size())
+        return m_apps.at(data).exeName.isEmpty() ? m_apps.at(data).title : m_apps.at(data).exeName;
+    return data == -2 ? QStringLiteral("all sound") : QString();
 }

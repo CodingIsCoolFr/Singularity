@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(Singularity VERSION 0.6.78 LANGUAGES CXX)
+project(Singularity VERSION 0.6.79 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -97,6 +97,8 @@ qt_add_executable(Singularity WIN32
     src/core/ScreenCapture.cpp
     src/core/ScreenShare.h
     src/core/ScreenShare.cpp
+    src/core/ShareAudio.h
+    src/core/ShareAudio.cpp
     src/core/CameraShare.h
     src/core/CameraShare.cpp
     src/core/Updater.h
@@ -278,6 +280,10 @@ target_link_libraries(Singularity PRIVATE
     # overlays - video players, most games - are actually in the picture.
     d3d11
     dxgi
+    # Mmdevapi has ActivateAudioInterfaceAsync, which is how a share gets
+    # one program's sound (or everything but ours) without a driver.
+    Mmdevapi
+    ole32
 )
 
 # ---------------------------------------------------------------------------

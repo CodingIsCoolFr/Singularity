@@ -1528,13 +1528,17 @@ void VoiceConnection::startAudio()
 {
     stopAudio();
 
+    // A viewer-only connection only ever encodes a share's sound - music,
+    // games, video - which Opus's speech mode would thin out.
     int error = 0;
-    m_encoder = opus_encoder_create(SampleRate, Channels, OPUS_APPLICATION_VOIP, &error);
+    m_encoder = opus_encoder_create(SampleRate, Channels,
+                                    m_viewerOnly ? OPUS_APPLICATION_AUDIO : OPUS_APPLICATION_VOIP,
+                                    &error);
     if (error != OPUS_OK || !m_encoder) {
         emit failed(QStringLiteral("Could not start the Opus encoder."));
         return;
     }
-    opus_encoder_ctl(m_encoder, OPUS_SET_BITRATE(64000));
+    opus_encoder_ctl(m_encoder, OPUS_SET_BITRATE(m_viewerOnly ? 96000 : 64000));
     opus_encoder_ctl(m_encoder, OPUS_SET_INBAND_FEC(1));
     opus_encoder_ctl(m_encoder, OPUS_SET_PACKET_LOSS_PERC(10));
 
@@ -1600,10 +1604,24 @@ void VoiceConnection::stopAudio()
     m_buffers.clear();
     m_captureBuffer.clear();
     m_externalPcm.clear();
+
+    QMutexLocker lock(&m_sharedSoundMutex);
+    m_sharedSound.clear();
+    m_saidSharedSound = false;
 }
 
 void VoiceConnection::onSendTick()
 {
+    // A share carries no microphone, only the sound of what is shared.
+    if (m_viewerOnly) {
+        sendSharedSound();
+        if (++m_statTicks >= 250) {
+            m_statTicks = 0;
+            reportAudioStats();
+        }
+        return;
+    }
+
     // Counted first, so the report below still happens when the microphone
     // never opened. That case is silence with a cause worth naming.
     const bool canCapture = m_inputStream && m_encoder && !m_secretKey.isEmpty();
@@ -1611,14 +1629,6 @@ void VoiceConnection::onSendTick()
     if (!canCapture) {
         if (++m_statTicks >= 250) {
             m_statTicks = 0;
-
-            // A viewer has no microphone on purpose, so saying so every five
-            // seconds would be noise rather than news.
-            if (m_viewerOnly) {
-                reportAudioStats();
-                return;
-            }
-
             wlog(QStringLiteral("voice"),
                  QStringLiteral("no sound is being captured: microphone %1, encoder %2, key %3")
                      .arg(m_inputStream ? QStringLiteral("open") : QStringLiteral("missing"))
@@ -2228,6 +2238,109 @@ void VoiceConnection::offerExternalPcm(const QByteArray &pcm)
 
     if (pcm.size() == FrameBytes)
         m_externalPcm = pcm;
+}
+
+void VoiceConnection::offerSharedSound(const QByteArray &pcm)
+{
+    // Ten frames of backlog at most. The capture and this beat run on
+    // different clocks, and a share that falls behind should drop sound and
+    // stay in step with its picture rather than drift further behind it.
+    constexpr int MaxBacklog = FrameBytes * 10;
+
+    QMutexLocker lock(&m_sharedSoundMutex);
+    m_sharedSound.append(pcm);
+    if (m_sharedSound.size() > MaxBacklog) {
+        const int excess = m_sharedSound.size() - MaxBacklog;
+        m_sharedSound.remove(0, excess - excess % 4);
+    }
+}
+
+void VoiceConnection::sendSharedSound()
+{
+    // How quiet counts as silence: about -70 dB. Real silence from Windows is
+    // exact zeros; this also catches the faint hiss some programs leave on.
+    constexpr double SilentLevel = 0.0003;
+
+    // A second of quiet before saying the sound stopped. Music has pauses,
+    // and each stop and start costs the listener a moment of cushion.
+    constexpr int TailFrames = 50;
+
+    QByteArray pending;
+    {
+        QMutexLocker lock(&m_sharedSoundMutex);
+        const int whole = m_sharedSound.size() - m_sharedSound.size() % FrameBytes;
+        if (whole > 0) {
+            pending = m_sharedSound.left(whole);
+            m_sharedSound.remove(0, whole);
+        }
+    }
+
+    const bool canSend = m_encoder && !m_secretKey.isEmpty() && m_ssrc != 0;
+
+    // Nothing arrived: the program went quiet, or closed. Count the beat as
+    // silence so the flag still comes down.
+    if (pending.isEmpty() || !canSend) {
+        if (m_speaking && ++m_silentFrames > TailFrames) {
+            m_speaking = false;
+            sendSpeaking(false);
+        }
+        return;
+    }
+
+    for (int offset = 0; offset < pending.size(); offset += FrameBytes) {
+        auto *samples = reinterpret_cast<qint16 *>(pending.data() + offset);
+        const int count = FrameSamples * Channels;
+
+        double sum = 0.0;
+        for (int i = 0; i < count; ++i) {
+            const double normalised = samples[i] / 32768.0;
+            sum += normalised * normalised;
+        }
+        const bool audible = std::sqrt(sum / count) > SilentLevel;
+
+        if (audible) {
+            m_silentFrames = 0;
+            if (!m_speaking) {
+                m_speaking = true;
+                sendSpeaking(true);
+            }
+        } else if (m_speaking && ++m_silentFrames > TailFrames) {
+            m_speaking = false;
+            sendSpeaking(false);
+        }
+
+        m_rtpTimestamp += FrameSamples;
+        m_rtpSequence++;
+
+        if (!m_speaking)
+            continue;
+
+        unsigned char encoded[4000];
+        const int encodedBytes = opus_encode(m_encoder, samples, FrameSamples, encoded, sizeof(encoded));
+        if (encodedBytes <= 0)
+            continue;
+
+        QByteArray sound(reinterpret_cast<const char *>(encoded), encodedBytes);
+        if (m_daveVersion > 0) {
+            sound = m_dave->encrypt(sound, m_ssrc);
+            if (sound.isEmpty()) {
+                ++m_statSealFailed;
+                continue;
+            }
+        }
+
+        const QByteArray packet = encryptFrame(buildRtpHeader(m_rtpSequence, m_rtpTimestamp, m_ssrc), sound);
+        if (packet.isEmpty())
+            continue;
+
+        m_udp.writeDatagram(packet, QHostAddress(m_serverAddress), m_serverPort);
+        ++m_statSent;
+
+        if (!m_saidSharedSound) {
+            m_saidSharedSound = true;
+            wlog(QStringLiteral("share"), QStringLiteral("first piece of screen sound sent"));
+        }
+    }
 }
 
 QByteArray VoiceConnection::mixWaitingStreams()
@@ -2884,7 +2997,9 @@ void VoiceConnection::sendSpeaking(bool speaking)
         {QStringLiteral("op"), OpSpeaking},
         {QStringLiteral("d"),
          QJsonObject{
-             {QStringLiteral("speaking"), speaking ? 1 : 0},
+             // 1 is a voice. 2 is SOUNDSHARE, "context audio for video, no
+             // speaking indicator" - what a share's sound is marked with.
+             {QStringLiteral("speaking"), speaking ? (m_viewerOnly ? 2 : 1) : 0},
              {QStringLiteral("delay"), 0},
              {QStringLiteral("ssrc"), static_cast<qint64>(m_ssrc)},
          }},

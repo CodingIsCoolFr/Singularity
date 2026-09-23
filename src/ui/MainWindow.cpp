@@ -12,6 +12,7 @@
 #include "ui/CaptchaDialog.h"
 #include "core/CameraShare.h"
 #include "core/ScreenShare.h"
+#include "core/ShareAudio.h"
 #include "ui/LoadingOverlay.h"
 #include "ui/MemberListPanel.h"
 #include "ui/ShareDialog.h"
@@ -470,11 +471,20 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
                 if (m_shareVoice)
                     m_shareVoice->startSendingVideo(width, height);
 
-                flashStatus(QStringLiteral("You are live — %1x%2, %3")
+                // Sound starts with the picture, once the stream connection
+                // holds its keys, so nothing piles up waiting for them.
+                const auto source = ShareAudio::Source(m_shareSoundSource);
+                if (m_shareAudio && source != ShareAudio::Source::Nothing)
+                    m_shareAudio->start(source, m_shareSoundPid);
+
+                flashStatus(QStringLiteral("You are live — %1x%2, %3%4")
                                 .arg(width)
                                 .arg(height)
                                 .arg(hardware ? QStringLiteral("hardware encoded")
-                                              : QStringLiteral("software encoded")),
+                                              : QStringLiteral("software encoded"))
+                                .arg(m_shareSoundName.isEmpty()
+                                         ? QStringLiteral(", no sound")
+                                         : QStringLiteral(", with %1").arg(m_shareSoundName)),
                             5000);
                 updateVoicePanel();
             });
@@ -484,6 +494,15 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         flashStatus(reason, 7000);
         stopScreenShare();
     });
+
+    // The share's sound goes from the capture thread straight to the stream
+    // connection, which takes it under a lock; the window never touches it.
+    m_shareAudio = new ShareAudio(this);
+    m_shareAudio->setSink([voice = m_shareVoice](const QByteArray &pcm) {
+        voice->offerSharedSound(pcm);
+    });
+    connect(m_shareAudio, &ShareAudio::failed, this,
+            [this](const QString &reason) { flashStatus(reason, 6000); });
 
     // A viewer that cannot draw anything asks, and the request arrives on the
     // socket rather than through any UI.
@@ -3317,6 +3336,11 @@ MainWindow::~MainWindow()
     // timers belong to that thread and cannot be torn down from this one -
     // and only then is the thread stopped. The share connection goes first
     // because the watching one hands its sound to the main one.
+    //
+    // The screen's sound thread writes into the share connection, so it is
+    // stopped before that connection is gone.
+    if (m_shareAudio)
+        m_shareAudio->stop();
     const bool running = m_mediaThread.isRunning();
     for (VoiceConnection *voice : {m_shareVoice, m_streamVoice, m_voice}) {
         if (!voice)
@@ -5611,6 +5635,9 @@ void MainWindow::startScreenShare()
     m_shareHeight = dialog.height();
     m_shareFps = dialog.frameRate();
     m_shareBitrate = dialog.bitrate();
+    m_shareSoundSource = int(dialog.soundSource());
+    m_shareSoundPid = dialog.soundProcessId();
+    m_shareSoundName = dialog.soundName();
 
     if (m_shareMonitorId.isEmpty())
         return;
@@ -5635,6 +5662,8 @@ void MainWindow::stopScreenShare()
 
     if (m_share)
         m_share->stop();
+    if (m_shareAudio)
+        m_shareAudio->stop();
     if (m_callView && !m_selfUserId.isEmpty())
         m_callView->dropFrames(m_selfUserId, CallView::Surface::Share);
     if (m_shareVoice) {

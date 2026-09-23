@@ -346,6 +346,12 @@ private:
     int m_shareFps = 30;
     int m_shareBitrate = 0;
 
+    // The sound that goes with the picture, and which one was picked.
+    class ShareAudio *m_shareAudio = nullptr;
+    int m_shareSoundSource = 0;   // ShareAudio::Source
+    quint32 m_shareSoundPid = 0;
+    QString m_shareSoundName;
+
     VoiceConnection *m_streamVoice = nullptr;
 
     // Where all three voice connections live: sound, network and video

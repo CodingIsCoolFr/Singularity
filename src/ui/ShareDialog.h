@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/ScreenCapture.h"
+#include "core/ShareAudio.h"
 
 #include <QDialog>
 #include <QList>
@@ -27,6 +28,12 @@ public:
     int frameRate() const;
     int bitrate() const;
 
+    // Whose sound goes out with the picture. Remembered for next time,
+    // except for a single program, which may not be running then.
+    ShareAudio::Source soundSource() const;
+    quint32 soundProcessId() const;
+    QString soundName() const;
+
     // False when Windows reported no screen that can be captured at all,
     // which is worth saying rather than showing an empty list.
     bool hasScreens() const { return !m_monitors.isEmpty(); }
@@ -35,4 +42,6 @@ private:
     QList<ScreenCapture::Monitor> m_monitors;
     QListWidget *m_list = nullptr;
     QComboBox *m_quality = nullptr;
+    QList<ShareAudio::App> m_apps;
+    QComboBox *m_sound = nullptr;
 };
