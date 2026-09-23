@@ -1005,7 +1005,13 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
     // --- hover buttons on a voice row -------------------------------------
     const bool isVoice = kind == QLatin1String("voice");
     const bool showButtons = isVoice && hoverAmount > 0.25;
-    int textRightInset = 8;
+
+    // Everything on the right of the row is laid out from the right edge
+    // inwards, each thing starting where the last one ended. The mention badge
+    // and the "01 / 05" count used to be measured from the edge separately,
+    // so the moment a voice channel with a user limit got a mention, the two
+    // were drawn in the same place.
+    int rightEdge = cell.right() - 8;
 
     if (showButtons) {
         const QPoint cursor = m_view ? m_view->viewport()->mapFromGlobal(QCursor::pos()) : QPoint(-1, -1);
@@ -1031,7 +1037,8 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
             painter->restore();
         }
 
-        textRightInset = 3 * (ButtonSize + ButtonGap) + 12;
+        for (const Button which : {Button::Chat, Button::Invite, Button::Settings})
+            rightEdge = qMin(rightEdge, buttonRect(cell, which).left() - 6);
     }
 
     // --- label ------------------------------------------------------------
@@ -1051,13 +1058,13 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
         badgeFont.setWeight(QFont::Bold);
         painter->setFont(badgeFont);
         const int width = qMax(16, painter->fontMetrics().horizontalAdvance(count) + 8);
-        const QRect badge(cell.right() - width - 8, cell.center().y() - 8, width, 16);
+        const QRect badge(rightEdge - width, cell.center().y() - 8, width, 16);
         painter->setPen(Qt::NoPen);
         painter->setBrush(QColor(Theme::Red));
         painter->drawRoundedRect(badge, 8, 8);
         painter->setPen(QColor(Theme::TextPrimary));
         painter->drawText(badge, Qt::AlignCenter, count);
-        textRightInset += width + 8;
+        rightEdge = badge.left() - 8;
     }
 
     // A capped voice channel shows how full it is. At the cap, and when we
@@ -1077,10 +1084,10 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
         countFont.setPixelSize(11);
         painter->setFont(countFont);
         const int countWidth = painter->fontMetrics().horizontalAdvance(occupancy);
-        const QRect countRect(cell.right() - countWidth - 12, cell.top(), countWidth, cell.height());
+        const QRect countRect(rightEdge - countWidth, cell.top(), countWidth, cell.height());
         painter->setPen(QColor(voiceFull ? Theme::TextFaint : Theme::TextMuted));
         painter->drawText(countRect, Qt::AlignRight | Qt::AlignVCenter, occupancy);
-        textRightInset += countWidth + 10;
+        rightEdge = countRect.left() - 10;
     }
 
     if (voiceFull)
@@ -1104,7 +1111,10 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
     painter->setFont(font);
     painter->setPen(colour);
 
-    const QRect textRect = panel.toRect().adjusted(30, 0, -textRightInset, 0);
+    // The name gets whatever is left, and shortens with "..." rather than run
+    // under the badge or the count.
+    QRect textRect = panel.toRect().adjusted(30, 0, 0, 0);
+    textRect.setRight(qMax(textRect.left(), rightEdge));
     QString label = text;
     if (isVoice && !m_joinedChannelId.isEmpty()
         && index.data(SingularityRoles::Id).toString() == m_joinedChannelId) {
