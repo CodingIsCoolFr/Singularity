@@ -39,11 +39,46 @@ QNetworkRequest AuthClient::buildRequest(const QString &path) const
 
 void AuthClient::post(const QString &path, const QJsonObject &body, const QString &stepName)
 {
-    const QByteArray payload = QJsonDocument(body).toJson(QJsonDocument::Compact);
-    QNetworkReply *reply = m_network.post(buildRequest(path), payload);
+    send(path, QJsonDocument(body).toJson(QJsonDocument::Compact), stepName, QString());
+}
+
+void AuthClient::send(const QString &path, const QByteArray &payload, const QString &stepName,
+                      const QString &captchaKey)
+{
+    m_lastPath = path;
+    m_lastPayload = payload;
+    m_lastStep = stepName;
+
+    QNetworkRequest request = buildRequest(path);
+    if (!captchaKey.isEmpty()) {
+        request.setRawHeader("X-Captcha-Key", captchaKey.toUtf8());
+        if (!m_captchaRqtoken.isEmpty())
+            request.setRawHeader("X-Captcha-Rqtoken", m_captchaRqtoken.toUtf8());
+        if (!m_captchaSessionId.isEmpty())
+            request.setRawHeader("X-Captcha-Session-Id", m_captchaSessionId.toUtf8());
+    }
+
+    QNetworkReply *reply = m_network.post(request, payload);
     connect(reply, &QNetworkReply::finished, this, [this, reply, stepName]() {
         handleReply(reply, stepName);
     });
+}
+
+void AuthClient::retryWithCaptcha(const QString &captchaKey)
+{
+    if (m_lastPath.isEmpty() || captchaKey.isEmpty())
+        return;
+    send(m_lastPath, m_lastPayload, m_lastStep, captchaKey);
+}
+
+void AuthClient::forgotPassword(const QString &login)
+{
+    if (login.trimmed().isEmpty()) {
+        emit failed(QStringLiteral("Type your email or phone number first."));
+        return;
+    }
+    post(QStringLiteral("/auth/forgot"), QJsonObject{{QStringLiteral("login"), login.trimmed()}},
+         QStringLiteral("forgot"));
 }
 
 void AuthClient::logIn(const QString &login, const QString &password)
@@ -118,7 +153,10 @@ bool AuthClient::handleCaptcha(const QJsonObject &body)
 
     const QString service = body.value(QStringLiteral("captcha_service")).toString(QStringLiteral("hcaptcha"));
     const QString siteKey = body.value(QStringLiteral("captcha_sitekey")).toString();
-    emit captchaRequired(service, siteKey);
+    m_captchaRqtoken = body.value(QStringLiteral("captcha_rqtoken")).toString();
+    m_captchaSessionId = body.value(QStringLiteral("captcha_session_id")).toString();
+    wlog(QStringLiteral("login"), QStringLiteral("Discord wants a %1 check before signing in").arg(service));
+    emit captchaRequired(service, siteKey, body.value(QStringLiteral("captcha_rqdata")).toString());
     return true;
 }
 
@@ -232,6 +270,10 @@ void AuthClient::handleReply(QNetworkReply *reply, const QString &stepName)
         }
         if (stepName == QLatin1String("phone-resend")) {
             emit smsCodeSent();
+            return;
+        }
+        if (stepName == QLatin1String("forgot")) {
+            emit passwordResetSent();
             return;
         }
         if (stepName == QLatin1String("phone-verify")) {

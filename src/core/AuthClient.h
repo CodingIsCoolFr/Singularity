@@ -46,6 +46,14 @@ public:
     void verifyPhoneForDevice(const QString &phone, const QString &code);
     void resendPhoneCode(const QString &phone);
 
+    // Sends the request that was stopped by a captcha again, with the answer
+    // the person gave attached - exactly what Discord's client does for any
+    // request that comes back asking for one.
+    void retryWithCaptcha(const QString &captchaKey);
+
+    // Asks Discord to email a password reset link.
+    void forgotPassword(const QString &login);
+
     // The email version: the link Discord mailed carries a token, and this
     // approves the device with it, exactly as the page that link opens does.
     void authorizeDevice(const QString &token);
@@ -65,9 +73,13 @@ signals:
     // The device check went through. Signing in again now works.
     void deviceAuthorized();
 
-    // Discord demanded a captcha. Singularity cannot solve one, so the flow stops
-    // here and the person is told what happened.
-    void captchaRequired(const QString &service, const QString &siteKey);
+    // Discord wants a captcha before it will answer. The window shows Discord's
+    // own hCaptcha for the person to solve, then calls retryWithCaptcha().
+    // Nothing in this program answers a captcha by itself.
+    void captchaRequired(const QString &service, const QString &siteKey, const QString &rqdata);
+
+    // The reset email is on its way.
+    void passwordResetSent();
 
     // A text message was sent successfully.
     void smsCodeSent();
@@ -78,6 +90,16 @@ signals:
 private:
     QNetworkRequest buildRequest(const QString &path) const;
     void post(const QString &path, const QJsonObject &body, const QString &stepName);
+    void send(const QString &path, const QByteArray &payload, const QString &stepName,
+              const QString &captchaKey);
+
+    // The last request, kept so it can be sent again after a captcha, and the
+    // captcha's own bookkeeping that has to travel back with the answer.
+    QString m_lastPath;
+    QByteArray m_lastPayload;
+    QString m_lastStep;
+    QString m_captchaRqtoken;
+    QString m_captchaSessionId;
     void handleReply(QNetworkReply *reply, const QString &stepName);
     bool handleCaptcha(const QJsonObject &body);
     bool handleMfa(const QJsonObject &body);

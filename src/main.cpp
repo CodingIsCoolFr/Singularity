@@ -49,7 +49,7 @@ int main(int argc, char *argv[])
     holdRunningMutex();
     app.setApplicationName(QStringLiteral("Singularity"));
     app.setOrganizationName(QStringLiteral("Singularity"));
-    app.setApplicationVersion(QStringLiteral("0.6.72"));
+    app.setApplicationVersion(QStringLiteral("0.6.73"));
     app.setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
 
     Theme::applySeed(QColor(AppConfig::instance().value(QStringLiteral("appearance/themeSeed"),

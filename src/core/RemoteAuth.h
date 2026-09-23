@@ -45,7 +45,7 @@ signals:
 
     // The phone scanned the code and is now showing this account, waiting for
     // the person to approve. Purely so the desktop can say "check your phone".
-    void scanned(const QString &username);
+    void scanned(const QString &userId, const QString &avatarHash, const QString &username);
 
     // Approved on the phone; this is the account token.
     void succeeded(const QString &token);

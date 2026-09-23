@@ -177,7 +177,11 @@ void RemoteAuth::handleMessage(const QByteArray &json)
         const QString username = parts.size() >= 4
             ? QString::fromUtf8(parts.mid(3).join(':'))
             : QStringLiteral("your account");
-        emit scanned(username);
+        const QString userId = parts.size() >= 1 ? QString::fromUtf8(parts.at(0)) : QString();
+        QString avatar = parts.size() >= 3 ? QString::fromUtf8(parts.at(2)) : QString();
+        if (avatar == QLatin1String("0"))
+            avatar.clear();   // no picture set
+        emit scanned(userId, avatar, username);
         return;
     }
 

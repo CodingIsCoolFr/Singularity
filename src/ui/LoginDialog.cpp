@@ -3,6 +3,8 @@
 #include "core/AppConfig.h"
 #include "core/Logger.h"
 #include "core/RestClient.h"
+#include "ui/CaptchaDialog.h"
+#include "ui/MediaCache.h"
 #include "ui/Theme.h"
 
 #include <QCheckBox>
@@ -87,7 +89,7 @@ LoginDialog::LoginDialog(RestClient *rest, QWidget *parent)
     , m_rest(rest)
 {
     setWindowTitle(QStringLiteral("Singularity"));
-    setMinimumSize(760, 620);
+    setMinimumSize(940, 640);
 
     // The hole is the window here too, exactly as in the main window. The
     // sign-in used to be a flat panel, which made the first thing anybody saw
@@ -127,73 +129,66 @@ LoginDialog::LoginDialog(RestClient *rest, QWidget *parent)
     centre->setSpacing(0);
     centre->addStretch(1);
 
+    // Laid out the way Discord's own sign-in is: one card, the form on the
+    // left, the QR code on the right already showing. Nobody has to find the
+    // phone option, and nobody meets a token box unless they go looking.
     auto *card = new QWidget(m_aurora);
     card->setObjectName(QStringLiteral("LoginPanel"));
-    card->setFixedWidth(460);
+    card->setFixedWidth(880);
 
-    // Symmetric now that the column is centred. A one-sided fade only works
-    // against an edge; in the middle of the window it would be a bright seam
-    // down one side of the text and nothing down the other.
+    // Symmetric: fades out at both sides so there is no edge for the eye to
+    // catch, with the words in the solid middle.
     card->setStyleSheet(QStringLiteral(
         "#LoginPanel { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
-        "stop:0 rgba(5, 7, 12, 0), stop:0.22 rgba(5, 7, 12, 214), "
-        "stop:0.78 rgba(5, 7, 12, 214), stop:1 rgba(5, 7, 12, 0)); }"));
+        "stop:0 rgba(5, 7, 12, 0), stop:0.08 rgba(5, 7, 12, 220), "
+        "stop:0.92 rgba(5, 7, 12, 220), stop:1 rgba(5, 7, 12, 0)); }"));
     centre->addWidget(card);
     centre->addStretch(1);
 
     m_aurora->setOverlay(card);
 
-    // Margins wide enough on both sides that no word is ever read against the
-    // part of the gradient that has started to fade.
     auto *layout = new QVBoxLayout(card);
-    layout->setContentsMargins(70, 0, 70, 0);
-    layout->setSpacing(14);
+    layout->setContentsMargins(90, 0, 90, 0);
+    layout->setSpacing(12);
     layout->addStretch(1);
 
-    auto *title = new QLabel(QStringLiteral("Singularity"), card);
-    title->setAlignment(Qt::AlignCenter);
-    title->setStyleSheet(QStringLiteral("font-size: 34px; font-weight: 600; letter-spacing: 0.4px; color: %1;")
+    // The program's own name, small, over the card - this is Singularity, not
+    // a copy of Discord's page, even where the layout follows it.
+    auto *brand = new QLabel(QStringLiteral("Singularity"), card);
+    brand->setAlignment(Qt::AlignCenter);
+    brand->setStyleSheet(QStringLiteral("font-size: 22px; font-weight: 600; letter-spacing: 0.6px; color: %1;")
                              .arg(QLatin1String(Theme::TextPrimary)));
-    layout->addWidget(title);
-    layout->addWidget(makeHint(QStringLiteral("A Discord client."), card));
-
-    auto *warning = new QLabel(
-        QStringLiteral("Discord does not allow third party clients on a normal account. "
-                       "Using one can get the account banned. Your password is sent only to "
-                       "discord.com and is never saved."),
-        card);
-    warning->setWordWrap(true);
-    // A rule down the left rather than a box around everything. It marks the
-    // text as a warning without drawing another rectangle on a screen whose
-    // whole point is that it has none.
-    warning->setStyleSheet(QStringLiteral("color: %1; background: transparent; "
-                                          "border-left: 2px solid %2; padding: 2px 0 2px 12px;")
-                               .arg(QLatin1String(Theme::TextMuted), QLatin1String(Theme::Red)));
-    layout->addWidget(warning);
+    layout->addWidget(brand);
+    layout->addSpacing(10);
 
     m_pages = new QStackedWidget(card);
     m_pages->addWidget(buildCredentialsPage());
     m_pages->addWidget(buildMfaPage());
     m_pages->addWidget(buildTokenPage());
-    m_pages->addWidget(buildQrPage());
     m_pages->addWidget(buildDevicePage());
     layout->addWidget(m_pages);
 
     m_statusLabel = new QLabel(card);
     m_statusLabel->setWordWrap(true);
+    m_statusLabel->setAlignment(Qt::AlignCenter);
     m_statusLabel->setStyleSheet(QStringLiteral("color: %1;").arg(QLatin1String(Theme::TextFaint)));
     layout->addWidget(m_statusLabel);
 
-    auto *bottomRow = new QHBoxLayout;
-    auto *quitButton = new QPushButton(QStringLiteral("Quit"), card);
-    connect(quitButton, &QPushButton::clicked, this, &QDialog::reject);
-    bottomRow->addStretch(1);
-    bottomRow->addWidget(quitButton);
-    bottomRow->addStretch(1);
-    layout->addLayout(bottomRow);
+    layout->addSpacing(10);
 
-    // Balances the stretch above, so the whole column sits in the middle of
-    // the window rather than against the top of it.
+    // Still said, because it is true, but as a footnote rather than the first
+    // thing on the screen.
+    auto *warning = new QLabel(
+        QStringLiteral("Discord does not allow third-party clients on a normal account, and using one can get "
+                       "an account banned. Your password goes only to discord.com and is never saved."),
+        card);
+    warning->setWordWrap(true);
+    warning->setAlignment(Qt::AlignCenter);
+    warning->setStyleSheet(QStringLiteral("color: %1; font-size: 11px; background: transparent;")
+                               .arg(QLatin1String(Theme::TextFaint)));
+    layout->addWidget(warning);
+
+    // Balances the stretch above, so the card sits in the middle of the window.
     layout->addStretch(1);
 
     connect(&m_auth, &AuthClient::succeeded, this, &LoginDialog::onAuthSucceeded);
@@ -214,15 +209,36 @@ LoginDialog::LoginDialog(RestClient *rest, QWidget *parent)
         submitCredentials();
     });
 
-    // QR sign-in. No password crosses this window at all; the phone approves.
-    connect(&m_remote, &RemoteAuth::qrCodeReady, this, [this](const QImage &code, const QString &) {
-        m_qrImage->setPixmap(QPixmap::fromImage(code).scaled(220, 220, Qt::KeepAspectRatio,
-                                                             Qt::FastTransformation));
-        m_qrStatus->setText(QStringLiteral("Open Discord on your phone, go to Settings and Scan QR Code, "
-                                           "then point it here."));
+    connect(&m_auth, &AuthClient::passwordResetSent, this, [this]() {
+        setBusy(false);
+        setStatus(QStringLiteral("Discord emailed you a link to reset your password."));
     });
-    connect(&m_remote, &RemoteAuth::scanned, this, [this](const QString &username) {
-        m_qrStatus->setText(QStringLiteral("Confirm on your phone to sign in as %1.").arg(username));
+
+    // QR sign-in, always on beside the form. No password crosses this window
+    // at all; the phone approves.
+    connect(&m_remote, &RemoteAuth::qrCodeReady, this, [this](const QImage &code, const QString &) {
+        m_qrImage->setPixmap(QPixmap::fromImage(code).scaled(176, 176, Qt::KeepAspectRatio,
+                                                             Qt::FastTransformation));
+        m_qrTitle->setText(QStringLiteral("Log in with QR code"));
+        m_qrStatus->setText(QStringLiteral("Scan this with the Discord mobile app to log in instantly."));
+    });
+    connect(&m_remote, &RemoteAuth::scanned, this,
+            [this](const QString &userId, const QString &avatarHash, const QString &username) {
+                // What Discord's page does: the code gives way to the face of
+                // the account that scanned it.
+                m_scannedAvatar = MediaCache::avatarUrl(userId, avatarHash, 128);
+                const QImage face = m_scannedAvatar.isEmpty() ? QImage() : MediaCache::instance().image(m_scannedAvatar);
+                m_qrImage->setPixmap(face.isNull() ? MediaCache::initialsAvatar(username, 120)
+                                                   : MediaCache::circular(face, 120));
+                m_qrTitle->setText(QStringLiteral("Check your phone!"));
+                m_qrStatus->setText(QStringLiteral("Logging in as %1").arg(username));
+            });
+    connect(&MediaCache::instance(), &MediaCache::ready, this, [this](const QUrl &url) {
+        if (url.isEmpty() || url != m_scannedAvatar)
+            return;
+        const QImage face = MediaCache::instance().image(url);
+        if (!face.isNull())
+            m_qrImage->setPixmap(MediaCache::circular(face, 120));
     });
     connect(&m_remote, &RemoteAuth::succeeded, this, [this](const QString &token) {
         m_qrStatus->setText(QStringLiteral("Approved. Loading..."));
@@ -230,11 +246,15 @@ LoginDialog::LoginDialog(RestClient *rest, QWidget *parent)
         finishWith(token);
     });
     connect(&m_remote, &RemoteAuth::declined, this, [this]() {
-        m_qrStatus->setText(QStringLiteral("The sign-in was declined on the phone."));
+        m_scannedAvatar.clear();
+        m_qrTitle->setText(QStringLiteral("Log in with QR code"));
+        m_qrStatus->setText(QStringLiteral("Declined on the phone. Here is a fresh code."));
+        if (m_pages->currentIndex() == CredentialsPage)
+            m_remote.start();
     });
     connect(&m_remote, &RemoteAuth::expired, this, [this]() {
-        m_qrStatus->setText(QStringLiteral("This code timed out. Fetching a fresh one..."));
-        if (m_pages->currentIndex() == QrPage)
+        m_scannedAvatar.clear();
+        if (m_pages->currentIndex() == CredentialsPage)
             m_remote.start();
     });
     connect(&m_remote, &RemoteAuth::failed, this, [this](const QString &reason) {
@@ -248,43 +268,112 @@ LoginDialog::LoginDialog(RestClient *rest, QWidget *parent)
 // Pages
 // ---------------------------------------------------------------------------
 
+// A small upper-case caption over a field, the way Discord labels its form.
+static QLabel *makeFieldLabel(const QString &text, QWidget *parent)
+{
+    auto *label = new QLabel(text, parent);
+    label->setStyleSheet(QStringLiteral("color: %1; font-size: 11px; font-weight: 700; letter-spacing: 0.4px;")
+                             .arg(QLatin1String(Theme::TextMuted)));
+    return label;
+}
+
 QWidget *LoginDialog::buildCredentialsPage()
 {
     auto *page = new QWidget(this);
-    auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(8);
+    auto *row = new QHBoxLayout(page);
+    row->setContentsMargins(0, 0, 0, 0);
+    row->setSpacing(40);
 
-    layout->addWidget(makeHeading(QStringLiteral("Sign in"), page));
+    // Left: the form.
+    auto *form = new QVBoxLayout;
+    form->setSpacing(6);
 
+    auto *welcome = new QLabel(QStringLiteral("Welcome back!"), page);
+    welcome->setAlignment(Qt::AlignCenter);
+    welcome->setStyleSheet(QStringLiteral("font-size: 24px; font-weight: 600; color: %1;")
+                               .arg(QLatin1String(Theme::TextPrimary)));
+    form->addWidget(welcome);
+    form->addWidget(makeHint(QStringLiteral("We're so excited to see you again!"), page));
+    form->addSpacing(14);
+
+    form->addWidget(makeFieldLabel(QStringLiteral("EMAIL OR PHONE NUMBER *"), page));
     m_loginEdit = new QLineEdit(page);
-    m_loginEdit->setPlaceholderText(QStringLiteral("Email or phone number"));
-    layout->addWidget(m_loginEdit);
+    m_loginEdit->setMinimumHeight(40);
+    form->addWidget(m_loginEdit);
+    form->addSpacing(10);
 
+    form->addWidget(makeFieldLabel(QStringLiteral("PASSWORD *"), page));
     m_passwordEdit = new QLineEdit(page);
-    m_passwordEdit->setPlaceholderText(QStringLiteral("Password"));
+    m_passwordEdit->setMinimumHeight(40);
     m_passwordEdit->setEchoMode(QLineEdit::Password);
-    layout->addWidget(m_passwordEdit);
+    form->addWidget(m_passwordEdit);
 
-    m_rememberBox = new QCheckBox(QStringLiteral("Stay signed in on this machine"), page);
-    m_rememberBox->setChecked(true);
-    layout->addWidget(m_rememberBox);
+    auto *forgotLink = makeLinkButton(QStringLiteral("Forgot your password?"), page);
+    form->addWidget(forgotLink);
+    form->addSpacing(8);
 
-    m_logInButton = makePrimaryButton(QStringLiteral("Log in"), page);
+    m_logInButton = makePrimaryButton(QStringLiteral("Log In"), page);
     m_logInButton->setDefault(true);
-    layout->addWidget(m_logInButton);
+    form->addWidget(m_logInButton);
 
-    auto *qrLink = makeLinkButton(QStringLiteral("Sign in with a QR code (scan with your phone)"), page);
-    layout->addWidget(qrLink);
+    m_rememberBox = new QCheckBox(QStringLiteral("Stay signed in on this computer"), page);
+    m_rememberBox->setChecked(true);
+    form->addWidget(m_rememberBox);
 
-    auto *tokenLink = makeLinkButton(QStringLiteral("Use a token instead"), page);
-    layout->addWidget(tokenLink);
+    auto *tokenLink = makeLinkButton(QStringLiteral("Sign in with a token"), page);
+    form->addWidget(tokenLink);
+
+    row->addLayout(form, 1);
+
+    // A thin rule between the two halves.
+    auto *divider = new QFrame(page);
+    divider->setFixedWidth(1);
+    divider->setStyleSheet(QStringLiteral("background: %1;").arg(QLatin1String(Theme::Border)));
+    row->addWidget(divider);
+
+    // Right: the QR code, already running.
+    auto *qr = new QVBoxLayout;
+    qr->setSpacing(10);
+    qr->addStretch(1);
+
+    m_qrImage = new QLabel(page);
+    m_qrImage->setAlignment(Qt::AlignCenter);
+    m_qrImage->setFixedSize(192, 192);
+    // White behind the code because a camera needs a light border around a
+    // dark code; when the code gives way to an avatar the plate stays, which
+    // is how Discord's page looks too.
+    m_qrImage->setStyleSheet(QStringLiteral("background: white; border-radius: 8px; color: #555;"));
+    m_qrImage->setText(QStringLiteral("..."));
+    auto *imageRow = new QHBoxLayout;
+    imageRow->addStretch(1);
+    imageRow->addWidget(m_qrImage);
+    imageRow->addStretch(1);
+    qr->addLayout(imageRow);
+
+    m_qrTitle = new QLabel(QStringLiteral("Log in with QR code"), page);
+    m_qrTitle->setAlignment(Qt::AlignCenter);
+    m_qrTitle->setStyleSheet(QStringLiteral("font-size: 20px; font-weight: 600; color: %1;")
+                                 .arg(QLatin1String(Theme::TextPrimary)));
+    qr->addWidget(m_qrTitle);
+
+    m_qrStatus = makeHint(QStringLiteral("Getting a code..."), page);
+    qr->addWidget(m_qrStatus);
+    qr->addStretch(1);
+
+    auto *qrColumn = new QWidget(page);
+    qrColumn->setFixedWidth(250);
+    qrColumn->setLayout(qr);
+    row->addWidget(qrColumn);
 
     connect(m_logInButton, &QPushButton::clicked, this, &LoginDialog::submitCredentials);
     connect(m_passwordEdit, &QLineEdit::returnPressed, this, &LoginDialog::submitCredentials);
     connect(m_loginEdit, &QLineEdit::returnPressed, this, &LoginDialog::submitCredentials);
-    connect(qrLink, &QPushButton::clicked, this, &LoginDialog::useQrInstead);
     connect(tokenLink, &QPushButton::clicked, this, &LoginDialog::useTokenInstead);
+    connect(forgotLink, &QPushButton::clicked, this, [this]() {
+        setBusy(true);
+        setStatus(QStringLiteral("Asking Discord for a reset email..."));
+        m_auth.forgotPassword(m_loginEdit->text());
+    });
 
     return page;
 }
@@ -303,7 +392,8 @@ QWidget *LoginDialog::buildMfaPage()
 {
     auto *page = new QWidget(this);
     auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(0, 0, 0, 0);
+    // Centred at a comfortable reading width inside the wide card.
+    layout->setContentsMargins(150, 0, 150, 0);
     layout->setSpacing(8);
 
     m_mfaHeading = makeHeading(QStringLiteral("Two step check"), page);
@@ -360,7 +450,8 @@ QWidget *LoginDialog::buildDevicePage()
 {
     auto *page = new QWidget(this);
     auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(0, 0, 0, 0);
+    // Centred at a comfortable reading width inside the wide card.
+    layout->setContentsMargins(150, 0, 150, 0);
     layout->setSpacing(8);
 
     layout->addWidget(makeHeading(QStringLiteral("Approve this device"), page));
@@ -404,13 +495,14 @@ QWidget *LoginDialog::buildTokenPage()
 {
     auto *page = new QWidget(this);
     auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(0, 0, 0, 0);
+    // Centred at a comfortable reading width inside the wide card.
+    layout->setContentsMargins(150, 0, 150, 0);
     layout->setSpacing(8);
 
     layout->addWidget(makeHeading(QStringLiteral("Sign in with a token"), page));
     layout->addWidget(makeHint(
-        QStringLiteral("Use this when Discord asks for a captcha. Singularity cannot answer a captcha, "
-                       "so the password path stops there."),
+        QStringLiteral("For people who already have their account token. Most people want the email "
+                       "and password, or the QR code."),
         page));
 
     m_tokenEdit = new QLineEdit(page);
@@ -457,56 +549,31 @@ QWidget *LoginDialog::buildTokenPage()
     return page;
 }
 
-QWidget *LoginDialog::buildQrPage()
-{
-    auto *page = new QWidget(this);
-    auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(10);
-
-    layout->addWidget(makeHeading(QStringLiteral("Scan to sign in"), page));
-
-    // The code itself. White quiet zone kept, on a small white plate, because a
-    // camera needs the light border and a dark QR on the dark hole would not
-    // read. Placed on its own so it sits centred whatever the code's size.
-    m_qrImage = new QLabel(page);
-    m_qrImage->setAlignment(Qt::AlignCenter);
-    m_qrImage->setFixedSize(240, 240);
-    m_qrImage->setStyleSheet(QStringLiteral("background: white; border-radius: 10px;"));
-    m_qrImage->setText(QStringLiteral("..."));
-    auto *imageRow = new QHBoxLayout;
-    imageRow->addStretch(1);
-    imageRow->addWidget(m_qrImage);
-    imageRow->addStretch(1);
-    layout->addLayout(imageRow);
-
-    m_qrStatus = makeHint(QStringLiteral("Getting a code..."), page);
-    layout->addWidget(m_qrStatus);
-
-    auto *backLink = makeLinkButton(QStringLiteral("Back to sign in"), page);
-    layout->addWidget(backLink);
-    connect(backLink, &QPushButton::clicked, this, [this]() {
-        m_remote.stop();
-        setStatus(QString());
-        showPage(CredentialsPage);
-    });
-
-    return page;
-}
-
 // ---------------------------------------------------------------------------
 // Flow
 // ---------------------------------------------------------------------------
 
 void LoginDialog::showPage(Page page)
 {
-    // Leaving the QR page tears the connection down, so a code is never left
-    // live behind a screen nobody is looking at.
-    if (m_pages->currentIndex() == QrPage && page != QrPage)
-        m_remote.stop();
-
+    const bool wasFront = m_pages->currentIndex() == CredentialsPage;
     m_pages->setCurrentIndex(page);
-    adjustSize();
+
+    // The QR code lives on the front page and runs whenever it is showing,
+    // as Discord's does. Leaving the page hangs up, so a code is never left
+    // live behind a screen nobody is looking at.
+    if (page == CredentialsPage) {
+        if (!wasFront || !m_remoteStarted) {
+            m_scannedAvatar.clear();
+            m_qrImage->setText(QStringLiteral("..."));
+            m_qrTitle->setText(QStringLiteral("Log in with QR code"));
+            m_qrStatus->setText(QStringLiteral("Getting a code..."));
+            m_remote.start();
+            m_remoteStarted = true;
+        }
+    } else if (m_remoteStarted) {
+        m_remote.stop();
+        m_remoteStarted = false;
+    }
 
     switch (page) {
     case CredentialsPage:
@@ -520,8 +587,6 @@ void LoginDialog::showPage(Page page)
     case TokenPage:
         m_tokenButton->setDefault(true);
         m_tokenEdit->setFocus();
-        break;
-    case QrPage:
         break;
     case DevicePage:
         m_deviceButton->setDefault(true);
@@ -764,16 +829,28 @@ void LoginDialog::submitDeviceCheck()
     m_auth.authorizeDevice(token);
 }
 
-void LoginDialog::onCaptchaRequired(const QString &service, const QString &siteKey)
+// Discord wants a captcha before it will let this sign-in through.
+//
+// What Discord's own client does for any request: show the captcha, then send
+// the same request again with the answer attached. The captcha is Discord's
+// real hCaptcha, in a small browser window, and the person solves it - this
+// program never answers one by itself.
+void LoginDialog::onCaptchaRequired(const QString &service, const QString &siteKey, const QString &rqdata)
 {
-    Q_UNUSED(siteKey)
-    setBusy(false);
-    setStatus(QStringLiteral("Discord asked for a %1 captcha, which Singularity cannot answer. "
-                             "The easiest way in is the QR code: go back and choose \"Sign in with a "
-                             "QR code\". Or paste a token below.")
-                  .arg(service),
-              true);
-    showPage(TokenPage);
+    setStatus(QStringLiteral("Discord wants a quick check that you are a person."));
+
+    const QString answer = CaptchaDialog::solve(this, siteKey, rqdata);
+    if (answer.isEmpty()) {
+        setBusy(false);
+        setStatus(QStringLiteral("The %1 check was closed before it finished. Press Log In to try again, "
+                                 "or scan the QR code instead.")
+                      .arg(service),
+                  true);
+        return;
+    }
+
+    setStatus(QStringLiteral("Thanks. Signing in..."));
+    m_auth.retryWithCaptcha(answer);
 }
 
 void LoginDialog::onAuthFailed(const QString &message)
@@ -797,11 +874,9 @@ void LoginDialog::useTokenInstead()
 
 void LoginDialog::useQrInstead()
 {
-    setStatus(QString());
-    m_qrImage->setText(QStringLiteral("..."));
-    m_qrStatus->setText(QStringLiteral("Getting a code..."));
-    showPage(QrPage);
-    m_remote.start();
+    // The code is on the front page, running whenever that page shows.
+    setStatus(QStringLiteral("Scan the code on the right with the Discord mobile app."));
+    showPage(CredentialsPage);
 }
 
 void LoginDialog::finishWith(const QString &token)

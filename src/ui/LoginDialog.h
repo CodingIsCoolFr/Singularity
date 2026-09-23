@@ -4,6 +4,7 @@
 #include "core/RemoteAuth.h"
 
 #include <QDialog>
+#include <QUrl>
 
 class QLabel;
 class QLineEdit;
@@ -38,7 +39,7 @@ private slots:
     void submitSecondFactor();
     void onAuthSucceeded(const QString &token);
     void onMfaRequired(const AuthClient::MfaOptions &options);
-    void onCaptchaRequired(const QString &service, const QString &siteKey);
+    void onCaptchaRequired(const QString &service, const QString &siteKey, const QString &rqdata);
     void onAuthFailed(const QString &message);
     void useTokenInstead();
     void useQrInstead();
@@ -50,12 +51,12 @@ private slots:
     void showDeviceCheck(bool byPhone, const QString &message);
 
 private:
-    enum Page { CredentialsPage = 0, MfaPage = 1, TokenPage = 2, QrPage = 3, DevicePage = 4 };
+    // The order they are added to the stack.
+    enum Page { CredentialsPage = 0, MfaPage = 1, TokenPage = 2, DevicePage = 3 };
 
     QWidget *buildCredentialsPage();
     QWidget *buildMfaPage();
     QWidget *buildTokenPage();
-    QWidget *buildQrPage();
     QWidget *buildDevicePage();
     void showPage(Page page);
     void setBusy(bool busy);
@@ -98,9 +99,12 @@ private:
     QLineEdit *m_tokenEdit = nullptr;
     QPushButton *m_tokenButton = nullptr;
 
-    // QR page
+    // QR code, the right half of the front page
     QLabel *m_qrImage = nullptr;
+    QLabel *m_qrTitle = nullptr;
     QLabel *m_qrStatus = nullptr;
+    QUrl m_scannedAvatar;
+    bool m_remoteStarted = false;
 
     QLabel *m_statusLabel = nullptr;
 
