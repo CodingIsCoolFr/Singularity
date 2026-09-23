@@ -3,6 +3,7 @@
 #include "core/DiscordIdentity.h"
 #include "core/Logger.h"
 
+#include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QJsonArray>
 #include <QSslError>
@@ -609,14 +610,24 @@ QJsonArray GatewayClient::clientActivities() const
 
     QJsonObject assets;
     assets.insert(QStringLiteral("large_image"), logo);
-    assets.insert(QStringLiteral("large_text"), QStringLiteral("Singularity"));
+    // The tooltip on the picture. It has room for more than the name, which is
+    // already on the line above it, so it says what the thing actually is.
+    assets.insert(QStringLiteral("large_text"),
+                  QStringLiteral("Singularity — a Discord client in C++"));
     assets.insert(QStringLiteral("large_url"), site);
 
     QJsonObject activity;
     activity.insert(QStringLiteral("name"), QStringLiteral("Singularity"));
     activity.insert(QStringLiteral("type"), 0);
     activity.insert(QStringLiteral("platform"), QStringLiteral("desktop"));
-    activity.insert(QStringLiteral("details"), QStringLiteral("On the client"));
+    // Discord draws these as two lines under the name: details, then state.
+    // Nothing here is ever derived from what you are doing - no channel, no
+    // server, no call - because this card is shown to everyone who can see
+    // your profile, and a presence that narrates your evening is a leak
+    // rather than a feature.
+    activity.insert(QStringLiteral("details"), QStringLiteral("Among the stars"));
+    activity.insert(QStringLiteral("state"),
+                    QStringLiteral("Version %1").arg(QCoreApplication::applicationVersion()));
     if (!m_activityApplicationId.isEmpty())
         activity.insert(QStringLiteral("application_id"), m_activityApplicationId);
     activity.insert(QStringLiteral("timestamps"),
