@@ -33,6 +33,19 @@ public:
     // Starts a group for one call. `groupId` is the channel id.
     bool begin(int version, quint64 groupId, const QString &selfUserId);
     void end();
+
+    // A new group for the same call (opcode 24, "prepare epoch"), sent when
+    // the group has to be rebuilt - most often because someone left.
+    //
+    // This re-initialises the library's session in place, which is what
+    // Discord's own client does, rather than calling begin() again. begin()
+    // throws the session away, and three things went with it: the group's
+    // authority from opcode 25, which Discord sends once per connection and
+    // never again, so no later proposal or welcome could be accepted; the
+    // encryptor's note that a stream is H.264; and the key in use, so every
+    // frame after a viewer left went out unsealed and stayed that way. That
+    // was a screen share that "failed to load" for everyone who came later.
+    bool restart(int version, quint64 groupId, const QString &selfUserId);
     bool isActive() const { return m_session != nullptr; }
 
     // Who Discord says may speak for the group. Arrives as opcode 25.

@@ -118,6 +118,31 @@ bool DaveSession::begin(int version, quint64 groupId, const QString &selfUserId)
 #endif
 }
 
+bool DaveSession::restart(int version, quint64 groupId, const QString &selfUserId)
+{
+#ifdef SINGULARITY_HAVE_DAVE
+    if (!m_session || !m_encryptor)
+        return begin(version, groupId, selfUserId);
+
+    m_selfUserId = selfUserId;
+
+    // Same session: libdave's Init resets the group but keeps the external
+    // sender, and makes the pending group from it straight away. The
+    // encryptor, its codec notes and the current key stay as they are until
+    // the new group's keys replace them at the next transition.
+    daveSessionInit(static_cast<DAVESessionHandle>(m_session), static_cast<uint16_t>(version),
+                    groupId, selfUserId.toUtf8().constData());
+
+    wlog(QStringLiteral("dave"), QStringLiteral("key group restarted in place, version %1, group %2 "
+                                                "(authority and current key kept)")
+                                     .arg(version).arg(groupId));
+    return true;
+#else
+    Q_UNUSED(version) Q_UNUSED(groupId) Q_UNUSED(selfUserId)
+    return false;
+#endif
+}
+
 void DaveSession::releaseKeys()
 {
 #ifdef SINGULARITY_HAVE_DAVE

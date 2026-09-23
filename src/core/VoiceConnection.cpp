@@ -950,11 +950,16 @@ void VoiceConnection::onTextMessage(const QString &message)
 
     case OpDavePrepareEpoch: {
         // A brand new group. Publish our key package again so we are included.
+        //
+        // Restarted in place, not begun again: see DaveSession::restart. And
+        // the same group id the connection started with - a Go Live stream's
+        // group is its media session, not the channel.
         const int version = data.value(QStringLiteral("protocol_version")).toInt();
         wlog(QStringLiteral("voice"), QStringLiteral("new key group, version %1").arg(version));
 
         if (m_dave && version > 0) {
-            m_dave->begin(version, m_channelId.toULongLong(), m_userId);
+            const quint64 groupId = m_daveGroupId != 0 ? m_daveGroupId : m_channelId.toULongLong();
+            m_dave->restart(version, groupId, m_userId);
             const QByteArray package = m_dave->keyPackage();
             if (!package.isEmpty())
                 sendBinary(OpDaveMlsKeyPackage, package);
