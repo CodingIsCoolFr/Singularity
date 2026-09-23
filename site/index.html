@@ -78,7 +78,7 @@
     <p class="lede">Vencord and BetterDiscord sit on top of Discord. Singularity is the client. Voice, video, messages, friends and plugins are the program itself.</p>
 
     <div class="tiles">
-      <div class="tile"><span class="mark">↓</span><h3>Easy install</h3><p>One setup program. No administrator prompt. It downloads the next version and installs itself.</p></div>
+      <div class="tile"><span class="mark">↓</span><h3>Easy install</h3><p>One setup program. No administrator prompt. It downloads the next version and installs itself, and What's new lists every release and what it changed.</p></div>
       <div class="tile"><span class="mark">♫</span><h3>Real voice</h3><p>Calls you can join, encrypted end to end, with mute, deafen, and your own camera.</p></div>
       <div class="tile"><span class="mark">▣</span><h3>Screen share</h3><p>Their screens and yours, decoded into the call instead of a spinning loader.</p></div>
       <div class="tile"><span class="mark">✦</span><h3>Plugins included</h3><p>Seven, compiled into the program. Nothing sitting in a folder for something else to replace.</p></div>
@@ -92,6 +92,7 @@
         <p>Voice channels you can actually join, with sound both ways, encrypted end to end the way Discord now requires. A channel with a user limit shows how full it is, and a full one will not let you in.</p>
         <p>Mute, deafen, device and volume control, a speaking threshold, and a microphone test with a live level bar. Right-click someone in a call to turn just them up or down. That volume is Discord's, so the official app matches.</p>
         <p>Calls run on a thread of their own, built the way Discord's own voice engine is: away from the window, with the same "Pro Audio" priority request to Windows. A busy window, a big server, or a game in the background no longer makes a twenty-person call chop.</p>
+        <p>Each voice gets a smart buffer modelled on WebRTC's NetEq, the one Discord's engine uses. It keeps packets in order, rebuilds a lost one from the backup copy Opus hides in the next, measures your line and picks its own cushion, and catches up a few milliseconds of voice at a time instead of dropping sound. On a simulated terrible connection it went from 74 clicks to none.</p>
       </div>
 
       <div class="panel card">
