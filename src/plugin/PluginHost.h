@@ -46,6 +46,9 @@ public:
     QString runDecorateHeader(const MessageInfo &message);
     QString runDecorateGutter(const MessageInfo &message);
 
+    // False when no enabled plugin will carry the file.
+    bool runOversizedFile(const QString &path, Plugin::UploadProgress progress, Plugin::UploadDone done);
+
     // Runs inside the audio path, every 20 milliseconds, while a call is up.
     void runMicrophoneFrame(qint16 *samples, int frames, int channels, int sampleRate);
 

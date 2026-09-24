@@ -38,6 +38,10 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QClipboard>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
+#include <QMimeData>
 #include <QCloseEvent>
 #include <QCursor>
 #include <QDialog>
@@ -1660,6 +1664,11 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
     m_composer->installEventFilter(this);
     m_composer->setEnabled(false);
 
+    // Files dropped anywhere on the window attach, like Discord. The box takes
+    // drops itself (it would type the file's path in), so it is watched too.
+    m_composer->viewport()->installEventFilter(this);
+    setAcceptDrops(true);
+
     row->addWidget(attach, 0, Qt::AlignVCenter);
     row->addWidget(m_composer, 1);
     row->addWidget(emoji, 0, Qt::AlignVCenter);
@@ -1773,6 +1782,7 @@ void MainWindow::onGatewayReady(const QJsonObject &payload)
 {
     const QJsonObject user = payload.value(QStringLiteral("user")).toObject();
     m_selfUserId = user.value(QStringLiteral("id")).toString();
+    m_selfPremiumType = user.value(QStringLiteral("premium_type")).toInt();
     m_selfAvatarHash = user.value(QStringLiteral("avatar")).toString();
     m_selfDisplayName = user.value(QStringLiteral("global_name")).toString();
     if (m_selfDisplayName.isEmpty())
@@ -4801,13 +4811,23 @@ void MainWindow::refreshComposerContext()
         m_composerContext->hide();
     }
 
-    if (m_pendingFiles.isEmpty()) {
-        m_attachmentLabel->hide();
-    } else {
+    QStringList parts;
+    if (!m_pendingFiles.isEmpty()) {
         QStringList names;
         for (const QString &path : m_pendingFiles)
             names.append(QFileInfo(path).fileName());
-        m_attachmentLabel->setText(QStringLiteral("Attached: %1").arg(names.join(QStringLiteral(", "))));
+        parts.append(QStringLiteral("Attached: %1").arg(names.join(QStringLiteral(", "))));
+    }
+    for (auto it = m_uploadsInFlight.cbegin(); it != m_uploadsInFlight.cend(); ++it) {
+        parts.append(QStringLiteral("Uploading %1 to GoFile… %2%")
+                         .arg(QFileInfo(it.key()).fileName())
+                         .arg(it.value()));
+    }
+
+    if (parts.isEmpty()) {
+        m_attachmentLabel->hide();
+    } else {
+        m_attachmentLabel->setText(parts.join(QStringLiteral("   ·   ")));
         m_attachmentLabel->show();
     }
 }
@@ -4851,20 +4871,206 @@ void MainWindow::chooseAttachment()
         QStringLiteral("All files (*.*)"));
     if (picked.isEmpty())
         return;
+    addAttachments(picked);
+}
 
-    for (const QString &path : picked) {
-        if (QFileInfo(path).size() > 25ll * 1024 * 1024) {
-            flashStatus(QStringLiteral("%1 is over 25 MB, which Discord will not take.")
-                            .arg(QFileInfo(path).fileName()),
-                        5000);
+// What Discord lets you send in the channel you are in. The check that
+// matters is Discord's own, on its servers; this only saves a doomed upload.
+qint64 MainWindow::uploadLimitBytes() const
+{
+    constexpr qint64 MiB = 1024 * 1024;
+
+    // Your account: no Nitro, Nitro Classic, Nitro, Nitro Basic.
+    qint64 limit = 10 * MiB;
+    switch (m_selfPremiumType) {
+    case 1:
+    case 3: limit = 50 * MiB; break;
+    case 2: limit = 500 * MiB; break;
+    default: break;
+    }
+
+    // A boosted server raises it for everyone in it.
+    const QString guildId = m_store->channel(m_currentChannelId).guildId;
+    if (!guildId.isEmpty()) {
+        const int tier = m_store->guild(guildId).premiumTier;
+        if (tier >= 3)
+            limit = qMax(limit, 100 * MiB);
+        else if (tier == 2)
+            limit = qMax(limit, 50 * MiB);
+    }
+    return limit;
+}
+
+void MainWindow::addAttachments(const QStringList &paths)
+{
+    if (m_currentChannelId.isEmpty() || !m_composer->isEnabled()) {
+        flashStatus(QStringLiteral("Open a channel first, then drop the file there."), 4000);
+        return;
+    }
+
+    constexpr qint64 MiB = 1024 * 1024;
+    const qint64 limit = uploadLimitBytes();
+
+    QStringList tooBig;
+    for (const QString &path : paths) {
+        const QFileInfo info(path);
+        if (info.isDir()) {
+            flashStatus(QStringLiteral("%1 is a folder. Zip it first: right-click it, then "
+                                       "Send to > Compressed (zipped) folder.")
+                            .arg(info.fileName()),
+                        8000);
+            continue;
+        }
+        if (!info.isFile())
+            continue;
+        if (info.size() > limit) {
+            tooBig.append(path);
             continue;
         }
         if (!m_pendingFiles.contains(path))
             m_pendingFiles.append(path);
     }
-    if (m_pendingFiles.size() > 10)
+
+    if (m_pendingFiles.size() > 10) {
         m_pendingFiles = m_pendingFiles.mid(0, 10);
+        flashStatus(QStringLiteral("Discord takes up to 10 files in one message."), 5000);
+    }
     refreshComposerContext();
+
+    if (tooBig.isEmpty())
+        return;
+
+    // Sending a file to another company is your call, so the first time it
+    // asks. Saying yes turns the plugin on, and after that it just works.
+    if (!m_plugins->isEnabled(QStringLiteral("big-files"))) {
+        QStringList names;
+        for (const QString &path : tooBig)
+            names.append(QFileInfo(path).fileName());
+
+        const auto answer = QMessageBox::question(
+            this, QStringLiteral("Too big for Discord"),
+            QStringLiteral("%1 is bigger than your Discord limit of %2 MB.\n\n"
+                           "The Big files plugin can upload it to GoFile, a free file host, and put the "
+                           "download link in your message instead. Anyone with the link can download it."
+                           "\n\nTurn on Big files and upload it?")
+                .arg(names.join(QStringLiteral(", ")))
+                .arg(limit / MiB));
+        if (answer != QMessageBox::Yes)
+            return;
+        m_plugins->setEnabled(QStringLiteral("big-files"), true);
+    }
+
+    for (const QString &path : tooBig)
+        startBigUpload(path);
+}
+
+void MainWindow::startBigUpload(const QString &path)
+{
+    if (m_uploadsInFlight.contains(path))
+        return;
+
+    const QString name = QFileInfo(path).fileName();
+    const QString channelId = m_currentChannelId;
+
+    m_uploadsInFlight.insert(path, 0);
+    refreshComposerContext();
+
+    // Quitting mid-upload closes this window before the plugin stops the
+    // upload, and the "stopped" report then arrives for a window that is gone.
+    const QPointer<MainWindow> guard(this);
+
+    const bool taken = m_plugins->runOversizedFile(
+        path,
+        [this, guard, path](qint64 sent, qint64 total) {
+            if (!guard)
+                return;
+            if (total <= 0 || !m_uploadsInFlight.contains(path))
+                return;
+            const int percent = int(sent * 100 / total);
+            if (percent == m_uploadsInFlight.value(path))
+                return;
+            m_uploadsInFlight.insert(path, percent);
+            refreshComposerContext();
+        },
+        [this, guard, path, name, channelId](const QString &link, const QString &error) {
+            if (!guard)
+                return;
+            m_uploadsInFlight.remove(path);
+            refreshComposerContext();
+
+            if (link.isEmpty()) {
+                flashStatus(QStringLiteral("Could not upload %1: %2").arg(name, error), 8000);
+                return;
+            }
+
+            // Still in the same channel: the link goes into your message, and
+            // Enter sends it. Moved on: it goes on the clipboard instead, so it
+            // never lands in a conversation it was not meant for.
+            if (channelId == m_currentChannelId && m_composer->isEnabled()) {
+                const QString existing = m_composer->toPlainText();
+                QTextCursor cursor = m_composer->textCursor();
+                cursor.movePosition(QTextCursor::End);
+                const bool newLine = !existing.isEmpty() && !existing.endsWith(QLatin1Char('\n'));
+                cursor.insertText((newLine ? QStringLiteral("\n") : QString()) + name + QStringLiteral(": ")
+                                  + link);
+                m_composer->setTextCursor(cursor);
+                m_composer->setFocus();
+                flashStatus(QStringLiteral("%1 is uploaded. The link is in your message. Press Enter to send it.")
+                                .arg(name),
+                            8000);
+            } else {
+                QApplication::clipboard()->setText(link);
+                flashStatus(QStringLiteral("%1 is uploaded. You changed channel, so the link is copied. "
+                                           "Paste it where you want it.")
+                                .arg(name),
+                            10000);
+            }
+        });
+
+    if (!taken) {
+        m_uploadsInFlight.remove(path);
+        refreshComposerContext();
+        flashStatus(QStringLiteral("Nothing could upload %1.").arg(name), 6000);
+    }
+}
+
+bool MainWindow::handleFileDrop(QEvent *event)
+{
+    auto *drop = static_cast<QDropEvent *>(event);
+    const QMimeData *mime = drop->mimeData();
+    if (!mime || !mime->hasUrls())
+        return false;
+
+    QStringList files;
+    for (const QUrl &url : mime->urls()) {
+        if (url.isLocalFile())
+            files.append(url.toLocalFile());
+    }
+    if (files.isEmpty())
+        return false;
+
+    drop->acceptProposedAction();
+    if (event->type() == QEvent::Drop)
+        addAttachments(files);
+    return true;
+}
+
+void MainWindow::dragEnterEvent(QDragEnterEvent *event)
+{
+    if (!handleFileDrop(event))
+        QMainWindow::dragEnterEvent(event);
+}
+
+void MainWindow::dragMoveEvent(QDragMoveEvent *event)
+{
+    if (!handleFileDrop(event))
+        QMainWindow::dragMoveEvent(event);
+}
+
+void MainWindow::dropEvent(QDropEvent *event)
+{
+    if (!handleFileDrop(event))
+        QMainWindow::dropEvent(event);
 }
 
 // The emoji page is painted, not a button per face.
@@ -5537,6 +5743,34 @@ void MainWindow::sendCurrentMessage()
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 {
+    // Files dragged onto the message box or the conversation attach instead of
+    // being typed in as a path.
+    if ((m_composer && watched == m_composer->viewport())
+        || (m_messageView && watched == m_messageView->viewport())) {
+        const QEvent::Type type = event->type();
+        if ((type == QEvent::DragEnter || type == QEvent::DragMove || type == QEvent::Drop)
+            && handleFileDrop(event)) {
+            return true;
+        }
+    }
+
+    // Ctrl+V on a file copied in Explorer attaches it, the same as a drop.
+    if (m_composer && watched == m_composer && event->type() == QEvent::KeyPress
+        && static_cast<QKeyEvent *>(event)->matches(QKeySequence::Paste)) {
+        const QMimeData *mime = QApplication::clipboard()->mimeData();
+        QStringList files;
+        if (mime && mime->hasUrls()) {
+            for (const QUrl &url : mime->urls()) {
+                if (url.isLocalFile())
+                    files.append(url.toLocalFile());
+            }
+        }
+        if (!files.isEmpty()) {
+            addAttachments(files);
+            return true;
+        }
+    }
+
     // A server dragged onto the middle of another tile makes or fills a
     // folder. Anything else is an ordinary reorder, left to the list.
     if (m_guildRail && watched == m_guildRail->viewport()

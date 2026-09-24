@@ -18,6 +18,9 @@
 class PluginHost;
 
 class AuroraWidget;
+class QDragEnterEvent;
+class QDragMoveEvent;
+class QDropEvent;
 class QPushButton;
 class QSlider;
 class QSplitter;
@@ -72,6 +75,13 @@ private slots:
     void beginEdit(const QString &messageId);
     void clearComposerContext();
     void chooseAttachment();
+
+    // Every way a file gets attached - the picker, a drop, a paste - ends here.
+    // Files over the Discord limit go to the Big files plugin instead.
+    void addAttachments(const QStringList &paths);
+    void startBigUpload(const QString &path);
+    qint64 uploadLimitBytes() const;
+    bool handleFileDrop(QEvent *event);
     void showEmojiMenu();
     void refreshComposerContext();
     QString messageIdAt(const QPoint &viewportPos) const;
@@ -201,6 +211,9 @@ private:
     static bool shouldGroup(const MessageInfo &previous, const MessageInfo &current);
 
     bool eventFilter(QObject *watched, QEvent *event) override;
+    void dragEnterEvent(QDragEnterEvent *event) override;
+    void dragMoveEvent(QDragMoveEvent *event) override;
+    void dropEvent(QDropEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
     void showEvent(QShowEvent *event) override;
     void changeEvent(QEvent *event) override;
@@ -227,6 +240,8 @@ private:
     QString m_replyMessageId;
     QString m_editingMessageId;
     QStringList m_pendingFiles;
+    QHash<QString, int> m_uploadsInFlight;   // path -> percent, while going to GoFile
+    int m_selfPremiumType = 0;               // 0 none, 1 Classic, 2 Nitro, 3 Basic
     QLabel *m_channelTitle = nullptr;
     QLabel *m_channelTopic = nullptr;
     QLabel *m_typingLabel = nullptr;

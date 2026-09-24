@@ -8,6 +8,8 @@
 #include <QVariant>
 #include <QWidget>
 
+#include <functional>
+
 class RestClient;
 class GatewayClient;
 class PluginHost;
@@ -97,6 +99,17 @@ public:
     //     wraps around, which sounds like tearing rather than loudness.
     virtual void onMicrophoneFrame(qint16 *samples, int frames, int channels, int sampleRate) {
         Q_UNUSED(samples) Q_UNUSED(frames) Q_UNUSED(channels) Q_UNUSED(sampleRate)
+    }
+
+    // A file too big for Discord to take. A plugin that can carry it some other
+    // way returns true, then calls `done` exactly once: with a link to the file,
+    // or with an empty link and a reason. `progress` may be called on the way.
+    // Return false to leave the file alone. The first plugin that says yes wins.
+    using UploadProgress = std::function<void(qint64 sent, qint64 total)>;
+    using UploadDone = std::function<void(const QString &link, const QString &error)>;
+    virtual bool onOversizedFile(const QString &path, UploadProgress progress, UploadDone done) {
+        Q_UNUSED(path) Q_UNUSED(progress) Q_UNUSED(done)
+        return false;
     }
 
     // Called before the typing indicator is sent. Return false to stay silent.

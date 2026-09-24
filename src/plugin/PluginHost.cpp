@@ -3,6 +3,7 @@
 #include "core/AppConfig.h"
 #include "plugin/builtin/MessageLoggerPlugin.h"
 #include "plugin/builtin/AnonymousPlugin.h"
+#include "plugin/builtin/BigFilesPlugin.h"
 #include "plugin/builtin/MicShaperPlugin.h"
 #include "plugin/builtin/NitroWatchPlugin.h"
 #include "plugin/builtin/PresenceHintsPlugin.h"
@@ -70,6 +71,7 @@ void PluginHost::registerBuiltins()
     add(std::make_unique<NitroWatchPlugin>());
     add(std::make_unique<MicShaperPlugin>());
     add(std::make_unique<RelationshipNotifierPlugin>());
+    add(std::make_unique<BigFilesPlugin>());
 }
 
 void PluginHost::add(std::unique_ptr<Plugin> plugin)
@@ -153,6 +155,16 @@ bool PluginHost::runOutgoingMessage(QString &content, const QString &channelId)
             return false;
     }
     return true;
+}
+
+bool PluginHost::runOversizedFile(const QString &path, Plugin::UploadProgress progress,
+                                  Plugin::UploadDone done)
+{
+    for (Entry *entry : m_entries) {
+        if (entry->enabled && entry->plugin->onOversizedFile(path, progress, done))
+            return true;
+    }
+    return false;
 }
 
 bool PluginHost::runBeforeTyping(const QString &channelId)
