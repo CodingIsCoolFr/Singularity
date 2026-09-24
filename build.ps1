@@ -62,14 +62,15 @@ if errorlevel 1 exit /b 1
 
 cmake --build "$buildDir"
 if errorlevel 1 (
-  rem LNK1201: the linker could not write the debug database. The project is
-  rem built with /Z7 so nothing should be holding it, but a stray mspdbsrv from
-  rem an older build, or a debugger, still can. Stopping that and deleting the
-  rem file recovers it. This costs nothing when the real failure was a compile
+  rem LNK1201: the linker could not write the debug database. The cause was a
+  rem running Singularity built before /PDBALTPATH (see CMakeLists.txt) holding
+  rem it open. A held file cannot be deleted but can be renamed, so it is moved
+  rem aside under a random name and the link runs again. Old leftovers are
+  rem cleared when nothing holds them any more. This costs nothing on a compile
   rem error, because the second pass then stops in the same place.
-  echo Build failed. Clearing the debug database and trying once more.
-  taskkill /f /im mspdbsrv.exe >nul 2>nul
-  del /q "$buildDir\$config\Singularity.pdb" >nul 2>nul
+  echo Build failed. Moving the debug database aside and trying once more.
+  del /q "$buildDir\*.pdb.old" >nul 2>nul
+  move /y "$buildDir\Singularity.pdb" "$buildDir\Singularity.%RANDOM%.pdb.old" >nul 2>nul
   cmake --build "$buildDir"
   if errorlevel 1 exit /b 1
 )

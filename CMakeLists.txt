@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(Singularity VERSION 0.6.84 LANGUAGES CXX)
+project(Singularity VERSION 0.6.85 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -151,19 +151,24 @@ set_target_properties(Singularity PROPERTIES
 # so those offsets can be turned back into function names later. /OPT:REF,ICF
 # put back the size optimisations that /DEBUG would otherwise switch off.
 #
-# /Z7 rather than /Zi, and the difference is not cosmetic. /Zi has every
-# compiler process write its debug information through one shared helper,
-# mspdbsrv.exe, which outlives the build and keeps the file open. When a build
-# then fails on a half-written database the linker says LNK1201 and the file
-# cannot be deleted either, because mspdbsrv still holds it - which is exactly
-# what happened here, three times. /Z7 puts the debug information in the object
-# files instead and the linker writes the database once, at the end, with no
-# helper involved and nothing left holding it afterwards. Object files are
-# larger; the produced code and the final PDB are the same.
+# /PDBALTPATH:%_PDB% makes the exe record only "Singularity.pdb", not the full
+# path it was built at. Two things went wrong without it. Every shipped copy
+# carried C:\Users\<name>\Desktop\Singularity\build\Release\Singularity.pdb,
+# which is the developer's Windows user name, handed to every user. And the
+# freeze reporter's DbgHelp follows that path: on the build machine a running
+# Singularity found the build's own PDB, opened it, and held it open for as
+# long as it ran, so every build made meanwhile failed with LNK1201. Found with
+# the Restart Manager, which named Singularity.exe as the holder; an earlier
+# guess blamed mspdbsrv and was wrong. The archived PDB in symbols\v<version>
+# still matches by its GUID, so reading a freeze report is unchanged.
+#
+# /Z7 keeps the debug information in the object files. It stays because it is
+# harmless, not because it fixed anything.
 if(MSVC)
     target_compile_options(Singularity PRIVATE $<$<CONFIG:Release>:/Z7>)
     target_link_options(Singularity PRIVATE
-        $<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF /PDB:${CMAKE_BINARY_DIR}/Singularity.pdb>)
+        $<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF /PDB:${CMAKE_BINARY_DIR}/Singularity.pdb
+                            /PDBALTPATH:%_PDB%>)
 endif()
 
 qt_add_resources(Singularity brand

@@ -12,6 +12,8 @@
 #include <QRandomGenerator>
 #include <QUrl>
 
+#include <iterator>
+
 namespace {
 
 // Gateway opcodes we care about.
@@ -110,6 +112,21 @@ GatewayClient::GatewayClient(QObject *parent)
     connect(&m_reconnectTimer, &QTimer::timeout, this, &GatewayClient::openSocket);
 
     m_clientActivityStart = QDateTime::currentMSecsSinceEpoch();
+
+    // Every three minutes, about as often as a Spotify card changes song, so
+    // it is an ordinary rate for a presence to move and nowhere near the
+    // gateway's limit. Idle is skipped, because an update there restamps the
+    // idle time; invisible and a hidden card are skipped because nothing is
+    // shown to change.
+    m_taglineTimer.setInterval(3 * 60 * 1000);
+    connect(&m_taglineTimer, &QTimer::timeout, this, [this]() {
+        if (!m_activityShared || (m_presenceStatus != QLatin1String("online")
+                                  && m_presenceStatus != QLatin1String("dnd")))
+            return;
+        ++m_tagline;
+        publishPresence();
+    });
+    m_taglineTimer.start();
 
     m_firstHeartbeatTimer.setSingleShot(true);
     connect(&m_firstHeartbeatTimer, &QTimer::timeout, this, [this]() {
@@ -625,7 +642,18 @@ QJsonArray GatewayClient::clientActivities() const
     // server, no call - because this card is shown to everyone who can see
     // your profile, and a presence that narrates your evening is a leak
     // rather than a feature.
-    activity.insert(QStringLiteral("details"), QStringLiteral("Among the stars"));
+    static const char *const kTaglines[] = {
+        "Among the stars",
+        "Not just another client",
+        "Better than Discord",
+        "Past the event horizon",
+        "Native C++, no Electron",
+        "Pulling everything in",
+        "Written from scratch",
+    };
+    constexpr int taglineCount = int(std::size(kTaglines));
+    activity.insert(QStringLiteral("details"),
+                    QString::fromUtf8(kTaglines[m_tagline % taglineCount]));
     activity.insert(QStringLiteral("state"),
                     QStringLiteral("Version %1").arg(QCoreApplication::applicationVersion()));
     if (!m_activityApplicationId.isEmpty())

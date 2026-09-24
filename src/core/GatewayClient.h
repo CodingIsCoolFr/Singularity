@@ -201,6 +201,11 @@ private:
     // When this process opened. The activity clock counts from here, so a
     // status change does not reset "how long you have had the client open".
     qint64 m_clientActivityStart = 0;
+
+    // The line under "Singularity" on the Playing card, swapped every few
+    // minutes. Only the words change; the clock keeps running.
+    QTimer m_taglineTimer;
+    int m_tagline = 0;
     QString m_activityApplicationId;
     QString m_activityImageKey;
     bool m_activityShared = true;

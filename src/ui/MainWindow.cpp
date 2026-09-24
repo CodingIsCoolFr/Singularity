@@ -5551,6 +5551,18 @@ void MainWindow::watchStream(const QString &userId)
 
     stopWatchingStream();
 
+    // Our own share is shown from our own capture, never watched through
+    // Discord. Watching it sent our video out and straight back to us, and
+    // leaving it afterwards sent STREAM_DELETE for our own key - which Discord
+    // reads as "stop broadcasting". A share ended the moment someone clicked
+    // another person's tile (19:35:09 in the 0.6.84 log: watch AZARYA, and 80
+    // ms later "Discord ended our stream").
+    if (userId == m_selfUserId) {
+        if (m_callView)
+            m_callView->setFocusedUser(userId, CallView::Surface::Share);
+        return;
+    }
+
     m_watchingUserId = userId;
     if (m_callView)
         m_callView->setFocusedUser(userId, CallView::Surface::Share);
@@ -5573,7 +5585,9 @@ void MainWindow::stopWatchingStream()
     if (m_streamKey.isEmpty())
         return;
 
-    m_gateway->stopWatchingStream(m_streamKey);
+    // STREAM_DELETE on our own key ends our broadcast, not our viewing.
+    if (m_streamKey != m_myStreamKey)
+        m_gateway->stopWatchingStream(m_streamKey);
 
     if (m_streamVoice)
         m_streamVoice->disconnectFromVoice();
