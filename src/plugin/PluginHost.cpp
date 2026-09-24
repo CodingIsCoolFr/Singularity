@@ -7,6 +7,7 @@
 #include "plugin/builtin/NitroWatchPlugin.h"
 #include "plugin/builtin/PresenceHintsPlugin.h"
 #include "plugin/builtin/QuickTextPlugin.h"
+#include "plugin/builtin/RelationshipNotifierPlugin.h"
 #include "plugin/builtin/SilentTypingPlugin.h"
 #include "plugin/builtin/TimestampsPlugin.h"
 
@@ -28,6 +29,12 @@ void PluginContext::log(const QString &line) const
 {
     if (m_host)
         emit m_host->pluginLogged(m_pluginId, line);
+}
+
+void PluginContext::notify(const QString &title, const QString &text) const
+{
+    if (m_host)
+        emit m_host->notificationRequested(m_pluginId, title, text);
 }
 
 // ---------------------------------------------------------------------------
@@ -62,6 +69,7 @@ void PluginHost::registerBuiltins()
     add(std::make_unique<AnonymousPlugin>());
     add(std::make_unique<NitroWatchPlugin>());
     add(std::make_unique<MicShaperPlugin>());
+    add(std::make_unique<RelationshipNotifierPlugin>());
 }
 
 void PluginHost::add(std::unique_ptr<Plugin> plugin)

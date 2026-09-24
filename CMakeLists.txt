@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(Singularity VERSION 0.6.88 LANGUAGES CXX)
+project(Singularity VERSION 0.6.89 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -73,6 +73,8 @@ qt_add_executable(Singularity WIN32
     src/plugin/builtin/NitroWatchPlugin.cpp
     src/plugin/builtin/MicShaperPlugin.h
     src/plugin/builtin/MicShaperPlugin.cpp
+    src/plugin/builtin/RelationshipNotifierPlugin.h
+    src/plugin/builtin/RelationshipNotifierPlugin.cpp
 
     src/ui/Theme.h
     src/ui/Theme.cpp

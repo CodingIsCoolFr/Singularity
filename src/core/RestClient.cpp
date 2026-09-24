@@ -275,8 +275,20 @@ void RestClient::addFriend(const QString &userId, ObjectHandler onOk, ErrorHandl
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+void RestClient::noteOwnRemoval(const QString &id)
+{
+    m_ownRemovals.insert(id, QDateTime::currentMSecsSinceEpoch());
+}
+
+bool RestClient::removedByUs(const QString &id, qint64 withinMs) const
+{
+    const auto it = m_ownRemovals.constFind(id);
+    return it != m_ownRemovals.constEnd() && QDateTime::currentMSecsSinceEpoch() - it.value() <= withinMs;
+}
+
 void RestClient::removeRelationship(const QString &userId, ObjectHandler onOk, ErrorHandler onError)
 {
+    noteOwnRemoval(userId);
     const QString path = QStringLiteral("/users/@me/relationships/%1").arg(userId);
     QNetworkReply *reply = m_network.deleteResource(buildRequest(path));
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
@@ -284,6 +296,7 @@ void RestClient::removeRelationship(const QString &userId, ObjectHandler onOk, E
 
 void RestClient::closeDirectChannel(const QString &channelId, ObjectHandler onOk, ErrorHandler onError)
 {
+    noteOwnRemoval(channelId);
     const QString path = QStringLiteral("/channels/%1").arg(channelId);
     QNetworkReply *reply = m_network.deleteResource(buildRequest(path));
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
@@ -291,6 +304,7 @@ void RestClient::closeDirectChannel(const QString &channelId, ObjectHandler onOk
 
 void RestClient::blockUser(const QString &userId, ObjectHandler onOk, ErrorHandler onError)
 {
+    noteOwnRemoval(userId);
     const QJsonObject body{{QStringLiteral("type"), 2}};
     const QString path = QStringLiteral("/users/@me/relationships/%1").arg(userId);
     QNetworkReply *reply = m_network.put(buildRequest(path), QJsonDocument(body).toJson(QJsonDocument::Compact));

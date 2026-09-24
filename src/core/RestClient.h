@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
@@ -175,6 +176,12 @@ public:
     // fetched straight from the CDN instead.
     static QString avatarUrl(const QString &userId, const QString &avatarHash, int size = 64);
 
+    // True if this program itself removed that friend, request or block, or
+    // closed that chat, in the last `withinMs`. The echo Discord sends back
+    // for our own action looks exactly like somebody else's, and a notifier
+    // must not tell you about something you just did.
+    bool removedByUs(const QString &id, qint64 withinMs = 60000) const;
+
 signals:
     void unauthorized();
 
@@ -184,4 +191,7 @@ private:
 
     QNetworkAccessManager m_network;
     QString m_token;
+
+    void noteOwnRemoval(const QString &id);
+    QHash<QString, qint64> m_ownRemovals;   // id -> when, ms since epoch
 };

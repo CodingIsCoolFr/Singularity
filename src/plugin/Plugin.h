@@ -37,6 +37,10 @@ public:
 
     void log(const QString &line) const;
 
+    // A Windows notification, like the ones Discord shows. Clicking it brings
+    // Singularity forward.
+    void notify(const QString &title, const QString &text) const;
+
 private:
     QString m_pluginId;
     RestClient *m_rest = nullptr;

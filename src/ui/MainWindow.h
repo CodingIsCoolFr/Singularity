@@ -217,6 +217,7 @@ private:
     QListWidget *m_guildRail = nullptr;
     QListWidget *m_channelList = nullptr;
     class GuildHeader *m_sidebarHeader = nullptr;   // name, banner, boost goal
+    class QSystemTrayIcon *m_tray = nullptr;        // made on the first notification
     ChatView *m_messageView = nullptr;
     QTextEdit *m_composer = nullptr;
     QWidget *m_composerContext = nullptr;

@@ -14,6 +14,8 @@
 #include "core/ScreenShare.h"
 #include "core/ShareAudio.h"
 #include "ui/GuildHeader.h"
+
+#include <QSystemTrayIcon>
 #include "ui/LoadingOverlay.h"
 #include "ui/MemberListPanel.h"
 #include "ui/ShareDialog.h"
@@ -354,6 +356,32 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     connect(m_plugins, &PluginHost::pluginLogged, this, [this](const QString &id, const QString &line) {
         flashStatus(QStringLiteral("[%1] %2").arg(id, line), 5000);
     });
+
+    // Windows notifications for plugins. A desktop program raises one through
+    // a tray icon, so the icon is made the first time one is needed and then
+    // stays, like Discord's; clicking either brings the window forward.
+    connect(m_plugins, &PluginHost::notificationRequested, this,
+            [this](const QString &id, const QString &title, const QString &text) {
+                wlog(QStringLiteral("notify"), QStringLiteral("[%1] %2: %3").arg(id, title, text));
+                if (!QSystemTrayIcon::isSystemTrayAvailable())
+                    return;
+                if (!m_tray) {
+                    m_tray = new QSystemTrayIcon(windowIcon(), this);
+                    m_tray->setToolTip(QStringLiteral("Singularity"));
+                    const auto bringForward = [this]() {
+                        if (isMinimized())
+                            showNormal();
+                        show();
+                        raise();
+                        activateWindow();
+                    };
+                    connect(m_tray, &QSystemTrayIcon::messageClicked, this, bringForward);
+                    connect(m_tray, &QSystemTrayIcon::activated, this,
+                            [bringForward](QSystemTrayIcon::ActivationReason) { bringForward(); });
+                    m_tray->show();
+                }
+                m_tray->showMessage(title, text, windowIcon(), 8000);
+            });
 
     connect(m_store, &MessageStore::readStateChanged, this, &MainWindow::refreshUnreadMarks);
     connect(m_store, &MessageStore::directOrderChanged, this, [this]() {
