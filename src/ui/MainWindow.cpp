@@ -13,6 +13,7 @@
 #include "core/CameraShare.h"
 #include "core/ScreenShare.h"
 #include "core/ShareAudio.h"
+#include "ui/GuildHeader.h"
 #include "ui/LoadingOverlay.h"
 #include "ui/MemberListPanel.h"
 #include "ui/ShareDialog.h"
@@ -334,6 +335,12 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     m_renderTimer.setSingleShot(true);
     m_renderTimer.setInterval(120);
     connect(&m_renderTimer, &QTimer::timeout, this, &MainWindow::renderChannel);
+
+    // Unknown people found while drawing are gathered for a quarter second,
+    // then asked about in one gateway message per 100.
+    m_memberLookupTimer.setSingleShot(true);
+    m_memberLookupTimer.setInterval(250);
+    connect(&m_memberLookupTimer, &QTimer::timeout, this, &MainWindow::flushMemberLookups);
 
     m_mentionRefresh.setSingleShot(true);
     m_mentionRefresh.setInterval(400);
@@ -1140,9 +1147,8 @@ QWidget *MainWindow::buildSidebar(QWidget *parent)
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
 
-    m_sidebarHeader = new QLabel(QStringLiteral("Direct messages"), sidebar);
-    m_sidebarHeader->setObjectName(QStringLiteral("SidebarHeader"));
-    m_sidebarHeader->setWordWrap(false);
+    m_sidebarHeader = new GuildHeader(sidebar);
+    m_sidebarHeader->setDirectMessages();
     layout->addWidget(m_sidebarHeader);
 
     m_channelList = new QListWidget(sidebar);
@@ -2219,6 +2225,24 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
         return;
     }
 
+    // The answer to requestGuildMembers: a member object per person asked
+    // about. Their user part is all the sidebar needs - name and picture.
+    if (eventType == QLatin1String("GUILD_MEMBERS_CHUNK")) {
+        const QJsonArray members = data.value(QStringLiteral("members")).toArray();
+        for (const QJsonValue &value : members)
+            m_store->rememberUser(value.toObject().value(QStringLiteral("user")).toObject());
+        const int missing = data.value(QStringLiteral("not_found")).toArray().size();
+        wlog(QStringLiteral("gateway"), QStringLiteral("learned %1 people in guild %2%3")
+                                            .arg(members.size())
+                                            .arg(data.value(QStringLiteral("guild_id")).toString())
+                                            .arg(missing ? QStringLiteral(", %1 not found").arg(missing)
+                                                         : QString()));
+        if (!m_voiceRefreshTimer.isActive())
+            m_voiceRefreshTimer.start(400);
+        m_mentionRefresh.start();
+        return;
+    }
+
     if (eventType == QLatin1String("RELATIONSHIP_REMOVE")) {
         m_store->setRelationship(data.value(QStringLiteral("id")).toString(), 0);
         return;
@@ -2783,8 +2807,10 @@ void MainWindow::refreshDirectRows()
 
 void MainWindow::populateChannelList(bool autoSelectFirst)
 {
-    m_sidebarHeader->setText(m_currentGuildId.isEmpty() ? QStringLiteral("Direct messages")
-                                                        : m_store->guild(m_currentGuildId).name);
+    if (m_currentGuildId.isEmpty())
+        m_sidebarHeader->setDirectMessages();
+    else
+        m_sidebarHeader->setGuild(m_store->guild(m_currentGuildId));
 
     m_channelList->blockSignals(true);
     m_channelList->clear();
@@ -2861,7 +2887,7 @@ void MainWindow::populateChannelList(bool autoSelectFirst)
             // number is no use to anyone, so ask Discord who they are. Once
             // each: the answer lands in the store and the list redraws itself.
             if (info.displayName().isEmpty())
-                requestUnknownName(memberId);
+                requestUnknownName(memberId, m_currentGuildId);
 
             const QString name = info.displayName().isEmpty() ? memberId : info.displayName();
 
@@ -6089,11 +6115,20 @@ void MainWindow::loadOlderMessages()
         oldest);
 }
 
-void MainWindow::requestUnknownName(const QString &userId)
+void MainWindow::requestUnknownName(const QString &userId, const QString &guildId)
 {
     if (userId.isEmpty() || m_namesRequested.contains(userId) || !m_rest)
         return;
     m_namesRequested.insert(userId);
+
+    // Inside a server: gather everyone unknown for a moment, then ask the
+    // gateway about all of them at once, the way Discord's client does.
+    if (!guildId.isEmpty()) {
+        m_pendingMemberLookups[guildId].insert(userId);
+        if (!m_memberLookupTimer.isActive())
+            m_memberLookupTimer.start();
+        return;
+    }
 
     m_rest->fetchUser(
         userId,
@@ -6105,12 +6140,28 @@ void MainWindow::requestUnknownName(const QString &userId)
             // the last one arrives instead of once per person.
             m_mentionRefresh.start();
         },
-        [userId](const RestClient::Error &error) {
-            // Deleted accounts and the like. The number stays, which is honest.
+        [this, userId](const RestClient::Error &error) {
             wlog(QStringLiteral("ui"), QStringLiteral("could not look up user %1: HTTP %2")
                                            .arg(userId)
                                            .arg(error.httpStatus));
+            // 429 means "not now", not "no such person". Being marked as
+            // already asked kept a rate-limited person a number for good, so
+            // they become askable again once Discord's wait is over.
+            if (error.httpStatus == 429) {
+                const double wait = error.body.value(QStringLiteral("retry_after")).toDouble();
+                const int ms = qBound(5000, int(wait * 1000) + 500, 120000);
+                QTimer::singleShot(ms, this, [this, userId]() { m_namesRequested.remove(userId); });
+            }
+            // Anything else - a deleted account and the like - keeps the
+            // number, which is honest.
         });
+}
+
+void MainWindow::flushMemberLookups()
+{
+    for (auto it = m_pendingMemberLookups.cbegin(); it != m_pendingMemberLookups.cend(); ++it)
+        m_gateway->requestGuildMembers(it.key(), it.value().values());
+    m_pendingMemberLookups.clear();
 }
 
 bool MainWindow::voiceChannelFull(const QString &channelId) const

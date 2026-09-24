@@ -28,6 +28,7 @@ constexpr int OpHello = 10;
 constexpr int OpHeartbeatAck = 11;
 constexpr int OpPresenceUpdate = 3;
 constexpr int OpVoiceStateUpdate = 4;
+constexpr int OpRequestGuildMembers = 8;
 constexpr int OpGuildSubscribe = 14;
 // The subscription the current desktop client actually sends. Some servers
 // answer this and ignore the older one, which is an empty member list.
@@ -795,6 +796,37 @@ void GatewayClient::joinVoice(const QString &guildId, const QString &channelId, 
                   QString::fromUtf8(QJsonDocument(request).toJson(QJsonDocument::Compact))));
 
     sendJson(request);
+}
+
+// Opcode 8 with user_ids: who these people are in this server, answered as
+// GUILD_MEMBERS_CHUNK with a member object (user, nick, avatar) for each.
+// This is how Discord's own client names the people in a voice channel. One
+// message covers up to 100 people (docs.discord.food, Request Guild Members);
+// asking for them one REST call at a time instead got 360 of 360 refused with
+// 429 in a busy server, and those people stayed numbers for good.
+void GatewayClient::requestGuildMembers(const QString &guildId, const QStringList &userIds)
+{
+    if (guildId.isEmpty() || userIds.isEmpty())
+        return;
+
+    for (int from = 0; from < userIds.size(); from += 100) {
+        QJsonArray ids;
+        for (const QString &id : userIds.mid(from, 100))
+            ids.append(id);
+
+        wlog(QStringLiteral("gateway"), QStringLiteral("asking guild %1 who %2 people are")
+                                            .arg(guildId)
+                                            .arg(ids.size()));
+        sendJson(QJsonObject{
+            {QStringLiteral("op"), OpRequestGuildMembers},
+            {QStringLiteral("d"),
+             QJsonObject{
+                 {QStringLiteral("guild_id"), guildId},
+                 {QStringLiteral("user_ids"), ids},
+                 {QStringLiteral("presences"), false},
+             }},
+        });
+    }
 }
 
 QString GatewayClient::streamKeyFor(const QString &guildId, const QString &channelId,

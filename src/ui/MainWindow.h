@@ -216,7 +216,7 @@ private:
 
     QListWidget *m_guildRail = nullptr;
     QListWidget *m_channelList = nullptr;
-    QLabel *m_sidebarHeader = nullptr;
+    class GuildHeader *m_sidebarHeader = nullptr;   // name, banner, boost goal
     ChatView *m_messageView = nullptr;
     QTextEdit *m_composer = nullptr;
     QWidget *m_composerContext = nullptr;
@@ -283,8 +283,13 @@ private:
 
     // People we have already asked Discord to name, so a sidebar rebuild does
     // not fire the same lookup again every few seconds.
-    void requestUnknownName(const QString &userId);
+    // With a guild id the person is asked about through the gateway, batched
+    // (see flushMemberLookups); without one, through a single REST call.
+    void requestUnknownName(const QString &userId, const QString &guildId = QString());
+    void flushMemberLookups();
     QSet<QString> m_namesRequested;
+    QHash<QString, QSet<QString>> m_pendingMemberLookups;   // guild -> users
+    QTimer m_memberLookupTimer;
 
     // Scrolling back through a channel.
     //

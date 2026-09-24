@@ -706,6 +706,17 @@ void MessageStore::ingestGuild(const QJsonObject &rawGuild)
 
     guild.name = properties.value(QStringLiteral("name")).toString();
     guild.iconHash = properties.value(QStringLiteral("icon")).toString();
+    guild.bannerHash = properties.value(QStringLiteral("banner")).toString();
+    guild.premiumTier = properties.value(QStringLiteral("premium_tier")).toInt();
+    guild.boostBarEnabled = properties.value(QStringLiteral("premium_progress_bar_enabled")).toBool();
+    for (const QJsonValue &feature : properties.value(QStringLiteral("features")).toArray())
+        guild.features.append(feature.toString());
+
+    // The boost count sits beside "properties" in READY, not inside it, and
+    // inside the object itself in GUILD_CREATE / GUILD_UPDATE.
+    guild.boostCount = rawGuild.contains(QStringLiteral("premium_subscription_count"))
+        ? rawGuild.value(QStringLiteral("premium_subscription_count")).toInt()
+        : properties.value(QStringLiteral("premium_subscription_count")).toInt();
 
     // Roles are needed to colour the pills on a profile card.
     const QJsonArray roles = rawGuild.value(QStringLiteral("roles")).toArray();

@@ -173,6 +173,14 @@ struct GuildInfo
     QString id;
     QString name;
     QString iconHash;
+
+    // The picture over the channel list, and the boost bar under it.
+    QString bannerHash;              // "a_" prefix = animated
+    int premiumTier = 0;             // boost level, 0 to 3
+    int boostCount = 0;              // premium_subscription_count
+    bool boostBarEnabled = false;    // premium_progress_bar_enabled
+    QStringList features;            // "BANNER", "GUILD_TAGS", ...
+
     QList<QString> channelIds;
     QHash<QString, RoleInfo> roles;
     QList<EmojiInfo> emojis;

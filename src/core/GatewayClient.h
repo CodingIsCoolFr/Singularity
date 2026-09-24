@@ -34,6 +34,10 @@ public:
     void start(const QString &token);
     void stop();
 
+    // Asks who these people are in one server; the answer arrives as
+    // GUILD_MEMBERS_CHUNK. Sent in batches of 100, Discord's limit.
+    void requestGuildMembers(const QString &guildId, const QStringList &userIds);
+
     // For quitting: stop(), then wait (at most 1.5 s) until the close frame
     // has actually left. See the .cpp for why the waiting is the point.
     void shutdown();
