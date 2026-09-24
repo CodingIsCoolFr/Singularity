@@ -4059,7 +4059,19 @@ QString MainWindow::embedsHtml(const MessageInfo &message)
 {
     QString html;
 
+    // Discord turns a fake-Nitro emoji link into a big picture under the
+    // message. The text already shows it as an emoji, so the big copy goes.
+    const auto isEmojiPicture = [](const QString &address) {
+        const QUrl url(address);
+        const QString host = url.host();
+        return (host == QLatin1String("cdn.discordapp.com") || host == QLatin1String("media.discordapp.net"))
+               && url.path().startsWith(QLatin1String("/emojis/"));
+    };
+
     for (const EmbedInfo &embed : message.embeds) {
+        if (isEmojiPicture(embed.url) || (embed.url.isEmpty() && isEmojiPicture(embed.imageUrl)))
+            continue;
+
         // gifv's image is a poster. The mp4 next to it is what actually plays.
         QString shown = embed.imageUrl;
         if ((embed.type == QLatin1String("gifv") || embed.type == QLatin1String("video"))
@@ -4134,6 +4146,37 @@ QString MainWindow::renderContent(const QString &raw)
         return {};
 
     QString text = raw.toHtmlEscaped();
+
+    // A fake-Nitro emoji: a link to an emoji's picture, sent by our own Fake
+    // Nitro plugin or by Vencord's. Shown as the emoji it stands for, whether it
+    // came as [name](address) or as the bare address. Done before real emoji,
+    // whose pictures carry the same kind of address and would match here.
+    static const QRegularExpression fakeEmojiRe(QStringLiteral(
+        "(\\[[^\\]\\n]*\\]\\()?https://(?:cdn|media)\\.discordapp\\.(?:com|net)/emojis/(\\d+)\\."
+        "(png|gif|webp)([^)\\s]*)"));
+    {
+        QString rebuilt;
+        int last = 0;
+        auto it = fakeEmojiRe.globalMatch(text);
+        while (it.hasNext()) {
+            const QRegularExpressionMatch match = it.next();
+            const QString id = match.captured(2);
+            const bool animated = match.captured(3) == QLatin1String("gif")
+                                  || match.captured(4).contains(QLatin1String("animated=true"));
+            int end = int(match.capturedEnd());
+            // [name](address) closes with a bracket that belongs to it.
+            if (!match.captured(1).isEmpty() && end < text.size() && text.at(end) == QLatin1Char(')'))
+                ++end;
+
+            rebuilt += text.mid(last, match.capturedStart() - last);
+            rebuilt += QStringLiteral("<img src=\"https://cdn.discordapp.com/emojis/%1.%2?size=48\" "
+                                      "width=\"22\" height=\"22\">")
+                           .arg(id, animated ? QStringLiteral("gif") : QStringLiteral("png"));
+            last = end;
+        }
+        rebuilt += text.mid(last);
+        text = rebuilt;
+    }
 
     // Custom emoji: <:name:id> and <a:name:id> become real little pictures.
     // Animated ones are asked for as .gif so they keep moving.

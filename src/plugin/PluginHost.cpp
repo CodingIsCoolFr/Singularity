@@ -4,6 +4,7 @@
 #include "plugin/builtin/MessageLoggerPlugin.h"
 #include "plugin/builtin/AnonymousPlugin.h"
 #include "plugin/builtin/BigFilesPlugin.h"
+#include "plugin/builtin/FakeNitroPlugin.h"
 #include "plugin/builtin/MicShaperPlugin.h"
 #include "plugin/builtin/NitroWatchPlugin.h"
 #include "plugin/builtin/PresenceHintsPlugin.h"
@@ -72,6 +73,7 @@ void PluginHost::registerBuiltins()
     add(std::make_unique<MicShaperPlugin>());
     add(std::make_unique<RelationshipNotifierPlugin>());
     add(std::make_unique<BigFilesPlugin>());
+    add(std::make_unique<FakeNitroPlugin>());
 }
 
 void PluginHost::add(std::unique_ptr<Plugin> plugin)
