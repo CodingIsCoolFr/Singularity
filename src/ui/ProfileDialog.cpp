@@ -284,7 +284,12 @@ ProfileDialog::ProfileDialog(MessageStore *store, RestClient *rest, QWidget *par
     , m_rest(rest)
 {
     setAttribute(Qt::WA_TranslucentBackground);
-    setModal(true);
+
+    // Not modal. A modal window makes Qt throw away every click on the rest of
+    // the program before anyone can see it, so "click outside to close" could
+    // never work. The event filter below closes it instead, which blocks the
+    // window behind just as well: the click that lands there is eaten.
+    setModal(false);
     setFixedSize(DialogWidth, DialogHeight);
 
     // Everything lives inside one opaque rounded frame. A plain QWidget does
@@ -633,6 +638,65 @@ void ProfileDialog::keyPressEvent(QKeyEvent *event)
         return;
     }
     QDialog::keyPressEvent(event);
+}
+
+// Click anywhere outside the card and it closes, the way Discord's does.
+// The filter only exists while the window is up.
+void ProfileDialog::showEvent(QShowEvent *event)
+{
+    QDialog::showEvent(event);
+    m_swallowRelease = false;
+    qApp->installEventFilter(this);
+}
+
+void ProfileDialog::hideEvent(QHideEvent *event)
+{
+    // Closed by an outside click: stay listening until that click's release
+    // has been eaten, then let go.
+    if (!m_swallowRelease)
+        qApp->removeEventFilter(this);
+    QDialog::hideEvent(event);
+}
+
+bool ProfileDialog::eventFilter(QObject *watched, QEvent *event)
+{
+    const QEvent::Type type = event->type();
+
+    // The release reaches the window object first. Eating it there means it
+    // never goes further, so this is the only sighting: reset on it.
+    if (type == QEvent::MouseButtonRelease && m_swallowRelease) {
+        Q_UNUSED(watched)
+        m_swallowRelease = false;
+        if (!isVisible())
+            qApp->removeEventFilter(this);
+        return true;
+    }
+
+    if (type != QEvent::MouseButtonPress && type != QEvent::MouseButtonDblClick)
+        return false;
+
+    // Each press passes through here twice: once for the window, once for the
+    // widget. Only the widget says where it landed.
+    auto *widget = qobject_cast<QWidget *>(watched);
+    if (!widget || !isVisible())
+        return false;
+
+    // Inside this window: the card itself, or its own buttons.
+    if (widget->window() == this)
+        return false;
+
+    // A menu or small box this window opened (the "..." menu, a confirm box)
+    // handles its own clicks. Closing under it would pull the rug out.
+    if (QApplication::activePopupWidget())
+        return false;
+    if (QWidget *modal = QApplication::activeModalWidget(); modal && modal != this)
+        return false;
+
+    // Outside. Close, and keep the click from also pressing whatever was
+    // under it.
+    m_swallowRelease = true;
+    accept();
+    return true;
 }
 
 // ---------------------------------------------------------------------------

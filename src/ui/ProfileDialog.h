@@ -39,6 +39,9 @@ signals:
 protected:
     void paintEvent(QPaintEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
+    void showEvent(QShowEvent *event) override;
+    void hideEvent(QHideEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     // Building blocks, each returns the widget it made.
@@ -111,6 +114,9 @@ private:
     QString m_userId;
     QString m_guildId;
     bool m_isSelf = false;
+
+    // The press that closed the window was eaten, so its release is too.
+    bool m_swallowRelease = false;
 
     // Straight from the profile endpoint.
     QJsonObject m_profile;
