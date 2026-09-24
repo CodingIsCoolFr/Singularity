@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include <QNetworkAccessManager>
 #include <QObject>
 #include <QString>
@@ -39,6 +40,13 @@ public:
     QString latestVersion() const { return m_latestVersion; }
     bool busy() const { return m_reply != nullptr; }
 
+    // A check that has been waiting over half a minute. The next check()
+    // abandons it and starts again.
+    bool stuck() const
+    {
+        return m_reply && m_replyIsCheck && m_replyAge.isValid() && m_replyAge.elapsed() > 30000;
+    }
+
 signals:
     void updateAvailable(const QString &version, const QString &notes, qint64 bytes);
     void upToDate();
@@ -61,6 +69,13 @@ private:
 
     QNetworkAccessManager m_network;
     QNetworkReply *m_reply = nullptr;
+
+    // Whether the request in flight is a check (small, quick) or the
+    // installer download (large, slow), and how long it has been going. A
+    // check that has gone quiet for long is abandoned rather than waited on:
+    // one lost reply used to block every later check, including the menu's.
+    bool m_replyIsCheck = false;
+    QElapsedTimer m_replyAge;
 
     QString m_latestVersion;
     QString m_notes;

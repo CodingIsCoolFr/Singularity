@@ -657,8 +657,17 @@ void UpdateFlow::run(bool quiet, QWidget *parent)
 {
     Updater *u = updater();
 
+    if (!quiet) {
+        wlog(QStringLiteral("update"),
+             QStringLiteral("Check for updates pressed%1")
+                 .arg(u->stuck() ? QStringLiteral("; the last check is stuck and will be abandoned")
+                                 : u->busy() ? QStringLiteral("; a check is already on its way")
+                                             : QString()));
+    }
+
     // A second check while one is still running would talk over the first.
-    if (u->busy())
+    // A stuck one is the exception: check() abandons it and asks again.
+    if (u->busy() && !u->stuck())
         return;
 
     g_owner = parent;

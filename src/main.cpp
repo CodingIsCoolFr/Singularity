@@ -1,6 +1,7 @@
 #include "core/AppConfig.h"
 #include "core/GatewayClient.h"
 #include "core/HangWatch.h"
+#include "core/InstallTidy.h"
 #include "core/Logger.h"
 #include "core/MessageStore.h"
 #include "core/RestClient.h"
@@ -17,6 +18,7 @@
 #include <QFontDatabase>
 #include <QIcon>
 #include <QSurfaceFormat>
+#include <QTimer>
 
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
@@ -51,7 +53,7 @@ int main(int argc, char *argv[])
     holdRunningMutex();
     app.setApplicationName(QStringLiteral("Singularity"));
     app.setOrganizationName(QStringLiteral("Singularity"));
-    app.setApplicationVersion(QStringLiteral("0.6.95"));
+    app.setApplicationVersion(QStringLiteral("0.6.96"));
     app.setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
 
     Theme::applySeed(QColor(AppConfig::instance().value(QStringLiteral("appearance/themeSeed"),
@@ -185,6 +187,10 @@ int main(int argc, char *argv[])
     window.show();
     wlog(QStringLiteral("app"), QStringLiteral("main window show() returned"));
     window.startSession(token);
+
+    // Twenty seconds in, by when an update's old copy has closed: point every
+    // shortcut (the taskbar pin included) at this copy and clear out old ones.
+    QTimer::singleShot(20000, &app, []() { InstallTidy::run(); });
 
     const int result = app.exec();
 

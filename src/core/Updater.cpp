@@ -77,8 +77,21 @@ bool Updater::isNewer(const QString &candidate, const QString &current)
 
 void Updater::check(bool quiet)
 {
-    if (m_reply)
-        return;
+    if (m_reply) {
+        // A check that has been going for more than half a minute is not
+        // coming back. Before this, one lost reply at 13:43 left every check
+        // after it - the two-minute ones and the menu's - silently skipped
+        // for the rest of the session. Abandon it and ask again. Aborting
+        // runs its finished handler, which clears m_reply.
+        if (m_replyIsCheck && m_replyAge.isValid() && m_replyAge.elapsed() > 30000) {
+            wlog(QStringLiteral("update"),
+                 QStringLiteral("the last check never answered (%1 s); abandoning it")
+                     .arg(m_replyAge.elapsed() / 1000));
+            m_reply->abort();
+        }
+        if (m_reply)
+            return;
+    }
 
     const QUrl url(QStringLiteral("https://api.github.com/repos/%1/releases/latest").arg(channel()));
 
@@ -86,6 +99,12 @@ void Updater::check(bool quiet)
     request.setRawHeader("Accept", "application/vnd.github+json");
     request.setRawHeader("User-Agent", "Singularity");
 
+    // Twenty seconds with nothing arriving and Qt gives up on its own. The
+    // reply is a few kilobytes; a healthy one takes well under a second.
+    request.setTransferTimeout(20000);
+
+    m_replyIsCheck = true;
+    m_replyAge.start();
     m_reply = m_network.get(request);
     connect(m_reply, &QNetworkReply::finished, this, [this, quiet]() {
         QNetworkReply *reply = m_reply;
@@ -163,6 +182,13 @@ void Updater::download()
     QNetworkRequest request(m_assetUrl);
     request.setRawHeader("User-Agent", "Singularity");
 
+    // Gives up after a whole minute with nothing arriving, not after a minute
+    // in total: a 55 MB installer on a slow line is still healthy at minute
+    // three, but one that has stopped moving is never going to finish.
+    request.setTransferTimeout(60000);
+
+    m_replyIsCheck = false;
+    m_replyAge.start();
     m_reply = m_network.get(request);
     connect(m_reply, &QNetworkReply::downloadProgress, this, &Updater::progress);
     connect(m_reply, &QNetworkReply::finished, this, [this]() {
