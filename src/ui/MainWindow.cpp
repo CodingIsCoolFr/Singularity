@@ -747,18 +747,17 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         m_pendingVoiceToken.clear();
         m_pendingVoiceEndpoint.clear();
 
-        // First try: ask for the same channel again without leaving it.
-        // Discord answers with a fresh voice server, the same way it does when
-        // a bot moves you. Leaving first shows everyone "left", and in a "join
-        // to create" channel it empties the room, so the bot deletes it and
-        // there is nothing to come back to.
+        // The voice connection already tried to resume the call without
+        // leaving, and could not. What is left is to leave and join again,
+        // which makes Discord throw away the old voice session and hand out a
+        // fresh server and ticket.
         //
-        // Only a second failure leaves and rejoins, which makes Discord throw
-        // away the old voice session and clears the usual causes of a refusal.
-        if (m_voiceRetries >= 2) {
-            m_voiceSessionId.clear();
-            m_gateway->leaveVoice(m_voiceGuildId);
-        }
+        // Asking for the same channel without leaving was tried first in
+        // 0.6.94 and the log settled it: Discord confirms you are in the
+        // channel and sends no new voice server, so it only added ten seconds
+        // of silence before this.
+        m_voiceSessionId.clear();
+        m_gateway->leaveVoice(m_voiceGuildId);
         m_voiceRetryTimer.start(1200);
     });
 
@@ -873,12 +872,11 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         if (missing.isEmpty())
             return;
 
-        // The quiet first retry (asking for the same channel without leaving)
-        // got no answer. Fall back to the full leave-and-rejoin once.
+        // A rejoin that got no answer is given one more go.
         if (m_voiceRetries == 1) {
             ++m_voiceRetries;
             wlog(QStringLiteral("voice"),
-                 QStringLiteral("rejoin without leaving got no answer (missing %1); leaving and rejoining")
+                 QStringLiteral("rejoin got no answer (missing %1); leaving and rejoining once more")
                      .arg(missing.join(QStringLiteral(" and "))));
             if (m_voiceState)
                 m_voiceState->setText(QStringLiteral("Retrying (%1)...").arg(m_voiceRetries));

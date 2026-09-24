@@ -420,6 +420,11 @@ private:
     QStringList m_offeredModes;
     qint64 m_lastSequence = -1;
 
+    // Picking a dropped call back up without leaving it (voice opcode 7).
+    bool m_resuming = false;
+    int m_resumeAttempts = 0;
+    void sendResume();
+
     // Outgoing packet counters.
     quint16 m_rtpSequence = 0;
     quint32 m_rtpTimestamp = 0;

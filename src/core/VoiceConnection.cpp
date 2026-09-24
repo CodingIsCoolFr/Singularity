@@ -48,7 +48,9 @@ constexpr int OpHeartbeat = 3;
 constexpr int OpSessionDescription = 4;
 constexpr int OpSpeaking = 5;
 constexpr int OpHeartbeatAck = 6;
+constexpr int OpResume = 7;
 constexpr int OpHello = 8;
+constexpr int OpResumed = 9;
 constexpr int OpClientsConnect = 11;
 constexpr int OpVideo = 12;
 constexpr int OpClientDisconnect = 13;
@@ -529,6 +531,8 @@ void VoiceConnection::connectToVoice(const QString &guildId, const QString &chan
     // Fresh connection, fresh counters. A stale sequence number from the last
     // call is rejected as a bad payload.
     m_lastSequence = -1;
+    m_resuming = false;
+    m_resumeAttempts = 0;
     m_offeredModes.clear();
     m_secretKey.clear();
 
@@ -573,6 +577,7 @@ void VoiceConnection::disconnectFromVoice()
 
 void VoiceConnection::teardown()
 {
+    m_resuming = false;
     m_heartbeatTimer.stop();
     m_handshakeWatchdog.stop();
     stopAudio();
@@ -674,6 +679,49 @@ void VoiceConnection::onSocketDisconnected()
     if (m_state == State::Idle)
         return;
 
+    // A live call whose voice server closed on us - a restart, a move, a blip
+    // on the network - is picked back up with a resume, the way the official
+    // client does it. Same server, same ticket, same encryption group, and we
+    // never leave the channel, so nobody sees "left" and a "join to create"
+    // room is not emptied. Leaving and rejoining (what the window falls back
+    // to) took over ten seconds and looked exactly like being kicked.
+    //
+    // Not for closes that say the session itself is over or was refused:
+    // resuming those only gets the same answer again.
+    const bool callWasLive = (m_state == State::Connected || m_resuming) && !m_secretKey.isEmpty();
+    const bool sessionOver = code == 4004 || code == 4006 || code == 4009 || code == 4011
+                             || code == 4012 || code == 4014 || code == 4016 || code == 4017
+                             || code == 4020 || code == 4021 || code == 4022;
+    if (callWasLive && !sessionOver && m_resumeAttempts < 3) {
+        ++m_resumeAttempts;
+        m_resuming = true;
+        m_stage = QStringLiteral("resuming the voice connection");
+        setState(State::Connecting);
+
+        // A quarter of a second, then a half, then one: quick enough to be a
+        // hiccup rather than a drop, spaced enough not to hammer a server
+        // that is restarting.
+        const int delay = 250 << (m_resumeAttempts - 1);
+        wlog(QStringLiteral("voice"),
+             QStringLiteral("resuming the call (try %1 of 3) in %2 ms, without leaving the channel")
+                 .arg(m_resumeAttempts)
+                 .arg(delay));
+
+        // If the resume never completes, this gives up and hands the problem
+        // to the window, which leaves and rejoins.
+        m_handshakeWatchdog.start(12000);
+
+        QTimer::singleShot(delay, this, [this]() {
+            if (!m_resuming)
+                return;
+            QString host = m_endpoint;
+            host.remove(QStringLiteral("wss://"));
+            m_socket.open(QUrl(QStringLiteral("wss://%1/?v=8").arg(host)));
+        });
+        return;
+    }
+    m_resuming = false;
+
     setState(State::Failed);
 
     // Some refusals are about the channel or the account, not about this
@@ -765,6 +813,30 @@ void VoiceConnection::sendIdentify()
     });
 }
 
+void VoiceConnection::sendResume()
+{
+    // The same four facts as signing in, minus the rest: which server, which
+    // session, the ticket, and the last numbered message we saw, so the server
+    // can send anything we missed while the socket was down.
+    wlog(QStringLiteral("voice"),
+         QStringLiteral("resuming: server=%1 session=%2 seq_ack=%3")
+             .arg(m_guildId, m_sessionId)
+             .arg(m_lastSequence));
+
+    QJsonObject d{
+        {QStringLiteral("server_id"), m_guildId},
+        {QStringLiteral("session_id"), m_sessionId},
+        {QStringLiteral("token"), m_token},
+    };
+    if (m_lastSequence >= 0)
+        d.insert(QStringLiteral("seq_ack"), m_lastSequence);
+
+    sendJson(QJsonObject{
+        {QStringLiteral("op"), OpResume},
+        {QStringLiteral("d"), d},
+    });
+}
+
 void VoiceConnection::sendHeartbeat()
 {
     // Version 8 wants an object carrying a nonce and the number of the last
@@ -805,11 +877,42 @@ void VoiceConnection::onTextMessage(const QString &message)
     case OpHello: {
         const int interval = data.value(QStringLiteral("heartbeat_interval")).toInt(13750);
 
-        m_stage = QStringLiteral("signing in to the voice server");
-        sendIdentify();
+        if (m_resuming) {
+            m_stage = QStringLiteral("asking the voice server to resume");
+            sendResume();
+        } else {
+            m_stage = QStringLiteral("signing in to the voice server");
+            sendIdentify();
+        }
 
         m_heartbeatTimer.start(interval);
         sendHeartbeat();
+        break;
+    }
+    case OpResumed: {
+        // Back on the same call. The UDP link, the key and the encryption
+        // group were never dropped; only the sound devices were stopped when
+        // the socket closed, so they start again.
+        //
+        // The packet counters carry on from where they were. Starting the
+        // encryption nonce again from zero would reuse nonces under the same
+        // key, which must never happen.
+        const quint16 sequence = m_rtpSequence;
+        const quint32 timestamp = m_rtpTimestamp;
+        const quint32 nonce = m_nonceCounter;
+
+        m_resuming = false;
+        m_resumeAttempts = 0;
+        m_handshakeWatchdog.stop();
+        m_stage = QStringLiteral("connected");
+        setState(State::Connected);
+        startAudio();
+
+        m_rtpSequence = sequence;
+        m_rtpTimestamp = timestamp;
+        m_nonceCounter = nonce;
+
+        wlog(QStringLiteral("voice"), QStringLiteral("call resumed; never left the channel"));
         break;
     }
     case OpReady:
