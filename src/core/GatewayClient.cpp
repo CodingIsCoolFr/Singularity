@@ -5,6 +5,7 @@
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
+#include <QEventLoop>
 #include <QJsonArray>
 #include <QSslError>
 #include <QJsonDocument>
@@ -165,6 +166,43 @@ void GatewayClient::stop()
     if (m_socket.state() != QAbstractSocket::UnconnectedState)
         m_socket.close();
     setState(State::Disconnected);
+}
+
+// Discord ends a session at once only when the socket closes with 1000 or
+// 1001. A connection that just drops stays alive for a few minutes in case it
+// resumes, and its presence - the Playing card included - stays with it. That
+// is what showed two Singularity cards after an update: the old copy called
+// stop(), which queues the 1000 close frame, and quit in the same breath, so
+// the frame never left the machine and the old session lingered.
+//
+// So quitting waits for the socket to actually close. Nothing else happens
+// meanwhile, and a network that has gone away costs at most 1.5 s.
+void GatewayClient::shutdown()
+{
+    if (m_socket.state() == QAbstractSocket::UnconnectedState) {
+        stop();
+        return;
+    }
+
+    QEventLoop wait;
+    QTimer limit;
+    limit.setSingleShot(true);
+    connect(&m_socket, &QWebSocket::disconnected, &wait, &QEventLoop::quit);
+    connect(&limit, &QTimer::timeout, &wait, &QEventLoop::quit);
+
+    QElapsedTimer took;
+    took.start();
+    stop();
+    if (m_socket.state() != QAbstractSocket::UnconnectedState) {
+        limit.start(1500);
+        wait.exec();
+    }
+
+    wlog(QStringLiteral("gateway"),
+         m_socket.state() == QAbstractSocket::UnconnectedState
+             ? QStringLiteral("closed the session cleanly in %1 ms, so Discord drops it now")
+                   .arg(took.elapsed())
+             : QStringLiteral("the close did not finish in 1.5 s; Discord will time the session out"));
 }
 
 void GatewayClient::setState(State state)

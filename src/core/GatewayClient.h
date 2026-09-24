@@ -34,6 +34,10 @@ public:
     void start(const QString &token);
     void stop();
 
+    // For quitting: stop(), then wait (at most 1.5 s) until the close frame
+    // has actually left. See the .cpp for why the waiting is the point.
+    void shutdown();
+
     State state() const { return m_state; }
     QJsonObject currentUser() const { return m_currentUser; }
 
