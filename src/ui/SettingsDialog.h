@@ -52,6 +52,7 @@ private:
     void startMicTest();
     void stopMicTest();
     void refreshAudioDevices();
+    void refreshVideoDevices();
 
     MessageStore *m_store = nullptr;
     RestClient *m_rest = nullptr;
@@ -64,6 +65,7 @@ private:
     // Voice page.
     QComboBox *m_inputDevice = nullptr;
     QComboBox *m_outputDevice = nullptr;
+    QComboBox *m_cameraDevice = nullptr;
     QSlider *m_inputVolume = nullptr;
     QSlider *m_outputVolume = nullptr;
     QSlider *m_streamVolume = nullptr;

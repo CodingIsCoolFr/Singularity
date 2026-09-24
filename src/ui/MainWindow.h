@@ -81,6 +81,7 @@ private slots:
 
     void toggleCamera();
     void stopCamera();
+    void applyCameraDevice();
     void openPlugins();
     void openSettings();
     void applyAppearance();

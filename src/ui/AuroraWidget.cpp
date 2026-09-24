@@ -456,7 +456,14 @@ double AuroraWidget::framePeriodMs() const
 
 void AuroraWidget::armNextFrame()
 {
-    if (!m_running || m_overlayTimer.isActive())
+    // The self-driving frame loop is only for the drawn hole, which changes
+    // every frame. A picture does not need it: a still one never changes, and
+    // an animated one is driven by its own QMovie, which asks for a repaint
+    // only when it has a new frame. Spinning at sixty a second behind a picture
+    // is the "black hole still running" that nobody wanted, so in picture mode
+    // we let the loop stop. Real changes - the movie, a resize, a new dim -
+    // still ask for their own repaint.
+    if (!m_running || m_background != Background::Hole || m_overlayTimer.isActive())
         return;
 
     // Something else in the window can cause a swap too. Timing from our own

@@ -10,6 +10,7 @@
 
 #include <QApplication>
 #include <QAudioDevice>
+#include <QCameraDevice>
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QClipboard>
@@ -371,11 +372,14 @@ QWidget *SettingsDialog::buildVoicePage()
 
     m_inputDevice = new QComboBox(page);
     m_outputDevice = new QComboBox(page);
+    m_cameraDevice = new QComboBox(page);
     form->addRow(QStringLiteral("Input device"), m_inputDevice);
     form->addRow(QStringLiteral("Output device"), m_outputDevice);
+    form->addRow(QStringLiteral("Camera"), m_cameraDevice);
     layout->addLayout(form);
 
     refreshAudioDevices();
+    refreshVideoDevices();
 
     connect(m_inputDevice, &QComboBox::currentIndexChanged, this, [this](int) {
         AppConfig::instance().setValue(QStringLiteral("voice/inputDevice"),
@@ -390,11 +394,17 @@ QWidget *SettingsDialog::buildVoicePage()
                                        m_outputDevice->currentData());
         emit voiceSettingsChanged();
     });
+    connect(m_cameraDevice, &QComboBox::currentIndexChanged, this, [this](int) {
+        AppConfig::instance().setValue(QStringLiteral("voice/cameraDevice"),
+                                       m_cameraDevice->currentData());
+        emit voiceSettingsChanged();
+    });
 
     // Devices come and go when headsets are plugged in.
     auto *devices = new QMediaDevices(this);
     connect(devices, &QMediaDevices::audioInputsChanged, this, &SettingsDialog::refreshAudioDevices);
     connect(devices, &QMediaDevices::audioOutputsChanged, this, &SettingsDialog::refreshAudioDevices);
+    connect(devices, &QMediaDevices::videoInputsChanged, this, &SettingsDialog::refreshVideoDevices);
 
     // --- levels -----------------------------------------------------------
     layout->addWidget(groupTitle(QStringLiteral("VOLUME"), page));
@@ -517,6 +527,35 @@ void SettingsDialog::refreshAudioDevices()
 
     fill(m_inputDevice, QMediaDevices::audioInputs(), QMediaDevices::defaultAudioInput(), savedInput);
     fill(m_outputDevice, QMediaDevices::audioOutputs(), QMediaDevices::defaultAudioOutput(), savedOutput);
+}
+
+void SettingsDialog::refreshVideoDevices()
+{
+    if (!m_cameraDevice)
+        return;
+
+    const QByteArray saved =
+        AppConfig::instance().value(QStringLiteral("voice/cameraDevice")).toByteArray();
+
+    QSignalBlocker blocker(m_cameraDevice);
+    m_cameraDevice->clear();
+
+    const QList<QCameraDevice> cameras = QMediaDevices::videoInputs();
+    if (cameras.isEmpty()) {
+        m_cameraDevice->addItem(QStringLiteral("No camera found"), QByteArray());
+        m_cameraDevice->setEnabled(false);
+        return;
+    }
+
+    m_cameraDevice->setEnabled(true);
+    const QCameraDevice fallback = QMediaDevices::defaultVideoInput();
+    m_cameraDevice->addItem(QStringLiteral("Default - %1").arg(fallback.description()), QByteArray());
+
+    for (const QCameraDevice &camera : cameras)
+        m_cameraDevice->addItem(camera.description(), camera.id());
+
+    const int index = m_cameraDevice->findData(saved);
+    m_cameraDevice->setCurrentIndex(index >= 0 ? index : 0);
 }
 
 void SettingsDialog::startMicTest()

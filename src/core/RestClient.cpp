@@ -317,6 +317,12 @@ void RestClient::fetchUser(const QString &userId, ObjectHandler onOk, ErrorHandl
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+void RestClient::fetchChannel(const QString &channelId, ObjectHandler onOk, ErrorHandler onError)
+{
+    QNetworkReply *reply = m_network.get(buildRequest(QStringLiteral("/channels/%1").arg(channelId)));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::fetchUserProfile(const QString &userId, const QString &guildId, ObjectHandler onOk,
                                   ErrorHandler onError)
 {

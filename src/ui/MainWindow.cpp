@@ -568,12 +568,12 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         stopCamera();
     });
 
-    const QCameraDevice device = QMediaDevices::defaultVideoInput();
-    if (!device.isNull()) {
-        m_webcam = new QCamera(device, this);
+    // The capture session and its sink last for the whole run. The webcam is
+    // chosen from settings by applyCameraDevice() below, and can be swapped
+    // later without disturbing this frame path.
+    {
         m_cameraSession = new QMediaCaptureSession(this);
         m_cameraSink = new QVideoSink(this);
-        m_cameraSession->setCamera(m_webcam);
         m_cameraSession->setVideoSink(m_cameraSink);
         connect(m_cameraSink, &QVideoSink::videoFrameChanged, this, [this](const QVideoFrame &incoming) {
             if (!m_camera || !m_camera->isRunning())
@@ -607,6 +607,8 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
                 m_callView->setFrame(m_selfUserId, image, CallView::Surface::Camera);
         });
     }
+
+    applyCameraDevice();
 
     // The capture cannot start until there is somewhere to send it.
     connect(m_shareVoice, &VoiceConnection::stateChanged, this,
@@ -4697,6 +4699,25 @@ void MainWindow::selectChannelEverywhere(const QString &channelId)
 
     const ChannelInfo channel = m_store->channel(channelId);
 
+    // A link can point at a channel we have never loaded. It shows as "unknown"
+    // because the store has nothing for it. Ask Discord what it is once, keep
+    // the answer, then come back here with a channel we can actually jump to.
+    // The store now has a real id, so this branch does not fire a second time.
+    if (channel.id.isEmpty()) {
+        flashStatus(QStringLiteral("Opening that channel..."), 3000);
+        m_rest->fetchChannel(
+            channelId,
+            [this, channelId](const QJsonObject &object) {
+                m_store->ingestChannelObject(object);
+                selectChannelEverywhere(channelId);
+            },
+            [this](const RestClient::Error &error) {
+                flashStatus(QStringLiteral("That channel could not be opened: %1").arg(error.message),
+                            5000);
+            });
+        return;
+    }
+
     // Jump to the right server first, so the sidebar holds the channel.
     const QString wantedGuild = channel.guildId;
     if (wantedGuild != m_currentGuildId) {
@@ -6312,6 +6333,53 @@ void MainWindow::stopCamera()
     }
 }
 
+void MainWindow::applyCameraDevice()
+{
+    if (!m_cameraSession)
+        return;
+
+    // Which camera did the settings pick? An empty id means "the default one".
+    const QByteArray wanted =
+        AppConfig::instance().value(QStringLiteral("voice/cameraDevice")).toByteArray();
+
+    QCameraDevice device = QMediaDevices::defaultVideoInput();
+    if (!wanted.isEmpty()) {
+        const QList<QCameraDevice> cameras = QMediaDevices::videoInputs();
+        for (const QCameraDevice &camera : cameras) {
+            if (camera.id() == wanted) {
+                device = camera;
+                break;
+            }
+        }
+    }
+
+    // No camera on the machine. toggleCamera() already tells the user.
+    if (device.isNull())
+        return;
+
+    // Already using this camera. Nothing to swap.
+    if (m_webcam && m_webcam->cameraDevice().id() == device.id())
+        return;
+
+    const bool wasOn = m_webcam && m_webcam->isActive();
+    if (m_webcam) {
+        m_webcam->stop();
+        m_webcam->deleteLater();
+        m_webcam = nullptr;
+    }
+
+    m_webcam = new QCamera(device, this);
+    m_cameraSession->setCamera(m_webcam);
+    wlog(QStringLiteral("camera"), QStringLiteral("using camera %1").arg(device.description()));
+
+    // If the camera was live when the pick changed, keep it live on the new one.
+    if (wasOn) {
+        m_webcam->start();
+        if (m_camera && m_camera->isRunning())
+            m_camera->requestKeyframe();
+    }
+}
+
 void MainWindow::leaveVoice()
 {
     if (m_voiceChannelId.isEmpty())
@@ -6982,6 +7050,9 @@ void MainWindow::applyVoiceSettings()
         m_outputVolumeSlider->setValue(config.value(QStringLiteral("voice/outputVolume"), 100).toInt());
     if (m_streamVolumeSlider)
         m_streamVolumeSlider->setValue(config.value(QStringLiteral("voice/streamVolume"), 80).toInt());
+
+    // Follow a new camera pick, even mid-call.
+    applyCameraDevice();
 }
 
 void MainWindow::updateVoicePanel()

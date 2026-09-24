@@ -113,6 +113,10 @@ public:
     // GET /users/{id} - just enough to put a name to an id.
     void fetchUser(const QString &userId, ObjectHandler onOk, ErrorHandler onError);
 
+    // One channel by id, for when a link points at a channel we have not loaded
+    // yet. The reply carries its guild and type, so we can jump to it.
+    void fetchChannel(const QString &channelId, ObjectHandler onOk, ErrorHandler onError);
+
     // GET /users/{id}/profile - the whole profile: banner, bio, badges,
     // connections, mutual servers and friends, and the member record for one
     // server when `guildId` is given.
