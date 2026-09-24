@@ -670,9 +670,19 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         // 4014 is Discord tearing down this voice socket. That happens when a
         // mod kicks you, and also — far more often — when the gateway
         // reconnects. Leaving would turn a blip into a real kick.
-        if (reason.contains(QStringLiteral("4014"))) {
+        //
+        // 4022 "call terminated" is the same thing when it lands while the
+        // gateway is reconnecting: Discord's docs list "the main gateway
+        // session was dropped" among its causes. A reconnect (op 7) that could
+        // not resume produced exactly that, and treating it as final left the
+        // call on its own.
+        const bool droppedWithGateway = reason.contains(QStringLiteral("4022"))
+                                        && m_gateway->state() != GatewayClient::State::Ready;
+        if (reason.contains(QStringLiteral("4014")) || droppedWithGateway) {
             wlog(QStringLiteral("voice"),
-                 QStringLiteral("voice server dropped us (4014); staying in the channel to rejoin"));
+                 QStringLiteral("voice server dropped us (%1); staying in the channel to rejoin")
+                     .arg(droppedWithGateway ? QStringLiteral("4022 during a gateway reconnect")
+                                             : QStringLiteral("4014")));
             m_pendingVoiceToken.clear();
             m_pendingVoiceEndpoint.clear();
             m_voiceSessionId.clear();
@@ -727,9 +737,6 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
             return;
         }
 
-        // Start the whole handshake again. Leaving first makes Discord throw
-        // away the old voice session and issue a fresh server and ticket,
-        // which clears the usual causes of a refused one.
         ++m_voiceRetries;
         wlog(QStringLiteral("voice"), QStringLiteral("retry %1 after: %2").arg(m_voiceRetries).arg(reason));
 
@@ -739,9 +746,19 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         m_voice->disconnectFromVoice();
         m_pendingVoiceToken.clear();
         m_pendingVoiceEndpoint.clear();
-        m_voiceSessionId.clear();
 
-        m_gateway->leaveVoice(m_voiceGuildId);
+        // First try: ask for the same channel again without leaving it.
+        // Discord answers with a fresh voice server, the same way it does when
+        // a bot moves you. Leaving first shows everyone "left", and in a "join
+        // to create" channel it empties the room, so the bot deletes it and
+        // there is nothing to come back to.
+        //
+        // Only a second failure leaves and rejoins, which makes Discord throw
+        // away the old voice session and clears the usual causes of a refusal.
+        if (m_voiceRetries >= 2) {
+            m_voiceSessionId.clear();
+            m_gateway->leaveVoice(m_voiceGuildId);
+        }
         m_voiceRetryTimer.start(1200);
     });
 
@@ -761,6 +778,11 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
                              config.value(QStringLiteral("voice/joinMuted"), false).toBool(),
                              config.value(QStringLiteral("voice/joinDeafened"), false).toBool(),
                              true);
+
+        // Marks the join as ours and in flight, so Discord's answer is used to
+        // connect rather than read as somebody moving us, and so a missing
+        // answer is named in the log instead of leaving the panel stuck.
+        m_voiceWatchdog.start(10000);
     });
 
     // Reaching the top of a channel fetches what came before it.
@@ -850,6 +872,24 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
 
         if (missing.isEmpty())
             return;
+
+        // The quiet first retry (asking for the same channel without leaving)
+        // got no answer. Fall back to the full leave-and-rejoin once.
+        if (m_voiceRetries == 1) {
+            ++m_voiceRetries;
+            wlog(QStringLiteral("voice"),
+                 QStringLiteral("rejoin without leaving got no answer (missing %1); leaving and rejoining")
+                     .arg(missing.join(QStringLiteral(" and "))));
+            if (m_voiceState)
+                m_voiceState->setText(QStringLiteral("Retrying (%1)...").arg(m_voiceRetries));
+            m_voice->disconnectFromVoice();
+            m_pendingVoiceToken.clear();
+            m_pendingVoiceEndpoint.clear();
+            m_voiceSessionId.clear();
+            m_gateway->leaveVoice(m_voiceGuildId);
+            m_voiceRetryTimer.start(1200);
+            return;
+        }
 
         wlog(QStringLiteral("voice"),
              QStringLiteral("Discord did not answer the join after 10 seconds. Still waiting for: %1. "
@@ -2092,6 +2132,14 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
             }
 
             if (nowIn.isEmpty() && !m_voiceChannelId.isEmpty()) {
+                // Our own retry left on purpose and is about to rejoin. This
+                // used to be read as "you left", which cleared the channel and
+                // cancelled the rejoin - the retry itself kicked you out.
+                if (m_voiceRetryTimer.isActive()) {
+                    wlog(QStringLiteral("voice"),
+                         QStringLiteral("own state: (left) from our own retry — rejoining shortly"));
+                    return;
+                }
                 if (m_voiceWatchdog.isActive()) {
                     wlog(QStringLiteral("voice"),
                          QStringLiteral("own state: (left) while join is in flight — ignoring"));
