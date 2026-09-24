@@ -23,8 +23,10 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QScreen>
+#include <QShortcut>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QWindow>
 
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
@@ -56,12 +58,35 @@ QString summarise(const QString &notes);
 // Above this program, not above every other window. A no-activate show was
 // leaving the card behind the main window, which is why Check for updates
 // looked like it had done nothing.
+// Names whatever could be swallowing clicks meant for the panel: a window Qt
+// treats as modal (every other window is then deaf to the mouse, whatever
+// Windows itself says), or an open pop-up menu (which eats the next click).
+QString inputBlockers()
+{
+    QStringList found;
+    if (QWindow *modal = QGuiApplication::modalWindow())
+        found << QStringLiteral("modal window \"%1\" (%2)")
+                     .arg(modal->title(), QString::fromLatin1(modal->metaObject()->className()));
+    if (QWidget *popup = QApplication::activePopupWidget())
+        found << QStringLiteral("open pop-up %1").arg(QString::fromLatin1(popup->metaObject()->className()));
+    return found.isEmpty() ? QStringLiteral("nothing") : found.join(QStringLiteral(", "));
+}
+
 void liftOverApp(QWidget *panel)
 {
     if (!panel)
         return;
     panel->setAttribute(Qt::WA_ShowWithoutActivating, false);
-    panel->setWindowModality(Qt::NonModal);
+
+    // A window Qt thinks is modal makes every other window deaf to the mouse,
+    // even though Windows reports them enabled. If one exists, this panel
+    // joins the modal stack on top of it - the newest modal window is the one
+    // that takes input - rather than sitting there unclickable.
+    if (!panel->isVisible()) {
+        QWindow *modal = QGuiApplication::modalWindow();
+        const bool blocked = modal && modal != panel->windowHandle();
+        panel->setWindowModality(blocked ? Qt::ApplicationModal : Qt::NonModal);
+    }
     panel->show();
     panel->raise();
     panel->activateWindow();
@@ -177,6 +202,30 @@ public:
                 m_decline();
         });
 
+        // A second way in that does not depend on the mouse: Enter updates,
+        // Escape is "Not now".
+        for (const auto key : {Qt::Key_Return, Qt::Key_Enter}) {
+            auto *shortcut = new QShortcut(QKeySequence(key), this);
+            connect(shortcut, &QShortcut::activated, m_yes, [this]() {
+                if (m_yes->isVisible() && m_yes->isEnabled())
+                    m_yes->click();
+            });
+        }
+        auto *escape = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+        connect(escape, &QShortcut::activated, m_no, [this]() {
+            if (m_no->isVisible())
+                m_no->click();
+        });
+        m_yes->setDefault(true);
+
+        // Every press on the panel is written down, with anything that could
+        // be eating it. "I cannot click Update" came with a log in which the
+        // panel appeared and then nothing at all - no way to tell a click that
+        // never arrived from one that arrived and did nothing.
+        installEventFilter(this);
+        m_yes->installEventFilter(this);
+        m_no->installEventFilter(this);
+
         if (owner)
             owner->installEventFilter(this);
     }
@@ -237,6 +286,17 @@ protected:
     {
         if (watched == m_owner.data() && event->type() == QEvent::Resize)
             place();
+
+        if (event->type() == QEvent::MouseButtonPress
+            && (watched == this || watched == m_yes || watched == m_no)) {
+            const QString what = watched == m_yes ? QStringLiteral("Update")
+                               : watched == m_no  ? QStringLiteral("Not now")
+                                                  : QStringLiteral("the panel");
+            wlog(QStringLiteral("update"), QStringLiteral("press on %1 (enabled %2); input held by %3")
+                                               .arg(what)
+                                               .arg(static_cast<QWidget *>(watched)->isEnabled())
+                                               .arg(inputBlockers()));
+        }
         return QWidget::eventFilter(watched, event);
     }
 
@@ -505,6 +565,7 @@ Updater *updater()
                                  g_offer->close();
                          });
                          g_offer->setAccept([]() {
+                             wlog(QStringLiteral("update"), QStringLiteral("Update pressed"));
                              g_updating = true;
                              if (g_offer)
                                  g_offer->close();
@@ -513,6 +574,12 @@ Updater *updater()
                          });
                          g_offer->place();
                          releaseForegroundLock();
+                         wlog(QStringLiteral("update"),
+                              QStringLiteral("offering %1; input held by %2%3")
+                                  .arg(version, inputBlockers(),
+                                       g_offer->windowModality() == Qt::ApplicationModal
+                                           ? QStringLiteral(", so the offer was put on top of it")
+                                           : QString()));
                      });
 
     QObject::connect(instance, &Updater::readyToInstall, qApp, [](const QString &path) {
