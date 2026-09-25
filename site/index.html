@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Singularity — a Discord client in C++</title>
-<meta name="description" content="A Discord client written from scratch in C++ with Qt 6. No Electron, no web view. Encrypted voice, received video, seven plugins compiled into the binary. Windows.">
+<meta name="description" content="A Discord client written from scratch in C++ with Qt 6. No Electron, no web view. Encrypted voice, video and screen share, eleven plugins compiled into the binary. Windows.">
 <meta name="theme-color" content="#05070b">
 <link rel="icon" href="mark.png" type="image/png">
 
@@ -52,7 +52,7 @@
         <span class="chip">Qt 6.10</span>
         <span class="chip">Encrypted voice</span>
         <span class="chip">Screen share and camera</span>
-        <span class="chip">Seven plugins, compiled in</span>
+        <span class="chip">Eleven plugins, compiled in</span>
       </div>
     </div>
   </div>
@@ -81,7 +81,7 @@
       <div class="tile"><span class="mark">↓</span><h3>Easy install</h3><p>One setup program. No administrator prompt. It downloads the next version and installs itself, and What's new lists every release and what it changed.</p></div>
       <div class="tile"><span class="mark">♫</span><h3>Real voice</h3><p>Calls you can join, encrypted end to end, with mute, deafen, and your own camera.</p></div>
       <div class="tile"><span class="mark">▣</span><h3>Screen share</h3><p>Their screens and yours, decoded into the call instead of a spinning loader.</p></div>
-      <div class="tile"><span class="mark">✦</span><h3>Plugins included</h3><p>Seven, compiled into the program. Nothing sitting in a folder for something else to replace.</p></div>
+      <div class="tile"><span class="mark">✦</span><h3>Plugins included</h3><p>Eleven, compiled into the program. Nothing sitting in a folder for something else to replace.</p></div>
       <div class="tile"><span class="mark">◉</span><h3>One colour</h3><p>Pick a seed and the whole client retints while it is running. Or put your own picture behind it.</p></div>
       <div class="tile"><span class="mark">⚑</span><h3>Private</h3><p>No analytics. No game detection. Your password is never written down.</p></div>
     </div>
@@ -101,11 +101,14 @@
         <p>You can share your own screen, and turn your own camera on. Encoding uses whatever hardware the machine has, and Cisco's software encoder when it has none.</p>
         <p>Share a whole screen, or just one window, from the Screens and Windows tabs. A shared window keeps going out even when something else covers it.</p>
         <p>A share can carry sound, the way Discord's does: everything on the computer except the call, or just one program, such as a browser or a game. It goes out marked as stream sound, so it never lights up a speaking ring.</p>
+        <p>Surround and virtual devices such as SteelSeries Sonar are taken in all their channels and mixed to stereo here, so a movie reaches your friends as loud as you hear it, not a quarter of that.</p>
+        <p>Pick which camera to use in Settings. A call that drops for a moment picks itself back up without leaving the channel.</p>
       </div>
 
       <div class="panel card">
         <h3><span class="dot"></span>Reading</h3>
-        <p>History, live messages, and scrolling up through older ones. You can reply, edit, delete, attach a file, and react. A welcome line shows the person's name as a clickable pill, not their number, and a channel link shows the channel name.</p>
+        <p>History, live messages, and scrolling up through older ones. You can reply, edit, delete, attach a file, and react. Drag files onto the window or paste them to attach them. A welcome line shows the person's name as a clickable pill, not their number, and a channel link shows the channel name and takes you there, voice channels included.</p>
+        <p>An invite link gets a card under it, the way Discord draws one: the server's picture, who is online, and a Join button. The + under your servers joins one from a link or a code. When Discord asks for a captcha first, it appears for you to solve, as in the official app.</p>
         <p>Images, GIFs, custom emoji from every server you are in, stickers and link previews. The picker has Emoji, Stickers and GIFs. Click any picture for a viewer with scroll to zoom and drag to pan.</p>
       </div>
 
@@ -202,7 +205,7 @@
 <section id="plugins">
   <div class="wrap rise">
     <p class="kicker">Nothing on disk to swap out</p>
-    <h2>Seven plugins, inside the binary</h2>
+    <h2>Eleven plugins, inside the binary</h2>
     <p class="lede">There is no plugin folder, so there is no file for anything else to replace. Each one has its own settings page.</p>
 
     <div class="rows">
@@ -213,6 +216,10 @@
       <div class="plugin"><div><strong>Silent typing</strong><p>Never sends the typing signal.</p></div><span class="state">Off</span></div>
       <div class="plugin"><div><strong>Presence hints</strong><p>Marks people active when they type or join voice. Off by default, because it works against a choice the other person made.</p></div><span class="state">Off</span></div>
       <div class="plugin"><div><strong>Nitro watch</strong><p>Spots gift links the instant they are posted, anywhere, and offers a Claim button. It does not claim by itself.</p></div><span class="state">Off</span></div>
+      <div class="plugin"><div><strong>Relationship notifier</strong><p>Tells you when someone unfriends you, a friend request is sent, accepted or cancelled, or you are removed from a server or group — even while Singularity was closed.</p></div><span class="state on">On</span></div>
+      <div class="plugin"><div><strong>Mic shaper</strong><p>Stereo placement, a rumble filter, a noise gate and a compressor for your microphone.</p></div><span class="state">Off</span></div>
+      <div class="plugin"><div><strong>Big files</strong><p>A file over your upload limit goes to GoFile instead, and the link drops into your message. For modpacks and videos Discord would refuse.</p></div><span class="state">Off</span></div>
+      <div class="plugin"><div><strong>Fake Nitro</strong><p>Sends emoji you cannot use as links other clients show as emoji, the same trick as Vencord's. It is not real Nitro.</p></div><span class="state">Off</span></div>
     </div>
 
     <div class="panel" style="margin-top:20px">
@@ -231,8 +238,6 @@
 
     <div class="panel">
       <ul class="plain">
-        <li>Sharing a single <b>window</b> rather than a whole screen, and the sound coming out of it.</li>
-        <li>Drag and drop onto the message box. Choosing a file with Attach is built.</li>
         <li>Search.</li>
         <li>Threads and forum channels.</li>
         <li>Avatar decorations, which are fetched but not drawn.</li>
