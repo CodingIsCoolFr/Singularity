@@ -221,7 +221,9 @@ private:
     void captureScrollAnchor();
     bool restoreScrollAnchor();
     QString messageHtml(const MessageInfo &message, bool grouped);
-    QString renderContent(const QString &raw);
+    // `jumbo`: a message's own text, where emoji on their own come out big the
+    // way Discord shows them. Embeds pass false.
+    QString renderContent(const QString &raw, bool jumbo = false);
     QString stickersHtml(const MessageInfo &message) const;
     QString embedsHtml(const MessageInfo &message);
     QString inviteCardsHtml(const MessageInfo &message);

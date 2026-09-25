@@ -13,6 +13,7 @@
 #include "ui/Theme.h"
 
 #include <QApplication>
+#include <QTimer>
 #include <QAudioDevice>
 #include <QCameraDevice>
 #include <QButtonGroup>
@@ -1620,16 +1621,83 @@ QWidget *SettingsDialog::buildAppearancePage()
     layout->addWidget(chipRow);
     restyleChips(currentSeed);
 
+    // -----------------------------------------------------------------
+    // Text size and zoom: Discord's "Chat font scaling" and "Zoom level".
+    // -----------------------------------------------------------------
+
+    layout->addWidget(groupTitle(QStringLiteral("TEXT SIZE"), page));
+
+    // A name on the left, the value on the right, the slider underneath.
+    const auto sliderHeader = [page, layout](const QString &name) {
+        auto *row = new QHBoxLayout;
+        auto *label = new QLabel(name, page);
+        auto *value = new QLabel(page);
+        value->setStyleSheet(QStringLiteral("color: %1;").arg(QLatin1String(Theme::TextMuted)));
+        row->addWidget(label);
+        row->addStretch(1);
+        row->addWidget(value);
+        layout->addLayout(row);
+        return value;
+    };
+
+    auto *chatSizeValue = sliderHeader(QStringLiteral("Chat text size"));
+    auto *chatSize = makeSlider(12, 24, config.value(QStringLiteral("appearance/fontSize"), 14).toInt(), page);
+    layout->addWidget(chatSize);
+    layout->addWidget(hint(QStringLiteral("Messages, names and emoji in the conversation. Changes at once."),
+                           page));
+    chatSizeValue->setText(QStringLiteral("%1 px").arg(chatSize->value()));
+
+    // Moving the slider redraws the whole conversation, so the redraw waits
+    // until the slider has been still for a moment rather than happening for
+    // every step it passes through.
+    auto *chatSizeSettle = new QTimer(page);
+    chatSizeSettle->setSingleShot(true);
+    chatSizeSettle->setInterval(150);
+    connect(chatSizeSettle, &QTimer::timeout, this, [this, chatSize]() {
+        AppConfig::instance().setValue(QStringLiteral("appearance/fontSize"), chatSize->value());
+        emit appearanceChanged();
+    });
+    connect(chatSize, &QSlider::valueChanged, this, [chatSizeValue, chatSizeSettle](int value) {
+        chatSizeValue->setText(QStringLiteral("%1 px").arg(value));
+        chatSizeSettle->start();
+    });
+
+    // Zoom is Qt's scale factor, which is fixed once the first window exists:
+    // it is saved here and read by the next copy, before it opens anything.
+    const int startedZoom = qApp->property("singularityZoom").isValid()
+                                ? qApp->property("singularityZoom").toInt() : 100;
+    auto *zoomValue = sliderHeader(QStringLiteral("App zoom"));
+    auto *zoom = makeSlider(8, 20, config.value(QStringLiteral("appearance/zoom"), 100).toInt() / 10, page);
+    zoom->setPageStep(1);
+    layout->addWidget(zoom);
+
+    auto *zoomRow = new QHBoxLayout;
+    auto *zoomHint = hint(QString(), page);
+    auto *restart = new QPushButton(QStringLiteral("Restart now"), page);
+    zoomRow->addWidget(zoomHint, 1);
+    zoomRow->addWidget(restart);
+    layout->addLayout(zoomRow);
+
+    const auto showZoom = [zoom, zoomValue, zoomHint, restart, startedZoom]() {
+        const int percent = zoom->value() * 10;
+        zoomValue->setText(QStringLiteral("%1%").arg(percent));
+        const bool waiting = percent != startedZoom;
+        zoomHint->setText(waiting ? QStringLiteral("Everything in the window, larger or smaller. "
+                                                   "Takes effect when Singularity restarts.")
+                                  : QStringLiteral("Everything in the window, larger or smaller."));
+        restart->setVisible(waiting);
+    };
+    showZoom();
+    connect(zoom, &QSlider::valueChanged, this, [showZoom](int value) {
+        AppConfig::instance().setValue(QStringLiteral("appearance/zoom"), value * 10);
+        showZoom();
+    });
+    connect(restart, &QPushButton::clicked, this, &SettingsDialog::restartRequested);
+
     layout->addWidget(groupTitle(QStringLiteral("MESSAGES"), page));
 
     auto *form = new QFormLayout;
     form->setSpacing(8);
-
-    auto *fontSize = new QSpinBox(page);
-    fontSize->setRange(11, 20);
-    fontSize->setSuffix(QStringLiteral(" px"));
-    fontSize->setValue(config.value(QStringLiteral("appearance/fontSize"), 14).toInt());
-    form->addRow(QStringLiteral("Message text size"), fontSize);
 
     auto *groupWindow = new QSpinBox(page);
     groupWindow->setRange(0, 60);
@@ -1645,10 +1713,6 @@ QWidget *SettingsDialog::buildAppearancePage()
 
     layout->addLayout(form);
 
-    connect(fontSize, &QSpinBox::valueChanged, this, [this](int value) {
-        AppConfig::instance().setValue(QStringLiteral("appearance/fontSize"), value);
-        emit appearanceChanged();
-    });
     connect(groupWindow, &QSpinBox::valueChanged, this, [this](int value) {
         AppConfig::instance().setValue(QStringLiteral("appearance/groupMinutes"), value);
         emit appearanceChanged();

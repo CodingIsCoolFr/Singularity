@@ -20,6 +20,7 @@
 #include <QTextStream>
 #include <QFontDatabase>
 #include <QIcon>
+#include <QSettings>
 #include <QSurfaceFormat>
 #include <QTimer>
 
@@ -57,7 +58,27 @@ int main(int argc, char *argv[])
     format.setDepthBufferSize(0);
     QSurfaceFormat::setDefaultFormat(format);
 
+    // Settings -> Appearance -> App zoom. Qt reads its scale factor once, while
+    // the application is being built, so it has to be in place before that.
+    // Someone who set QT_SCALE_FACTOR themselves keeps theirs.
+    int zoom = 100;
+    const bool ownScale = qEnvironmentVariableIsSet("QT_SCALE_FACTOR");
+    if (!ownScale) {
+        const QSettings stored(QSettings::IniFormat, QSettings::UserScope, QStringLiteral("Singularity"),
+                               QStringLiteral("Singularity"));
+        zoom = qBound(80, stored.value(QStringLiteral("appearance/zoom"), 100).toInt(), 200);
+        if (zoom != 100)
+            qputenv("QT_SCALE_FACTOR", QByteArray::number(zoom / 100.0));
+    }
+
     QApplication app(argc, argv);
+
+    // Taken back out once read: every program started from here (a restart,
+    // the updater, a browser) would inherit it, and the next copy decides its
+    // zoom for itself.
+    if (!ownScale)
+        qunsetenv("QT_SCALE_FACTOR");
+    app.setProperty("singularityZoom", zoom);
 
     // Before the first log line: a second launch that is only going to wake
     // the running copy must not start its log on top of that copy's.
@@ -69,7 +90,7 @@ int main(int argc, char *argv[])
     CrashLog::install();
     app.setApplicationName(QStringLiteral("Singularity"));
     app.setOrganizationName(QStringLiteral("Singularity"));
-    app.setApplicationVersion(QStringLiteral("0.8.4"));
+    app.setApplicationVersion(QStringLiteral("0.8.5"));
     app.setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
 
     Theme::applySeed(QColor(AppConfig::instance().value(QStringLiteral("appearance/themeSeed"),
@@ -99,6 +120,8 @@ int main(int argc, char *argv[])
 
     // Touch the log first so the file exists even if startup fails early.
     wlog(QStringLiteral("app"), QStringLiteral("Singularity %1 starting").arg(app.applicationVersion()));
+    if (zoom != 100)
+        wlog(QStringLiteral("app"), QStringLiteral("app zoom %1%").arg(zoom));
 
     // --layout-report <file>: builds the main window without signing in or
     // connecting to anything, writes the narrowest width each part of it will

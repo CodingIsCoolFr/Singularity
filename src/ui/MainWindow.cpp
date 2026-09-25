@@ -4083,7 +4083,7 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
     const bool isSelf = !m_selfUserId.isEmpty() && message.authorId == m_selfUserId;
 
     // Body -----------------------------------------------------------------
-    QString body = renderContent(message.content);
+    QString body = renderContent(message.content, true);
 
     for (const Attachment &attachment : message.attachments) {
         const QString safeUrl = attachment.url.toHtmlEscaped();
@@ -4191,9 +4191,13 @@ QString MainWindow::reactionsHtml(const MessageInfo &message) const
         if (reaction.isCustom()) {
             const QString ext = (reaction.animated && animate) ? QStringLiteral("gif")
                                                                : QStringLiteral("png");
-            face = QStringLiteral("<img src=\"https://cdn.discordapp.com/emojis/%1.%2?size=32\" "
-                                  "width=\"16\" height=\"16\">")
-                       .arg(reaction.id, ext);
+            const int textSize =
+                qBound(12, AppConfig::instance().value(QStringLiteral("appearance/fontSize"), 14).toInt(), 24);
+            const int pixels = qRound(textSize * 16 / 14.0);
+            face = QStringLiteral("<img src=\"https://cdn.discordapp.com/emojis/%1.%2?size=48#e%3\" "
+                                  "width=\"%3\" height=\"%3\">")
+                       .arg(reaction.id, ext)
+                       .arg(pixels);
         } else {
             face = reaction.name.toHtmlEscaped();
         }
@@ -4297,12 +4301,130 @@ QString MainWindow::embedsHtml(const MessageInfo &message)
     return html;
 }
 
-QString MainWindow::renderContent(const QString &raw)
+namespace {
+
+// A code point that starts an emoji: pictographs, symbols, arrows and the
+// few older characters Discord draws as emoji.
+bool startsEmoji(char32_t c)
+{
+    return (c >= 0x1F000 && c <= 0x1FAFF) || (c >= 0x2600 && c <= 0x27BF)
+           || (c >= 0x2300 && c <= 0x23FF) || (c >= 0x2B00 && c <= 0x2BFF)
+           || (c >= 0x2190 && c <= 0x21FF) || (c >= 0x25AA && c <= 0x25FE)
+           || c == 0x2934 || c == 0x2935 || c == 0x3030 || c == 0x303D || c == 0x3297
+           || c == 0x3299 || c == 0x00A9 || c == 0x00AE || c == 0x203C || c == 0x2049
+           || c == 0x2122 || c == 0x2139 || c == 0x24C2;
+}
+
+// A code point that only changes the emoji before it: the joiner that makes
+// families, colour and text selectors, the keycap, skin tones, flag tags.
+bool continuesEmoji(char32_t c)
+{
+    return c == 0x200D || c == 0xFE0F || c == 0xFE0E || c == 0x20E3 || (c >= 0x1F3FB && c <= 0x1F3FF)
+           || (c >= 0xE0020 && c <= 0xE007F);
+}
+
+// Arrows, (c), (r), (tm) and the like are ordinary text unless the emoji
+// selector after them asks for the picture.
+bool usuallyText(char32_t c)
+{
+    return c < 0x2300 || (c >= 0x25AA && c <= 0x25FE) || (c >= 0x3000 && c <= 0x3299);
+}
+
+// How many emoji a message is, when it is nothing but emoji and spaces; 0
+// when there is anything else in it. A family or a flag counts as one.
+int emojiOnlyCount(const QString &raw)
+{
+    static const QRegularExpression custom(QStringLiteral(
+        "<a?:[A-Za-z0-9_]+:\\d+>|(\\[[^\\]\\n]*\\]\\()?https://(?:cdn|media)\\.discordapp\\.(?:com|net)"
+        "/emojis/\\d+\\.(?:png|gif|webp)[^)\\s]*\\)?"));
+
+    int count = 0;
+    QString rest;
+    int last = 0;
+    for (auto it = custom.globalMatch(raw); it.hasNext();) {
+        const QRegularExpressionMatch match = it.next();
+        rest += raw.mid(last, match.capturedStart() - last) + QLatin1Char(' ');
+        last = int(match.capturedEnd());
+        ++count;
+    }
+    rest += raw.mid(last);
+
+    bool afterJoiner = false;
+    bool halfFlag = false;
+    const QList<uint> points = rest.toUcs4();
+    for (qsizetype i = 0; i < points.size(); ++i) {
+        const char32_t c = points.at(i);
+        if (QChar::isSpace(c)) {
+            afterJoiner = false;
+            continue;
+        }
+        if (continuesEmoji(c)) {
+            afterJoiner = c == 0x200D;
+            continue;
+        }
+        if (c >= 0x1F1E6 && c <= 0x1F1FF) {
+            // Flags are two letters that make one picture.
+            if (!halfFlag)
+                ++count;
+            halfFlag = !halfFlag;
+            continue;
+        }
+        if (!startsEmoji(c))
+            return 0;
+        if (usuallyText(c) && !(i + 1 < points.size() && points.at(i + 1) == 0xFE0F))
+            return 0;
+        if (!afterJoiner)
+            ++count;
+        afterJoiner = false;
+        halfFlag = false;
+    }
+    return count;
+}
+
+// Every run of emoji characters wrapped so it can be drawn larger than the
+// words around it, the way Discord draws them.
+QString enlargeEmoji(const QString &text, int pixels)
+{
+    const QString open = QStringLiteral("<span style=\"font-family: 'Segoe UI Emoji'; font-size: %1px;\">")
+                             .arg(pixels);
+    QString out;
+    out.reserve(text.size());
+    bool inRun = false;
+    const QList<uint> points = text.toUcs4();
+    for (qsizetype i = 0; i < points.size(); ++i) {
+        const char32_t c = points.at(i);
+        bool part = (c >= 0x1F1E6 && c <= 0x1F1FF) || (inRun && continuesEmoji(c));
+        if (!part && startsEmoji(c))
+            part = !usuallyText(c) || (i + 1 < points.size() && points.at(i + 1) == 0xFE0F);
+        if (part && !inRun)
+            out += open;
+        else if (!part && inRun)
+            out += QStringLiteral("</span>");
+        inRun = part;
+        out += QString::fromUcs4(&c, 1);
+    }
+    if (inRun)
+        out += QStringLiteral("</span>");
+    return out;
+}
+
+} // namespace
+
+QString MainWindow::renderContent(const QString &raw, bool jumbo)
 {
     if (raw.isEmpty())
         return {};
 
-    QString text = raw.toHtmlEscaped();
+    // Emoji follow the chat text size, in Discord's proportions: inline ones a
+    // little over the line height, and a message of up to 27 emoji and
+    // nothing else shown at three times the text.
+    const int textSize = qBound(12, AppConfig::instance().value(QStringLiteral("appearance/fontSize"), 14).toInt(), 24);
+    const int emojiOnly = jumbo ? emojiOnlyCount(raw) : 0;
+    const int emojiPx = (emojiOnly > 0 && emojiOnly <= 27) ? qRound(textSize * 48 / 14.0)
+                                                          : qRound(textSize * 22 / 14.0);
+    const QString emojiSource = emojiPx > 32 ? QStringLiteral("96") : QStringLiteral("48");
+
+    QString text = enlargeEmoji(raw.toHtmlEscaped(), qRound(emojiPx * 0.85));
 
     // A fake-Nitro emoji: a link to an emoji's picture, sent by our own Fake
     // Nitro plugin or by Vencord's. Shown as the emoji it stands for, whether it
@@ -4326,9 +4448,10 @@ QString MainWindow::renderContent(const QString &raw)
                 ++end;
 
             rebuilt += text.mid(last, match.capturedStart() - last);
-            rebuilt += QStringLiteral("<img src=\"https://cdn.discordapp.com/emojis/%1.%2?size=48\" "
-                                      "width=\"22\" height=\"22\">")
-                           .arg(id, animated ? QStringLiteral("gif") : QStringLiteral("png"));
+            rebuilt += QStringLiteral("<img src=\"https://cdn.discordapp.com/emojis/%1.%2?size=%3#e%4\" "
+                                      "width=\"%4\" height=\"%4\">")
+                           .arg(id, animated ? QStringLiteral("gif") : QStringLiteral("png"), emojiSource)
+                           .arg(emojiPx);
             last = end;
         }
         rebuilt += text.mid(last);
@@ -4351,9 +4474,10 @@ QString MainWindow::renderContent(const QString &raw)
             // width and height only. Qt's text engine does not understand
             // title, and the rest of the tag was spilling onto the page as
             // text next to a blank square.
-            rebuilt += QStringLiteral("<img src=\"https://cdn.discordapp.com/emojis/%1.%2?size=48\" "
-                                      "width=\"22\" height=\"22\">")
-                           .arg(id, animated ? QStringLiteral("gif") : QStringLiteral("png"));
+            rebuilt += QStringLiteral("<img src=\"https://cdn.discordapp.com/emojis/%1.%2?size=%3#e%4\" "
+                                      "width=\"%4\" height=\"%4\">")
+                           .arg(id, animated ? QStringLiteral("gif") : QStringLiteral("png"), emojiSource)
+                           .arg(emojiPx);
             last = match.capturedEnd();
         }
         rebuilt += text.mid(last);
@@ -8241,6 +8365,7 @@ void MainWindow::openSettings()
         m_settingsDialog = new SettingsDialog(m_store, m_rest, m_plugins, m_selfUserId, this);
         connect(m_settingsDialog, &SettingsDialog::appearanceChanged, this, &MainWindow::applyAppearance);
         connect(m_settingsDialog, &SettingsDialog::logOutRequested, this, &MainWindow::logOut);
+    connect(m_settingsDialog, &SettingsDialog::restartRequested, this, [this]() { restartInto({}); });
         connect(m_settingsDialog, &SettingsDialog::testNotificationRequested, this, [this]() {
             showDesktopNotification(QStringLiteral("Singularity"),
                                     QStringLiteral("This is what a new message looks like."), QString());

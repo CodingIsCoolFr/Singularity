@@ -58,6 +58,10 @@ signals:
     // "Send a test notification" on the Notifications page.
     void testNotificationRequested();
 
+    // "Restart now" under App zoom. The zoom is read once, before the first
+    // window exists, so it only takes effect in a new copy.
+    void restartRequested();
+
 protected:
     void showEvent(QShowEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;

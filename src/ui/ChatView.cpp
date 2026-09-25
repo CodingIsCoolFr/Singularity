@@ -6,6 +6,7 @@
 #include "core/Logger.h"
 
 #include <QElapsedTimer>
+#include <QtMath>
 #include <QPalette>
 #include <QScrollBar>
 #include <QTextDocument>
@@ -185,8 +186,18 @@ QSize ChatView::boxFor(const QUrl &url) const
 {
     if (looksLikeAvatar(url))
         return QSize(AvatarPixels, AvatarPixels);
-    if (looksLikeEmoji(url))
-        return QSize(EmojiPixels, EmojiPixels);
+    if (looksLikeEmoji(url)) {
+        // The size follows the chat text size, and rides in the address as
+        // "#e31" so each size is its own picture. The fragment never leaves
+        // this machine. Kept sharp on a scaled screen: the tag's width and
+        // height set the room it takes, the pixels only how fine it looks.
+        int pixels = EmojiPixels;
+        const QString fragment = url.fragment();
+        if (fragment.startsWith(QLatin1Char('e')))
+            pixels = qBound(12, fragment.mid(1).toInt(), 128);
+        pixels = qCeil(pixels * devicePixelRatioF());
+        return QSize(pixels, pixels);
+    }
     return QSize(MaxPictureWidth, MaxPictureHeight);
 }
 

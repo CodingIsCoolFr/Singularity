@@ -6,6 +6,7 @@
 #include <QGuiApplication>
 #include <QHash>
 #include <QPalette>
+#include <QRegularExpression>
 #include <QStyleHints>
 #include <QObject>
 #include <QVector3D>
@@ -1002,6 +1003,23 @@ code {
     font-size: 11px;
 }
 )"));
+
+    // Names, times, embeds and the rest grow with the message text, keeping
+    // the proportions they have at the usual 14 px, so a larger text size
+    // does not leave small grey labels next to big words.
+    const double scale = qBound(12, bodyFontSize, 24) / 14.0;
+    static const QRegularExpression fixedSize(QStringLiteral("font-size: (\\d+)px"));
+    QString scaled;
+    int last = 0;
+    for (auto it = fixedSize.globalMatch(css); it.hasNext();) {
+        const QRegularExpressionMatch match = it.next();
+        scaled += css.mid(last, match.capturedStart() - last);
+        scaled += QStringLiteral("font-size: %1px").arg(qRound(match.captured(1).toInt() * scale));
+        last = int(match.capturedEnd());
+    }
+    scaled += css.mid(last);
+    css = scaled;
+
     css.replace(QStringLiteral("@bodySize"), QString::number(bodyFontSize));
     return css;
 }
