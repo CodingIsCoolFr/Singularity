@@ -15,6 +15,7 @@ constexpr int MaxEncodeFailures = 30;
 // How often your own tile is refreshed. Twice a second is enough to tell you
 // the right screen is going out, which is all it is for.
 constexpr qint64 PreviewEveryMs = 500;
+constexpr qint64 PreviewLargeEveryMs = 66;
 
 } // namespace
 
@@ -87,6 +88,23 @@ void ScreenShareWorker::begin(const QString &monitorId, int width, int height, i
         return;
     }
 
+    // Only the CPU would take it, so ask less of the CPU. 1080p at 30 in
+    // software took a friend's whole machine with it: the window froze fifty
+    // times a minute and her voice lagged (2026-09-25). 720p is Discord's own
+    // ceiling without Nitro, and a quarter of the work.
+    if (!m_encoder.isHardware() && outHeight > 720) {
+        const int cappedWidth = int(qRound(double(outWidth) * 720.0 / outHeight));
+        if (m_encoder.open(cappedWidth, 720, fps, bitrate)) {
+            wlog(QStringLiteral("share"),
+                 QStringLiteral("no graphics card encoder, so sending %1x720 instead of %2x%3")
+                     .arg(cappedWidth).arg(outWidth).arg(outHeight));
+        } else if (!m_encoder.open(outWidth, outHeight, fps, bitrate)) {
+            m_capture.stop();
+            emit failed(QStringLiteral("This machine has no H.264 encoder that would start."));
+            return;
+        }
+    }
+
     m_fps = qBound(5, fps, 60);
     m_running = true;
     m_encodeFailures = 0;
@@ -112,6 +130,12 @@ void ScreenShareWorker::end()
     m_running = false;
     if (was)
         emit stopped();
+}
+
+void ScreenShareWorker::setPreviewLarge(bool large)
+{
+    m_previewLarge = large;
+    m_lastPreviewMs = 0;   // the next picture comes at the new size at once
 }
 
 void ScreenShareWorker::requestKeyframe()
@@ -185,14 +209,20 @@ void ScreenShareWorker::tick()
     // Taken from the same pixels the encoder just read, so it costs a shrink
     // and nothing else. Done after the encode rather than before it, because
     // the encode is the job and this is the courtesy.
-    if (now - m_lastPreviewMs >= PreviewEveryMs) {
+    //
+    // While you have your own share on the big tile, it is 720p at fifteen a
+    // second instead: a thumbnail blown up to the stage twice a second looked
+    // like a share that did not work.
+    const qint64 every = m_previewLarge ? PreviewLargeEveryMs : PreviewEveryMs;
+    if (now - m_lastPreviewMs >= every) {
         m_lastPreviewMs = now;
 
         // Wraps the mapped pixels without copying; scaled() then makes the
         // copy that is safe to send across the thread boundary.
         const QImage whole(pixels, m_capture.width(), m_capture.height(), stride,
                            QImage::Format_ARGB32);
-        emit preview(whole.scaled(QSize(480, 270), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        const QSize box = m_previewLarge ? QSize(1280, 720) : QSize(480, 270);
+        emit preview(whole.scaled(box, Qt::KeepAspectRatio, Qt::SmoothTransformation));
     }
 
     if (units.isEmpty())
@@ -273,6 +303,13 @@ void ScreenShare::stop()
     if (!m_worker)
         return;
     QMetaObject::invokeMethod(m_worker, "end", Qt::QueuedConnection);
+}
+
+void ScreenShare::setPreviewLarge(bool large)
+{
+    if (!m_worker)
+        return;
+    QMetaObject::invokeMethod(m_worker, "setPreviewLarge", Qt::QueuedConnection, Q_ARG(bool, large));
 }
 
 void ScreenShare::requestKeyframe()

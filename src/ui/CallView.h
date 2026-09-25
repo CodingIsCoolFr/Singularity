@@ -60,6 +60,11 @@ signals:
     void focusRequested(const QString &userId, CallView::Surface surface);
     void visibilityChanged(bool visible);
 
+    // What sits on the big tile, each time that changes. Empty when the stage
+    // is hidden. Your own share uses it to send a full sized picture only
+    // while you are actually looking at it.
+    void stageChanged(const QString &userId, CallView::Surface surface);
+
 protected:
     void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
@@ -122,6 +127,8 @@ private:
 
     QHash<QString, int> m_lastViews;
     bool m_viewsPublished = false;
+    QString m_lastStageUser;
+    Surface m_lastStageSurface = Surface::Camera;
     QString m_channelId;
     bool m_stageSuppressed = false;
     QString m_focusedUser;

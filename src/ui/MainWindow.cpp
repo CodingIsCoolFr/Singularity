@@ -74,6 +74,7 @@
 #include <QTransform>
 #include <QVideoFrame>
 #include <QVideoSink>
+#include <private/qvideoframeconverter_p.h>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QPainter>
@@ -572,7 +573,9 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
             QVideoFrame frame = incoming;
             if (!frame.map(QVideoFrame::ReadOnly))
                 return;
-            QImage image = frame.toImage();
+            // On the CPU: the default sends it to the card and waits for it
+            // back, on the window thread.
+            QImage image = qImageFromVideoFrame(frame, /*forceCpu=*/true);
             const QtVideo::Rotation rotation = frame.rotation();
             const bool mirrored = frame.mirrored();
             frame.unmap();
@@ -1059,6 +1062,13 @@ void MainWindow::buildUi()
             [this](const QString &userId) { showProfile(userId, QCursor::pos()); });
     connect(m_callView, &CallView::volumeMenuRequested, this, &MainWindow::showPersonMenu);
     connect(m_callView, &CallView::watchAttempted, this, &MainWindow::watchStream);
+    // Your own share gets a full sized picture only while it is the big tile.
+    connect(m_callView, &CallView::stageChanged, this,
+            [this](const QString &userId, CallView::Surface surface) {
+                if (m_share)
+                    m_share->setPreviewLarge(!m_selfUserId.isEmpty() && userId == m_selfUserId
+                                             && surface == CallView::Surface::Share);
+            });
     // Only the cameras on screen are downloaded, at the size they are drawn.
     connect(m_callView, &CallView::videoViewsChanged, this, [this](const QHash<QString, int> &views) {
         if (m_voice)
@@ -6228,19 +6238,23 @@ void MainWindow::watchStream(const QString &userId)
     if (m_watchingUserId == userId)
         return;
 
-    stopWatchingStream();
-
     // Our own share is shown from our own capture, never watched through
     // Discord. Watching it sent our video out and straight back to us, and
     // leaving it afterwards sent STREAM_DELETE for our own key - which Discord
     // reads as "stop broadcasting". A share ended the moment someone clicked
     // another person's tile (19:35:09 in the 0.6.84 log: watch AZARYA, and 80
     // ms later "Discord ended our stream").
+    //
+    // Checked before anything is stopped. Looking at your own share is only
+    // a change of which tile is big; it used to end the stream you were
+    // watching as well (11:00:29 and 11:02:50 in the 2026-09-25 log).
     if (userId == m_selfUserId) {
         if (m_callView)
             m_callView->setFocusedUser(userId, CallView::Surface::Share);
         return;
     }
+
+    stopWatchingStream();
 
     m_watchingUserId = userId;
     if (m_callView)
@@ -8264,6 +8278,7 @@ void MainWindow::applyAppearance()
     const QColor seed(config.value(QStringLiteral("appearance/themeSeed"),
                                    QLatin1String(Theme::DefaultSeed)).toString());
     Theme::applySeed(seed.isValid() ? seed : QColor(QLatin1String(Theme::DefaultSeed)));
+    Theme::applyPalette();
     qApp->setStyleSheet(Theme::applicationStyleSheet());
 
     if (m_messageView) {

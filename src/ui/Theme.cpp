@@ -3,7 +3,10 @@
 #include <QApplication>
 #include <QColor>
 #include <QEvent>
+#include <QGuiApplication>
 #include <QHash>
+#include <QPalette>
+#include <QStyleHints>
 #include <QObject>
 #include <QVector3D>
 #include <QWidget>
@@ -330,6 +333,81 @@ const Preset *presets(int *count)
     if (count)
         *count = int(sizeof(kPresets) / sizeof(kPresets[0]));
     return kPresets;
+}
+
+// The program is dark, always, and says so to Qt.
+//
+// With Windows in light mode, Qt's Windows 11 style draws in its light colours
+// wherever the style sheet does not name one - the fields and edges of the
+// sign-in window came out white with pale text on them. Switching Windows back
+// to dark did not repair a window already built. Telling Qt the scheme is dark,
+// and giving it a palette with every colour set, takes the system setting out
+// of the picture: a colour set here is not replaced when Windows changes its
+// mind, because Qt only fills in the roles a palette leaves unset.
+void applyPalette()
+{
+    if (!qApp)
+        return;
+
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+    QGuiApplication::styleHints()->setColorScheme(Qt::ColorScheme::Dark);
+#endif
+
+    const QColor text{QLatin1String(TextPrimary)};
+    const QColor faint{QLatin1String(TextFaint)};
+    const QColor chat{QLatin1String(SurfaceChat)};
+    const QColor input{QLatin1String(SurfaceInput)};
+    const QColor hover{QLatin1String(SurfaceHover)};
+    const QColor sidebar{QLatin1String(SurfaceSidebar)};
+    const QColor rail{QLatin1String(SurfaceRail)};
+    const QColor border{QLatin1String(Border)};
+    const QColor accent{QLatin1String(Accent)};
+    const QColor dark{QLatin1String(Dark)};
+
+    QPalette palette;
+    const auto both = [&palette](QPalette::ColorRole role, const QColor &colour) {
+        palette.setColor(QPalette::Active, role, colour);
+        palette.setColor(QPalette::Inactive, role, colour);
+    };
+
+    both(QPalette::Window, chat);
+    both(QPalette::WindowText, text);
+    both(QPalette::Base, input);
+    both(QPalette::AlternateBase, sidebar);
+    both(QPalette::ToolTipBase, rail);
+    both(QPalette::ToolTipText, text);
+    both(QPalette::PlaceholderText, faint);
+    both(QPalette::Text, text);
+    both(QPalette::Button, input);
+    both(QPalette::ButtonText, text);
+    both(QPalette::BrightText, QColor(Qt::white));
+    both(QPalette::Light, hover);
+    both(QPalette::Midlight, border);
+    both(QPalette::Mid, border);
+    both(QPalette::Dark, rail);
+    both(QPalette::Shadow, dark);
+    both(QPalette::Highlight, accent);
+    both(QPalette::HighlightedText, dark);
+    both(QPalette::Link, accent);
+    both(QPalette::LinkVisited, accent);
+    both(QPalette::Accent, accent);
+
+    // Disabled is the same dark ground with the writing dimmed, never the
+    // light greys Qt would otherwise fill in.
+    const QPalette::ColorRole roles[] = {
+        QPalette::Window, QPalette::Base, QPalette::AlternateBase, QPalette::ToolTipBase,
+        QPalette::Button, QPalette::Light, QPalette::Midlight, QPalette::Mid,
+        QPalette::Dark, QPalette::Shadow, QPalette::Highlight, QPalette::Accent,
+        QPalette::ToolTipText, QPalette::BrightText, QPalette::Link, QPalette::LinkVisited,
+        QPalette::HighlightedText};
+    for (const QPalette::ColorRole role : roles)
+        palette.setColor(QPalette::Disabled, role, palette.color(QPalette::Active, role));
+    palette.setColor(QPalette::Disabled, QPalette::WindowText, faint);
+    palette.setColor(QPalette::Disabled, QPalette::Text, faint);
+    palette.setColor(QPalette::Disabled, QPalette::ButtonText, faint);
+    palette.setColor(QPalette::Disabled, QPalette::PlaceholderText, faint);
+
+    QApplication::setPalette(palette);
 }
 
 void installDarkTitleBars()

@@ -13,6 +13,7 @@
 #include <QTimer>
 #include <QVideoFrame>
 #include <QVideoSink>
+#include <private/qvideoframeconverter_p.h>
 
 #include <exception>
 #include <utility>
@@ -301,9 +302,16 @@ void ChatView::adoptVideo(const QUrl &url)
         // program - which is what happened on 2026-09-24 (0.6.96 and 0.6.97:
         // Qt's QRhi readback in QVideoFrame::toImage threw std::bad_alloc on
         // the window thread). The video stops and stays a still picture.
+        //
+        // Converted on the CPU, not the way toImage() does it. toImage() sends
+        // the frame to the graphics card, converts it there and reads it back,
+        // and the read back waits for the card. On an AMD machine that wait was
+        // 250 to 600 ms on the window thread, fifty times a minute, with a few
+        // clips in view (the 2026-09-25 log from a friend's PC). A clip in a
+        // message is small, and the CPU does it in about a millisecond.
         QImage image;
         try {
-            image = frame.toImage();
+            image = qImageFromVideoFrame(frame, /*forceCpu=*/true);
         } catch (const std::exception &error) {
             wlog(QStringLiteral("media"), QStringLiteral("stopped the video %1: copying a frame failed (%2)")
                                               .arg(url.toString(), QString::fromLocal8Bit(error.what())));

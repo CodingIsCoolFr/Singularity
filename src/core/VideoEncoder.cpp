@@ -2,11 +2,15 @@
 
 #include "core/Logger.h"
 
+#include <cstdarg>
+#include <cstdio>
 #include <cstring>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/error.h>
+#include <libavutil/log.h>
+#include <libavutil/pixdesc.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
 #include <libswscale/swscale.h>
@@ -31,6 +35,19 @@ const char *const kCandidates[] = {
 bool isHardwareName(const QString &name)
 {
     return name != QLatin1String("libopenh264");
+}
+
+// FFmpeg's own complaints while an encoder is being opened. The error code
+// alone ("Invalid argument") never says which setting or which driver.
+void logOpenComplaint(void *, int level, const char *format, va_list args)
+{
+    if (level > AV_LOG_ERROR)
+        return;
+    char text[512] = {0};
+    std::vsnprintf(text, sizeof(text), format, args);
+    const QString line = QString::fromUtf8(text).trimmed();
+    if (!line.isEmpty())
+        wlog(QStringLiteral("encode"), QStringLiteral("ffmpeg: %1").arg(line));
 }
 
 } // namespace
@@ -60,12 +77,13 @@ bool VideoEncoder::open(int width, int height, int fps, int bitrate)
             m_hardware = isHardwareName(m_name);
 
             wlog(QStringLiteral("encode"),
-                 QStringLiteral("%1 encoder ready, %2x%3 at %4 fps, %5 kbit")
+                 QStringLiteral("%1 encoder ready, %2x%3 at %4 fps, %5 kbit, %6")
                      .arg(m_name)
                      .arg(width)
                      .arg(height)
                      .arg(fps)
-                     .arg(bitrate / 1000));
+                     .arg(bitrate / 1000)
+                     .arg(QLatin1String(av_get_pix_fmt_name(m_context->pix_fmt))));
             return true;
         }
     }
@@ -91,7 +109,33 @@ bool VideoEncoder::tryCodec(const char *name, int width, int height, int fps, in
     context->height = height;
     context->time_base = AVRational{1, fps};
     context->framerate = AVRational{fps, 1};
-    context->pix_fmt = AV_PIX_FMT_YUV420P;
+
+    // The picture layout this encoder takes natively. Graphics card encoders
+    // work in NV12; Intel's accepts nothing else, and Windows' own encoder
+    // turns YUV420P away when the hardware is underneath. Handing every one of
+    // them YUV420P meant the Intel path could never open and the others
+    // often did not, so machines fell through to the CPU (a friend's AMD
+    // machine, 2026-09-25). Only Cisco's software encoder wants YUV420P.
+    AVPixelFormat format = AV_PIX_FMT_YUV420P;
+    {
+        const void *supported = nullptr;
+        int count = 0;
+        if (avcodec_get_supported_config(nullptr, codec, AV_CODEC_CONFIG_PIX_FORMAT, 0,
+                                         &supported, &count) >= 0 && supported && count > 0) {
+            const auto *list = static_cast<const AVPixelFormat *>(supported);
+            bool hasNv12 = false;
+            bool hasYuv = false;
+            for (int i = 0; i < count; ++i) {
+                hasNv12 = hasNv12 || list[i] == AV_PIX_FMT_NV12;
+                hasYuv = hasYuv || list[i] == AV_PIX_FMT_YUV420P;
+            }
+            if (hasNv12 && qstrcmp(name, "libopenh264") != 0)
+                format = AV_PIX_FMT_NV12;
+            else if (!hasYuv && hasNv12)
+                format = AV_PIX_FMT_NV12;
+        }
+    }
+    context->pix_fmt = format;
 
     context->bit_rate = bitrate;
     context->rc_max_rate = bitrate;
@@ -133,6 +177,8 @@ bool VideoEncoder::tryCodec(const char *name, int width, int height, int fps, in
         av_opt_set_int(context->priv_data, "b_ref_mode", 0, 0);
     } else if (qstrcmp(name, "h264_amf") == 0) {
         av_opt_set(context->priv_data, "usage", "ultralowlatency", 0);
+        // AMF has no plain "baseline"; this is its name for the same thing.
+        av_opt_set(context->priv_data, "profile", "constrained_baseline", 0);
         av_opt_set(context->priv_data, "rc", "cbr", 0);
         av_opt_set_int(context->priv_data, "bf_delta_qp", 0, 0);
     } else if (qstrcmp(name, "h264_qsv") == 0) {
@@ -142,6 +188,9 @@ bool VideoEncoder::tryCodec(const char *name, int width, int height, int fps, in
     } else if (qstrcmp(name, "h264_mf") == 0) {
         av_opt_set_int(context->priv_data, "hw_encoding", 1, 0);
         av_opt_set(context->priv_data, "rate_control", "cbr", 0);
+        // Windows' name for "someone is watching this screen live": low
+        // delay, sharp text.
+        av_opt_set(context->priv_data, "scenario", "display_remoting", 0);
     } else if (qstrcmp(name, "libopenh264") == 0) {
         // Software, so it gets the cheapest settings and more threads: this
         // is the path where the machine has nothing better, and the cost
@@ -151,7 +200,16 @@ bool VideoEncoder::tryCodec(const char *name, int width, int height, int fps, in
         context->thread_count = 0;   // let FFmpeg choose
     }
 
-    if (avcodec_open2(context, codec, nullptr) < 0) {
+    av_log_set_callback(logOpenComplaint);
+    const int opened = avcodec_open2(context, codec, nullptr);
+    av_log_set_callback(av_log_default_callback);
+    if (opened < 0) {
+        // Said, because the next one down may be the CPU. A friend's AMD card
+        // fell through to software at 1080p and nothing said why.
+        char reason[AV_ERROR_MAX_STRING_SIZE] = {0};
+        av_strerror(opened, reason, sizeof(reason));
+        wlog(QStringLiteral("encode"),
+             QStringLiteral("%1 would not start: %2").arg(QLatin1String(name), QString::fromUtf8(reason)));
         avcodec_free_context(&context);
         return false;
     }
@@ -225,7 +283,7 @@ bool VideoEncoder::convert(const uchar *bgra, int srcWidth, int srcHeight, int s
         // is most of what anybody shares a screen to show.
         const bool bigReduction = srcWidth >= m_width * 2;
         m_scaler = sws_getContext(srcWidth, srcHeight, AV_PIX_FMT_BGRA,
-                                  m_width, m_height, AV_PIX_FMT_YUV420P,
+                                  m_width, m_height, m_context->pix_fmt,
                                   bigReduction ? SWS_BICUBIC : SWS_BILINEAR,
                                   nullptr, nullptr, nullptr);
         m_sourceWidth = srcWidth;

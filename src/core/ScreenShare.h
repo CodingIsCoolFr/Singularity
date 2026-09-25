@@ -43,6 +43,9 @@ public slots:
     // so far describes changes from a picture it never saw.
     void requestKeyframe();
 
+    // Your own share is on the big tile: send a bigger, faster preview.
+    void setPreviewLarge(bool large);
+
 signals:
     // One complete picture, already split into the pieces RTP wants.
     void picture(const QList<QByteArray> &units, bool keyframe);
@@ -81,6 +84,7 @@ private:
     qint64 m_lastPreviewMs = 0;
 
     int m_fps = 30;
+    bool m_previewLarge = false;
     bool m_running = false;
     bool m_saidFirst = false;
     int m_encodeFailures = 0;
@@ -100,6 +104,7 @@ public:
     void start(const QString &monitorId, int width, int height, int fps, int bitrate);
     void stop();
     void requestKeyframe();
+    void setPreviewLarge(bool large);
     bool isRunning() const { return m_running; }
 
 signals:

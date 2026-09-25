@@ -296,7 +296,62 @@ private:
         int dropped = 0;
         int hungry = 0;
         int rotation = 0;
+
+        // Lost packets we have asked to have sent again, and when we last
+        // asked. A hole is waited on for a while before the picture is given
+        // up, because the copy is usually on its way.
+        QHash<quint16, qint64> nacked;
+        QHash<quint16, int> nackTries;
+        qint64 holeSinceMs = 0;
+        int asked = 0;
+        int resent = 0;
     };
+
+    // Resending. A picture is dozens of packets; lose one and the whole
+    // picture is useless, and every picture after it until the next keyframe.
+    // Discord's clients ask for just the missing packet (RTCP NACK, RFC 4585)
+    // and get it back on the stream's "rtx" partner (RFC 4588). Without this,
+    // a stream through a far or busy server showed nothing at all.
+    void requestMissingVideo(VideoStream &stream, quint32 ssrc, quint16 from, quint16 to);
+    void sendNack(quint32 mediaSsrc, const QList<quint16> &sequences);
+    void sweepVideoHoles();
+    QHash<quint32, quint32> m_rtxToMedia;
+    int m_statVideoRecovered = 0;
+    int m_statNacksSent = 0;
+
+    // Our own pictures, kept for a moment so a viewer who lost one can have
+    // it again. Indexed by sequence number modulo the size.
+    struct SentVideoPacket {
+        quint16 sequence = 0;
+        quint32 timestamp = 0;
+        bool marker = false;
+        bool valid = false;
+        QByteArray payload;
+    };
+    static constexpr int SentVideoHistory = 1024;
+    QList<SentVideoPacket> m_sentVideo;
+    quint16 m_rtxSequence = 0;
+    quint16 m_transportSequence = 0;
+    int m_statVideoResentOut = 0;
+    bool m_saidFeedback = false;
+    int m_statRtcpIn = 0;
+    void resendVideo(const QList<quint16> &sequences);
+
+    // Pacing. A keyframe is a hundred packets; sent all at once they queue in
+    // the home router in front of the voice packets, and the voice arrives
+    // late in a lump every two seconds. Spread over a few milliseconds each,
+    // at a bit over twice the stream's own rate, they do not.
+    void queueVideoDatagram(const QByteArray &packet);
+    void drainPacer();
+    QList<QByteArray> m_paceQueue;
+    qint64 m_paceQueuedBytes = 0;
+    QTimer m_paceTimer;
+    QElapsedTimer m_paceClock;
+    qint64 m_paceLastMs = 0;
+    double m_paceBudget = 0.0;
+    qint64 m_rateWindowStartMs = 0;
+    qint64 m_rateWindowBytes = 0;
+    double m_videoBytesPerMs = 0.0;
 
     void handleVideoPacket(quint32 ssrc, const QByteArray &payload, bool endOfFrame,
                            quint16 sequence, int rotation);

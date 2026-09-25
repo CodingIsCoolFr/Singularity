@@ -385,6 +385,12 @@ VoiceConnection::VoiceConnection(QObject *parent)
     m_sendTimer.setParent(this);
     m_playTimer.setParent(this);
     m_handshakeWatchdog.setParent(this);
+    m_paceTimer.setParent(this);
+
+    m_paceTimer.setSingleShot(false);
+    m_paceTimer.setTimerType(Qt::PreciseTimer);
+    m_paceTimer.setInterval(2);
+    connect(&m_paceTimer, &QTimer::timeout, this, &VoiceConnection::drainPacer);
 
     m_heartbeatTimer.setSingleShot(false);
     m_sendTimer.setSingleShot(false);
@@ -966,6 +972,8 @@ void VoiceConnection::onTextMessage(const QString &message)
             const bool active = stream.value(QStringLiteral("active")).toBool(true);
             if (rtx != 0)
                 m_rtxSsrcs.insert(rtx);
+            if (rtx != 0 && ssrc != 0)
+                m_rtxToMedia.insert(rtx, ssrc);
             if (ssrc == 0 || !active)
                 continue;
             keep.insert(ssrc);
@@ -1720,6 +1728,9 @@ void VoiceConnection::stopAudio()
 
 void VoiceConnection::onSendTick()
 {
+    if (!m_videoStreams.isEmpty())
+        sweepVideoHoles();
+
     // A share carries no microphone, only the sound of what is shared.
     if (m_viewerOnly) {
         sendSharedSound();
@@ -1900,9 +1911,25 @@ void VoiceConnection::reportAudioStats()
                         .arg(m_statVideoSealFailed);
         if (m_daveVersion > 0)
             line += QStringLiteral(" [end-to-end v%1]").arg(m_daveVersion);
+        if (m_statVideoResentOut > 0)
+            line += QStringLiteral(", %1 sent again for viewers").arg(m_statVideoResentOut);
         m_statVideoSent = 0;
         m_statVideoSealFailed = 0;
+        m_statVideoResentOut = 0;
     }
+
+    // Reports and requests from the server and the people watching. Zero on a
+    // connection that is sending or receiving pictures means they are not
+    // getting through to us.
+    if (m_statRtcpIn > 0)
+        line += QStringLiteral(", %1 reports in").arg(m_statRtcpIn);
+    if (m_statNacksSent > 0 || m_statVideoRecovered > 0)
+        line += QStringLiteral(", asked for %1 lost picture packets, %2 came back")
+                    .arg(m_statNacksSent)
+                    .arg(m_statVideoRecovered);
+    m_statRtcpIn = 0;
+    m_statNacksSent = 0;
+    m_statVideoRecovered = 0;
 
     // What the buffers did, summed over everyone. "rebuilt" is a lost packet
     // recovered from the next one's FEC copy; "guessed" is one there was no
@@ -2001,17 +2028,48 @@ void VoiceConnection::onUdpReadyRead()
         //
         // RTCP (sender reports, NACKs) uses 200-207 and is not media. Counting
         // those as failed decrypts made a working call look broken.
-        const quint8 payloadType = packet.size() > 1
-            ? static_cast<quint8>(packet[1]) & 0x7F
-            : 0;
-        if (payloadType >= 200 && payloadType <= 207) {
+        //
+        // Judged on the whole second byte, as RFC 5761 says. RTCP types are
+        // 200 to 207 and fill that byte; masking off the top bit first, as
+        // this once did, can never give more than 127, so every report and
+        // every request from a viewer was tried as media, failed to open, and
+        // was counted as "rejected by the transport" - 50 to 60 of them every
+        // five seconds while sharing.
+        const quint8 secondByte = packet.size() > 1 ? static_cast<quint8>(packet[1]) : 0;
+        const quint8 payloadType = secondByte & 0x7F;
+        if (secondByte >= 200 && secondByte <= 207) {
+            ++m_statRtcpIn;
             // Not media, but not nothing: this is where a viewer says it
             // cannot draw anything from what we have sent.
             handleIncomingRtcp(packet);
             continue;
         }
-        if (payloadType == m_rtxPayloadType)
+        // A packet sent again because we asked. Inside is the original
+        // sequence number, then the original payload, on a partner stream
+        // (RFC 4588). Unwrapped, it goes in as though it had arrived on time.
+        if (payloadType == m_rtxPayloadType) {
+            QByteArray payload;
+            quint32 rtxSsrc = 0;
+            bool marker = false;
+            int rotation = 0;
+            if (!decryptFrame(packet, payload, rtxSsrc, &marker, nullptr, &rotation))
+                continue;
+            const quint32 media = m_rtxToMedia.value(rtxSsrc);
+            // Two bytes of sequence and nothing else is padding, which
+            // Discord sends on this stream to measure the line.
+            if (media == 0 || payload.size() <= 2)
+                continue;
+            const auto *raw = reinterpret_cast<const quint8 *>(payload.constData());
+            const quint16 original = static_cast<quint16>((raw[0] << 8) | raw[1]);
+            if (VideoStream *stream = m_videoStreams.value(media)) {
+                if (stream->nacked.contains(original)) {
+                    ++stream->resent;
+                    ++m_statVideoRecovered;
+                }
+            }
+            handleVideoPacket(media, payload.mid(2), marker, original, rotation);
             continue;
+        }
 
         const bool isVideo = payloadType == m_videoPayloadType
             || payloadType == VideoPayloadType;
@@ -2081,6 +2139,7 @@ void VoiceConnection::clearVideoStreams()
     m_videoRid.clear();
     m_bestVideoSsrc.clear();
     m_rtxSsrcs.clear();
+    m_rtxToMedia.clear();
     m_lastWantedVideo.clear();
 }
 
@@ -2113,27 +2172,31 @@ void VoiceConnection::handleVideoPacket(quint32 ssrc, const QByteArray &payload,
         return;
     }
 
+    // How many packets may wait behind a hole. A 1080p keyframe is well over
+    // a hundred, and the one lost near its start holds up all the rest.
+    constexpr int MaxHeldVideo = 1024;
+
     const quint16 dist = static_cast<quint16>(sequence - stream.nextSeq);
     if (dist == 0) {
         ingestVideoPayload(stream, ssrc, userId, payload, endOfFrame, rotation);
         stream.nextSeq = static_cast<quint16>(stream.nextSeq + 1);
         flushHeldVideo(stream, ssrc, userId);
+        // Filled, or stopped at the next hole, which starts its own wait.
+        stream.holeSinceMs = stream.held.isEmpty() ? 0 : QDateTime::currentMSecsSinceEpoch();
         return;
     }
 
-    if (dist < 0x8000 && dist <= 64) {
-        // Arrived early. Hold it and wait for the hole — treating this as
-        // loss is what dropped a whole busy 1080p picture when two packets
-        // swapped places.
+    if (dist < 0x8000 && dist <= MaxHeldVideo) {
+        // Arrived early: something before it is missing, or only late. Hold
+        // it, ask for what is missing, and wait - sweepVideoHoles() gives up
+        // on the hole if the copy does not come. Giving up the moment the
+        // picture's last packet was seen is what made a far stream show
+        // nothing at all (bom06, 2026-09-25: 692 packets, 0 pictures).
         stream.held.insert(sequence, {payload, endOfFrame, rotation});
-        bool markerHeld = false;
-        for (const HeldPacket &held : stream.held) {
-            if (held.endOfFrame) {
-                markerHeld = true;
-                break;
-            }
-        }
-        if ((markerHeld && !stream.held.contains(stream.nextSeq)) || stream.held.size() >= 64)
+        if (stream.holeSinceMs == 0)
+            stream.holeSinceMs = QDateTime::currentMSecsSinceEpoch();
+        requestMissingVideo(stream, ssrc, stream.nextSeq, sequence);
+        if (stream.held.size() >= MaxHeldVideo)
             skipLostVideo(stream, ssrc, userId);
         return;
     }
@@ -2142,6 +2205,9 @@ void VoiceConnection::handleVideoPacket(quint32 ssrc, const QByteArray &payload,
         // Jumped far ahead: a burst was lost, not reordered.
         stream.gap = true;
         stream.held.clear();
+        stream.nacked.clear();
+        stream.nackTries.clear();
+        stream.holeSinceMs = 0;
         stream.assembling.clear();
         ingestVideoPayload(stream, ssrc, userId, payload, endOfFrame, rotation);
         stream.nextSeq = static_cast<quint16>(sequence + 1);
@@ -2184,6 +2250,134 @@ void VoiceConnection::skipLostVideo(VideoStream &stream, quint32 ssrc, const QSt
         return;
     stream.nextSeq = bestSeq;
     flushHeldVideo(stream, ssrc, userId);
+    stream.holeSinceMs = stream.held.isEmpty() ? 0 : QDateTime::currentMSecsSinceEpoch();
+}
+
+// Asks again for whatever is still missing, and gives a hole up once waiting
+// longer would only make the picture late. Run on every beat.
+void VoiceConnection::sweepVideoHoles()
+{
+    // Long enough for a copy to cross the world and back; short enough that
+    // a picture given up on is still followed by a fresh one quickly.
+    constexpr qint64 HoleWaitMs = 400;
+    constexpr qint64 AskAgainMs = 120;
+    constexpr int MaxTries = 3;
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    for (auto it = m_videoStreams.begin(); it != m_videoStreams.end(); ++it) {
+        VideoStream &stream = *it.value();
+        const quint32 ssrc = it.key();
+
+        // Forget requests for anything already behind us.
+        for (auto n = stream.nacked.begin(); n != stream.nacked.end();) {
+            if (static_cast<quint16>(n.key() - stream.nextSeq) >= 0x8000) {
+                stream.nackTries.remove(n.key());
+                n = stream.nacked.erase(n);
+            } else {
+                ++n;
+            }
+        }
+
+        if (stream.held.isEmpty() || stream.holeSinceMs == 0)
+            continue;
+
+        // A sender or server that never answers is not waited on: after
+        // thirty unanswered requests a hole is given up almost at once, as it
+        // was before any of this existed.
+        const qint64 wait = (stream.asked >= 30 && stream.resent == 0) ? 60 : HoleWaitMs;
+        if (now - stream.holeSinceMs > wait) {
+            skipLostVideo(stream, ssrc, m_videoSsrcToUser.value(ssrc));
+            continue;
+        }
+
+        QList<quint16> again;
+        for (auto n = stream.nacked.begin(); n != stream.nacked.end(); ++n) {
+            if (stream.held.contains(n.key()) || now - n.value() < AskAgainMs)
+                continue;
+            int &tries = stream.nackTries[n.key()];
+            if (tries >= MaxTries)
+                continue;
+            ++tries;
+            n.value() = now;
+            again.append(n.key());
+        }
+        if (!again.isEmpty())
+            sendNack(ssrc, again);
+    }
+}
+
+void VoiceConnection::requestMissingVideo(VideoStream &stream, quint32 ssrc, quint16 from,
+                                          quint16 to)
+{
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    QList<quint16> missing;
+    for (quint16 seq = from; seq != to && missing.size() < 256; ++seq) {
+        if (stream.held.contains(seq) || stream.nacked.contains(seq))
+            continue;
+        stream.nacked.insert(seq, now);
+        stream.nackTries.insert(seq, 1);
+        missing.append(seq);
+    }
+    if (!missing.isEmpty()) {
+        stream.asked += int(missing.size());
+        sendNack(ssrc, missing);
+    }
+}
+
+// RTCP generic NACK (RTPFB, format 1). Each entry names one lost packet and,
+// in a sixteen-bit mask, up to sixteen more right after it.
+void VoiceConnection::sendNack(quint32 mediaSsrc, const QList<quint16> &sequences)
+{
+    if (m_secretKey.isEmpty() || m_ssrc == 0 || mediaSsrc == 0 || sequences.isEmpty())
+        return;
+
+    QList<quint16> sorted = sequences;
+    const quint16 base = sorted.first();
+    std::sort(sorted.begin(), sorted.end(), [base](quint16 a, quint16 b) {
+        return static_cast<quint16>(a - base) < static_cast<quint16>(b - base);
+    });
+
+    QList<QPair<quint16, quint16>> entries;
+    for (const quint16 seq : sorted) {
+        if (!entries.isEmpty()) {
+            const quint16 offset = static_cast<quint16>(seq - entries.last().first);
+            if (offset >= 1 && offset <= 16) {
+                entries.last().second |= static_cast<quint16>(1u << (offset - 1));
+                continue;
+            }
+        }
+        entries.append({seq, 0});
+    }
+
+    QByteArray rtcp(12 + entries.size() * 4, '\0');
+    auto *bytes = reinterpret_cast<quint8 *>(rtcp.data());
+    const int words = 2 + int(entries.size());
+    bytes[0] = 0x81;   // version 2, FMT 1 (generic NACK)
+    bytes[1] = 205;    // transport-layer feedback
+    bytes[2] = static_cast<quint8>(words >> 8);
+    bytes[3] = static_cast<quint8>(words & 0xFF);
+    bytes[4] = static_cast<quint8>(m_ssrc >> 24);
+    bytes[5] = static_cast<quint8>(m_ssrc >> 16);
+    bytes[6] = static_cast<quint8>(m_ssrc >> 8);
+    bytes[7] = static_cast<quint8>(m_ssrc & 0xFF);
+    bytes[8] = static_cast<quint8>(mediaSsrc >> 24);
+    bytes[9] = static_cast<quint8>(mediaSsrc >> 16);
+    bytes[10] = static_cast<quint8>(mediaSsrc >> 8);
+    bytes[11] = static_cast<quint8>(mediaSsrc & 0xFF);
+    for (int i = 0; i < entries.size(); ++i) {
+        quint8 *entry = bytes + 12 + i * 4;
+        entry[0] = static_cast<quint8>(entries[i].first >> 8);
+        entry[1] = static_cast<quint8>(entries[i].first & 0xFF);
+        entry[2] = static_cast<quint8>(entries[i].second >> 8);
+        entry[3] = static_cast<quint8>(entries[i].second & 0xFF);
+    }
+
+    // Sealed the same way as the PLI: the first eight bytes in the clear.
+    const QByteArray packet = encryptFrame(rtcp.left(8), rtcp.mid(8));
+    if (packet.isEmpty())
+        return;
+    m_udp.writeDatagram(packet, QHostAddress(m_serverAddress), m_serverPort);
+    m_statNacksSent += int(sequences.size());
 }
 
 void VoiceConnection::ingestVideoPayload(VideoStream &stream, quint32 ssrc, const QString &userId,
@@ -2688,6 +2882,8 @@ void VoiceConnection::startSendingVideo(int width, int height)
         m_videoSsrc = m_ssrc + 1;
         m_rtxSsrc = m_ssrc + 2;
     }
+    m_sentVideo.clear();
+    m_saidFeedback = false;
 
     m_sendWidth = width;
     m_sendHeight = height;
@@ -2719,6 +2915,12 @@ void VoiceConnection::stopSendingVideo()
     m_videoSsrc = 0;
     m_rtxSsrc = 0;
     m_sendWidth = m_sendHeight = 0;
+
+    // Anything still waiting to leave belonged to the stream that just ended.
+    m_paceTimer.stop();
+    m_paceQueue.clear();
+    m_paceQueuedBytes = 0;
+    m_sentVideo.clear();
 
     wlog(QStringLiteral("share"), QStringLiteral("stopped sending video"));
 
@@ -2862,15 +3064,124 @@ void VoiceConnection::sendVideoPacket(const QByteArray &payload, bool endOfPictu
     QByteArray clear = header;
     clear.append(videoExtensionPreamble());
 
-    QByteArray body = videoExtensionBody(m_videoSequence, m_viewerOnly);
+    // The transport sequence counts every picture packet that leaves, resent
+    // ones included, so it is its own counter.
+    QByteArray body = videoExtensionBody(++m_transportSequence, m_viewerOnly);
     body.append(payload);
 
     const QByteArray packet = encryptFrame(clear, body);
     if (packet.isEmpty())
         return;
 
-    m_udp.writeDatagram(packet, QHostAddress(m_serverAddress), m_serverPort);
+    // Kept, so it can be sent again if a viewer loses it.
+    if (m_sentVideo.size() != SentVideoHistory)
+        m_sentVideo.resize(SentVideoHistory);
+    SentVideoPacket &kept = m_sentVideo[m_videoSequence % SentVideoHistory];
+    kept.sequence = m_videoSequence;
+    kept.timestamp = m_videoTimestamp;
+    kept.marker = endOfPicture;
+    kept.valid = true;
+    kept.payload = payload;
+
+    queueVideoDatagram(packet);
     ++m_statVideoSent;
+}
+
+// Sends again what a viewer said it lost, on the retransmission stream Discord
+// gave us next to the picture stream: the original sequence number first, then
+// the original payload (RFC 4588).
+void VoiceConnection::resendVideo(const QList<quint16> &sequences)
+{
+    if (!m_sendingVideo || m_rtxSsrc == 0 || m_sentVideo.size() != SentVideoHistory)
+        return;
+
+    int sent = 0;
+    for (const quint16 seq : sequences) {
+        if (sent >= 128)
+            break;
+        const SentVideoPacket &kept = m_sentVideo.at(seq % SentVideoHistory);
+        if (!kept.valid || kept.sequence != seq)
+            continue;
+
+        ++m_rtxSequence;
+        QByteArray header = buildVideoRtpHeader(m_rtxSequence, kept.timestamp, m_rtxSsrc, kept.marker);
+        header[1] = static_cast<char>(m_rtxPayloadType | (kept.marker ? 0x80 : 0));
+
+        QByteArray clear = header;
+        clear.append(videoExtensionPreamble());
+
+        QByteArray body = videoExtensionBody(++m_transportSequence, m_viewerOnly);
+        body.append(static_cast<char>(seq >> 8));
+        body.append(static_cast<char>(seq & 0xFF));
+        body.append(kept.payload);
+
+        const QByteArray packet = encryptFrame(clear, body);
+        if (packet.isEmpty())
+            continue;
+
+        // Ahead of the queue: somebody's picture is stuck until this lands.
+        m_paceQueue.prepend(packet);
+        m_paceQueuedBytes += packet.size();
+        ++sent;
+        ++m_statVideoResentOut;
+    }
+    if (sent > 0) {
+        drainPacer();
+        if (!m_paceQueue.isEmpty() && !m_paceTimer.isActive())
+            m_paceTimer.start();
+    }
+}
+
+void VoiceConnection::queueVideoDatagram(const QByteArray &packet)
+{
+    if (!m_paceClock.isValid())
+        m_paceClock.start();
+    const qint64 now = m_paceClock.elapsed();
+
+    // What the stream has been sending lately, a second at a time.
+    m_rateWindowBytes += packet.size();
+    if (now - m_rateWindowStartMs >= 1000) {
+        m_videoBytesPerMs = double(m_rateWindowBytes) / double(qMax<qint64>(1, now - m_rateWindowStartMs));
+        m_rateWindowStartMs = now;
+        m_rateWindowBytes = 0;
+    }
+
+    m_paceQueue.append(packet);
+    m_paceQueuedBytes += packet.size();
+    drainPacer();
+    if (!m_paceQueue.isEmpty() && !m_paceTimer.isActive())
+        m_paceTimer.start();
+}
+
+void VoiceConnection::drainPacer()
+{
+    if (!m_paceClock.isValid())
+        m_paceClock.start();
+    const qint64 now = m_paceClock.elapsed();
+    const qint64 elapsed = qMax<qint64>(0, now - m_paceLastMs);
+    m_paceLastMs = now;
+
+    // Two and a half times the stream's own rate, as WebRTC's pacer does, and
+    // never under 4 Mbit/s, so a still screen that suddenly changes is not
+    // held back by a rate measured while nothing moved.
+    const double bytesPerMs = qMax(500.0, m_videoBytesPerMs * 2.5);
+    constexpr double MaxBurst = 6000.0;   // about five packets at once
+    m_paceBudget = qMin(m_paceBudget + double(elapsed) * bytesPerMs, MaxBurst);
+
+    // More than half a second behind means pacing is only adding delay.
+    const bool flush = double(m_paceQueuedBytes) > bytesPerMs * 500.0;
+
+    while (!m_paceQueue.isEmpty() && (flush || m_paceBudget > 0.0)) {
+        const QByteArray packet = m_paceQueue.takeFirst();
+        m_paceQueuedBytes -= packet.size();
+        m_paceBudget -= double(packet.size());
+        m_udp.writeDatagram(packet, QHostAddress(m_serverAddress), m_serverPort);
+    }
+    if (flush)
+        m_paceBudget = qMax(m_paceBudget, 0.0);
+
+    if (m_paceQueue.isEmpty())
+        m_paceTimer.stop();
 }
 
 // Asks for other people's video.
@@ -3054,10 +3365,10 @@ void VoiceConnection::handleIncomingRtcp(const QByteArray &packet)
 
     // 206 is payload-specific feedback. Format 1 is "I have lost the picture",
     // format 4 is "send a full picture now". Both mean the same thing to us.
-    // 205 is transport feedback, which is mostly requests to resend a
-    // particular packet; we do not keep old packets to resend, and a keyframe
-    // fixes the same problem more bluntly.
-    if (type != 206 || (format != 1 && format != 4))
+    // 205 format 1 is "these packets never arrived". We keep the last thousand
+    // or so and send them again, which is far cheaper than a keyframe.
+    const bool nack = type == 205 && format == 1;
+    if (!nack && (type != 206 || (format != 1 && format != 4)))
         return;
 
     // The body is encrypted, and the ssrc being complained about is in it.
@@ -3075,18 +3386,50 @@ void VoiceConnection::handleIncomingRtcp(const QByteArray &packet)
         reinterpret_cast<const unsigned char *>(packet.constData()), RtcpHeaderSize, nonce,
         reinterpret_cast<const unsigned char *>(m_secretKey.constData()));
 
-    if (result != 0 || plainLength < 8)
+    if (result != 0 || plainLength < 4)
         return;
 
     body.resize(static_cast<int>(plainLength));
     const auto *bytes = reinterpret_cast<const quint8 *>(body.constData());
 
-    // Bytes 0-3 are whoever is asking; 4-7 are the stream they mean.
-    const quint32 target = (quint32(bytes[4]) << 24) | (quint32(bytes[5]) << 16)
-        | (quint32(bytes[6]) << 8) | quint32(bytes[7]);
-
-    if (target != m_videoSsrc)
+    // Which stream they mean. The eight bytes in the clear are the RTCP
+    // header and the asker's ssrc, so the opened body starts with the stream
+    // being complained about. This used to read it four bytes further on, and
+    // demanded eight bytes where a PLI has four: no viewer's request for a
+    // keyframe was ever answered ("asked for a keyframe" is in no log). Both
+    // places are accepted, in case a sender puts its own ssrc inside.
+    const auto ssrcAt = [&](int at) {
+        return (quint32(bytes[at]) << 24) | (quint32(bytes[at + 1]) << 16)
+            | (quint32(bytes[at + 2]) << 8) | quint32(bytes[at + 3]);
+    };
+    int fciAt = -1;
+    if (ssrcAt(0) == m_videoSsrc)
+        fciAt = 4;
+    else if (body.size() >= 8 && ssrcAt(4) == m_videoSsrc)
+        fciAt = 8;
+    if (fciAt < 0)
         return;
+
+    if (!m_saidFeedback) {
+        m_saidFeedback = true;
+        wlog(QStringLiteral("share"),
+             QStringLiteral("viewers are talking back (RTCP %1/%2)").arg(type).arg(format));
+    }
+
+    if (nack) {
+        QList<quint16> lost;
+        for (int at = fciAt; at + 4 <= body.size(); at += 4) {
+            const quint16 first = static_cast<quint16>((bytes[at] << 8) | bytes[at + 1]);
+            const quint16 mask = static_cast<quint16>((bytes[at + 2] << 8) | bytes[at + 3]);
+            lost.append(first);
+            for (int bit = 0; bit < 16; ++bit) {
+                if (mask & (1u << bit))
+                    lost.append(static_cast<quint16>(first + bit + 1));
+            }
+        }
+        resendVideo(lost);
+        return;
+    }
 
     // Several viewers joining at once ask separately, and a keyframe is the
     // most expensive thing the encoder makes. One answers all of them.

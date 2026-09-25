@@ -1,11 +1,11 @@
 cmake_minimum_required(VERSION 3.21)
-project(Singularity VERSION 0.7.9 LANGUAGES CXX)
+project(Singularity VERSION 0.8.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network WebSockets Multimedia OpenGL OpenGLWidgets)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network WebSockets Multimedia MultimediaPrivate OpenGL OpenGLWidgets)
 qt_standard_project_setup()
 
 # Where the finished program goes.
@@ -293,6 +293,7 @@ target_link_libraries(Singularity PRIVATE
     Qt6::Network
     Qt6::WebSockets
     Qt6::Multimedia
+    Qt6::MultimediaPrivate
     Qt6::OpenGL
     Qt6::OpenGLWidgets
     "${OPUS_INSTALL}/lib/opus.lib"

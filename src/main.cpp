@@ -48,6 +48,17 @@ static bool holdRunningMutex()
 
 int main(int argc, char *argv[])
 {
+    // Clips in messages are decoded on the CPU, not the graphics card.
+    //
+    // A card-decoded frame lives on the card, and every picture drawn from
+    // one has to be copied back first. Qt's player does that copy on the
+    // window thread and waits for it; on an AMD machine each wait was up to
+    // 600 ms, fifty times a minute (2026-09-25). Message clips are small and
+    // cheap to decode in software. Only Qt's player reads this; the call
+    // video has its own decoder and is not affected. "none" names no device,
+    // so the list of allowed devices is empty.
+    qputenv("QT_FFMPEG_DECODING_HW_DEVICE_TYPES", "none");
+
     QSurfaceFormat format;
     format.setVersion(3, 3);
     format.setProfile(QSurfaceFormat::CoreProfile);
@@ -67,7 +78,7 @@ int main(int argc, char *argv[])
     CrashLog::install();
     app.setApplicationName(QStringLiteral("Singularity"));
     app.setOrganizationName(QStringLiteral("Singularity"));
-    app.setApplicationVersion(QStringLiteral("0.7.9"));
+    app.setApplicationVersion(QStringLiteral("0.8.0"));
     app.setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
 
     Theme::applySeed(QColor(AppConfig::instance().value(QStringLiteral("appearance/themeSeed"),
@@ -83,6 +94,7 @@ int main(int argc, char *argv[])
              .arg(Theme::seedColor().name(), QLatin1String(Theme::Accent),
                   QLatin1String(Theme::SurfaceChat), QLatin1String(Theme::TextPrimary),
                   QLatin1String(Theme::Dark)));
+    Theme::applyPalette();
     app.setStyleSheet(Theme::applicationStyleSheet());
 
     // The title bar belongs to Windows, not to Qt, so it has to be coloured

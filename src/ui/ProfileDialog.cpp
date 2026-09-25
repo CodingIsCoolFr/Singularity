@@ -24,6 +24,7 @@
 #include <QPainterPath>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QStackedWidget>
 #include <QStyle>
 #include <QToolButton>
@@ -31,6 +32,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <functional>
 
 namespace {
 
@@ -152,6 +154,28 @@ private:
     AnimatedImage *m_source = nullptr;
     QImage m_still;
     QColor m_fallback;
+};
+
+// Runs a function for every event another object receives, and lets the
+// event carry on.
+class EventHook : public QObject
+{
+public:
+    EventHook(QObject *parent, std::function<void(QEvent *)> onEvent)
+        : QObject(parent)
+        , m_onEvent(std::move(onEvent))
+    {
+    }
+
+protected:
+    bool eventFilter(QObject *, QEvent *event) override
+    {
+        m_onEvent(event);
+        return false;
+    }
+
+private:
+    std::function<void(QEvent *)> m_onEvent;
 };
 
 // Paints the round avatar, the decoration frame around it, and the status
@@ -421,12 +445,33 @@ QWidget *ProfileDialog::buildLeftCard()
     layout->setSpacing(6);
 
     // The avatar rides up over the banner.
-    m_avatar = new AvatarView(AvatarPixels, body);
+    //
+    // It belongs to the card, not to the scrolling body, and follows a
+    // placeholder in the body. Inside the body it was clipped at the scroll
+    // area's top edge: scroll a little and the banner cut the top of the face
+    // off. On the card it is drawn over the banner, moves with the text, and
+    // sits back in its place when you scroll up.
+    constexpr int AvatarRise = 52;
+    auto *avatarSpot = new QWidget(body);
+    avatarSpot->setFixedSize(AvatarPixels, AvatarPixels - AvatarRise);
     auto *avatarRow = new QHBoxLayout;
-    avatarRow->setContentsMargins(0, -52, 0, 0);
-    avatarRow->addWidget(m_avatar);
+    avatarRow->setContentsMargins(0, 0, 0, 0);
+    avatarRow->addWidget(avatarSpot);
     avatarRow->addStretch(1);
     layout->addLayout(avatarRow);
+
+    m_avatar = new AvatarView(AvatarPixels, card);
+    const auto placeAvatar = [card, avatarSpot, avatar = m_avatar]() {
+        const QPoint at = avatarSpot->mapTo(card, QPoint(0, 0));
+        avatar->move(at.x(), at.y() - AvatarRise);
+        avatar->raise();
+    };
+    connect(scroll->verticalScrollBar(), &QScrollBar::valueChanged, card, placeAvatar);
+    avatarSpot->installEventFilter(new EventHook(avatarSpot, [placeAvatar](QEvent *event) {
+        if (event->type() == QEvent::Move || event->type() == QEvent::Resize
+            || event->type() == QEvent::Show)
+            placeAvatar();
+    }));
 
     m_displayName = new QLabel(body);
     m_displayName->setWordWrap(true);

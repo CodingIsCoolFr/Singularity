@@ -386,6 +386,23 @@ void CallView::scrollStrip(int pixels)
 // the size they are drawn, and this does the same.
 void CallView::publishViews()
 {
+    QString stageUser;
+    Surface stageSurface = Surface::Camera;
+    if (!m_stageSuppressed && !isHidden()) {
+        for (const Tile &tile : m_tiles) {
+            if (tile.featured) {
+                stageUser = tile.userId;
+                stageSurface = tile.surface;
+                break;
+            }
+        }
+    }
+    if (stageUser != m_lastStageUser || stageSurface != m_lastStageSurface) {
+        m_lastStageUser = stageUser;
+        m_lastStageSurface = stageSurface;
+        emit stageChanged(stageUser, stageSurface);
+    }
+
     QHash<QString, int> views;
     if (!m_stageSuppressed && !isHidden()) {
         for (const Tile &tile : m_tiles) {

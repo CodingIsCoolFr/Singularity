@@ -68,6 +68,11 @@ const Preset *presets(int *count);
 // Qt stylesheet for the whole application.
 QString applicationStyleSheet();
 
+// Makes the program dark whatever Windows is set to, and sets every colour
+// the style sheet does not. Call after applySeed(), and again after each
+// later applySeed().
+void applyPalette();
+
 // CSS used inside the message view, which is a rich text document.
 QString messageViewCss(int bodyFontSize = 14);
 
