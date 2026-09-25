@@ -21,15 +21,20 @@ ProfilePreview::ProfilePreview(QWidget *parent)
     : QWidget(parent)
     , m_avatar(new AnimatedImage(this))
     , m_banner(new AnimatedImage(this))
+    , m_decoration(new AnimatedImage(this))
 {
     setMinimumSize(300, 380);
     connect(m_avatar, &AnimatedImage::frameChanged, this, [this]() { update(); });
     connect(m_banner, &AnimatedImage::frameChanged, this, [this]() { update(); });
+    connect(m_decoration, &AnimatedImage::frameChanged, this, [this]() { update(); });
 }
 
 void ProfilePreview::setAvatar(const QByteArray &bytes, const QImage &still)
 {
     m_avatarStill = still;
+    if (bytes == m_avatarBytes && !bytes.isEmpty())
+        return update();
+    m_avatarBytes = bytes;
     if (bytes.isEmpty() || !AnimatedImage::isAnimatedData(bytes))
         m_avatar->clear();
     else
@@ -37,15 +42,27 @@ void ProfilePreview::setAvatar(const QByteArray &bytes, const QImage &still)
     update();
 }
 
-void ProfilePreview::setDecoration(const QImage &decoration)
+void ProfilePreview::setDecoration(const QByteArray &bytes, const QImage &still)
 {
-    m_decoration = decoration;
+    m_decorationStill = still;
+    // Decoding an animation is not free; the same bytes again (every picture
+    // that lands redraws the card) keep the one already playing.
+    if (bytes == m_decorationBytes)
+        return update();
+    m_decorationBytes = bytes;
+    if (bytes.isEmpty() || !AnimatedImage::isAnimatedData(bytes))
+        m_decoration->clear();
+    else
+        m_decoration->setData(bytes);
     update();
 }
 
 void ProfilePreview::setBanner(const QByteArray &bytes, const QImage &still)
 {
     m_bannerStill = still;
+    if (bytes == m_bannerBytes && !bytes.isEmpty())
+        return update();
+    m_bannerBytes = bytes;
     if (bytes.isEmpty() || !AnimatedImage::isAnimatedData(bytes))
         m_banner->clear();
     else
@@ -109,7 +126,10 @@ void ProfilePreview::paintEvent(QPaintEvent *)
 
     // --- avatar, sitting half over the banner in a ring of the card colour.
     const QRect frame(AvatarLeft, BannerHeight - AvatarSize / 2, AvatarSize, AvatarSize);
-    const bool framed = !m_decoration.isNull();
+    QImage decoration = m_decoration->currentFrame();
+    if (decoration.isNull())
+        decoration = m_decorationStill;
+    const bool framed = !decoration.isNull();
     const int face = framed ? qRound(AvatarSize * 0.76) : AvatarSize - 12;
     const QRect faceRect(frame.center().x() - face / 2 + 1, frame.center().y() - face / 2 + 1, face, face);
 
@@ -125,7 +145,7 @@ void ProfilePreview::paintEvent(QPaintEvent *)
                                                ? MediaCache::initialsAvatar(fallbackName, face)
                                                : MediaCache::circular(avatarFrame, face));
     if (framed)
-        painter.drawImage(frame, m_decoration.scaled(frame.size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        painter.drawImage(frame, decoration.scaled(frame.size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
 
     // --- the words.
     int y = frame.bottom() + 14;

@@ -21,7 +21,8 @@ public:
 
     // `bytes` wins when it is an animation; `still` is the fallback frame.
     void setAvatar(const QByteArray &bytes, const QImage &still);
-    void setDecoration(const QImage &decoration);
+    // `bytes` is the animated PNG when there is one; `still` otherwise.
+    void setDecoration(const QByteArray &bytes, const QImage &still);
     void setBanner(const QByteArray &bytes, const QImage &still);
     void setBannerColour(const QColor &colour);
     void setNames(const QString &displayName, const QString &username);
@@ -36,9 +37,13 @@ protected:
 private:
     AnimatedImage *m_avatar = nullptr;
     AnimatedImage *m_banner = nullptr;
+    AnimatedImage *m_decoration = nullptr;
     QImage m_avatarStill;
     QImage m_bannerStill;
-    QImage m_decoration;
+    QImage m_decorationStill;
+    QByteArray m_decorationBytes;
+    QByteArray m_avatarBytes;
+    QByteArray m_bannerBytes;
     QColor m_bannerColour;
     QString m_displayName;
     QString m_username;

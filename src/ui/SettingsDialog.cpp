@@ -5,6 +5,7 @@
 #include "core/MessageStore.h"
 #include "core/RestClient.h"
 #include "plugin/PluginHost.h"
+#include "ui/AnimatedImage.h"
 #include "ui/AudioMeter.h"
 #include "ui/MediaCache.h"
 #include "ui/ProfilePreview.h"
@@ -509,6 +510,19 @@ QWidget *SettingsDialog::buildProfilesPage()
         profileEdited();
     });
 
+    // The playing tile: frames painted onto it as they come.
+    m_tileAnimation = new AnimatedImage(this);
+    connect(m_tileAnimation, &AnimatedImage::frameChanged, this, [this]() {
+        if (QListWidgetItem *item = m_decorations->item(m_animatedTileRow))
+            paintDecorationTile(item, m_tileAnimation->currentFrame());
+    });
+    m_decorations->setMouseTracking(true);
+    m_decorations->viewport()->installEventFilter(this);
+    connect(m_decorations, &QListWidget::itemEntered, this, [this](QListWidgetItem *item) {
+        m_decorationHover = m_decorations->row(item);
+        animateDecorationTile(m_decorationHover);
+    });
+
     // --- Banner -------------------------------------------------------------------
     left->addWidget(groupTitle(QStringLiteral("PROFILE BANNER"), page));
     m_accentButton = new QPushButton(QStringLiteral("Banner Colour"), page);
@@ -644,6 +658,16 @@ void SettingsDialog::showEvent(QShowEvent *event)
     loadProfile(true);
 }
 
+bool SettingsDialog::eventFilter(QObject *watched, QEvent *event)
+{
+    // The pointer left the decoration grid: the picked tile plays again.
+    if (m_decorations && watched == m_decorations->viewport() && event->type() == QEvent::Leave) {
+        m_decorationHover = -1;
+        animateDecorationTile(m_decorations->currentRow());
+    }
+    return QDialog::eventFilter(watched, event);
+}
+
 void SettingsDialog::setStatus(QLabel *label, bool ok, const QString &text)
 {
     if (!label)
@@ -755,36 +779,82 @@ void SettingsDialog::refreshProfileArt()
         if (!card)
             continue;
         card->setAvatar(avatarBytes, avatar);
-        card->setDecoration(decoration);
+        card->setDecoration(cache.animationData(decorationUrl), decoration);
         card->setBanner(bannerBytes, banner);
         card->setBannerColour(bannerColour);
         card->setNames(shown, m_loaded.username);
         card->setPronouns(m_pronouns->text().trimmed());
         card->setBio(card == m_preview ? m_bio->toPlainText() : QString());
     }
-    if (accent >= 0)
-        m_accentButton->setStyleSheet(QStringLiteral("QPushButton { border-left: 14px solid %1; }")
-                                          .arg(bannerColour.name()));
+    // The chosen colour as a small square on the button. A thick left border
+    // did this before and, on a rounded button, looked like a smudge.
+    if (accent >= 0) {
+        QPixmap swatch(16, 16);
+        swatch.fill(Qt::transparent);
+        QPainter paint(&swatch);
+        paint.setRenderHint(QPainter::Antialiasing, true);
+        paint.setPen(QColor(Theme::Border));
+        paint.setBrush(bannerColour);
+        paint.drawRoundedRect(QRectF(0.5, 0.5, 15, 15), 4, 4);
+        paint.end();
+        m_accentButton->setIcon(swatch);
+    } else {
+        m_accentButton->setIcon(QIcon());
+    }
 
     // Each decoration tile shows it around your own face, as Discord's does.
-    const QPixmap face = avatar.isNull() ? MediaCache::initialsAvatar(m_loaded.username, 54)
-                                         : MediaCache::circular(avatar, 54);
+    m_tileFace = avatar.isNull() ? MediaCache::initialsAvatar(m_loaded.username, 54)
+                                 : MediaCache::circular(avatar, 54);
     for (int row = 0; row < m_decorations->count(); ++row) {
         QListWidgetItem *item = m_decorations->item(row);
         const QString tileAsset = item->data(Qt::UserRole).toMap().value(QStringLiteral("asset")).toString();
-        QPixmap tile(72, 72);
-        tile.fill(Qt::transparent);
-        QPainter painter(&tile);
-        painter.setRenderHint(QPainter::Antialiasing, true);
-        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-        painter.drawPixmap(9, 9, face);
         const QUrl url = MediaCache::decorationUrl(tileAsset);
-        const QImage frame = url.isEmpty() ? QImage() : cache.image(url);
-        if (!frame.isNull())
-            painter.drawImage(QRect(0, 0, 72, 72), frame);
-        painter.end();
-        item->setIcon(tile);
+        paintDecorationTile(item, url.isEmpty() ? QImage() : cache.image(url));
     }
+
+    // One tile moves at a time - the one under the pointer, or else the one
+    // picked - as in Discord. Playing all of them would hold every frame of
+    // every decoration in memory at once.
+    animateDecorationTile(m_decorationHover >= 0 ? m_decorationHover : m_decorations->currentRow());
+}
+
+void SettingsDialog::paintDecorationTile(QListWidgetItem *item, const QImage &frame)
+{
+    QPixmap tile(72, 72);
+    tile.fill(Qt::transparent);
+    QPainter painter(&tile);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    painter.drawPixmap(9, 9, m_tileFace);
+    if (!frame.isNull())
+        painter.drawImage(QRect(0, 0, 72, 72), frame);
+    painter.end();
+    item->setIcon(tile);
+}
+
+void SettingsDialog::animateDecorationTile(int row)
+{
+    QListWidgetItem *item = m_decorations->item(row);
+    const QString asset = item ? item->data(Qt::UserRole).toMap().value(QStringLiteral("asset")).toString()
+                               : QString();
+    const QUrl url = MediaCache::decorationUrl(asset);
+    const QByteArray bytes = url.isEmpty() ? QByteArray() : MediaCache::instance().animationData(url);
+    if (row == m_animatedTileRow && bytes == m_animatedTileBytes)
+        return;
+
+    // The tile that stops goes back to its first frame.
+    if (QListWidgetItem *previous = m_decorations->item(m_animatedTileRow)) {
+        const QString oldAsset = previous->data(Qt::UserRole).toMap().value(QStringLiteral("asset")).toString();
+        const QUrl oldUrl = MediaCache::decorationUrl(oldAsset);
+        paintDecorationTile(previous, oldUrl.isEmpty() ? QImage() : MediaCache::instance().image(oldUrl));
+    }
+
+    m_animatedTileRow = row;
+    m_animatedTileBytes = bytes;
+    if (bytes.isEmpty())
+        m_tileAnimation->clear();
+    else
+        m_tileAnimation->setData(bytes);
 }
 
 void SettingsDialog::loadProfile(bool force)

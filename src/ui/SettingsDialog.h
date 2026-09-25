@@ -2,6 +2,7 @@
 
 #include <QDialog>
 #include <QJsonObject>
+#include <QPixmap>
 #include <QVariantMap>
 
 #include <functional>
@@ -58,6 +59,7 @@ signals:
 
 protected:
     void showEvent(QShowEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     // My Account and Profiles: what is on Discord now, loaded each time the
@@ -68,6 +70,8 @@ private:
     void loadServerNickname();
     void fillProfileFields();
     void refreshProfileArt();   // both cards and the decoration tiles
+    void paintDecorationTile(class QListWidgetItem *item, const QImage &frame);
+    void animateDecorationTile(int row);
     void profileEdited();
     bool profileDirty() const;
     void updateSaveBar();
@@ -157,6 +161,13 @@ private:
     QLineEdit *m_nickname = nullptr;
     QFrame *m_saveBar = nullptr;
     QPushButton *m_saveButton = nullptr;
+
+    // The one decoration tile that plays: hovered, or else the picked one.
+    class AnimatedImage *m_tileAnimation = nullptr;
+    QPixmap m_tileFace;
+    int m_animatedTileRow = -1;
+    QByteArray m_animatedTileBytes;
+    int m_decorationHover = -1;
 
     // Voice page.
     QComboBox *m_inputDevice = nullptr;

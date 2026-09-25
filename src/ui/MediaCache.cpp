@@ -505,11 +505,12 @@ QUrl MediaCache::decorationUrl(const QString &asset)
     if (asset.isEmpty())
         return {};
 
-    // passthrough=true hands back an animated PNG, and Qt ships no reader for
-    // those, so the picture came out empty. passthrough=false asks the CDN to
-    // flatten it into an ordinary PNG we can actually draw.
+    // passthrough=true hands back the animated PNG, as Discord's own client
+    // asks for. Qt has no reader for those; ui/ApngDecoder plays them, and
+    // everything that only wants a still gets the first frame from Qt's
+    // ordinary PNG reader.
     return QUrl(QStringLiteral("https://cdn.discordapp.com/avatar-decoration-presets/%1.png"
-                               "?size=160&passthrough=false")
+                               "?size=160&passthrough=true")
                     .arg(asset));
 }
 

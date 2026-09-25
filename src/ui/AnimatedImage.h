@@ -3,7 +3,9 @@
 #include <QBuffer>
 #include <QByteArray>
 #include <QImage>
+#include <QList>
 #include <QObject>
+#include <QTimer>
 
 class QMovie;
 
@@ -32,7 +34,7 @@ public:
     void clear();
 
     QImage currentFrame() const;
-    bool isAnimated() const { return m_movie != nullptr; }
+    bool isAnimated() const { return m_movie != nullptr || m_apngFrames.size() > 1; }
     bool isNull() const;
 
     // Animation is paused while nothing is on screen, so a hidden profile
@@ -49,4 +51,11 @@ private:
     QBuffer m_buffer;
     QMovie *m_movie = nullptr;
     QImage m_still;
+
+    // Animated PNG (Discord's avatar decorations), which QMovie cannot play:
+    // decoded up front by Apng::decode and stepped by a timer.
+    QList<QImage> m_apngFrames;
+    QList<int> m_apngDelays;
+    int m_apngIndex = 0;
+    QTimer m_apngTimer;
 };
