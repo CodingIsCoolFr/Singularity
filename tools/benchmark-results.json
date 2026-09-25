@@ -63,4 +63,136 @@
                         "Disk MB":  490
                     }
                 ]
+},
+{
+    "Date":  "2026-09-25T14:35:10",
+    "Label":  "0.8.0, both on the same text channel, no call (run 1)",
+    "Seconds":  60,
+    "Machine":  "13th Gen Intel(R) Core(TM) i9-13900K, 32 GB RAM, 32 logical cores",
+    "Windows":  "Microsoft Windows 11 Pro",
+    "Singularity":  "0.8.0",
+    "Discord":  "app-1.0.9258",
+    "Results":  [
+                    {
+                        "App":  "Singularity",
+                        "RAM avg MB":  492,
+                        "RAM peak MB":  493,
+                        "Private MB":  546,
+                        "CPU avg %":  0.94,
+                        "CPU peak %":  1.47,
+                        "Processes":  1,
+                        "Threads":  107,
+                        "Disk MB":  181
+                    },
+                    {
+                        "App":  "Discord",
+                        "RAM avg MB":  1189,
+                        "RAM peak MB":  1194,
+                        "Private MB":  956,
+                        "CPU avg %":  0.16,
+                        "CPU peak %":  1.51,
+                        "Processes":  6,
+                        "Threads":  256,
+                        "Disk MB":  490
+                    }
+                ]
+},
+{
+    "Date":  "2026-09-25T14:36:13",
+    "Label":  "0.8.0, both on the same text channel, no call (run 2)",
+    "Seconds":  60,
+    "Machine":  "13th Gen Intel(R) Core(TM) i9-13900K, 32 GB RAM, 32 logical cores",
+    "Windows":  "Microsoft Windows 11 Pro",
+    "Singularity":  "0.8.0",
+    "Discord":  "app-1.0.9258",
+    "Results":  [
+                    {
+                        "App":  "Singularity",
+                        "RAM avg MB":  493,
+                        "RAM peak MB":  494,
+                        "Private MB":  547,
+                        "CPU avg %":  0.98,
+                        "CPU peak %":  1.54,
+                        "Processes":  1,
+                        "Threads":  106,
+                        "Disk MB":  181
+                    },
+                    {
+                        "App":  "Discord",
+                        "RAM avg MB":  1185,
+                        "RAM peak MB":  1201,
+                        "Private MB":  958,
+                        "CPU avg %":  0.15,
+                        "CPU peak %":  1.12,
+                        "Processes":  6,
+                        "Threads":  255,
+                        "Disk MB":  490
+                    }
+                ]
+},
+{
+    "Date":  "2026-09-25T14:54:05",
+    "Label":  "0.8.0 as used: open since 14:20, left a call at 14:31, same text channel, Singularity playing its animated GIF background (run 1)",
+    "Seconds":  60,
+    "Machine":  "13th Gen Intel(R) Core(TM) i9-13900K, 32 GB RAM, 32 logical cores",
+    "Windows":  "Microsoft Windows 11 Pro",
+    "Singularity":  "0.8.0",
+    "Discord":  "app-1.0.9258",
+    "Results":  [
+                    {
+                        "App":  "Singularity",
+                        "RAM avg MB":  568,
+                        "RAM peak MB":  572,
+                        "Private MB":  634,
+                        "CPU avg %":  0.98,
+                        "CPU peak %":  2.12,
+                        "Processes":  1,
+                        "Threads":  107,
+                        "Disk MB":  181
+                    },
+                    {
+                        "App":  "Discord",
+                        "RAM avg MB":  1213,
+                        "RAM peak MB":  1219,
+                        "Private MB":  967,
+                        "CPU avg %":  0.13,
+                        "CPU peak %":  2.35,
+                        "Processes":  6,
+                        "Threads":  248,
+                        "Disk MB":  490
+                    }
+                ]
+},
+{
+    "Date":  "2026-09-25T14:55:08",
+    "Label":  "0.8.0 as used: open since 14:20, left a call at 14:31, same text channel, Singularity playing its animated GIF background (run 2)",
+    "Seconds":  60,
+    "Machine":  "13th Gen Intel(R) Core(TM) i9-13900K, 32 GB RAM, 32 logical cores",
+    "Windows":  "Microsoft Windows 11 Pro",
+    "Singularity":  "0.8.0",
+    "Discord":  "app-1.0.9258",
+    "Results":  [
+                    {
+                        "App":  "Singularity",
+                        "RAM avg MB":  582,
+                        "RAM peak MB":  600,
+                        "Private MB":  644,
+                        "CPU avg %":  1.56,
+                        "CPU peak %":  2.56,
+                        "Processes":  1,
+                        "Threads":  107,
+                        "Disk MB":  181
+                    },
+                    {
+                        "App":  "Discord",
+                        "RAM avg MB":  1200,
+                        "RAM peak MB":  1201,
+                        "Private MB":  947,
+                        "CPU avg %":  0.07,
+                        "CPU peak %":  1.38,
+                        "Processes":  6,
+                        "Threads":  247,
+                        "Disk MB":  490
+                    }
+                ]
 }]

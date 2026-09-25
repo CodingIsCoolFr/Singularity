@@ -135,12 +135,23 @@ $entry = [pscustomobject]@{
 
 $out = Join-Path $PSScriptRoot 'benchmark-results.json'
 $runs = New-Object System.Collections.ArrayList
+
+# Every saved run, flattened. Windows PowerShell 5.1 hands a parsed JSON array
+# back as ONE object, so @(...) around it made a one-item list holding the
+# whole array, which was then saved as {"value": [...], "Count": n} - nested
+# one level deeper on every run. This walks any such nesting and keeps only
+# real runs (objects with a Date).
+function Add-Runs($node) {
+    if ($null -eq $node) { return }
+    if ($node -is [System.Array]) { foreach ($n in $node) { Add-Runs $n }; return }
+    if ($node -is [string]) { return }
+    $names = $node.PSObject.Properties.Name
+    if ($names -contains 'Date') { [void]$runs.Add($node); return }
+    if ($names -contains 'value') { Add-Runs $node.value }
+}
 if (Test-Path $out) {
-    foreach ($old in @(Get-Content $out -Raw | ConvertFrom-Json)) {
-        # Windows PowerShell 5.1 can wrap an array as {"value": [...], "Count": n}.
-        if ($old.PSObject.Properties.Name -contains 'value') { foreach ($v in $old.value) { [void]$runs.Add($v) } }
-        else { [void]$runs.Add($old) }
-    }
+    $parsed = Get-Content $out -Raw | ConvertFrom-Json
+    Add-Runs $parsed
 }
 [void]$runs.Add($entry)
 # Each run on its own, then joined: ConvertTo-Json on a whole array is what
