@@ -351,6 +351,53 @@ void RestClient::createInvite(const QString &channelId, ObjectHandler onOk, Erro
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+void RestClient::editCurrentUser(const QJsonObject &fields, ObjectHandler onOk, ErrorHandler onError,
+                                 const QString &mfaToken)
+{
+    QNetworkRequest request = buildRequest(QStringLiteral("/users/@me"));
+    if (!mfaToken.isEmpty())
+        request.setRawHeader("X-Discord-MFA-Authorization", mfaToken.toUtf8());
+    QNetworkReply *reply = m_network.sendCustomRequest(request, QByteArrayLiteral("PATCH"),
+                                                       QJsonDocument(fields).toJson(QJsonDocument::Compact));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
+void RestClient::editCurrentProfile(const QJsonObject &fields, ObjectHandler onOk, ErrorHandler onError)
+{
+    QNetworkReply *reply = m_network.sendCustomRequest(buildRequest(QStringLiteral("/users/@me/profile")),
+                                                       QByteArrayLiteral("PATCH"),
+                                                       QJsonDocument(fields).toJson(QJsonDocument::Compact));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
+void RestClient::editGuildMember(const QString &guildId, const QJsonObject &fields, ObjectHandler onOk,
+                                 ErrorHandler onError)
+{
+    const QString path = QStringLiteral("/guilds/%1/members/@me").arg(guildId);
+    QNetworkReply *reply = m_network.sendCustomRequest(buildRequest(path), QByteArrayLiteral("PATCH"),
+                                                       QJsonDocument(fields).toJson(QJsonDocument::Compact));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
+void RestClient::fetchCollectibles(ArrayHandler onOk, ErrorHandler onError)
+{
+    QNetworkReply *reply = m_network.get(buildRequest(QStringLiteral("/users/@me/collectibles-purchases")));
+    dispatch(reply, nullptr, std::move(onOk), std::move(onError));
+}
+
+void RestClient::finishMfa(const QString &ticket, const QString &type, const QString &data, ObjectHandler onOk,
+                           ErrorHandler onError)
+{
+    const QJsonObject body{
+        {QStringLiteral("ticket"), ticket},
+        {QStringLiteral("mfa_type"), type},
+        {QStringLiteral("data"), data},
+    };
+    QNetworkReply *reply = m_network.post(buildRequest(QStringLiteral("/mfa/finish")),
+                                          QJsonDocument(body).toJson(QJsonDocument::Compact));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::sendFriendRequest(const QString &username, int discriminator, ObjectHandler onOk,
                                    ErrorHandler onError, const CaptchaProof &captcha)
 {

@@ -126,6 +126,30 @@ public:
     // POST /channels/{id}/invites - makes a share link for a channel.
     void createInvite(const QString &channelId, ObjectHandler onOk, ErrorHandler onError);
 
+    // Editing your own account and profile (checked against docs.discord.food
+    // and discord.py-self). Pictures go as data URIs; null clears a field.
+    //
+    // PATCH /users/@me: avatar, global_name, username (+ password),
+    // avatar_decoration_id / avatar_decoration_sku_id. The answer is the user,
+    // sometimes with a fresh "token" that replaces the old one.
+    void editCurrentUser(const QJsonObject &fields, ObjectHandler onOk, ErrorHandler onError,
+                         const QString &mfaToken = {});
+    // PATCH /users/@me/profile: bio (190), pronouns (40), accent_color,
+    // banner (Nitro).
+    void editCurrentProfile(const QJsonObject &fields, ObjectHandler onOk, ErrorHandler onError);
+    // PATCH /guilds/{id}/members/@me: nick, and with Nitro a server avatar,
+    // banner and bio.
+    void editGuildMember(const QString &guildId, const QJsonObject &fields, ObjectHandler onOk,
+                         ErrorHandler onError);
+    // GET /users/@me/collectibles-purchases - what you own from the shop.
+    // type 0 = avatar decoration, 1 = profile effect, 2 = nameplate.
+    void fetchCollectibles(ArrayHandler onOk, ErrorHandler onError);
+    // POST /mfa/finish {ticket, mfa_type, data} -> {token}. The answer to a
+    // 401 with code 60003 ("Two factor is required for this operation"): the
+    // token goes back in X-Discord-MFA-Authorization on the same request.
+    void finishMfa(const QString &ticket, const QString &type, const QString &data, ObjectHandler onOk,
+                   ErrorHandler onError);
+
     // POST /users/@me/relationships {"username", "discriminator"} - a friend
     // request by name, from the Friends page's Add Friend tab. Sent with
     // X-Context-Properties {"location":"Add Friend"}, as the real client does

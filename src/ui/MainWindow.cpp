@@ -7943,6 +7943,21 @@ void MainWindow::openSettings()
         m_settingsDialog = new SettingsDialog(m_store, m_rest, m_plugins, m_selfUserId, this);
         connect(m_settingsDialog, &SettingsDialog::appearanceChanged, this, &MainWindow::applyAppearance);
         connect(m_settingsDialog, &SettingsDialog::logOutRequested, this, &MainWindow::logOut);
+
+        // An account change answered with a new token: the old one is dead
+        // from now on, so every place that holds it gets the new one.
+        connect(m_settingsDialog, &SettingsDialog::tokenReplaced, this, [this](const QString &token) {
+            const bool saved = !m_sessionToken.isEmpty() && AppConfig::instance().token() == m_sessionToken;
+            m_sessionToken = token;
+            m_rest->setToken(token);
+            m_gateway->setToken(token);
+            if (saved) {
+                AppConfig::instance().setToken(token);
+                const UserInfo self = m_store->user(m_selfUserId);
+                TokenStore::rememberAccount(TokenStore::Account{m_selfUserId, self.username, m_selfAvatarHash, token});
+            }
+            wlog(QStringLiteral("account"), QStringLiteral("Discord issued a new token after an account change"));
+        });
         // A call already running has to be told, or the sliders only take effect
         // the next time you join one.
         connect(m_settingsDialog, &SettingsDialog::voiceSettingsChanged, this, &MainWindow::applyVoiceSettings);

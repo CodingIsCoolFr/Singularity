@@ -3,6 +3,7 @@
 #include "core/AppConfig.h"
 #include "core/Logger.h"
 #include "core/MessageStore.h"
+#include "core/RestClient.h"
 #include "plugin/PluginHost.h"
 #include "ui/AudioMeter.h"
 #include "ui/MediaCache.h"
@@ -22,7 +23,15 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QInputDialog>
+#include <QJsonArray>
+#include <QLineEdit>
 #include <QMessageBox>
+#include <QPlainTextEdit>
+#include <QSignalBlocker>
+
+#include <algorithm>
+#include <functional>
 #include <QMovie>
 #include <QPainter>
 #include <QRadioButton>
@@ -197,7 +206,7 @@ QPushButton:hover { background-color: %4; }
 QPushButton:pressed { background-color: %6; }
 QPushButton:disabled { color: %9; }
 
-QSpinBox, QComboBox, QLineEdit {
+QSpinBox, QComboBox, QLineEdit, QPlainTextEdit {
     background-color: %6;
     color: %5;
     border: 1px solid %2;
@@ -206,7 +215,7 @@ QSpinBox, QComboBox, QLineEdit {
     min-height: 22px;
     selection-background-color: %7;
 }
-QSpinBox:focus, QComboBox:focus, QLineEdit:focus { border-color: %7; }
+QSpinBox:focus, QComboBox:focus, QLineEdit:focus, QPlainTextEdit:focus { border-color: %7; }
 QComboBox::drop-down { border: none; width: 22px; }
 QComboBox QAbstractItemView {
     background-color: %8;
@@ -285,34 +294,215 @@ QWidget *SettingsDialog::buildAccountPage()
     auto *row = new QHBoxLayout;
     row->setSpacing(14);
 
-    auto *avatar = new QLabel(page);
-    avatar->setFixedSize(72, 72);
+    m_avatarPreview = new QLabel(page);
+    m_avatarPreview->setFixedSize(72, 72);
     const QUrl url = MediaCache::avatarUrl(m_selfUserId, info.avatarHash, 160);
     const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
-    avatar->setPixmap(picture.isNull() ? MediaCache::initialsAvatar(info.displayName(), 72)
-                                       : MediaCache::circular(picture, 72));
-    row->addWidget(avatar);
+    m_avatarPreview->setPixmap(picture.isNull() ? MediaCache::initialsAvatar(info.displayName(), 72)
+                                                : MediaCache::circular(picture, 72));
+    row->addWidget(m_avatarPreview);
 
     auto *names = new QVBoxLayout;
     names->setSpacing(2);
 
-    auto *display = new QLabel(info.displayName().isEmpty() ? QStringLiteral("Signed in")
-                                                            : info.displayName(),
-                               page);
-    display->setStyleSheet(QStringLiteral("font-size: 17px; font-weight: 600; color: %1;")
-                               .arg(QLatin1String(Theme::TextPrimary)));
-    names->addWidget(display);
+    m_nameLabel = new QLabel(info.displayName().isEmpty() ? QStringLiteral("Signed in") : info.displayName(), page);
+    m_nameLabel->setStyleSheet(QStringLiteral("font-size: 17px; font-weight: 600; color: %1;")
+                                   .arg(QLatin1String(Theme::TextPrimary)));
+    names->addWidget(m_nameLabel);
 
-    auto *handle = new QLabel(info.username.isEmpty() ? m_selfUserId
-                                                      : QStringLiteral("@%1").arg(info.username),
-                              page);
-    handle->setStyleSheet(QStringLiteral("color: %1;").arg(QLatin1String(Theme::TextMuted)));
-    handle->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    names->addWidget(handle);
+    m_handleLabel = new QLabel(info.username.isEmpty() ? m_selfUserId : QStringLiteral("@%1").arg(info.username),
+                               page);
+    m_handleLabel->setStyleSheet(QStringLiteral("color: %1;").arg(QLatin1String(Theme::TextMuted)));
+    m_handleLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    names->addWidget(m_handleLabel);
 
     names->addStretch(1);
     row->addLayout(names, 1);
     layout->addLayout(row);
+
+    // What Discord said about the last change: saved, or why not.
+    m_profileStatus = new QLabel(page);
+    m_profileStatus->setWordWrap(true);
+    m_profileStatus->hide();
+    layout->addWidget(m_profileStatus);
+
+    const auto buttonRow = [page](std::initializer_list<QPushButton *> buttons) {
+        auto *line = new QHBoxLayout;
+        line->setSpacing(8);
+        for (QPushButton *button : buttons)
+            line->addWidget(button);
+        line->addStretch(1);
+        Q_UNUSED(page)
+        return line;
+    };
+    const auto fieldRow = [](QWidget *field, QPushButton *save) {
+        auto *line = new QHBoxLayout;
+        line->setSpacing(8);
+        field->setMaximumWidth(360);
+        line->addWidget(field);
+        line->addWidget(save);
+        line->addStretch(1);
+        return line;
+    };
+
+    // --- Avatar ------------------------------------------------------------
+    layout->addWidget(groupTitle(QStringLiteral("AVATAR"), page));
+    auto *changeAvatar = new QPushButton(QStringLiteral("Change Avatar"), page);
+    auto *removeAvatar = new QPushButton(QStringLiteral("Remove Avatar"), page);
+    layout->addLayout(buttonRow({changeAvatar, removeAvatar}));
+    layout->addWidget(hint(QStringLiteral("PNG, JPG, WebP or GIF, up to 10 MB. Moving GIF avatars need Nitro; "
+                                          "without it Discord refuses them and says so here."),
+                           page));
+    connect(changeAvatar, &QPushButton::clicked, this, [this]() {
+        QImage preview;
+        const QString data = pickPicture(QStringLiteral("Choose an avatar"), &preview);
+        if (data.isEmpty())
+            return;
+        setAvatarPreview(preview);
+        editUser(QJsonObject{{QStringLiteral("avatar"), data}}, QStringLiteral("Avatar"));
+    });
+    connect(removeAvatar, &QPushButton::clicked, this, [this]() {
+        editUser(QJsonObject{{QStringLiteral("avatar"), QJsonValue()}}, QStringLiteral("Avatar removed"));
+    });
+
+    // --- Names -------------------------------------------------------------
+    layout->addWidget(groupTitle(QStringLiteral("DISPLAY NAME"), page));
+    m_displayName = new QLineEdit(page);
+    m_displayName->setMaxLength(32);
+    m_displayName->setPlaceholderText(QStringLiteral("Shown instead of your username. Empty uses your username."));
+    auto *saveDisplay = new QPushButton(QStringLiteral("Save"), page);
+    layout->addLayout(fieldRow(m_displayName, saveDisplay));
+    connect(saveDisplay, &QPushButton::clicked, this, [this]() {
+        const QString name = m_displayName->text().trimmed();
+        editUser(QJsonObject{{QStringLiteral("global_name"), name.isEmpty() ? QJsonValue() : QJsonValue(name)}},
+                 QStringLiteral("Display name"));
+    });
+
+    layout->addWidget(groupTitle(QStringLiteral("USERNAME"), page));
+    m_username = new QLineEdit(page);
+    m_username->setMaxLength(32);
+    m_username->setPlaceholderText(QStringLiteral("lowercase letters, numbers, _ and ."));
+    auto *saveUsername = new QPushButton(QStringLiteral("Change"), page);
+    layout->addLayout(fieldRow(m_username, saveUsername));
+    layout->addWidget(hint(QStringLiteral("Discord asks for your password to change this, and only allows it "
+                                          "a couple of times an hour."),
+                           page));
+    connect(saveUsername, &QPushButton::clicked, this, [this]() {
+        const QString wanted = m_username->text().trimmed();
+        if (wanted.isEmpty())
+            return;
+        bool ok = false;
+        const QString password = QInputDialog::getText(this, QStringLiteral("Change username"),
+                                                       QStringLiteral("Your Discord password:"),
+                                                       QLineEdit::Password, QString(), &ok);
+        if (!ok || password.isEmpty())
+            return;
+        editUser(QJsonObject{{QStringLiteral("username"), wanted}, {QStringLiteral("password"), password}},
+                 QStringLiteral("Username"));
+    });
+
+    // --- Profile -----------------------------------------------------------
+    layout->addWidget(groupTitle(QStringLiteral("PRONOUNS"), page));
+    m_pronouns = new QLineEdit(page);
+    m_pronouns->setMaxLength(40);
+    m_pronouns->setPlaceholderText(QStringLiteral("Add your pronouns"));
+    auto *savePronouns = new QPushButton(QStringLiteral("Save"), page);
+    layout->addLayout(fieldRow(m_pronouns, savePronouns));
+    connect(savePronouns, &QPushButton::clicked, this, [this]() {
+        editProfile(QJsonObject{{QStringLiteral("pronouns"), m_pronouns->text().trimmed()}},
+                    QStringLiteral("Pronouns"));
+    });
+
+    layout->addWidget(groupTitle(QStringLiteral("ABOUT ME"), page));
+    m_bio = new QPlainTextEdit(page);
+    m_bio->setMaximumWidth(440);
+    m_bio->setFixedHeight(96);
+    m_bio->setPlaceholderText(QStringLiteral("Up to 190 characters. Markdown and emoji work, as in Discord."));
+    auto *saveBio = new QPushButton(QStringLiteral("Save About Me"), page);
+    layout->addWidget(m_bio);
+    layout->addLayout(buttonRow({saveBio}));
+    connect(saveBio, &QPushButton::clicked, this, [this]() {
+        const QString bio = m_bio->toPlainText();
+        if (bio.size() > 190) {
+            setProfileStatus(false, QStringLiteral("About me is %1 characters; Discord allows 190.").arg(bio.size()));
+            return;
+        }
+        editProfile(QJsonObject{{QStringLiteral("bio"), bio}}, QStringLiteral("About me"));
+    });
+
+    layout->addWidget(groupTitle(QStringLiteral("BANNER AND COLOUR"), page));
+    m_accentButton = new QPushButton(QStringLiteral("Banner Colour"), page);
+    auto *changeBanner = new QPushButton(QStringLiteral("Change Banner"), page);
+    auto *removeBanner = new QPushButton(QStringLiteral("Remove Banner"), page);
+    layout->addLayout(buttonRow({m_accentButton, changeBanner, removeBanner}));
+    layout->addWidget(hint(QStringLiteral("The colour shows at the top of your profile when there is no banner. "
+                                          "A picture banner needs Nitro."),
+                           page));
+    connect(m_accentButton, &QPushButton::clicked, this, [this]() {
+        const QColor start = m_accentColour >= 0 ? QColor::fromRgb(QRgb(m_accentColour)) : QColor(Qt::black);
+        const QColor chosen = QColorDialog::getColor(start, this, QStringLiteral("Banner colour"));
+        if (!chosen.isValid())
+            return;
+        m_accentColour = int(chosen.rgb() & 0xFFFFFF);
+        editProfile(QJsonObject{{QStringLiteral("accent_color"), m_accentColour}}, QStringLiteral("Banner colour"));
+    });
+    connect(changeBanner, &QPushButton::clicked, this, [this]() {
+        const QString data = pickPicture(QStringLiteral("Choose a banner"), nullptr);
+        if (!data.isEmpty())
+            editProfile(QJsonObject{{QStringLiteral("banner"), data}}, QStringLiteral("Banner"));
+    });
+    connect(removeBanner, &QPushButton::clicked, this, [this]() {
+        editProfile(QJsonObject{{QStringLiteral("banner"), QJsonValue()}}, QStringLiteral("Banner removed"));
+    });
+
+    // --- Decoration ----------------------------------------------------------
+    layout->addWidget(groupTitle(QStringLiteral("AVATAR DECORATION"), page));
+    m_decorations = new QComboBox(page);
+    m_decorations->setMinimumWidth(280);
+    auto *saveDecoration = new QPushButton(QStringLiteral("Apply"), page);
+    layout->addLayout(fieldRow(m_decorations, saveDecoration));
+    layout->addWidget(hint(QStringLiteral("The decorations you own from the Discord shop."), page));
+    connect(saveDecoration, &QPushButton::clicked, this, [this]() {
+        const QVariantMap chosen = m_decorations->currentData().toMap();
+        const QString id = chosen.value(QStringLiteral("id")).toString();
+        const QString sku = chosen.value(QStringLiteral("sku")).toString();
+        editUser(QJsonObject{{QStringLiteral("avatar_decoration_id"), id.isEmpty() ? QJsonValue() : QJsonValue(id)},
+                             {QStringLiteral("avatar_decoration_sku_id"), sku.isEmpty() ? QJsonValue() : QJsonValue(sku)}},
+                 sku.isEmpty() ? QStringLiteral("Decoration removed") : QStringLiteral("Decoration"));
+    });
+
+    // --- Per server ----------------------------------------------------------
+    layout->addWidget(groupTitle(QStringLiteral("SERVER PROFILE"), page));
+    m_serverPick = new QComboBox(page);
+    m_serverPick->setMinimumWidth(280);
+    auto *reloadServer = new QPushButton(QStringLiteral("Reload"), page);
+    layout->addLayout(fieldRow(m_serverPick, reloadServer));
+    connect(reloadServer, &QPushButton::clicked, this, [this]() { loadServerNickname(); });
+    m_nickname = new QLineEdit(page);
+    m_nickname->setMaxLength(32);
+    m_nickname->setPlaceholderText(QStringLiteral("Nickname in this server. Empty removes it."));
+    auto *saveNick = new QPushButton(QStringLiteral("Save Nickname"), page);
+    layout->addLayout(fieldRow(m_nickname, saveNick));
+    auto *serverAvatar = new QPushButton(QStringLiteral("Server Avatar"), page);
+    auto *resetServerAvatar = new QPushButton(QStringLiteral("Reset Server Avatar"), page);
+    layout->addLayout(buttonRow({serverAvatar, resetServerAvatar}));
+    layout->addWidget(hint(QStringLiteral("A nickname needs the server's Change Nickname permission. A different "
+                                          "avatar per server needs Nitro."),
+                           page));
+    connect(m_serverPick, &QComboBox::currentIndexChanged, this, [this](int) { loadServerNickname(); });
+    connect(saveNick, &QPushButton::clicked, this, [this]() {
+        const QString nick = m_nickname->text().trimmed();
+        editServer(QJsonObject{{QStringLiteral("nick"), nick.isEmpty() ? QJsonValue() : QJsonValue(nick)}},
+                   nick.isEmpty() ? QStringLiteral("Nickname removed") : QStringLiteral("Nickname"));
+    });
+    connect(serverAvatar, &QPushButton::clicked, this, [this]() {
+        const QString data = pickPicture(QStringLiteral("Choose a server avatar"), nullptr);
+        if (!data.isEmpty())
+            editServer(QJsonObject{{QStringLiteral("avatar"), data}}, QStringLiteral("Server avatar"));
+    });
+    connect(resetServerAvatar, &QPushButton::clicked, this, [this]() {
+        editServer(QJsonObject{{QStringLiteral("avatar"), QJsonValue()}}, QStringLiteral("Server avatar reset"));
+    });
 
     layout->addWidget(groupTitle(QStringLiteral("ACCOUNT"), page));
 
@@ -332,12 +522,325 @@ QWidget *SettingsDialog::buildAccountPage()
     layout->addWidget(logOut);
 
     layout->addWidget(hint(QStringLiteral("Logging out clears the saved token from this machine. "
-                                          "Changing your name, avatar, password or email is not built "
-                                          "yet: do those on discord.com."),
+                                          "Changing your password or email is not built yet: do those on "
+                                          "discord.com."),
                            page));
 
     layout->addStretch(1);
     return page;
+}
+
+void SettingsDialog::showEvent(QShowEvent *event)
+{
+    QDialog::showEvent(event);
+    loadProfile();
+}
+
+void SettingsDialog::setProfileStatus(bool ok, const QString &text)
+{
+    if (!m_profileStatus)
+        return;
+    m_profileStatus->setStyleSheet(QStringLiteral("color: %1; font-weight: 600;")
+                                       .arg(ok ? QLatin1String(Theme::Green) : QStringLiteral("#f23f43")));
+    m_profileStatus->setText(text);
+    m_profileStatus->show();
+}
+
+void SettingsDialog::setAvatarPreview(const QImage &picture)
+{
+    if (m_avatarPreview && !picture.isNull())
+        m_avatarPreview->setPixmap(MediaCache::circular(picture, 72));
+}
+
+void SettingsDialog::loadProfile()
+{
+    if (!m_rest || m_selfUserId.isEmpty() || !m_displayName)
+        return;
+
+    // The servers, by name, for nicknames.
+    const QString keepServer = m_serverPick->currentData().toString();
+    QList<GuildInfo> guilds = m_store->guilds();
+    std::sort(guilds.begin(), guilds.end(), [](const GuildInfo &a, const GuildInfo &b) {
+        return a.name.compare(b.name, Qt::CaseInsensitive) < 0;
+    });
+    {
+        const QSignalBlocker quiet(m_serverPick);
+        m_serverPick->clear();
+        for (const GuildInfo &guild : guilds)
+            m_serverPick->addItem(guild.name, guild.id);
+        const int keep = m_serverPick->findData(keepServer);
+        m_serverPick->setCurrentIndex(keep >= 0 ? keep : 0);
+    }
+    loadServerNickname();
+
+    // The profile as Discord has it now. Fields are only filled if nobody
+    // has started typing in them since.
+    m_rest->fetchUserProfile(
+        m_selfUserId, QString(),
+        [this](const QJsonObject &answer) {
+            const QJsonObject user = answer.value(QStringLiteral("user")).toObject();
+            const QJsonObject profile = answer.value(QStringLiteral("user_profile")).toObject();
+
+            if (!m_displayName->isModified())
+                m_displayName->setText(user.value(QStringLiteral("global_name")).toString());
+            if (!m_username->isModified())
+                m_username->setText(user.value(QStringLiteral("username")).toString());
+            if (!m_pronouns->isModified())
+                m_pronouns->setText(profile.value(QStringLiteral("pronouns")).toString());
+            if (!m_bio->document()->isModified()) {
+                m_bio->setPlainText(profile.value(QStringLiteral("bio")).toString());
+                m_bio->document()->setModified(false);
+            }
+
+            const QJsonValue accent = profile.value(QStringLiteral("accent_color"));
+            m_accentColour = accent.isDouble() ? accent.toInt() : -1;
+            if (m_accentColour >= 0) {
+                const QColor colour = QColor::fromRgb(QRgb(m_accentColour));
+                m_accentButton->setStyleSheet(QStringLiteral("QPushButton { border-left: 14px solid %1; }")
+                                                  .arg(colour.name()));
+            }
+
+            m_currentDecorationSku = user.value(QStringLiteral("avatar_decoration_data")).toObject()
+                                         .value(QStringLiteral("sku_id")).toString();
+
+            const QString name = user.value(QStringLiteral("global_name")).toString();
+            m_nameLabel->setText(name.isEmpty() ? user.value(QStringLiteral("username")).toString() : name);
+            m_handleLabel->setText(QStringLiteral("@%1").arg(user.value(QStringLiteral("username")).toString()));
+        },
+        [this](const RestClient::Error &error) {
+            wlog(QStringLiteral("account"), QStringLiteral("could not load your profile: HTTP %1 %2")
+                                                .arg(error.httpStatus).arg(error.message));
+        });
+
+    // The decorations you own.
+    m_rest->fetchCollectibles(
+        [this](const QJsonArray &products) {
+            const QSignalBlocker quiet(m_decorations);
+            m_decorations->clear();
+            m_decorations->addItem(QStringLiteral("None"), QVariantMap{});
+            for (const QJsonValue &value : products) {
+                const QJsonObject product = value.toObject();
+                if (product.value(QStringLiteral("type")).toInt() != 0)
+                    continue;
+                const QString sku = product.value(QStringLiteral("sku_id")).toString();
+                QString id;
+                for (const QJsonValue &item : product.value(QStringLiteral("items")).toArray()) {
+                    if (item.toObject().value(QStringLiteral("type")).toInt() == 0) {
+                        id = item.toObject().value(QStringLiteral("id")).toString();
+                        break;
+                    }
+                }
+                m_decorations->addItem(product.value(QStringLiteral("name")).toString(),
+                                       QVariantMap{{QStringLiteral("id"), id.isEmpty() ? sku : id},
+                                                   {QStringLiteral("sku"), sku}});
+                if (!m_currentDecorationSku.isEmpty() && sku == m_currentDecorationSku)
+                    m_decorations->setCurrentIndex(m_decorations->count() - 1);
+            }
+            if (m_decorations->count() == 1)
+                m_decorations->setItemText(0, QStringLiteral("None (you do not own any decorations)"));
+        },
+        [this](const RestClient::Error &error) {
+            wlog(QStringLiteral("account"), QStringLiteral("could not list your decorations: HTTP %1 %2")
+                                                .arg(error.httpStatus).arg(error.message));
+            m_decorations->clear();
+            m_decorations->addItem(QStringLiteral("None"), QVariantMap{});
+        });
+}
+
+void SettingsDialog::loadServerNickname()
+{
+    const QString guildId = m_serverPick ? m_serverPick->currentData().toString() : QString();
+    if (guildId.isEmpty() || !m_rest)
+        return;
+    m_nickname->clear();
+    m_nickname->setPlaceholderText(QStringLiteral("Loading…"));
+    m_rest->fetchUserProfile(
+        m_selfUserId, guildId,
+        [this, guildId](const QJsonObject &answer) {
+            if (m_serverPick->currentData().toString() != guildId)
+                return;
+            m_nickname->setText(answer.value(QStringLiteral("guild_member")).toObject()
+                                    .value(QStringLiteral("nick")).toString());
+            m_nickname->setPlaceholderText(QStringLiteral("Nickname in this server. Empty removes it."));
+        },
+        [this](const RestClient::Error &) {
+            m_nickname->setPlaceholderText(QStringLiteral("Nickname in this server. Empty removes it."));
+        });
+}
+
+namespace {
+
+// Discord's own words for a refused change. A form error carries them per
+// field ({"errors":{"avatar":{"_errors":[{"message":...}]}}}); the top line
+// ("Invalid Form Body") says nothing useful by itself.
+QString discordReason(const RestClient::Error &error)
+{
+    std::function<QString(const QJsonObject &)> first = [&first](const QJsonObject &node) -> QString {
+        const QJsonArray list = node.value(QStringLiteral("_errors")).toArray();
+        if (!list.isEmpty())
+            return list.first().toObject().value(QStringLiteral("message")).toString();
+        for (auto it = node.constBegin(); it != node.constEnd(); ++it) {
+            if (it.value().isObject()) {
+                const QString found = first(it.value().toObject());
+                if (!found.isEmpty())
+                    return found;
+            }
+        }
+        return {};
+    };
+    const QString field = first(error.body.value(QStringLiteral("errors")).toObject());
+    if (!field.isEmpty())
+        return field;
+    const QString message = error.body.value(QStringLiteral("message")).toString();
+    if (error.isRateLimit())
+        return QStringLiteral("Discord says to slow down. Try again in a little while.");
+    return message.isEmpty() ? QStringLiteral("HTTP %1").arg(error.httpStatus) : message;
+}
+
+} // namespace
+
+void SettingsDialog::editUser(const QJsonObject &fields, const QString &what, const QString &mfaToken)
+{
+    setProfileStatus(true, QStringLiteral("Saving…"));
+    m_rest->editCurrentUser(
+        fields,
+        [this, what](const QJsonObject &user) {
+            // Some changes come back with a new sign-in token; the old one
+            // no longer works after them.
+            const QString token = user.value(QStringLiteral("token")).toString();
+            if (!token.isEmpty())
+                emit tokenReplaced(token);
+            if (user.contains(QStringLiteral("id")))
+                m_store->rememberUser(user);
+            m_username->setModified(false);
+            m_displayName->setModified(false);
+            const QString name = user.value(QStringLiteral("global_name")).toString();
+            if (user.contains(QStringLiteral("username"))) {
+                m_nameLabel->setText(name.isEmpty() ? user.value(QStringLiteral("username")).toString() : name);
+                m_handleLabel->setText(QStringLiteral("@%1").arg(user.value(QStringLiteral("username")).toString()));
+            }
+            wlog(QStringLiteral("account"), QStringLiteral("%1 saved").arg(what));
+            setProfileStatus(true, QStringLiteral("%1 saved.").arg(what));
+        },
+        [this, fields, what, mfaToken](const RestClient::Error &error) {
+            // Two-factor accounts: Discord wants the code before a sensitive
+            // change, then the same change again with proof.
+            const QJsonObject mfa = error.body.value(QStringLiteral("mfa")).toObject();
+            const QString ticket = mfa.value(QStringLiteral("ticket")).toString();
+            if (error.body.value(QStringLiteral("code")).toInt() == 60003 && !ticket.isEmpty() && mfaToken.isEmpty()) {
+                bool ok = false;
+                const QString code = QInputDialog::getText(
+                                         this, QStringLiteral("Two-factor code"),
+                                         QStringLiteral("Discord wants your two-factor code for this.\n"
+                                                        "The 6 digits from your authenticator app, or an 8 character "
+                                                        "backup code:"),
+                                         QLineEdit::Normal, QString(), &ok)
+                                         .trimmed()
+                                         .remove(QLatin1Char(' '))
+                                         .remove(QLatin1Char('-'));
+                if (!ok || code.isEmpty()) {
+                    setProfileStatus(false, QStringLiteral("%1 was not changed: the two-factor code was not entered.")
+                                                .arg(what));
+                    return;
+                }
+                const QString type = code.size() == 8 ? QStringLiteral("backup") : QStringLiteral("totp");
+                m_rest->finishMfa(
+                    ticket, type, code,
+                    [this, fields, what](const QJsonObject &answer) {
+                        editUser(fields, what, answer.value(QStringLiteral("token")).toString());
+                    },
+                    [this, what](const RestClient::Error &problem) {
+                        setProfileStatus(false, QStringLiteral("%1 was not changed: %2")
+                                                    .arg(what, discordReason(problem)));
+                    });
+                return;
+            }
+            wlog(QStringLiteral("account"), QStringLiteral("%1 refused: HTTP %2 %3")
+                                                .arg(what).arg(error.httpStatus).arg(error.message));
+            setProfileStatus(false, QStringLiteral("%1 was not changed: %2").arg(what, discordReason(error)));
+        },
+        mfaToken);
+}
+
+void SettingsDialog::editProfile(const QJsonObject &fields, const QString &what)
+{
+    setProfileStatus(true, QStringLiteral("Saving…"));
+    m_rest->editCurrentProfile(
+        fields,
+        [this, what](const QJsonObject &) {
+            m_pronouns->setModified(false);
+            m_bio->document()->setModified(false);
+            wlog(QStringLiteral("account"), QStringLiteral("%1 saved").arg(what));
+            setProfileStatus(true, QStringLiteral("%1 saved.").arg(what));
+        },
+        [this, what](const RestClient::Error &error) {
+            wlog(QStringLiteral("account"), QStringLiteral("%1 refused: HTTP %2 %3")
+                                                .arg(what).arg(error.httpStatus).arg(error.message));
+            setProfileStatus(false, QStringLiteral("%1 was not changed: %2").arg(what, discordReason(error)));
+        });
+}
+
+void SettingsDialog::editServer(const QJsonObject &fields, const QString &what)
+{
+    const QString guildId = m_serverPick->currentData().toString();
+    const QString server = m_serverPick->currentText();
+    if (guildId.isEmpty())
+        return;
+    setProfileStatus(true, QStringLiteral("Saving…"));
+    m_rest->editGuildMember(
+        guildId, fields,
+        [this, what, server](const QJsonObject &) {
+            wlog(QStringLiteral("account"), QStringLiteral("%1 saved in %2").arg(what, server));
+            setProfileStatus(true, QStringLiteral("%1 saved in %2.").arg(what, server));
+        },
+        [this, what, server](const RestClient::Error &error) {
+            wlog(QStringLiteral("account"), QStringLiteral("%1 in %2 refused: HTTP %3 %4")
+                                                .arg(what, server).arg(error.httpStatus).arg(error.message));
+            const QString reason = error.httpStatus == 403
+                ? QStringLiteral("this server does not let you change that.")
+                : discordReason(error);
+            setProfileStatus(false, QStringLiteral("%1 was not changed in %2: %3").arg(what, server, reason));
+        });
+}
+
+QString SettingsDialog::pickPicture(const QString &title, QImage *preview)
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, title, QStandardPaths::writableLocation(QStandardPaths::PicturesLocation),
+        QStringLiteral("Pictures (*.png *.jpg *.jpeg *.gif *.webp)"));
+    if (path.isEmpty())
+        return {};
+
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        setProfileStatus(false, QStringLiteral("Could not open that file."));
+        return {};
+    }
+    if (file.size() > 10 * 1024 * 1024) {
+        setProfileStatus(false, QStringLiteral("That picture is %1 MB; Discord takes up to 10 MB.")
+                                    .arg(file.size() / (1024.0 * 1024.0), 0, 'f', 1));
+        return {};
+    }
+    const QByteArray bytes = file.readAll();
+
+    // The type from the file's own first bytes, not its name.
+    QString mime;
+    if (bytes.startsWith("\x89PNG"))
+        mime = QStringLiteral("image/png");
+    else if (bytes.startsWith("\xFF\xD8\xFF"))
+        mime = QStringLiteral("image/jpeg");
+    else if (bytes.startsWith("GIF8"))
+        mime = QStringLiteral("image/gif");
+    else if (bytes.startsWith("RIFF") && bytes.mid(8, 4) == "WEBP")
+        mime = QStringLiteral("image/webp");
+    if (mime.isEmpty()) {
+        setProfileStatus(false, QStringLiteral("That is not a PNG, JPG, GIF or WebP picture."));
+        return {};
+    }
+
+    if (preview)
+        *preview = QImage::fromData(bytes);
+    return QStringLiteral("data:%1;base64,%2").arg(mime, QString::fromLatin1(bytes.toBase64()));
 }
 
 // ---------------------------------------------------------------------------

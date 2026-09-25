@@ -32,6 +32,10 @@ public:
     explicit GatewayClient(QObject *parent = nullptr);
 
     void start(const QString &token);
+
+    // A replacement token from an account change. The session keeps running;
+    // the next IDENTIFY or RESUME uses this one.
+    void setToken(const QString &token) { m_token = token; }
     void stop();
 
     // Asks who these people are in one server; the answer arrives as
