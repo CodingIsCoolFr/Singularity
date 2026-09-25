@@ -7,6 +7,12 @@
 
 namespace {
 constexpr int MaxHistoryLines = 2000;
+bool g_sideFile = false;
+}
+
+void Logger::useSideFile()
+{
+    g_sideFile = true;
 }
 
 Logger::Logger()
@@ -14,7 +20,19 @@ Logger::Logger()
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir().mkpath(dir);
 
-    m_file.setFileName(dir + QStringLiteral("/singularity.log"));
+    const QString path = dir + (g_sideFile ? QStringLiteral("/singularity.other.log")
+                                           : QStringLiteral("/singularity.log"));
+
+    // The last run's log is kept as singularity.prev.log. After a crash the
+    // program is usually started again at once, and truncating would wipe
+    // the only record of what went wrong.
+    const QString previous = dir + QStringLiteral("/singularity.prev.log");
+    if (!g_sideFile && QFileInfo(path).size() > 0) {
+        QFile::remove(previous);
+        QFile::rename(path, previous);
+    }
+
+    m_file.setFileName(path);
     // Truncate on every start so the file always describes this run.
     if (m_file.open(QIODevice::WriteOnly | QIODevice::Text)) {
         m_stream.setDevice(&m_file);
@@ -73,6 +91,16 @@ void Logger::log(const QString &source, const QString &message)
 
     // Outside the lock: whoever listens runs on its own thread's time.
     emit lineLogged(line);
+}
+
+void Logger::flush()
+{
+    const QMutexLocker lock(&m_mutex);
+    if (m_file.isOpen()) {
+        m_stream.flush();
+        m_file.flush();
+        m_sinceFlush = 0;
+    }
 }
 
 QStringList Logger::history() const

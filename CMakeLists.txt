@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(Singularity VERSION 0.6.97 LANGUAGES CXX)
+project(Singularity VERSION 0.6.98 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -81,6 +81,8 @@ qt_add_executable(Singularity WIN32
     src/plugin/builtin/FakeNitroPlugin.cpp
     src/core/InstallTidy.h
     src/core/InstallTidy.cpp
+    src/core/CrashLog.h
+    src/core/CrashLog.cpp
 
     src/ui/Theme.h
     src/ui/Theme.cpp

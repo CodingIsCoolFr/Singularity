@@ -22,11 +22,21 @@ class Logger : public QObject
 public:
     static Logger &instance();
 
+    // Called before the first line when another copy of the program is
+    // already running and owns singularity.log. This copy then writes to
+    // singularity.other.log, so a second launch - which mostly just brings
+    // the running window forward - no longer wipes the running copy's log.
+    static void useSideFile();
+
     // `source` is a short tag such as "gateway" or "rest".
     void log(const QString &source, const QString &message);
 
     QStringList history() const;
     QString filePath() const;
+
+    // Writes out everything still held in memory. For the last moments
+    // before the program stops, when there is no later batch to wait for.
+    void flush();
 
 signals:
     void lineLogged(const QString &line);

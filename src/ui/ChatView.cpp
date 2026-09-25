@@ -14,6 +14,7 @@
 #include <QVideoFrame>
 #include <QVideoSink>
 
+#include <exception>
 #include <utility>
 
 namespace {
@@ -180,6 +181,7 @@ void ChatView::clearImageCache()
     m_animations.clear();
     qDeleteAll(m_videos);
     m_videos.clear();
+    m_videoFrameAt.clear();
     m_animationTimer.stop();
 }
 
@@ -267,7 +269,7 @@ void ChatView::adoptVideo(const QUrl &url)
         return;
 
     const QString key = url.toString();
-    if (m_videos.contains(key) || m_videos.size() >= 4)
+    if (m_videos.contains(key) || m_videos.size() >= 4 || m_videosGivenUp.contains(key))
         return;
 
     auto *player = new QMediaPlayer(this);
@@ -278,8 +280,40 @@ void ChatView::adoptVideo(const QUrl &url)
     player->setVideoSink(sink);
     player->setLoops(QMediaPlayer::Infinite);
 
-    connect(sink, &QVideoSink::videoFrameChanged, this, [this, url](const QVideoFrame &frame) {
-        const QImage image = frame.toImage();
+    connect(sink, &QVideoSink::videoFrameChanged, this, [this, url, key, player](const QVideoFrame &frame) {
+        // Nobody sees a frame drawn while the chat is hidden, and a looping
+        // clip keeps producing them all day.
+        if (!isVisible())
+            return;
+
+        // At most 30 pictures a second. Each one is a full-size copy off the
+        // graphics card, and clips come in at 60.
+        static QElapsedTimer clock;
+        if (!clock.isValid())
+            clock.start();
+        const qint64 now = clock.elapsed();
+        if (now - m_videoFrameAt.value(key, -1000) < 33)
+            return;
+        m_videoFrameAt.insert(key, now);
+
+        // toImage() can fail to get the memory for its copy. That comes out
+        // of it as an exception, and one that nobody catches ends the whole
+        // program - which is what happened on 2026-09-24 (0.6.96 and 0.6.97:
+        // Qt's QRhi readback in QVideoFrame::toImage threw std::bad_alloc on
+        // the window thread). The video stops and stays a still picture.
+        QImage image;
+        try {
+            image = frame.toImage();
+        } catch (const std::exception &error) {
+            wlog(QStringLiteral("media"), QStringLiteral("stopped the video %1: copying a frame failed (%2)")
+                                              .arg(url.toString(), QString::fromLocal8Bit(error.what())));
+            m_videosGivenUp.insert(key);
+            m_videos.remove(key);
+            m_videoFrameAt.remove(key);
+            player->stop();
+            player->deleteLater();
+            return;
+        }
         if (!image.isNull())
             showVideoFrame(url, image);
     });

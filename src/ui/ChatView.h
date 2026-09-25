@@ -62,6 +62,14 @@ private:
     // gifv cards are mp4s. One player each, muted and looping.
     QHash<QString, QMediaPlayer *> m_videos;
 
+    // When each video last had a frame turned into a picture, so a 60 fps
+    // clip is not copied off the graphics card sixty times a second.
+    QHash<QString, qint64> m_videoFrameAt;
+
+    // Videos whose frames could not be copied. They stay a still picture
+    // for the rest of this run instead of being started again.
+    QSet<QString> m_videosGivenUp;
+
     // The size each picture settled on, so later frames never change the page
     // height and make the view jump.
     mutable QHash<QString, QSize> m_frameSize;

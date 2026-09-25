@@ -1,4 +1,5 @@
 #include "core/AppConfig.h"
+#include "core/CrashLog.h"
 #include "core/GatewayClient.h"
 #include "core/HangWatch.h"
 #include "core/InstallTidy.h"
@@ -31,13 +32,18 @@
 // disappear and then copies files. It does not ask Windows to close whoever
 // has the program open, because Explorer keeps the shortcut's target open to
 // draw its icon, and closing Explorer is the taskbar not taking clicks.
-static void holdRunningMutex()
+//
+// Returns true when another copy already held it.
+static bool holdRunningMutex()
 {
 #ifdef Q_OS_WIN
     static HANDLE held = nullptr;
-    if (!held)
+    if (!held) {
         held = CreateMutexW(nullptr, FALSE, L"Local\\SingularityRunning");
+        return held && GetLastError() == ERROR_ALREADY_EXISTS;
+    }
 #endif
+    return false;
 }
 
 int main(int argc, char *argv[])
@@ -50,10 +56,18 @@ int main(int argc, char *argv[])
     QSurfaceFormat::setDefaultFormat(format);
 
     QApplication app(argc, argv);
-    holdRunningMutex();
+
+    // Before the first log line: a second launch that is only going to wake
+    // the running copy must not start its log on top of that copy's.
+    const bool anotherCopy = holdRunningMutex();
+    if (anotherCopy && !app.arguments().contains(QStringLiteral("--replace"))
+        && !app.arguments().contains(QStringLiteral("--add-account")))
+        Logger::useSideFile();
+
+    CrashLog::install();
     app.setApplicationName(QStringLiteral("Singularity"));
     app.setOrganizationName(QStringLiteral("Singularity"));
-    app.setApplicationVersion(QStringLiteral("0.6.97"));
+    app.setApplicationVersion(QStringLiteral("0.6.98"));
     app.setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
 
     Theme::applySeed(QColor(AppConfig::instance().value(QStringLiteral("appearance/themeSeed"),
