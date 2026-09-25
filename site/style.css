@@ -278,6 +278,17 @@ h1 {
 
 .btn.ghost { border-color: var(--edge-lit); color: var(--text); background: rgba(16, 21, 31, 0.6); }
 .btn.ghost:hover { background: var(--hover); color: var(--text); }
+.btn .gh { flex: none; opacity: 0.9; }
+
+/* Support: the same glass, with one warm note so it is found without shouting. */
+.btn.support { border-color: rgba(255, 107, 122, 0.35); }
+.btn.support:hover { border-color: rgba(255, 107, 122, 0.7); background: rgba(255, 107, 122, 0.08); }
+@media (max-width: 440px) {
+    nav .wrap { gap: 10px; }
+    nav .links { gap: 0; }
+    nav .links a { font-size: 13.5px; padding: 6px 8px; }
+    nav .links .get { margin-left: 4px; }
+}
 
 .meta { font-size: 14px; color: var(--faint); margin-top: 18px; }
 .meta b { color: var(--dim); font-weight: 500; }
