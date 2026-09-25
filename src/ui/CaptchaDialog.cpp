@@ -105,6 +105,12 @@ CaptchaDialog::~CaptchaDialog()
 #endif
 }
 
+bool CaptchaDialog::isDemand(const QJsonObject &body)
+{
+    return !body.value(QStringLiteral("captcha_key")).toArray().isEmpty()
+        && !body.value(QStringLiteral("captcha_sitekey")).toString().isEmpty();
+}
+
 QString CaptchaDialog::solve(QWidget *parent, const QString &sitekey, const QString &rqdata)
 {
     if (sitekey.isEmpty())

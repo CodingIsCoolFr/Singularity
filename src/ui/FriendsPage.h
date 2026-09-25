@@ -1,12 +1,13 @@
 #pragma once
 
+#include "core/RestClient.h"
+
 #include <QPoint>
 #include <QSet>
 #include <QTimer>
 #include <QWidget>
 
 class MessageStore;
-class RestClient;
 
 class QLabel;
 class QLineEdit;
@@ -41,9 +42,16 @@ signals:
     void statusMessage(const QString &text);
 
 private:
-    enum class Tab { Online, All, Pending, Blocked };
+    enum class Tab { Online, All, Pending, Blocked, Add };
 
     QWidget *buildTabBar();
+
+    // The Add Friend tab: a username box and a Send button, the way Discord's
+    // own Friends page has it. Discord often asks for a captcha first; the
+    // person solves it and the same request goes again with the answer.
+    QWidget *buildAddPanel();
+    void sendFriendRequest(const RestClient::CaptchaProof &captcha = {});
+    void showAddResult(bool ok, const QString &text);
     void setTab(Tab tab);
     void startDirectMessage(const QString &userId);
 
@@ -65,6 +73,14 @@ private:
     QPushButton *m_allTab = nullptr;
     QPushButton *m_pendingTab = nullptr;
     QPushButton *m_blockedTab = nullptr;
+    QPushButton *m_addTab = nullptr;
+
+    QWidget *m_top = nullptr;         // search and heading, hidden on Add Friend
+    QWidget *m_addPanel = nullptr;
+    QLineEdit *m_addField = nullptr;
+    QPushButton *m_addSend = nullptr;
+    QLabel *m_addResult = nullptr;
+    bool m_addBusy = false;
 
     QLineEdit *m_search = nullptr;
     QLabel *m_heading = nullptr;

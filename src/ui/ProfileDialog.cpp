@@ -1276,12 +1276,7 @@ void ProfileDialog::toggleFriend()
     const auto reenable = [this]() { m_friendButton->setEnabled(true); };
 
     const auto onError = [this, userId, info, onOk, reenable](const RestClient::Error &error) {
-        const QJsonArray keys = error.body.value(QStringLiteral("captcha_key")).toArray();
-        bool needsCheck = false;
-        for (const QJsonValue &key : keys) {
-            if (key.toString() == QLatin1String("captcha-required"))
-                needsCheck = true;
-        }
+        const bool needsCheck = CaptchaDialog::isDemand(error.body);
         if (needsCheck && !info.isFriend() && info.relationship != 4 && !info.isBlocked()) {
             const QString token = CaptchaDialog::solve(
                 this, error.body.value(QStringLiteral("captcha_sitekey")).toString(),

@@ -126,6 +126,16 @@ public:
     // POST /channels/{id}/invites - makes a share link for a channel.
     void createInvite(const QString &channelId, ObjectHandler onOk, ErrorHandler onError);
 
+    // POST /users/@me/relationships {"username", "discriminator"} - a friend
+    // request by name, from the Friends page's Add Friend tab. Sent with
+    // X-Context-Properties {"location":"Add Friend"}, as the real client does
+    // (discord.py-self send_friend_request). discriminator is null for the new
+    // unique usernames and the four digits for an old Name#1234. 204 on
+    // success; 80004 = nobody by that name, 80007 = already friends,
+    // 80000 = they do not take requests.
+    void sendFriendRequest(const QString &username, int discriminator, ObjectHandler onOk, ErrorHandler onError,
+                           const CaptchaProof &captcha = {});
+
     // GET /invites/{code}?with_counts=true&with_expiration=true - what an
     // invite leads to (server, channel, how many online and in total)
     // without joining. 10006 = the invite is unknown or has expired.

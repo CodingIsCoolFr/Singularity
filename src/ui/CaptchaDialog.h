@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QDialog>
+#include <QJsonObject>
 #include <QString>
 
 // The check Discord puts in front of some messages.
@@ -14,6 +15,12 @@ class CaptchaDialog : public QDialog
 public:
     // Empty if the window was closed before the check finished.
     static QString solve(QWidget *parent, const QString &sitekey, const QString &rqdata);
+
+    // True when an error body is Discord asking for a check: a captcha_key
+    // list and a site key. Whatever the words in captcha_key say. Discord's
+    // own client shows the puzzle for every such answer, and the words vary
+    // ("captcha-required", "You need to update your app to join this server.").
+    static bool isDemand(const QJsonObject &body);
 
 private:
     CaptchaDialog(const QString &sitekey, const QString &rqdata, QWidget *parent);

@@ -351,6 +351,27 @@ void RestClient::createInvite(const QString &channelId, ObjectHandler onOk, Erro
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+void RestClient::sendFriendRequest(const QString &username, int discriminator, ObjectHandler onOk,
+                                   ErrorHandler onError, const CaptchaProof &captcha)
+{
+    const QJsonObject body{
+        {QStringLiteral("username"), username},
+        {QStringLiteral("discriminator"), discriminator > 0 ? QJsonValue(discriminator) : QJsonValue()},
+    };
+
+    QNetworkRequest request = buildRequest(QStringLiteral("/users/@me/relationships"));
+    request.setRawHeader("X-Context-Properties", QByteArrayLiteral(R"({"location":"Add Friend"})").toBase64());
+    if (!captcha.key.isEmpty()) {
+        request.setRawHeader("X-Captcha-Key", captcha.key.toUtf8());
+        if (!captcha.rqtoken.isEmpty())
+            request.setRawHeader("X-Captcha-Rqtoken", captcha.rqtoken.toUtf8());
+        if (!captcha.sessionId.isEmpty())
+            request.setRawHeader("X-Captcha-Session-Id", captcha.sessionId.toUtf8());
+    }
+    QNetworkReply *reply = m_network.post(request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::fetchInvite(const QString &code, ObjectHandler onOk, ErrorHandler onError)
 {
     const QString path = QStringLiteral("/invites/%1?with_counts=true&with_expiration=true")

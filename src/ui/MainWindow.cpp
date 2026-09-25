@@ -5904,13 +5904,7 @@ void MainWindow::sendCurrentMessage()
     m_rest->sendMessage(
         channelId, content, replyTo, files, [](const QJsonObject &) {},
         [this, channelId, content, replyTo, files](const RestClient::Error &error) {
-            const QJsonArray keys = error.body.value(QStringLiteral("captcha_key")).toArray();
-            bool needsCheck = false;
-            for (const QJsonValue &key : keys) {
-                if (key.toString() == QLatin1String("captcha-required"))
-                    needsCheck = true;
-            }
-            if (needsCheck) {
+            if (CaptchaDialog::isDemand(error.body)) {
                 const QString token = CaptchaDialog::solve(
                     this, error.body.value(QStringLiteral("captcha_sitekey")).toString(),
                     error.body.value(QStringLiteral("captcha_rqdata")).toString());
@@ -7261,10 +7255,9 @@ bool MainWindow::takeCaptcha(const RestClient::Error &error, RestClient::Captcha
     // join came back with "You need to update your app to join this server.",
     // which is the text meant for clients that cannot show a captcha, and an
     // earlier version here waited for "captcha-required" and gave up.
-    const QJsonArray keys = error.body.value(QStringLiteral("captcha_key")).toArray();
-    const QString siteKey = error.body.value(QStringLiteral("captcha_sitekey")).toString();
-    if (keys.isEmpty() || siteKey.isEmpty())
+    if (!CaptchaDialog::isDemand(error.body))
         return false;
+    const QJsonArray keys = error.body.value(QStringLiteral("captcha_key")).toArray();
     wlog(QStringLiteral("ui"), QStringLiteral("Discord asks for a captcha (%1 via %2)")
                                    .arg(keys.first().toString(),
                                         error.body.value(QStringLiteral("captcha_service")).toString()));

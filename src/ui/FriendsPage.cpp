@@ -151,6 +151,9 @@ FriendsPage::FriendsPage(MessageStore *store, RestClient *rest, QWidget *parent)
     root->addWidget(mainColumn, 1);
 
     layout->addWidget(buildTabBar());
+    m_addPanel = buildAddPanel();
+    m_addPanel->hide();
+    layout->addWidget(m_addPanel);
 
     // Faces arrive long after the rows do.
     //
@@ -178,6 +181,7 @@ FriendsPage::FriendsPage(MessageStore *store, RestClient *rest, QWidget *parent)
     });
 
     auto *top = new QWidget(this);
+    m_top = top;
     auto *topLayout = new QVBoxLayout(top);
     topLayout->setContentsMargins(24, 12, 24, 6);
     topLayout->setSpacing(8);
@@ -295,16 +299,186 @@ QWidget *FriendsPage::buildTabBar()
     m_pendingTab = makeTab(QStringLiteral("Pending"), Tab::Pending);
     m_blockedTab = makeTab(QStringLiteral("Blocked"), Tab::Blocked);
 
+    // Filled in green, as Discord draws it; green writing once it is open.
+    m_addTab = makeTab(QStringLiteral("Add Friend"), Tab::Add);
+    m_addTab->setObjectName(QStringLiteral("AddFriendTab"));
+    m_addTab->setStyleSheet(QStringLiteral(
+        "QPushButton#AddFriendTab { background-color: %1; color: #ffffff; border: none; border-radius: 4px; "
+        "padding: 3px 10px; font-weight: 600; }"
+        "QPushButton#AddFriendTab[active=\"true\"] { background-color: transparent; color: %1; }")
+                                .arg(QLatin1String(Theme::Green)));
+
     layout->addStretch(1);
     return bar;
+}
+
+QWidget *FriendsPage::buildAddPanel()
+{
+    auto *panel = new QWidget(this);
+    auto *layout = new QVBoxLayout(panel);
+    layout->setContentsMargins(30, 20, 30, 20);
+    layout->setSpacing(8);
+
+    auto *title = new QLabel(QStringLiteral("ADD FRIEND"), panel);
+    title->setStyleSheet(QStringLiteral("color: %1; font-size: 16px; font-weight: 700;")
+                             .arg(QLatin1String(Theme::TextPrimary)));
+    auto *intro = new QLabel(QStringLiteral("You can add friends with their Discord username."), panel);
+    intro->setStyleSheet(QStringLiteral("color: %1;").arg(QLatin1String(Theme::TextMuted)));
+
+    // The box and the button sit together in one dark bar, as in Discord.
+    auto *bar = new QWidget(panel);
+    bar->setObjectName(QStringLiteral("AddFriendBar"));
+    bar->setStyleSheet(QStringLiteral("#AddFriendBar { background-color: %1; border: 1px solid %2; "
+                                      "border-radius: 8px; }")
+                           .arg(QLatin1String(Theme::SurfaceInput), QLatin1String(Theme::Border)));
+    auto *barLayout = new QHBoxLayout(bar);
+    barLayout->setContentsMargins(12, 8, 8, 8);
+
+    m_addField = new QLineEdit(bar);
+    m_addField->setPlaceholderText(QStringLiteral("You can add friends with their Discord username."));
+    m_addField->setStyleSheet(QStringLiteral("QLineEdit { background: transparent; border: none; font-size: 15px; "
+                                             "color: %1; }")
+                                  .arg(QLatin1String(Theme::TextPrimary)));
+
+    m_addSend = new QPushButton(QStringLiteral("Send Friend Request"), bar);
+    m_addSend->setCursor(Qt::PointingHandCursor);
+    m_addSend->setEnabled(false);
+    m_addSend->setStyleSheet(QStringLiteral(
+        "QPushButton { background-color: %1; color: #ffffff; border: none; border-radius: 4px; "
+        "padding: 8px 16px; font-weight: 600; }"
+        "QPushButton:disabled { background-color: %2; color: %3; }")
+                                 .arg(QLatin1String(Theme::Green), QLatin1String(Theme::SurfaceHover),
+                                      QLatin1String(Theme::TextFaint)));
+
+    barLayout->addWidget(m_addField, 1);
+    barLayout->addWidget(m_addSend);
+
+    m_addResult = new QLabel(panel);
+    m_addResult->setWordWrap(true);
+    m_addResult->hide();
+
+    layout->addWidget(title);
+    layout->addWidget(intro);
+    layout->addSpacing(6);
+    layout->addWidget(bar);
+    layout->addWidget(m_addResult);
+
+    connect(m_addField, &QLineEdit::textChanged, this, [this](const QString &text) {
+        m_addSend->setEnabled(!m_addBusy && !text.trimmed().isEmpty());
+        m_addResult->hide();
+    });
+    connect(m_addField, &QLineEdit::returnPressed, this, [this]() {
+        if (m_addSend->isEnabled())
+            sendFriendRequest();
+    });
+    connect(m_addSend, &QPushButton::clicked, this, [this]() { sendFriendRequest(); });
+    return panel;
+}
+
+void FriendsPage::showAddResult(bool ok, const QString &text)
+{
+    m_addResult->setStyleSheet(QStringLiteral("color: %1;").arg(ok ? QLatin1String(Theme::Green)
+                                                                   : QStringLiteral("#f23f43")));
+    m_addResult->setText(text);
+    m_addResult->show();
+}
+
+void FriendsPage::sendFriendRequest(const RestClient::CaptchaProof &captcha)
+{
+    // "@name" and "Name#1234" both come in from copying. The new unique
+    // names have no number; an old tag keeps its four digits.
+    QString name = m_addField->text().trimmed();
+    if (name.startsWith(QLatin1Char('@')))
+        name.remove(0, 1);
+    int discriminator = 0;
+    const int hash = name.lastIndexOf(QLatin1Char('#'));
+    if (hash > 0) {
+        bool numeric = false;
+        const int number = name.mid(hash + 1).toInt(&numeric);
+        if (numeric && name.size() - hash - 1 == 4) {
+            discriminator = number;
+            name = name.left(hash);
+        }
+    }
+    if (name.isEmpty())
+        return;
+
+    m_addBusy = true;
+    m_addSend->setEnabled(false);
+    m_addSend->setText(QStringLiteral("Sending…"));
+
+    const auto done = [this]() {
+        m_addBusy = false;
+        m_addSend->setText(QStringLiteral("Send Friend Request"));
+        m_addSend->setEnabled(!m_addField->text().trimmed().isEmpty());
+    };
+
+    m_rest->sendFriendRequest(
+        name, discriminator,
+        [this, name, done](const QJsonObject &) {
+            done();
+            wlog(QStringLiteral("friends"), QStringLiteral("friend request sent to %1").arg(name));
+            showAddResult(true, QStringLiteral("Success! Your friend request to %1 was sent.").arg(name));
+            m_addField->clear();
+            m_addResult->show();
+        },
+        [this, name, done](const RestClient::Error &error) {
+            if (CaptchaDialog::isDemand(error.body)) {
+                const QString token = CaptchaDialog::solve(
+                    this, error.body.value(QStringLiteral("captcha_sitekey")).toString(),
+                    error.body.value(QStringLiteral("captcha_rqdata")).toString());
+                if (token.isEmpty()) {
+                    done();
+                    showAddResult(false, QStringLiteral("Discord asked for a captcha, and it was not finished, "
+                                                        "so the request was not sent."));
+                    return;
+                }
+                RestClient::CaptchaProof proof;
+                proof.key = token;
+                proof.rqtoken = error.body.value(QStringLiteral("captcha_rqtoken")).toString();
+                proof.sessionId = error.body.value(QStringLiteral("captcha_session_id")).toString();
+                sendFriendRequest(proof);
+                return;
+            }
+
+            done();
+            const int code = error.body.value(QStringLiteral("code")).toInt();
+            wlog(QStringLiteral("friends"), QStringLiteral("friend request to %1 failed: HTTP %2, code %3, %4")
+                                                .arg(name).arg(error.httpStatus).arg(code).arg(error.message));
+            QString text;
+            if (code == 80004)
+                text = QStringLiteral("Hm, didn't work. Double check that the username is correct.");
+            else if (code == 80007)
+                text = QStringLiteral("You're already friends with that user!");
+            else if (code == 80000 || code == 80001)
+                text = QStringLiteral("That person is not taking friend requests right now.");
+            else if (code == 80003)
+                text = QStringLiteral("You can't send a friend request to yourself.");
+            else if (error.isRateLimit())
+                text = QStringLiteral("Discord says to slow down. Try again in a minute.");
+            else
+                text = error.message.isEmpty() ? QStringLiteral("Could not send the request.")
+                                               : error.message.left(180);
+            showAddResult(false, text);
+        },
+        captcha);
 }
 
 void FriendsPage::setTab(Tab tab)
 {
     m_tab = tab;
 
-    const QList<QPushButton *> tabs{m_onlineTab, m_allTab, m_pendingTab, m_blockedTab};
-    const QList<Tab> kinds{Tab::Online, Tab::All, Tab::Pending, Tab::Blocked};
+    // Add Friend has its own panel in place of the list.
+    const bool adding = tab == Tab::Add;
+    if (m_addPanel)
+        m_addPanel->setVisible(adding);
+    if (m_search)
+        m_search->setVisible(!adding);
+    if (adding && m_addField)
+        m_addField->setFocus();
+
+    const QList<QPushButton *> tabs{m_onlineTab, m_allTab, m_pendingTab, m_blockedTab, m_addTab};
+    const QList<Tab> kinds{Tab::Online, Tab::All, Tab::Pending, Tab::Blocked, Tab::Add};
 
     for (int i = 0; i < tabs.size(); ++i) {
         tabs.at(i)->setProperty("active", kinds.at(i) == tab);
@@ -341,6 +515,12 @@ void FriendsPage::refresh()
     case Tab::Blocked:
         people = m_store->usersWithRelationship(2);
         heading = QStringLiteral("BLOCKED");
+        break;
+    case Tab::Add:
+        // Requests you have sent show under the box, so a new one appears
+        // there the moment Discord confirms it.
+        people = m_store->usersWithRelationship(4);
+        heading = QStringLiteral("SENT REQUESTS");
         break;
     }
 
@@ -764,10 +944,7 @@ void FriendsPage::acceptRequest(const QString &userId)
     // asks for a check first; the person solves it, exactly as in its own
     // client, and the same call goes again with the answer.
     m_rest->addFriend(userId, accepted, [this, userId, accepted, failed](const RestClient::Error &error) {
-        bool needsCheck = false;
-        for (const QJsonValue &key : error.body.value(QStringLiteral("captcha_key")).toArray())
-            needsCheck = needsCheck || key.toString() == QLatin1String("captcha-required");
-        if (!needsCheck) {
+        if (!CaptchaDialog::isDemand(error.body)) {
             failed(error);
             return;
         }
