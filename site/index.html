@@ -79,6 +79,36 @@
   </div>
 </section>
 
+<section id="benchmark">
+  <div class="wrap rise">
+    <p class="kicker">Measured, not claimed</p>
+    <h2>About 40% of Discord's memory</h2>
+    <p class="lede">Singularity and the official Discord app, open side by side on the same text channel, measured for a minute each by a script anyone can run. One process instead of six, and a fraction of the threads.</p>
+
+    <div class="slab" style="margin-bottom:22px">
+      <div><b>336 MB</b><span>private memory, vs 863 MB</span></div>
+      <div><b>1</b><span>process, vs 6</span></div>
+      <div><b>33</b><span>threads, vs 260</span></div>
+      <div><b>181 MB</b><span>on disk, vs 490 MB</span></div>
+    </div>
+
+    <div class="bench-wrap">
+      <table class="bench">
+        <tr><th></th><th>Singularity 0.7.7</th><th>Discord (app 1.0.9258)</th></tr>
+        <tr><td>Private memory</td><td class="win">336 MB</td><td>863 MB</td></tr>
+        <tr><td>RAM in use (working set)</td><td class="win">283 MB</td><td>1,357 MB</td></tr>
+        <tr><td>CPU, average</td><td>0.10%</td><td>0.10%</td></tr>
+        <tr><td>CPU, peak</td><td class="win">0.28%</td><td>0.77%</td></tr>
+        <tr><td>Processes</td><td class="win">1</td><td>6</td></tr>
+        <tr><td>Threads</td><td class="win">33</td><td>260</td></tr>
+        <tr><td>Size on disk</td><td class="win">181 MB</td><td>490 MB</td></tr>
+      </table>
+    </div>
+
+    <p class="bench-note">Both idle on the same text channel, sampled every second for 60 seconds, on an Intel Core i9-13900K with 32 GB of RAM under Windows 11 Pro, 25 September 2026. Memory is summed over every process each app runs. Private memory is the fairer figure: the working set counts memory Discord's six processes share once for each of them. At idle both use about the same CPU; Discord's peaks are higher. This is the idle case only; calls and screen share have not been compared yet. The script and the raw results are in <a href="https://github.com/CodingIsCoolFr/singularity-updates/tree/main/benchmark">singularity-updates/benchmark</a>.</p>
+  </div>
+</section>
+
 <section id="features">
   <div class="wrap rise">
     <p class="kicker">In the client today</p>
