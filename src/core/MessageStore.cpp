@@ -1316,6 +1316,17 @@ bool MessageStore::isUnread(const QString &channelId) const
     return newerId(m_channels.value(channelId).lastMessageId, mark.lastReadId);
 }
 
+QList<QPair<QString, QString>> MessageStore::unreadChannels() const
+{
+    QList<QPair<QString, QString>> found;
+    for (auto it = m_channels.constBegin(); it != m_channels.constEnd(); ++it) {
+        if (it.value().lastMessageId.isEmpty() || !isUnread(it.key()))
+            continue;
+        found.append({it.key(), it.value().lastMessageId});
+    }
+    return found;
+}
+
 int MessageStore::mentionCount(const QString &channelId) const
 {
     return m_reads.value(channelId).mentions;

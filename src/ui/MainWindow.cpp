@@ -1152,6 +1152,20 @@ QWidget *MainWindow::buildGuildRail(QWidget *parent)
     layout->setContentsMargins(4, 10, 4, 10);
     layout->setSpacing(0);
 
+    // Marks every unread chat read, like Vencord's Read All button above
+    // Discord's rail.
+    auto *readAllButton = new QPushButton(QStringLiteral("Read All"), rail);
+    readAllButton->setObjectName(QStringLiteral("RailReadAll"));
+    readAllButton->setCursor(Qt::PointingHandCursor);
+    readAllButton->setToolTip(QStringLiteral("Mark every server and chat as read"));
+    readAllButton->setStyleSheet(QStringLiteral(
+        "QPushButton#RailReadAll { background: transparent; border: none; color: %1; font-size: 11px; "
+        "padding: 2px 0 8px 0; }"
+        "QPushButton#RailReadAll:hover { color: %2; }")
+                                     .arg(QLatin1String(Theme::TextMuted), QLatin1String(Theme::TextPrimary)));
+    connect(readAllButton, &QPushButton::clicked, this, &MainWindow::readAll);
+    layout->addWidget(readAllButton, 0, Qt::AlignHCenter);
+
     m_guildRail = new QListWidget(rail);
     m_guildRail->setIconSize(QSize(GuildIconPixels, GuildIconPixels));
     m_guildRail->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -1976,7 +1990,10 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
             const bool mine = message.authorId == m_selfUserId;
             const bool seen = mine || (channelId == m_currentChannelId && m_stickToBottom);
             const QString raw = data.value(QStringLiteral("content")).toString();
-            bool mention = data.value(QStringLiteral("mention_everyone")).toBool()
+            // In a direct message every message counts, as in Discord: the
+            // red number on a DM is how many you have not read.
+            bool mention = data.value(QStringLiteral("guild_id")).toString().isEmpty()
+                || data.value(QStringLiteral("mention_everyone")).toBool()
                 || raw.contains(QStringLiteral("<@") + m_selfUserId)
                 || raw.contains(QStringLiteral("<@!") + m_selfUserId);
             const QJsonArray named = data.value(QStringLiteral("mentions")).toArray();
@@ -2584,8 +2601,8 @@ void MainWindow::saveRailOrderFromView()
             continue;
         }
 
-        if (id.isEmpty())
-            continue;   // direct messages
+        if (id.isEmpty() || kind == QLatin1String("unreadDm"))
+            continue;   // direct messages, and the unread ones under them
 
         // Only an open folder can swallow the tiles drawn under it.
         if (!currentFolder.isEmpty() && !rebuilt.isEmpty() && rebuilt.last().isFolder
@@ -2858,10 +2875,13 @@ void MainWindow::applyDiscordFolders(const QByteArray &settingsProto, bool parti
 
 void MainWindow::refreshGuildIcons()
 {
+    // Faces on the unread direct message tiles arrive the same way.
+    refreshDmTiles();
+
     for (int row = 0; row < m_guildRail->count(); ++row) {
         QListWidgetItem *item = m_guildRail->item(row);
         const QString guildId = item->data(IdRole).toString();
-        if (guildId.isEmpty())
+        if (guildId.isEmpty() || item->data(KindRole).toString() == QLatin1String("unreadDm"))
             continue;
 
         // A folder shows small pictures of the first four servers inside.
@@ -2903,6 +2923,18 @@ void MainWindow::onGuildSelected(int row)
     QListWidgetItem *item = m_guildRail->item(row);
     if (!item)
         return;
+
+    // An unread direct message: open that chat.
+    if (item->data(KindRole).toString() == QLatin1String("unreadDm")) {
+        // The home tile takes the highlight, since this one goes away as soon
+        // as the chat is read; then the chat opens.
+        const QString channelId = item->data(IdRole).toString();
+        QTimer::singleShot(0, this, [this, channelId]() {
+            m_guildRail->setCurrentRow(0);
+            selectChannelEverywhere(channelId);
+        });
+        return;
+    }
 
     // A folder tile is not a server: clicking it opens or closes the folder.
     if (item->data(KindRole).toString() == QLatin1String("folder")) {
@@ -5841,10 +5873,119 @@ void MainWindow::showMessageMenu(const QPoint &pos)
     menu.exec(m_messageView->viewport()->mapToGlobal(pos));
 }
 
+void MainWindow::refreshDmTiles()
+{
+    if (!m_guildRail || m_guildRail->count() == 0 || m_refreshingDmTiles)
+        return;
+
+    // Which chats should have a tile: the unread direct messages, newest
+    // first, as many as Discord would show before it starts scrolling.
+    QStringList wanted;
+    for (const ChannelInfo &channel : m_store->directChannels()) {
+        if (m_store->mentionCount(channel.id) > 0)
+            wanted.append(channel.id);
+        if (wanted.size() >= 8)
+            break;
+    }
+
+    // What is there now: the tiles straight after the home tile.
+    QStringList have;
+    for (int row = 1; row < m_guildRail->count(); ++row) {
+        QListWidgetItem *item = m_guildRail->item(row);
+        if (item->data(KindRole).toString() != QLatin1String("unreadDm"))
+            break;
+        have.append(item->data(IdRole).toString());
+    }
+
+    const auto describe = [this](QListWidgetItem *item, const QString &channelId) {
+        const ChannelInfo channel = m_store->channel(channelId);
+        QString name = channel.name;
+        QIcon icon;
+        if (channel.recipientIds.size() == 1) {
+            const UserInfo person = m_store->user(channel.recipientIds.first());
+            name = person.displayName().isEmpty() ? person.username : person.displayName();
+            const QUrl url = MediaCache::avatarUrl(person.id, person.avatarHash, 96);
+            const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
+            if (!picture.isNull())
+                icon = MediaCache::circular(picture, GuildIconPixels);
+        }
+        if (name.isEmpty())
+            name = QStringLiteral("Direct message");
+        if (icon.isNull())
+            icon = MediaCache::initialsAvatar(name, GuildIconPixels);
+        item->setIcon(icon);
+        item->setToolTip(name);
+        item->setData(SingularityRoles::Mentions, m_store->mentionCount(channelId));
+        item->setData(SingularityRoles::Unread, true);
+    };
+
+    if (have == wanted) {
+        for (int i = 0; i < have.size(); ++i)
+            describe(m_guildRail->item(1 + i), have.at(i));
+        m_guildRail->viewport()->update();
+        return;
+    }
+
+    // Rebuild just those rows. The selection is held by what it is, not by
+    // row number, because the rows under it move.
+    m_refreshingDmTiles = true;
+    QListWidgetItem *current = m_guildRail->currentItem();
+    const QString currentKind = current ? current->data(KindRole).toString() : QString();
+    const QString currentId = current ? current->data(IdRole).toString() : QString();
+
+    m_guildRail->blockSignals(true);
+    for (int i = 0; i < have.size(); ++i)
+        delete m_guildRail->takeItem(1);
+    for (int i = 0; i < wanted.size(); ++i) {
+        auto *item = new QListWidgetItem;
+        item->setData(IdRole, wanted.at(i));
+        item->setData(KindRole, QStringLiteral("unreadDm"));
+        item->setFlags(item->flags() & ~Qt::ItemIsDragEnabled & ~Qt::ItemIsDropEnabled);
+        describe(item, wanted.at(i));
+        m_guildRail->insertItem(1 + i, item);
+    }
+    for (int row = 0; row < m_guildRail->count(); ++row) {
+        QListWidgetItem *item = m_guildRail->item(row);
+        if (item->data(KindRole).toString() == currentKind && item->data(IdRole).toString() == currentId) {
+            m_guildRail->setCurrentRow(row);
+            break;
+        }
+    }
+    m_guildRail->blockSignals(false);
+    m_refreshingDmTiles = false;
+}
+
+void MainWindow::readAll()
+{
+    const QList<QPair<QString, QString>> unread = m_store->unreadChannels();
+    if (unread.isEmpty()) {
+        flashStatus(QStringLiteral("Nothing is unread."), 4000);
+        return;
+    }
+
+    // Marked here at once; Discord is told in batches of a hundred, its limit.
+    for (const auto &pair : unread)
+        m_store->markChannelRead(pair.first, pair.second);
+    for (int from = 0; from < unread.size(); from += 100) {
+        const QList<QPair<QString, QString>> batch = unread.mid(from, 100);
+        m_rest->ackBulk(
+            batch, [](const QJsonObject &) {},
+            [this, count = batch.size()](const RestClient::Error &error) {
+                wlog(QStringLiteral("ui"), QStringLiteral("Read All: Discord refused %1 chats: HTTP %2 %3")
+                                               .arg(count).arg(error.httpStatus).arg(error.message));
+                flashStatus(QStringLiteral("Some chats could not be marked read on Discord."), 6000);
+            });
+    }
+    wlog(QStringLiteral("ui"), QStringLiteral("Read All: %1 chats marked read").arg(unread.size()));
+    flashStatus(QStringLiteral("Marked %1 chats as read.").arg(unread.size()), 4000);
+}
+
 void MainWindow::refreshUnreadMarks()
 {
     if (!m_guildRail || !m_channelList || !m_store)
         return;
+
+    refreshDmTiles();
 
     for (int row = 0; row < m_guildRail->count(); ++row) {
         QListWidgetItem *item = m_guildRail->item(row);

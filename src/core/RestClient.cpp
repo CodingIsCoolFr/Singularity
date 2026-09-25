@@ -351,6 +351,23 @@ void RestClient::createInvite(const QString &channelId, ObjectHandler onOk, Erro
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+void RestClient::ackBulk(const QList<QPair<QString, QString>> &channelsAndMessages, ObjectHandler onOk,
+                         ErrorHandler onError)
+{
+    QJsonArray states;
+    for (const auto &pair : channelsAndMessages) {
+        states.append(QJsonObject{
+            {QStringLiteral("channel_id"), pair.first},
+            {QStringLiteral("message_id"), pair.second},
+            {QStringLiteral("read_state_type"), 0},
+        });
+    }
+    const QJsonObject body{{QStringLiteral("read_states"), states}};
+    QNetworkReply *reply = m_network.post(buildRequest(QStringLiteral("/read-states/ack-bulk")),
+                                          QJsonDocument(body).toJson(QJsonDocument::Compact));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::editCurrentUser(const QJsonObject &fields, ObjectHandler onOk, ErrorHandler onError,
                                  const QString &mfaToken)
 {

@@ -126,6 +126,15 @@ private:
     void maybeNotify(const QJsonObject &data, const MessageInfo &message);
     void showDesktopNotification(const QString &title, const QString &text, const QString &channelId);
 
+    // Direct messages with something unread, as pictures with a red count
+    // under the home tile, the way Discord puts them there. Kept in step with
+    // the read state; clicking one opens that chat.
+    void refreshDmTiles();
+    bool m_refreshingDmTiles = false;
+
+    // "Read All" above the rail: every unread chat marked read in one go.
+    void readAll();
+
     void showJoinServerDialog(const QString &prefill = {});
     void requestInvite(const QString &code);
     void redrawInviteWaiters(const QString &code);

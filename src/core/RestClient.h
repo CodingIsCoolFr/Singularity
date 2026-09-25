@@ -126,6 +126,12 @@ public:
     // POST /channels/{id}/invites - makes a share link for a channel.
     void createInvite(const QString &channelId, ObjectHandler onOk, ErrorHandler onError);
 
+    // POST /read-states/ack-bulk {"read_states":[{channel_id, message_id,
+    // read_state_type: 0}]} - marks many chats read at once, as Discord's
+    // "Mark as read" on a folder and Vencord's Read All do. Up to 100 a call.
+    void ackBulk(const QList<QPair<QString, QString>> &channelsAndMessages, ObjectHandler onOk,
+                 ErrorHandler onError);
+
     // Editing your own account and profile (checked against docs.discord.food
     // and discord.py-self). Pictures go as data URIs; null clears a field.
     //

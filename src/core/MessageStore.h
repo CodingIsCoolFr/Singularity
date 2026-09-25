@@ -361,6 +361,10 @@ public:
     void noteIncoming(const QString &channelId, const QString &messageId, bool mention, bool seen);
     void markChannelRead(const QString &channelId, const QString &messageId);
     bool isUnread(const QString &channelId) const;
+
+    // Every chat with something unread, each with the newest message id
+    // (what an ack needs). For "Read All".
+    QList<QPair<QString, QString>> unreadChannels() const;
     int mentionCount(const QString &channelId) const;
     bool guildHasUnread(const QString &guildId) const;
     int guildMentionCount(const QString &guildId) const;
