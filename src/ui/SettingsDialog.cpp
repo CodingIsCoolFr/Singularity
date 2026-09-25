@@ -7,6 +7,7 @@
 #include "plugin/PluginHost.h"
 #include "ui/AnimatedImage.h"
 #include "ui/AudioMeter.h"
+#include "ui/CaptchaDialog.h"
 #include "ui/MediaCache.h"
 #include "ui/ProfilePreview.h"
 #include "ui/Theme.h"
@@ -314,6 +315,8 @@ QString discordReason(const RestClient::Error &error)
     const QString field = first(error.body.value(QStringLiteral("errors")).toObject());
     if (!field.isEmpty())
         return field;
+    if (error.body.contains(QStringLiteral("captcha_key")))
+        return QStringLiteral("Discord asked for a captcha, and it was not finished.");
     const QString message = error.body.value(QStringLiteral("message")).toString();
     if (error.isRateLimit())
         return QStringLiteral("Discord says to slow down. Try again in a little while.");
@@ -1044,9 +1047,7 @@ void SettingsDialog::saveProfile()
             finish(true, QString());
             return;
         }
-        m_rest->editCurrentProfile(
-            profileFields, [finish](const QJsonObject &) { finish(true, QString()); },
-            [finish](const RestClient::Error &error) { finish(false, discordReason(error)); });
+        editProfileFields(profileFields, finish);
     };
 
     if (userFields.isEmpty()) {
@@ -1062,8 +1063,43 @@ void SettingsDialog::saveProfile()
     });
 }
 
+bool SettingsDialog::solveCaptcha(const RestClient::Error &error, RestClient::CaptchaProof *proof, bool *asked)
+{
+    *asked = CaptchaDialog::isDemand(error.body);
+    if (!*asked)
+        return false;
+    wlog(QStringLiteral("account"), QStringLiteral("Discord asks for a captcha before this change"));
+    const QString token = CaptchaDialog::solve(this, error.body.value(QStringLiteral("captcha_sitekey")).toString(),
+                                               error.body.value(QStringLiteral("captcha_rqdata")).toString());
+    if (token.isEmpty())
+        return false;
+    proof->key = token;
+    proof->rqtoken = error.body.value(QStringLiteral("captcha_rqtoken")).toString();
+    proof->sessionId = error.body.value(QStringLiteral("captcha_session_id")).toString();
+    return true;
+}
+
+void SettingsDialog::editProfileFields(const QJsonObject &fields, std::function<void(bool, const QString &)> done,
+                                       const RestClient::CaptchaProof &captcha)
+{
+    m_rest->editCurrentProfile(
+        fields, [done](const QJsonObject &) { done(true, QString()); },
+        [this, fields, done, captcha](const RestClient::Error &error) {
+            RestClient::CaptchaProof proof;
+            bool asked = false;
+            if (captcha.key.isEmpty() && solveCaptcha(error, &proof, &asked)) {
+                editProfileFields(fields, done, proof);
+                return;
+            }
+            wlog(QStringLiteral("account"), QStringLiteral("profile change refused: HTTP %1 %2")
+                                                .arg(error.httpStatus).arg(error.message));
+            done(false, asked ? QStringLiteral("the captcha was not finished.") : discordReason(error));
+        },
+        captcha);
+}
+
 void SettingsDialog::editUser(const QJsonObject &fields, std::function<void(bool, const QString &)> done,
-                              const QString &mfaToken)
+                              const QString &mfaToken, const RestClient::CaptchaProof &captcha)
 {
     m_rest->editCurrentUser(
         fields,
@@ -1078,7 +1114,20 @@ void SettingsDialog::editUser(const QJsonObject &fields, std::function<void(bool
             wlog(QStringLiteral("account"), QStringLiteral("account change saved"));
             done(true, QString());
         },
-        [this, fields, done, mfaToken](const RestClient::Error &error) {
+        [this, fields, done, mfaToken, captcha](const RestClient::Error &error) {
+            // A captcha first, when Discord asks: solved by the person, then
+            // the same change again with the answer.
+            RestClient::CaptchaProof proof;
+            bool asked = false;
+            if (captcha.key.isEmpty() && solveCaptcha(error, &proof, &asked)) {
+                editUser(fields, done, mfaToken, proof);
+                return;
+            }
+            if (asked) {
+                done(false, QStringLiteral("the captcha was not finished."));
+                return;
+            }
+
             // Two-factor accounts: Discord wants the code before a sensitive
             // change, then the same change again with proof.
             const QJsonObject mfa = error.body.value(QStringLiteral("mfa")).toObject();
@@ -1111,10 +1160,11 @@ void SettingsDialog::editUser(const QJsonObject &fields, std::function<void(bool
                                                 .arg(error.httpStatus).arg(error.message));
             done(false, discordReason(error));
         },
-        mfaToken);
+        mfaToken, captcha);
 }
 
-void SettingsDialog::editServer(const QJsonObject &fields, const QString &what)
+void SettingsDialog::editServer(const QJsonObject &fields, const QString &what,
+                                const RestClient::CaptchaProof &captcha)
 {
     const QString guildId = m_serverPick->currentData().toString();
     const QString server = m_serverPick->currentText();
@@ -1127,14 +1177,21 @@ void SettingsDialog::editServer(const QJsonObject &fields, const QString &what)
             wlog(QStringLiteral("account"), QStringLiteral("%1 saved in %2").arg(what, server));
             setProfileStatus(true, QStringLiteral("%1 saved in %2.").arg(what, server));
         },
-        [this, what, server](const RestClient::Error &error) {
+        [this, fields, what, server, captcha](const RestClient::Error &error) {
+            RestClient::CaptchaProof proof;
+            bool asked = false;
+            if (captcha.key.isEmpty() && solveCaptcha(error, &proof, &asked)) {
+                editServer(fields, what, proof);
+                return;
+            }
             wlog(QStringLiteral("account"), QStringLiteral("%1 in %2 refused: HTTP %3 %4")
                                                 .arg(what, server).arg(error.httpStatus).arg(error.message));
-            const QString reason = error.httpStatus == 403
-                ? QStringLiteral("this server does not let you change that.")
-                : discordReason(error);
+            const QString reason = asked                    ? QStringLiteral("the captcha was not finished.")
+                                   : error.httpStatus == 403 ? QStringLiteral("this server does not let you change that.")
+                                                             : discordReason(error);
             setProfileStatus(false, QStringLiteral("%1 was not changed in %2: %3").arg(what, server, reason));
-        });
+        },
+        captcha);
 }
 
 QString SettingsDialog::pickPicture(const QString &title, QByteArray *bytesOut)

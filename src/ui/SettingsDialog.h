@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/RestClient.h"
+
 #include <QDialog>
 #include <QJsonObject>
 #include <QPixmap>
@@ -13,7 +15,6 @@ class QFrame;
 class LevelBar;
 class MessageStore;
 class PluginHost;
-class RestClient;
 
 class QComboBox;
 class QLabel;
@@ -83,8 +84,15 @@ private:
     // PATCH /users/@me, handling Discord's "two factor is required" by asking
     // for the code and sending the same change again.
     void editUser(const QJsonObject &fields, std::function<void(bool ok, const QString &problem)> done,
-                  const QString &mfaToken = {});
-    void editServer(const QJsonObject &fields, const QString &what);
+                  const QString &mfaToken = {}, const RestClient::CaptchaProof &captcha = {});
+    void editProfileFields(const QJsonObject &fields, std::function<void(bool ok, const QString &problem)> done,
+                           const RestClient::CaptchaProof &captcha = {});
+    void editServer(const QJsonObject &fields, const QString &what, const RestClient::CaptchaProof &captcha = {});
+
+    // Discord's captcha, shown for the person to solve when an answer asks
+    // for one. True with `proof` filled when it was solved; false when there
+    // was no demand (`*asked` false) or it was closed unsolved (`*asked` true).
+    bool solveCaptcha(const RestClient::Error &error, RestClient::CaptchaProof *proof, bool *asked);
 
     // Asks for a picture and hands it back as a data URI, or empty.
     QString pickPicture(const QString &title, QByteArray *bytes);

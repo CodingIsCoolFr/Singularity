@@ -145,15 +145,18 @@ public:
     // PATCH /users/@me: avatar, global_name, username (+ password),
     // avatar_decoration_id / avatar_decoration_sku_id. The answer is the user,
     // sometimes with a fresh "token" that replaces the old one.
+    // All three can come back with a captcha demand ("You need to update your
+    // app to perform this action."); the proof goes in `captcha` on the retry.
     void editCurrentUser(const QJsonObject &fields, ObjectHandler onOk, ErrorHandler onError,
-                         const QString &mfaToken = {});
+                         const QString &mfaToken = {}, const CaptchaProof &captcha = {});
     // PATCH /users/@me/profile: bio (190), pronouns (40), accent_color,
     // banner (Nitro).
-    void editCurrentProfile(const QJsonObject &fields, ObjectHandler onOk, ErrorHandler onError);
+    void editCurrentProfile(const QJsonObject &fields, ObjectHandler onOk, ErrorHandler onError,
+                            const CaptchaProof &captcha = {});
     // PATCH /guilds/{id}/members/@me: nick, and with Nitro a server avatar,
     // banner and bio.
     void editGuildMember(const QString &guildId, const QJsonObject &fields, ObjectHandler onOk,
-                         ErrorHandler onError);
+                         ErrorHandler onError, const CaptchaProof &captcha = {});
     // GET /users/@me/collectibles-purchases - what you own from the shop.
     // type 0 = avatar decoration, 1 = profile effect, 2 = nameplate.
     void fetchCollectibles(ArrayHandler onOk, ErrorHandler onError);

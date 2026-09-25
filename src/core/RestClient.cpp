@@ -377,30 +377,49 @@ void RestClient::ackBulk(const QList<QPair<QString, QString>> &channelsAndMessag
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+namespace {
+
+void attachCaptcha(QNetworkRequest &request, const RestClient::CaptchaProof &captcha)
+{
+    if (captcha.key.isEmpty())
+        return;
+    request.setRawHeader("X-Captcha-Key", captcha.key.toUtf8());
+    if (!captcha.rqtoken.isEmpty())
+        request.setRawHeader("X-Captcha-Rqtoken", captcha.rqtoken.toUtf8());
+    if (!captcha.sessionId.isEmpty())
+        request.setRawHeader("X-Captcha-Session-Id", captcha.sessionId.toUtf8());
+}
+
+} // namespace
+
 void RestClient::editCurrentUser(const QJsonObject &fields, ObjectHandler onOk, ErrorHandler onError,
-                                 const QString &mfaToken)
+                                 const QString &mfaToken, const CaptchaProof &captcha)
 {
     QNetworkRequest request = buildRequest(QStringLiteral("/users/@me"));
     if (!mfaToken.isEmpty())
         request.setRawHeader("X-Discord-MFA-Authorization", mfaToken.toUtf8());
+    attachCaptcha(request, captcha);
     QNetworkReply *reply = m_network.sendCustomRequest(request, QByteArrayLiteral("PATCH"),
                                                        QJsonDocument(fields).toJson(QJsonDocument::Compact));
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
-void RestClient::editCurrentProfile(const QJsonObject &fields, ObjectHandler onOk, ErrorHandler onError)
+void RestClient::editCurrentProfile(const QJsonObject &fields, ObjectHandler onOk, ErrorHandler onError,
+                                    const CaptchaProof &captcha)
 {
-    QNetworkReply *reply = m_network.sendCustomRequest(buildRequest(QStringLiteral("/users/@me/profile")),
-                                                       QByteArrayLiteral("PATCH"),
+    QNetworkRequest request = buildRequest(QStringLiteral("/users/@me/profile"));
+    attachCaptcha(request, captcha);
+    QNetworkReply *reply = m_network.sendCustomRequest(request, QByteArrayLiteral("PATCH"),
                                                        QJsonDocument(fields).toJson(QJsonDocument::Compact));
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
 void RestClient::editGuildMember(const QString &guildId, const QJsonObject &fields, ObjectHandler onOk,
-                                 ErrorHandler onError)
+                                 ErrorHandler onError, const CaptchaProof &captcha)
 {
-    const QString path = QStringLiteral("/guilds/%1/members/@me").arg(guildId);
-    QNetworkReply *reply = m_network.sendCustomRequest(buildRequest(path), QByteArrayLiteral("PATCH"),
+    QNetworkRequest request = buildRequest(QStringLiteral("/guilds/%1/members/@me").arg(guildId));
+    attachCaptcha(request, captcha);
+    QNetworkReply *reply = m_network.sendCustomRequest(request, QByteArrayLiteral("PATCH"),
                                                        QJsonDocument(fields).toJson(QJsonDocument::Compact));
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
