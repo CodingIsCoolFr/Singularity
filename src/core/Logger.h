@@ -28,6 +28,16 @@ public:
     // the running window forward - no longer wipes the running copy's log.
     static void useSideFile();
 
+    // Called once this copy knows it is the one that stays running. If it
+    // started on the side file, it moves to singularity.log (the last run's
+    // log becoming singularity.prev.log) and writes everything so far there.
+    //
+    // Needed because "another copy holds the running mutex" at start was not
+    // always a copy that was about to be woken: after 0.6.98 and 0.6.99
+    // installed themselves, the fresh copy the installer started saw the name
+    // taken and spent its whole run writing to singularity.other.log.
+    void claimMainFile();
+
     // `source` is a short tag such as "gateway" or "rest".
     void log(const QString &source, const QString &message);
 

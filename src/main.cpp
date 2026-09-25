@@ -67,7 +67,7 @@ int main(int argc, char *argv[])
     CrashLog::install();
     app.setApplicationName(QStringLiteral("Singularity"));
     app.setOrganizationName(QStringLiteral("Singularity"));
-    app.setApplicationVersion(QStringLiteral("0.6.99"));
+    app.setApplicationVersion(QStringLiteral("0.7.0"));
     app.setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
 
     Theme::applySeed(QColor(AppConfig::instance().value(QStringLiteral("appearance/themeSeed"),
@@ -104,6 +104,9 @@ int main(int argc, char *argv[])
     const bool replaceRunning = addingAccount || app.arguments().contains(QStringLiteral("--replace"));
     if (!SingleInstance::claim(app.applicationVersion(), replaceRunning))
         return 0;
+
+    // This copy stays. If it began on the side log, singularity.log is its.
+    Logger::instance().claimMainFile();
 
     // Names whatever freezes the window, in the log, the moment it happens.
     HangWatch::start();

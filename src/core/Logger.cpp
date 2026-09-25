@@ -93,6 +93,39 @@ void Logger::log(const QString &source, const QString &message)
     emit lineLogged(line);
 }
 
+void Logger::claimMainFile()
+{
+    const QMutexLocker lock(&m_mutex);
+    if (!g_sideFile)
+        return;
+    g_sideFile = false;
+
+    const QString side = m_file.fileName();
+    const QString dir = QFileInfo(side).absolutePath();
+    const QString path = dir + QStringLiteral("/singularity.log");
+    const QString previous = dir + QStringLiteral("/singularity.prev.log");
+
+    m_stream.flush();
+    m_file.close();
+    QFile::remove(side);
+
+    if (QFileInfo(path).size() > 0) {
+        QFile::remove(previous);
+        QFile::rename(path, previous);
+    }
+
+    m_file.setFileName(path);
+    if (m_file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        m_stream.setDevice(&m_file);
+        m_stream << QStringLiteral("=== Singularity started %1 (moved here from the side log) ===\n")
+                        .arg(QDateTime::currentDateTime().toString(Qt::ISODate));
+        for (const QString &line : std::as_const(m_history))
+            m_stream << line << '\n';
+        m_stream.flush();
+        m_sinceFlush = 0;
+    }
+}
+
 void Logger::flush()
 {
     const QMutexLocker lock(&m_mutex);

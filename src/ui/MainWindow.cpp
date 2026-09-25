@@ -7255,14 +7255,19 @@ void MainWindow::openDirectWith(const QString &userId)
 
 bool MainWindow::takeCaptcha(const RestClient::Error &error, RestClient::CaptchaProof *proof)
 {
+    // Any captcha_key with a site key is a check to show, whatever the words
+    // in it. Discord's own client does exactly that (its HTTP interceptor
+    // opens hCaptcha for every 400 carrying captcha_key). The words vary: a
+    // join came back with "You need to update your app to join this server.",
+    // which is the text meant for clients that cannot show a captcha, and an
+    // earlier version here waited for "captcha-required" and gave up.
     const QJsonArray keys = error.body.value(QStringLiteral("captcha_key")).toArray();
-    bool needed = false;
-    for (const QJsonValue &key : keys) {
-        if (key.toString() == QLatin1String("captcha-required"))
-            needed = true;
-    }
-    if (!needed)
+    const QString siteKey = error.body.value(QStringLiteral("captcha_sitekey")).toString();
+    if (keys.isEmpty() || siteKey.isEmpty())
         return false;
+    wlog(QStringLiteral("ui"), QStringLiteral("Discord asks for a captcha (%1 via %2)")
+                                   .arg(keys.first().toString(),
+                                        error.body.value(QStringLiteral("captcha_service")).toString()));
 
     const QString token = CaptchaDialog::solve(
         this, error.body.value(QStringLiteral("captcha_sitekey")).toString(),
