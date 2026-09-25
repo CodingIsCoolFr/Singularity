@@ -50,6 +50,9 @@ signals:
     // after some changes). The old one stops working, so the window swaps it.
     void tokenReplaced(const QString &token);
 
+    // "Send a test notification" on the Notifications page.
+    void testNotificationRequested();
+
 protected:
     void showEvent(QShowEvent *event) override;
 
@@ -72,6 +75,7 @@ private:
 
     QWidget *buildAccountPage();
     QWidget *buildVoicePage();
+    QWidget *buildNotificationsPage();
     QWidget *buildAppearancePage();
     QWidget *buildPluginsPage();
     QWidget *buildAdvancedPage();

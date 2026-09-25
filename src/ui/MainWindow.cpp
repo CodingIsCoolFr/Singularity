@@ -55,6 +55,9 @@
 #include <QJsonDocument>
 #include <QMouseEvent>
 #include <QAbstractTextDocumentLayout>
+#include <QFontMetricsF>
+
+#include <cmath>
 #include <QCamera>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -368,24 +371,7 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     connect(m_plugins, &PluginHost::notificationRequested, this,
             [this](const QString &id, const QString &title, const QString &text) {
                 wlog(QStringLiteral("notify"), QStringLiteral("[%1] %2: %3").arg(id, title, text));
-                if (!QSystemTrayIcon::isSystemTrayAvailable())
-                    return;
-                if (!m_tray) {
-                    m_tray = new QSystemTrayIcon(windowIcon(), this);
-                    m_tray->setToolTip(QStringLiteral("Singularity"));
-                    const auto bringForward = [this]() {
-                        if (isMinimized())
-                            showNormal();
-                        show();
-                        raise();
-                        activateWindow();
-                    };
-                    connect(m_tray, &QSystemTrayIcon::messageClicked, this, bringForward);
-                    connect(m_tray, &QSystemTrayIcon::activated, this,
-                            [bringForward](QSystemTrayIcon::ActivationReason) { bringForward(); });
-                    m_tray->show();
-                }
-                m_tray->showMessage(title, text, windowIcon(), 8000);
+                showDesktopNotification(title, text, QString());
             });
 
     connect(m_store, &MessageStore::readStateChanged, this, &MainWindow::refreshUnreadMarks);
@@ -1727,9 +1713,28 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
     m_composer->viewport()->installEventFilter(this);
     setAcceptDrops(true);
 
-    row->addWidget(attach, 0, Qt::AlignVCenter);
+    // The box grows with what is typed, a line at a time, up to eight lines,
+    // and scrolls after that - Discord's behaviour. It used to be fixed at one
+    // line with the scroll bar off, so a second line pushed the first up out
+    // of sight and the text looked cut off.
+    const auto fitComposer = [this]() {
+        const QFontMetricsF metrics(m_composer->font());
+        const qreal line = metrics.lineSpacing();
+        const qreal margin = m_composer->document()->documentMargin();
+        const qreal oneLine = line + 2 * margin;
+        const qreal extra = qMax<qreal>(0, m_composer->document()->size().height() - oneLine);
+        const int most = int(32 + 7 * line);
+        const int wanted = int(32 + std::ceil(extra));
+        m_composer->setFixedHeight(qMin(wanted, most));
+        m_composer->setVerticalScrollBarPolicy(wanted > most ? Qt::ScrollBarAsNeeded : Qt::ScrollBarAlwaysOff);
+    };
+    connect(m_composer->document()->documentLayout(), &QAbstractTextDocumentLayout::documentSizeChanged, this,
+            [fitComposer](const QSizeF &) { fitComposer(); });
+
+    // The buttons stay beside the first line as the box grows, as in Discord.
+    row->addWidget(attach, 0, Qt::AlignTop);
     row->addWidget(m_composer, 1);
-    row->addWidget(emoji, 0, Qt::AlignVCenter);
+    row->addWidget(emoji, 0, Qt::AlignTop);
     boxLayout->addLayout(row);
 
     composerLayout->addWidget(composerBox);
@@ -1878,6 +1883,8 @@ void MainWindow::onGatewayReady(const QJsonObject &payload)
         m_loading->setStep(QStringLiteral("Sorting your servers..."));
 
     m_store->ingestReady(payload);
+    m_notifyRules = NotificationRules();
+    m_notifyRules.ingestReady(payload, m_selfUserId);
     const QByteArray settingsProto = QByteArray::fromBase64(
         payload.value(QStringLiteral("user_settings_proto")).toString().toLatin1());
     if (!settingsProto.isEmpty())
@@ -1980,6 +1987,8 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
             m_store->noteIncoming(channelId, message.id, mention && !mine, seen);
             if (seen && channelId == m_currentChannelId)
                 m_rest->ackMessage(channelId, message.id);
+            if (!mine)
+                maybeNotify(data, message);
 
             if (channelId == m_currentChannelId && m_store->hasHistory(channelId)) {
                 const bool grouped = m_hasLastRendered && shouldGroup(m_lastRendered, message);
@@ -2028,8 +2037,23 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
         return;
     }
 
+    // Notification settings changed in any client, or your roles changed.
+    if (eventType == QLatin1String("USER_GUILD_SETTINGS_UPDATE")) {
+        m_notifyRules.applySettingsEntry(data);
+        return;
+    }
+    if (eventType == QLatin1String("GUILD_MEMBER_UPDATE")
+        && data.value(QStringLiteral("user")).toObject().value(QStringLiteral("id")).toString() == m_selfUserId) {
+        QStringList roles;
+        for (const QJsonValue &role : data.value(QStringLiteral("roles")).toArray())
+            roles.append(role.toString());
+        m_notifyRules.setSelfRoles(data.value(QStringLiteral("guild_id")).toString(), roles);
+        // Fall through: anything else that wants member updates still gets it.
+    }
+
     if (eventType == QLatin1String("GUILD_CREATE")) {
         const QString guildId = data.value(QStringLiteral("id")).toString();
+        m_notifyRules.applyGuild(data);
         const bool joinedJustNow = !guildId.isEmpty() && m_store->guild(guildId).id.isEmpty();
         m_store->applyGuild(data);
         if (guildId == m_currentGuildId)
@@ -7587,6 +7611,124 @@ void MainWindow::createInvite(const QString &channelId)
 }
 
 // ---------------------------------------------------------------------------
+// Desktop notifications
+// ---------------------------------------------------------------------------
+
+void MainWindow::showDesktopNotification(const QString &title, const QString &text, const QString &channelId)
+{
+    // A desktop program raises one through a tray icon, so the icon is made
+    // the first time one is needed and then stays, like Discord's. Clicking
+    // the notification opens the chat it was about.
+    if (!QSystemTrayIcon::isSystemTrayAvailable())
+        return;
+    if (!m_tray) {
+        m_tray = new QSystemTrayIcon(windowIcon(), this);
+        m_tray->setToolTip(QStringLiteral("Singularity"));
+        const auto bringForward = [this]() {
+            if (isMinimized())
+                showNormal();
+            show();
+            raise();
+            activateWindow();
+        };
+        connect(m_tray, &QSystemTrayIcon::messageClicked, this, [this, bringForward]() {
+            bringForward();
+            if (!m_notifyChannelId.isEmpty())
+                selectChannelEverywhere(m_notifyChannelId);
+        });
+        connect(m_tray, &QSystemTrayIcon::activated, this,
+                [bringForward](QSystemTrayIcon::ActivationReason) { bringForward(); });
+        m_tray->show();
+    }
+    m_notifyChannelId = channelId;
+    m_tray->showMessage(title, text, windowIcon(), 8000);
+}
+
+void MainWindow::maybeNotify(const QJsonObject &data, const MessageInfo &message)
+{
+    AppConfig &config = AppConfig::instance();
+    if (!config.value(QStringLiteral("notifications/desktop"), true).toBool())
+        return;
+
+    // Discord shows these only while it is not the window in front. Reading
+    // the chat already tells you, and a pop-up on top of it would be noise.
+    if (QApplication::activeWindow() != nullptr)
+        return;
+
+    // Do Not Disturb silences Discord's own notifications. This account sits
+    // on it most of the time, so here it is a choice, on by default.
+    if (m_gateway && m_gateway->presenceStatus() == QLatin1String("dnd")
+        && !config.value(QStringLiteral("notifications/duringDnd"), true).toBool())
+        return;
+
+    if (m_store->user(message.authorId).isBlocked())
+        return;
+
+    const QString channelId = data.value(QStringLiteral("channel_id")).toString();
+    const ChannelInfo channel = m_store->channel(channelId);
+    const NotificationRules::Verdict verdict =
+        m_notifyRules.judge(data, m_selfUserId, channel.parentId, QDateTime::currentMSecsSinceEpoch());
+    if (!verdict.notify)
+        return;
+
+    // Who and where, as Discord words it.
+    const QString author = message.authorName.isEmpty() ? QStringLiteral("Someone") : message.authorName;
+    QString title = author;
+    if (!channel.guildId.isEmpty()) {
+        const GuildInfo guild = m_store->guild(channel.guildId);
+        title = QStringLiteral("%1 (#%2, %3)").arg(author, channel.name, guild.name);
+    } else if (channel.type == 3 && !channel.name.isEmpty()) {
+        title = QStringLiteral("%1 (%2)").arg(author, channel.name);
+    }
+
+    // The words, with <@id> and friends turned back into names.
+    QString text;
+    if (config.value(QStringLiteral("notifications/showText"), true).toBool()) {
+        text = message.content;
+        static const QRegularExpression user(QStringLiteral(R"(<@!?(\d+)>)"));
+        static const QRegularExpression role(QStringLiteral(R"(<@&(\d+)>)"));
+        static const QRegularExpression room(QStringLiteral(R"(<#(\d+)>)"));
+        static const QRegularExpression emoji(QStringLiteral(R"(<a?:(\w+):\d+>)"));
+        for (auto it = user.globalMatch(message.content); it.hasNext();) {
+            const auto match = it.next();
+            const QString name = m_store->user(match.captured(1)).displayName();
+            text.replace(match.captured(0), QStringLiteral("@") + (name.isEmpty() ? QStringLiteral("someone") : name));
+        }
+        const GuildInfo guild = m_store->guild(channel.guildId);
+        for (auto it = role.globalMatch(message.content); it.hasNext();) {
+            const auto match = it.next();
+            const QString name = guild.roles.value(match.captured(1)).name;
+            text.replace(match.captured(0), QStringLiteral("@") + (name.isEmpty() ? QStringLiteral("role") : name));
+        }
+        for (auto it = room.globalMatch(message.content); it.hasNext();) {
+            const auto match = it.next();
+            text.replace(match.captured(0), QStringLiteral("#") + m_store->channel(match.captured(1)).name);
+        }
+        text.replace(emoji, QStringLiteral(":\\1:"));
+        text = text.simplified();
+        if (text.size() > 220)
+            text = text.left(217) + QStringLiteral("…");
+    }
+    if (text.isEmpty()) {
+        if (!message.attachments.isEmpty())
+            text = QStringLiteral("Sent an attachment.");
+        else if (!message.stickers.isEmpty())
+            text = QStringLiteral("Sent a sticker.");
+        else if (!message.embeds.isEmpty())
+            text = QStringLiteral("Sent a link.");
+        else
+            text = QStringLiteral("New message.");
+    }
+
+    wlog(QStringLiteral("notify"), QStringLiteral("message from %1 in %2: %3")
+                                       .arg(author, channelId, verdict.reason));
+    showDesktopNotification(title, text, channelId);
+
+    // The taskbar button flashes until the window is opened, as Discord's does.
+    QApplication::alert(this);
+}
+
+// ---------------------------------------------------------------------------
 // Invites (the link helpers are with handleAnchor)
 // ---------------------------------------------------------------------------
 
@@ -7943,6 +8085,10 @@ void MainWindow::openSettings()
         m_settingsDialog = new SettingsDialog(m_store, m_rest, m_plugins, m_selfUserId, this);
         connect(m_settingsDialog, &SettingsDialog::appearanceChanged, this, &MainWindow::applyAppearance);
         connect(m_settingsDialog, &SettingsDialog::logOutRequested, this, &MainWindow::logOut);
+        connect(m_settingsDialog, &SettingsDialog::testNotificationRequested, this, [this]() {
+            showDesktopNotification(QStringLiteral("Singularity"),
+                                    QStringLiteral("This is what a new message looks like."), QString());
+        });
 
         // An account change answered with a new token: the old one is dead
         // from now on, so every place that holds it gets the new one.

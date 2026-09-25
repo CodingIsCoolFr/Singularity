@@ -2,6 +2,7 @@
 
 #include "core/GatewayClient.h"
 #include "core/MessageStore.h"
+#include "core/NotificationRules.h"
 #include "core/RestClient.h"
 #include "core/SettingsProto.h"
 #include "core/VoiceConnection.h"
@@ -120,6 +121,11 @@ private:
     // Invites: the "Join a server" box, the card under a message that holds
     // a discord.gg link, and the join itself (with the captcha Discord often
     // asks for, solved by the person in CaptchaDialog).
+    // A Windows notification for a new message, when Discord's rules for that
+    // chat say so (NotificationRules) and the window is not in front.
+    void maybeNotify(const QJsonObject &data, const MessageInfo &message);
+    void showDesktopNotification(const QString &title, const QString &text, const QString &channelId);
+
     void showJoinServerDialog(const QString &prefill = {});
     void requestInvite(const QString &code);
     void redrawInviteWaiters(const QString &code);
@@ -252,6 +258,9 @@ private:
     QString m_editingMessageId;
     QStringList m_pendingFiles;
     QHash<QString, int> m_uploadsInFlight;   // path -> percent, while going to GoFile
+
+    NotificationRules m_notifyRules;
+    QString m_notifyChannelId;   // the chat the last notification was about
 
     // What each invite code seen in chat leads to, fetched once per run.
     struct InviteCard

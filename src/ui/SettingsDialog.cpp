@@ -157,6 +157,7 @@ SettingsDialog::SettingsDialog(MessageStore *store, RestClient *rest, PluginHost
 
     addSection(QStringLiteral("My Account"), buildAccountPage());
     addSection(QStringLiteral("Voice & Video"), buildVoicePage());
+    addSection(QStringLiteral("Notifications"), buildNotificationsPage());
     addSection(QStringLiteral("Appearance"), buildAppearancePage());
     addSection(QStringLiteral("Plugins"), buildPluginsPage());
     addSection(QStringLiteral("Advanced"), buildAdvancedPage());
@@ -841,6 +842,53 @@ QString SettingsDialog::pickPicture(const QString &title, QImage *preview)
     if (preview)
         *preview = QImage::fromData(bytes);
     return QStringLiteral("data:%1;base64,%2").arg(mime, QString::fromLatin1(bytes.toBase64()));
+}
+
+// ---------------------------------------------------------------------------
+// Notifications
+// ---------------------------------------------------------------------------
+
+QWidget *SettingsDialog::buildNotificationsPage()
+{
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(34, 28, 34, 28);
+    layout->setSpacing(8);
+
+    layout->addWidget(pageTitle(QStringLiteral("Notifications"), page));
+    layout->addWidget(hint(QStringLiteral("A Windows notification for a new message while Singularity is not the "
+                                          "window in front. Which chats count follows your Discord settings: every "
+                                          "direct message, and in servers all messages, only @mentions or nothing, "
+                                          "the way each server and channel is set. A muted server or channel still "
+                                          "notifies when you are mentioned. Clicking one opens that chat."),
+                           page));
+
+    AppConfig &config = AppConfig::instance();
+    const auto toggle = [&](const QString &key, const QString &label, bool fallback) {
+        auto *box = new QCheckBox(label, page);
+        box->setChecked(config.value(key, fallback).toBool());
+        connect(box, &QCheckBox::toggled, this, [key](bool on) { AppConfig::instance().setValue(key, on); });
+        layout->addWidget(box);
+        return box;
+    };
+
+    layout->addWidget(groupTitle(QStringLiteral("DESKTOP"), page));
+    toggle(QStringLiteral("notifications/desktop"), QStringLiteral("Show desktop notifications"), true);
+    toggle(QStringLiteral("notifications/showText"), QStringLiteral("Show what the message says"), true);
+    toggle(QStringLiteral("notifications/duringDnd"), QStringLiteral("Keep notifying while I am on Do Not Disturb"),
+           true);
+    layout->addWidget(hint(QStringLiteral("Discord itself goes quiet on Do Not Disturb. Turn the last one off to "
+                                          "match it. Windows' own Focus mode can also hide them."),
+                           page));
+
+    auto *test = new QPushButton(QStringLiteral("Send a test notification"), page);
+    test->setMaximumWidth(260);
+    connect(test, &QPushButton::clicked, this, [this]() { emit testNotificationRequested(); });
+    layout->addSpacing(8);
+    layout->addWidget(test);
+
+    layout->addStretch(1);
+    return page;
 }
 
 // ---------------------------------------------------------------------------
