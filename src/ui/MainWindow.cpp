@@ -23,6 +23,7 @@
 
 #include <QProcess>
 
+#include "ui/AnimatedImage.h"
 #include "ui/CallView.h"
 #include "ui/ChangelogDialog.h"
 #include "ui/ListDelegates.h"
@@ -78,6 +79,8 @@
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QPainter>
+#include <QPainterPath>
+#include <QPointer>
 #include <QToolTip>
 #include <QKeyEvent>
 #include <QLabel>
@@ -5521,7 +5524,7 @@ protected:
         const int first = qMax(0, clip.top() / CellSize);
         const int last = qMin((m_shown.size() + Columns - 1) / Columns - 1, clip.bottom() / CellSize);
         QFont font(QStringLiteral("Segoe UI Emoji"));
-        font.setPixelSize(18);
+        font.setPixelSize(26);
         painter.setFont(font);
         painter.setPen(Qt::white);
 
@@ -5540,7 +5543,7 @@ protected:
                 }
                 const QImage picture = MediaCache::instance().image(cell.icon);
                 if (!picture.isNull())
-                    painter.drawImage(box.adjusted(5, 5, -5, -5), picture);
+                    painter.drawImage(box.adjusted(6, 6, -6, -6), picture);
             }
         }
     }
@@ -5577,8 +5580,10 @@ protected:
     }
 
 private:
-    static constexpr int Columns = 8;
-    static constexpr int CellSize = 36;
+    // Discord's picker draws faces at 40 in 48 cells; this one is a little
+    // narrower so nine fit across without a sideways scroll.
+    static constexpr int Columns = 9;
+    static constexpr int CellSize = 44;
 
     QList<int> m_shown;
     int m_hover = -1;
@@ -5591,6 +5596,203 @@ private:
     }
 };
 
+// The GIF page: two columns of tiles, each as tall as its picture wants, the
+// way Discord lays them out. Painted, like the emoji page, so only the tiles
+// on screen fetch anything. Tiles are still until the pointer is on one;
+// fifty moving pictures at once is a lot of work for a menu.
+class GifBoard : public QWidget
+{
+public:
+    struct Tile
+    {
+        QString id;
+        QString title;     // a category's name, drawn over it
+        QUrl picture;      // a small .gif from Tenor
+        QString page;      // what is sent: Discord turns it into the moving card
+        int width = 0;
+        int height = 0;
+        bool category = false;
+    };
+
+    std::function<void(const Tile &)> onPick;
+
+    explicit GifBoard(QWidget *parent)
+        : QWidget(parent)
+    {
+        setMouseTracking(true);
+        setCursor(Qt::PointingHandCursor);
+    }
+
+    void setTiles(const QList<Tile> &tiles)
+    {
+        m_tiles = tiles;
+        m_message.clear();
+        stopHover();
+        relayout();
+    }
+
+    // Shown instead of tiles: "Loading", nothing found, or what went wrong.
+    void setMessage(const QString &text)
+    {
+        m_tiles.clear();
+        m_rects.clear();
+        m_message = text;
+        stopHover();
+        setFixedHeight(120);
+        update();
+    }
+
+protected:
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QWidget::resizeEvent(event);
+        if (event->oldSize().width() != width())
+            relayout();
+    }
+
+    void paintEvent(QPaintEvent *event) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+
+        if (!m_message.isEmpty()) {
+            painter.setPen(QColor(QLatin1String(Theme::TextMuted)));
+            painter.drawText(rect().adjusted(12, 0, -12, 0), Qt::AlignCenter | Qt::TextWordWrap, m_message);
+            return;
+        }
+
+        for (int index = 0; index < m_rects.size(); ++index) {
+            const QRect box = m_rects.at(index);
+            if (!box.intersects(event->rect()))
+                continue;
+            const Tile &tile = m_tiles.at(index);
+
+            QPainterPath shape;
+            shape.addRoundedRect(QRectF(box), 6, 6);
+            painter.save();
+            painter.setClipPath(shape);
+            painter.fillRect(box, QColor(255, 255, 255, 12));
+
+            QImage frame;
+            if (index == m_hover && m_playing)
+                frame = m_playing->currentFrame();
+            if (frame.isNull())
+                frame = MediaCache::instance().image(tile.picture);
+            if (!frame.isNull()) {
+                // Cover the tile, trimming whichever side is too long.
+                const QSize fitted = frame.size().scaled(box.size(), Qt::KeepAspectRatioByExpanding);
+                const QRect target(box.center().x() - fitted.width() / 2 + 1,
+                                   box.center().y() - fitted.height() / 2 + 1, fitted.width(), fitted.height());
+                painter.drawImage(target, frame);
+            }
+
+            if (tile.category) {
+                painter.fillRect(box, QColor(0, 0, 0, index == m_hover ? 90 : 140));
+                QFont font = painter.font();
+                font.setPixelSize(15);
+                font.setBold(true);
+                painter.setFont(font);
+                painter.setPen(Qt::white);
+                painter.drawText(box.adjusted(8, 0, -8, 0), Qt::AlignCenter | Qt::TextWordWrap, tile.title);
+            } else if (index == m_hover) {
+                painter.setPen(QPen(QColor(QLatin1String(Theme::Accent)), 2));
+                painter.setBrush(Qt::NoBrush);
+                painter.drawRoundedRect(QRectF(box).adjusted(1, 1, -1, -1), 6, 6);
+            }
+            painter.restore();
+        }
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        const int index = tileAt(event->position().toPoint());
+        if (index == m_hover)
+            return;
+        stopHover();
+        m_hover = index;
+        startHover();
+        update();
+    }
+
+    void leaveEvent(QEvent *) override
+    {
+        stopHover();
+        update();
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (event->button() != Qt::LeftButton || !onPick)
+            return;
+        const int index = tileAt(event->position().toPoint());
+        if (index >= 0)
+            onPick(m_tiles.at(index));
+    }
+
+private:
+    static constexpr int Gap = 6;
+    static constexpr int CategoryHeight = 96;
+
+    QList<Tile> m_tiles;
+    QList<QRect> m_rects;
+    QString m_message;
+    int m_hover = -1;
+    AnimatedImage *m_playing = nullptr;
+
+    int tileAt(const QPoint &pos) const
+    {
+        for (int index = 0; index < m_rects.size(); ++index) {
+            if (m_rects.at(index).contains(pos))
+                return index;
+        }
+        return -1;
+    }
+
+    // Each tile goes under whichever column is shorter so far.
+    void relayout()
+    {
+        m_rects.clear();
+        const int columnWidth = qMax(40, (width() - Gap) / 2);
+        int bottom[2] = {0, 0};
+        for (const Tile &tile : std::as_const(m_tiles)) {
+            int height = CategoryHeight;
+            if (!tile.category && tile.width > 0 && tile.height > 0)
+                height = qBound(60, columnWidth * tile.height / tile.width, 280);
+            const int column = bottom[1] < bottom[0] ? 1 : 0;
+            m_rects.append(QRect(column * (columnWidth + Gap), bottom[column], columnWidth, height));
+            bottom[column] += height + Gap;
+        }
+        setFixedHeight(qMax(120, qMax(bottom[0], bottom[1])));
+        update();
+    }
+
+    void startHover()
+    {
+        if (m_hover < 0)
+            return;
+        const QByteArray bytes = MediaCache::instance().animationData(m_tiles.at(m_hover).picture);
+        if (bytes.isEmpty())
+            return;
+        m_playing = new AnimatedImage(this);
+        if (!m_playing->setData(bytes) || !m_playing->isAnimated()) {
+            delete m_playing;
+            m_playing = nullptr;
+            return;
+        }
+        const QRect box = m_rects.at(m_hover);
+        connect(m_playing, &AnimatedImage::frameChanged, this, [this, box]() { update(box); });
+        m_playing->setPlaying(true);
+    }
+
+    void stopHover()
+    {
+        m_hover = -1;
+        delete m_playing;
+        m_playing = nullptr;
+    }
+};
+
 void MainWindow::showEmojiMenu()
 {
     // A grid, the way Discord's picker is. A menu stretches each face to the
@@ -5600,7 +5802,7 @@ void MainWindow::showEmojiMenu()
     auto *popup = new QFrame(nullptr, Qt::Popup | Qt::FramelessWindowHint);
     popup->setAttribute(Qt::WA_DeleteOnClose);
     popup->setObjectName(QStringLiteral("EmojiPicker"));
-    popup->setFixedWidth(328);
+    popup->setFixedWidth(432);
     popup->setStyleSheet(QStringLiteral(
         "QFrame#EmojiPicker { background-color: %1; border: 1px solid %2; border-radius: 12px; }"
         "QLineEdit { background: %3; color: %4; border: none; border-radius: 8px; padding: 6px 8px; "
@@ -5627,7 +5829,7 @@ void MainWindow::showEmojiMenu()
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    scroll->setFixedHeight(292);
+    scroll->setFixedHeight(380);
     outer->addWidget(scroll);
 
     auto *page = new QWidget;
@@ -5645,6 +5847,11 @@ void MainWindow::showEmojiMenu()
     grid->setSpacing(2);
     buttonHost->hide();
     pageLayout->addWidget(buttonHost);
+
+    auto *gifBoard = new GifBoard(page);
+    gifBoard->hide();
+    pageLayout->addWidget(gifBoard);
+    pageLayout->addStretch(1);
 
     QList<EmojiBoard::Cell> cells;
 
@@ -5683,7 +5890,11 @@ void MainWindow::showEmojiMenu()
         }
     }
 
-    constexpr int columns = 8;
+    // Stickers are pictures, not letters: four across at 96, near the size
+    // Discord's own sticker page shows them.
+    constexpr int columns = 4;
+    constexpr int StickerCell = 96;
+    constexpr int StickerPicture = 88;
     board->cells = cells;
     board->onPick = [this, popup](const QString &token) {
         m_composer->insertPlainText(token);
@@ -5718,18 +5929,17 @@ void MainWindow::showEmojiMenu()
     auto addPictureButton = [this, popup, buttonHost, held](const QString &kind, const QString &filter,
                                                       const QUrl &icon, const std::function<void()> &onClick) {
         auto *button = new QToolButton(buttonHost);
-        button->setFixedSize(36, 36);
+        button->setFixedSize(StickerCell, StickerCell);
         button->setAutoRaise(true);
         button->setCursor(Qt::PointingHandCursor);
         button->setToolTip(filter);
         button->setProperty("filter", filter);
         button->setProperty("iconUrl", icon);
         button->setProperty("kind", kind);
+        button->setIconSize(QSize(StickerPicture, StickerPicture));
         const QImage picture = MediaCache::instance().image(icon);
-        if (!picture.isNull()) {
+        if (!picture.isNull())
             button->setIcon(QPixmap::fromImage(picture));
-            button->setIconSize(QSize(26, 26));
-        }
         connect(button, &QToolButton::clicked, popup, [onClick]() { onClick(); });
         held->append(button);
     };
@@ -5738,63 +5948,122 @@ void MainWindow::showEmojiMenu()
     gifTimer->setSingleShot(true);
     gifTimer->setInterval(280);
 
-    auto loadGifs = [this, popup, buttonHost, held, search, refill]() {
+    // A gif from any of Discord's GIF answers, as a tile. Discord's list is
+    // {id, url, src, gif_src, preview, width, height}; src is in the size we
+    // asked for (tinygif), url is the Tenor page that gets sent.
+    const auto gifTiles = [](const QJsonArray &gifs) {
+        QList<GifBoard::Tile> tiles;
+        for (const QJsonValue &value : gifs) {
+            const QJsonObject gif = value.toObject();
+            GifBoard::Tile tile;
+            tile.id = gif.value(QStringLiteral("id")).toVariant().toString();
+            tile.page = gif.value(QStringLiteral("url")).toString();
+            tile.picture = QUrl(gif.value(QStringLiteral("src")).toString());
+            if (!tile.picture.toString().endsWith(QLatin1String(".gif")))
+                tile.picture = QUrl(gif.value(QStringLiteral("gif_src")).toString());
+            tile.width = gif.value(QStringLiteral("width")).toInt();
+            tile.height = gif.value(QStringLiteral("height")).toInt();
+            if (!tile.page.isEmpty() && tile.picture.isValid() && !tile.picture.isEmpty())
+                tiles.append(tile);
+        }
+        return tiles;
+    };
+
+    // One answer at a time: a slow reply to an older search must not replace
+    // the newer one on screen.
+    const auto nextTicket = [popup]() {
         const int ticket = popup->property("gifTicket").toInt() + 1;
         popup->setProperty("gifTicket", ticket);
-        const QString query = search->text();
+        return ticket;
+    };
+    const auto showGifError = [gifBoard](const RestClient::Error &error) {
+        wlog(QStringLiteral("gifs"), QStringLiteral("GIF request failed: HTTP %1 %2")
+                                         .arg(error.httpStatus)
+                                         .arg(error.message.left(160)));
+        gifBoard->setMessage(QStringLiteral("Could not load GIFs (%1).").arg(error.message.left(80)));
+    };
+
+    // The first page, as in Discord: a Trending tile, then Tenor's categories.
+    // A category is a search for its name.
+    auto loadGifs = [this, popup, search, gifBoard, gifTiles, nextTicket, showGifError]() {
+        const int ticket = nextTicket();
+        const QString query = search->text().trimmed();
         QPointer<QFrame> alive(popup);
-        m_rest->searchGifs(query, [alive, buttonHost, held, refill, ticket, this](const QJsonObject &payload) {
-            if (!alive || alive->property("gifTicket").toInt() != ticket)
+        gifBoard->setMessage(QStringLiteral("Loading GIFs…"));
+
+        const auto current = [alive, ticket]() {
+            return alive && alive->property("gifTicket").toInt() == ticket;
+        };
+        const auto failed = [current, showGifError](const RestClient::Error &error) {
+            if (current())
+                showGifError(error);
+        };
+        const auto showList = [current, gifBoard, gifTiles](const QJsonArray &gifs) {
+            if (!current())
                 return;
-            QList<QToolButton *> doomed;
-            for (QToolButton *button : *held) {
-                if (button->property("kind").toString() == QLatin1String("gif"))
-                    doomed.append(button);
-            }
-            for (QToolButton *button : doomed) {
-                held->removeAll(button);
-                button->deleteLater();
-            }
-            const QJsonArray gifs = payload.value(QStringLiteral("gifs")).toArray();
-            for (const QJsonValue &value : gifs) {
-                const QJsonObject gif = value.toObject();
-                const QString page = gif.value(QStringLiteral("url")).toString();
-                QString preview = gif.value(QStringLiteral("gif_src")).toString();
-                if (preview.isEmpty())
-                    preview = gif.value(QStringLiteral("src")).toString();
-                if (page.isEmpty() || preview.isEmpty())
-                    continue;
-                auto *button = new QToolButton(buttonHost);
-                button->setFixedSize(72, 72);
-                button->setAutoRaise(true);
-                button->setCursor(Qt::PointingHandCursor);
-                button->setToolTip(gif.value(QStringLiteral("title")).toString());
-                button->setProperty("filter", gif.value(QStringLiteral("title")).toString());
-                button->setProperty("iconUrl", QUrl(preview));
-                button->setProperty("kind", QStringLiteral("gif"));
-                const QImage picture = MediaCache::instance().image(QUrl(preview));
-                if (!picture.isNull()) {
-                    button->setIcon(QPixmap::fromImage(picture));
-                    button->setIconSize(QSize(64, 64));
+            const QList<GifBoard::Tile> tiles = gifTiles(gifs);
+            if (tiles.isEmpty())
+                gifBoard->setMessage(QStringLiteral("No GIFs found."));
+            else
+                gifBoard->setTiles(tiles);
+        };
+
+        if (popup->property("gifTrending").toBool()) {
+            m_rest->trendingGifs(showList, failed);
+        } else if (!query.isEmpty()) {
+            m_rest->searchGifs(query, showList, failed);
+        } else {
+            m_rest->gifCategories([current, gifBoard, gifTiles](const QJsonObject &payload) {
+                if (!current())
+                    return;
+                QList<GifBoard::Tile> tiles;
+                const QList<GifBoard::Tile> trending = gifTiles(payload.value(QStringLiteral("gifs")).toArray());
+                if (!trending.isEmpty()) {
+                    GifBoard::Tile tile = trending.first();
+                    tile.category = true;
+                    tile.title = QStringLiteral("Trending GIFs");
+                    tile.page.clear();
+                    tiles.append(tile);
                 }
-                connect(button, &QToolButton::clicked, alive.data(), [this, alive, page]() {
-                    if (m_currentChannelId.isEmpty())
-                        return;
-                    m_rest->sendMessage(m_currentChannelId, page, QString(), {},
-                                        [](const QJsonObject &) {},
-                                        [this](const RestClient::Error &error) {
-                                            flashStatus(QStringLiteral("GIF failed (%1).")
-                                                            .arg(error.message.left(120)),
-                                                        5000);
-                                        });
-                    if (alive)
-                        alive->close();
-                });
-                held->append(button);
+                for (const QJsonValue &value : payload.value(QStringLiteral("categories")).toArray()) {
+                    const QJsonObject category = value.toObject();
+                    GifBoard::Tile tile;
+                    tile.category = true;
+                    tile.title = category.value(QStringLiteral("name")).toString();
+                    tile.picture = QUrl(category.value(QStringLiteral("src")).toString());
+                    if (!tile.title.isEmpty())
+                        tiles.append(tile);
+                }
+                if (tiles.isEmpty())
+                    gifBoard->setMessage(QStringLiteral("No GIFs right now."));
+                else
+                    gifBoard->setTiles(tiles);
+            }, failed);
+        }
+    };
+
+    gifBoard->onPick = [this, popup, search, loadGifs](const GifBoard::Tile &tile) {
+        if (tile.category) {
+            // Trending has no search word; the rest are searched by name,
+            // which also puts the word in the box, as Discord does.
+            if (tile.title == QLatin1String("Trending GIFs") && tile.page.isEmpty()) {
+                popup->setProperty("gifTrending", true);
+                loadGifs();
+            } else {
+                search->setText(tile.title);
             }
-            if (alive->property("kind").toString() == QLatin1String("gif"))
-                refill(QString());
-        }, [](const RestClient::Error &) {});
+            return;
+        }
+        if (m_currentChannelId.isEmpty())
+            return;
+        // Sent as the Tenor address, exactly what the official client sends;
+        // Discord turns it into the moving card for everyone.
+        m_rest->sendMessage(m_currentChannelId, tile.page, QString(), {}, [](const QJsonObject &) {},
+                            [this](const RestClient::Error &error) {
+                                flashStatus(QStringLiteral("GIF failed (%1).").arg(error.message.left(120)), 5000);
+                            });
+        m_rest->selectGif(tile.id, search->text().trimmed());
+        popup->close();
     };
 
     connect(gifTimer, &QTimer::timeout, popup, loadGifs);
@@ -5811,11 +6080,13 @@ void MainWindow::showEmojiMenu()
         button->setCursor(Qt::PointingHandCursor);
         const QString kind = QString::fromUtf8(tab.kind);
         connect(button, &QPushButton::clicked, popup,
-                [this, popup, search, refill, loadGifs, kind, buttonHost, board, held, addPictureButton]() {
+                [this, popup, search, refill, loadGifs, kind, buttonHost, board, gifBoard, addPictureButton]() {
             popup->setProperty("kind", kind);
             const bool emojiTab = kind == QLatin1String("emoji");
+            const bool gifTab = kind == QLatin1String("gif");
             board->setVisible(emojiTab);
-            buttonHost->setVisible(!emojiTab);
+            gifBoard->setVisible(gifTab);
+            buttonHost->setVisible(!emojiTab && !gifTab);
             if (emojiTab)
                 board->setQuery(search->text());
             if (kind == QLatin1String("sticker") && !popup->property("guildStickers").toBool()) {
@@ -5847,7 +6118,7 @@ void MainWindow::showEmojiMenu()
             if (kind == QLatin1String("sticker") && !popup->property("packs").toBool()) {
                 popup->setProperty("packs", true);
                 QPointer<QFrame> alive(popup);
-                m_rest->fetchStickerPacks([alive, buttonHost, held, refill, this](const QJsonObject &payload) {
+                m_rest->fetchStickerPacks([alive, refill, addPictureButton, this](const QJsonObject &payload) {
                     if (!alive)
                         return;
                     const QJsonArray packs = payload.value(QStringLiteral("sticker_packs")).toArray();
@@ -5865,17 +6136,7 @@ void MainWindow::showEmojiMenu()
                             const QUrl icon(QStringLiteral("https://media.discordapp.net/stickers/%1.%2?size=160")
                                                 .arg(id, ext));
                             const QString name = sticker.value(QStringLiteral("name")).toString();
-                            auto *button = new QToolButton(buttonHost);
-                            button->setFixedSize(36, 36);
-                            button->setProperty("filter", name);
-                            button->setProperty("iconUrl", icon);
-                            button->setProperty("kind", QStringLiteral("sticker"));
-                            const QImage picture = MediaCache::instance().image(icon);
-                            if (!picture.isNull()) {
-                                button->setIcon(QPixmap::fromImage(picture));
-                                button->setIconSize(QSize(26, 26));
-                            }
-                            connect(button, &QToolButton::clicked, alive.data(), [this, alive, id]() {
+                            addPictureButton(QStringLiteral("sticker"), name, icon, [this, alive, id]() {
                                 if (m_currentChannelId.isEmpty())
                                     return;
                                 m_rest->sendMessage(m_currentChannelId, QString(), QString(), {},
@@ -5889,22 +6150,22 @@ void MainWindow::showEmojiMenu()
                                 if (alive)
                                     alive->close();
                             });
-                            held->append(button);
                         }
                     }
                     if (alive->property("kind").toString() == QLatin1String("sticker"))
                         refill(QString());
                 }, [](const RestClient::Error &) {});
             }
-            if (kind == QLatin1String("gif")) {
-                search->setPlaceholderText(QStringLiteral("Search GIFs"));
+            if (gifTab) {
+                search->setPlaceholderText(QStringLiteral("Search Tenor"));
+                popup->setProperty("gifTrending", false);
                 loadGifs();
             } else if (kind == QLatin1String("sticker")) {
                 search->setPlaceholderText(QStringLiteral("Find a sticker"));
             } else {
                 search->setPlaceholderText(QStringLiteral("Find an emoji"));
             }
-            if (!emojiTab)
+            if (!emojiTab && !gifTab)
                 refill(search->text());
         });
         tabs->addWidget(button);
@@ -5913,23 +6174,24 @@ void MainWindow::showEmojiMenu()
 
     connect(search, &QLineEdit::textChanged, popup, [popup, board, gifTimer, refill](const QString &text) {
         const QString kind = popup->property("kind").toString();
-        if (kind == QLatin1String("gif"))
+        if (kind == QLatin1String("gif")) {
+            popup->setProperty("gifTrending", false);
             gifTimer->start();
-        else if (kind == QLatin1String("emoji"))
+        } else if (kind == QLatin1String("emoji"))
             board->setQuery(text);
         else
             refill(text);
     });
-    connect(&MediaCache::instance(), &MediaCache::ready, popup, [popup](const QUrl &url) {
+    connect(&MediaCache::instance(), &MediaCache::ready, popup, [popup, gifBoard](const QUrl &url) {
+        if (gifBoard->isVisible())
+            gifBoard->update();
         const QImage picture = MediaCache::instance().image(url);
         if (picture.isNull())
             return;
         const auto found = popup->findChildren<QToolButton *>();
         for (QToolButton *button : found) {
-            if (button->property("iconUrl").toUrl() != url)
-                continue;
-            button->setIcon(QPixmap::fromImage(picture));
-            button->setIconSize(QSize(26, 26));
+            if (button->property("iconUrl").toUrl() == url)
+                button->setIcon(QPixmap::fromImage(picture));
         }
     });
 

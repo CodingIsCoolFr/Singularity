@@ -242,14 +242,36 @@ void RestClient::openDirectMessage(const QString &userId, ObjectHandler onOk, Er
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
-void RestClient::searchGifs(const QString &query, ObjectHandler onOk, ErrorHandler onError)
+// The GIF picker, the way the official client fills it. Every answer is in
+// Tenor's "tinygif" size: small moving pictures made for a grid of tiles.
+void RestClient::gifCategories(ObjectHandler onOk, ErrorHandler onError)
 {
-    const QString path = query.trimmed().isEmpty()
-        ? QStringLiteral("/gifs/trending?media_format=gif&locale=en-US")
-        : QStringLiteral("/gifs/search?q=%1&media_format=gif&locale=en-US&provider=tenor")
-              .arg(QString::fromUtf8(QUrl::toPercentEncoding(query.trimmed())));
-    QNetworkReply *reply = m_network.get(buildRequest(path));
+    QNetworkReply *reply = m_network.get(
+        buildRequest(QStringLiteral("/gifs/trending?provider=tenor&locale=en-US&media_format=tinygif")));
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
+void RestClient::trendingGifs(ArrayHandler onOk, ErrorHandler onError)
+{
+    QNetworkReply *reply = m_network.get(buildRequest(
+        QStringLiteral("/gifs/trending-gifs?provider=tenor&locale=en-US&media_format=tinygif&limit=50")));
+    dispatch(reply, nullptr, std::move(onOk), std::move(onError));
+}
+
+void RestClient::searchGifs(const QString &query, ArrayHandler onOk, ErrorHandler onError)
+{
+    const QString path = QStringLiteral("/gifs/search?q=%1&provider=tenor&locale=en-US&media_format=tinygif&limit=50")
+                             .arg(QString::fromUtf8(QUrl::toPercentEncoding(query.trimmed())));
+    QNetworkReply *reply = m_network.get(buildRequest(path));
+    dispatch(reply, nullptr, std::move(onOk), std::move(onError));
+}
+
+void RestClient::selectGif(const QString &gifId, const QString &query)
+{
+    const QJsonObject body{{QStringLiteral("id"), gifId}, {QStringLiteral("q"), query}};
+    QNetworkReply *reply = m_network.post(buildRequest(QStringLiteral("/gifs/select")),
+                                          QJsonDocument(body).toJson(QJsonDocument::Compact));
+    dispatch(reply, nullptr, nullptr, nullptr);
 }
 
 void RestClient::fetchStickerPacks(ObjectHandler onOk, ErrorHandler onError)

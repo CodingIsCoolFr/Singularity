@@ -65,8 +65,16 @@ public:
                      const QStringList &files, ObjectHandler onOk, ErrorHandler onError,
                      const QString &stickerId = {}, const CaptchaProof &captcha = {});
 
-    // Discord's GIF picker. An empty query is the trending row.
-    void searchGifs(const QString &query, ObjectHandler onOk, ErrorHandler onError);
+    // Discord's GIF picker.
+    //
+    // gifCategories is the first page: {"categories": [{name, src}], "gifs":
+    // [one trending gif, for the Trending tile]}. The other two answer with a
+    // plain list of gifs: {id, url, src, gif_src, preview, width, height}.
+    // selectGif is the note the official client sends when one is picked.
+    void gifCategories(ObjectHandler onOk, ErrorHandler onError);
+    void trendingGifs(ArrayHandler onOk, ErrorHandler onError);
+    void searchGifs(const QString &query, ArrayHandler onOk, ErrorHandler onError);
+    void selectGif(const QString &gifId, const QString &query);
 
     // The standard sticker packs, plus anything a server has is already on the guild.
     void fetchStickerPacks(ObjectHandler onOk, ErrorHandler onError);
