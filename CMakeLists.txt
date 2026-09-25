@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(Singularity VERSION 0.7.5 LANGUAGES CXX)
+project(Singularity VERSION 0.7.6 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -85,6 +85,8 @@ qt_add_executable(Singularity WIN32
     src/core/CrashLog.cpp
     src/core/NotificationRules.h
     src/core/NotificationRules.cpp
+    src/ui/ProfilePreview.h
+    src/ui/ProfilePreview.cpp
 
     src/ui/Theme.h
     src/ui/Theme.cpp

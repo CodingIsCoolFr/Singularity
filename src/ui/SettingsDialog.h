@@ -2,10 +2,13 @@
 
 #include <QDialog>
 #include <QJsonObject>
+#include <QVariantMap>
 
 #include <functional>
 
 class AudioMeter;
+class ProfilePreview;
+class QFrame;
 class LevelBar;
 class MessageStore;
 class PluginHost;
@@ -57,21 +60,30 @@ protected:
     void showEvent(QShowEvent *event) override;
 
 private:
-    // My Account: what is on Discord now, loaded each time the window opens.
-    void loadProfile();
+    // My Account and Profiles: what is on Discord now, loaded each time the
+    // window opens (force) or when nothing has been edited since.
+    QWidget *buildProfilesPage();
+    QWidget *buildSaveBar();
+    void loadProfile(bool force);
     void loadServerNickname();
+    void fillProfileFields();
+    void refreshProfileArt();   // both cards and the decoration tiles
+    void profileEdited();
+    bool profileDirty() const;
+    void updateSaveBar();
+    void saveProfile();
+    void setStatus(QLabel *label, bool ok, const QString &text);
     void setProfileStatus(bool ok, const QString &text);
-    void setAvatarPreview(const QImage &picture);
+    void setAccountStatus(bool ok, const QString &text);
 
-    // One change each. Every answer, good or bad, is written under the title.
-    // editUser handles Discord's "two factor is required" by asking for the
-    // code and sending the same change again.
-    void editUser(const QJsonObject &fields, const QString &what, const QString &mfaToken = {});
-    void editProfile(const QJsonObject &fields, const QString &what);
+    // PATCH /users/@me, handling Discord's "two factor is required" by asking
+    // for the code and sending the same change again.
+    void editUser(const QJsonObject &fields, std::function<void(bool ok, const QString &problem)> done,
+                  const QString &mfaToken = {});
     void editServer(const QJsonObject &fields, const QString &what);
 
     // Asks for a picture and hands it back as a data URI, or empty.
-    QString pickPicture(const QString &title, QImage *preview);
+    QString pickPicture(const QString &title, QByteArray *bytes);
 
     QWidget *buildAccountPage();
     QWidget *buildVoicePage();
@@ -94,21 +106,57 @@ private:
     QListWidget *m_sections = nullptr;
     QStackedWidget *m_pages = nullptr;
 
-    // My Account page.
-    QLabel *m_avatarPreview = nullptr;
-    QLabel *m_nameLabel = nullptr;
-    QLabel *m_handleLabel = nullptr;
+    // My Account and Profiles pages.
+    struct LoadedProfile
+    {
+        QString username;
+        QString globalName;
+        QString avatarHash;
+        QString bannerHash;
+        QString pronouns;
+        QString bio;
+        QString decorationSku;
+        QString decorationAsset;
+        int accent = -1;
+    };
+    // Changes picked but not saved. Text fields are compared to LoadedProfile
+    // directly; pictures, colour and decoration are held here.
+    struct PendingProfile
+    {
+        bool avatarTouched = false;
+        QString avatarData;        // data URI; empty with avatarTouched = remove
+        QByteArray avatarBytes;
+        bool bannerTouched = false;
+        QString bannerData;
+        QByteArray bannerBytes;
+        bool accentTouched = false;
+        int accent = -1;
+        bool decorationTouched = false;
+        QVariantMap decoration;    // {id, sku, asset}; empty = none
+    };
+    LoadedProfile m_loaded;
+    PendingProfile m_pending;
+    bool m_userEdited = false;
+    bool m_fillingProfile = false;
+    bool m_fillingDecorations = false;
+    int m_profilesRow = 1;
+
+    ProfilePreview *m_accountCard = nullptr;
+    ProfilePreview *m_preview = nullptr;
+    QLabel *m_accountStatus = nullptr;
     QLabel *m_profileStatus = nullptr;
+    QLabel *m_bioTitle = nullptr;
+    QLabel *m_decorationHint = nullptr;
     QLineEdit *m_displayName = nullptr;
     QLineEdit *m_username = nullptr;
     QLineEdit *m_pronouns = nullptr;
     QPlainTextEdit *m_bio = nullptr;
     QPushButton *m_accentButton = nullptr;
-    int m_accentColour = -1;
-    QComboBox *m_decorations = nullptr;
-    QString m_currentDecorationSku;
+    QListWidget *m_decorations = nullptr;
     QComboBox *m_serverPick = nullptr;
     QLineEdit *m_nickname = nullptr;
+    QFrame *m_saveBar = nullptr;
+    QPushButton *m_saveButton = nullptr;
 
     // Voice page.
     QComboBox *m_inputDevice = nullptr;
