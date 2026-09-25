@@ -117,13 +117,16 @@ GatewayClient::GatewayClient(QObject *parent)
 
     // Every three minutes, about as often as a Spotify card changes song, so
     // it is an ordinary rate for a presence to move and nowhere near the
-    // gateway's limit. Idle is skipped, because an update there restamps the
-    // idle time; invisible and a hidden card are skipped because nothing is
-    // shown to change.
+    // gateway's limit. Invisible and a hidden card are skipped because nothing
+    // is shown to change.
+    //
+    // Idle rotates too. It used to be skipped because every update sent
+    // `since` as "now", which restamped the idle time - so an account left on
+    // Idle showed "Among the stars" for hours (2026-09-25). The moment you went
+    // idle is kept and sent again unchanged, the way Discord's own client does.
     m_taglineTimer.setInterval(3 * 60 * 1000);
     connect(&m_taglineTimer, &QTimer::timeout, this, [this]() {
-        if (!m_activityShared || (m_presenceStatus != QLatin1String("online")
-                                  && m_presenceStatus != QLatin1String("dnd")))
+        if (!m_activityShared || m_presenceStatus == QLatin1String("invisible"))
             return;
         ++m_tagline;
         publishPresence();
@@ -724,6 +727,15 @@ void GatewayClient::setPresenceStatus(const QString &status)
         && status != QLatin1String("dnd") && status != QLatin1String("invisible"))
         return;
 
+    // When idle began, kept across later updates. A new idle starts the clock;
+    // repeating idle does not.
+    if (status == QLatin1String("idle")) {
+        if (m_presenceStatus != QLatin1String("idle") || m_idleSinceMs == 0)
+            m_idleSinceMs = QDateTime::currentMSecsSinceEpoch();
+    } else {
+        m_idleSinceMs = 0;
+    }
+
     m_presenceStatus = status;
     wlog(QStringLiteral("gateway"), QStringLiteral("presence is now \"%1\"").arg(status));
     publishPresence();
@@ -740,8 +752,10 @@ void GatewayClient::publishPresence()
     // which means "not idle". A missing or wrong `since` is dropped whole,
     // and the status on screen never leaves this machine.
     const bool idle = m_presenceStatus == QLatin1String("idle");
+    if (idle && m_idleSinceMs == 0)
+        m_idleSinceMs = QDateTime::currentMSecsSinceEpoch();
     const QJsonObject body{
-        {QStringLiteral("since"), idle ? QJsonValue(QDateTime::currentMSecsSinceEpoch()) : QJsonValue(0)},
+        {QStringLiteral("since"), idle ? QJsonValue(m_idleSinceMs) : QJsonValue(0)},
         {QStringLiteral("activities"), clientActivities()},
         {QStringLiteral("status"), m_presenceStatus},
         {QStringLiteral("afk"), idle},

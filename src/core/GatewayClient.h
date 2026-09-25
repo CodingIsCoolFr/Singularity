@@ -218,6 +218,9 @@ private:
     // minutes. Only the words change; the clock keeps running.
     QTimer m_taglineTimer;
     int m_tagline = 0;
+
+    // When the current idle began, in ms since the epoch; 0 when not idle.
+    qint64 m_idleSinceMs = 0;
     QString m_activityApplicationId;
     QString m_activityImageKey;
     bool m_activityShared = true;
