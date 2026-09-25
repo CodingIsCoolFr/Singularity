@@ -7647,16 +7647,25 @@ QString MainWindow::inviteCardsHtml(const MessageInfo &message)
 
             // Joined goes to the server. Join joins it; the message id tells
             // Discord which card was pressed, as the real client does.
+            //
+            // The coloured box is a table of its own inside a middle-aligned
+            // cell. Coloured directly, the cell took the whole row's height
+            // (the 48 px icon's) with its word stuck at the top.
+            const QString buttonBox = QStringLiteral(
+                "<td valign=\"middle\"><table cellspacing=\"0\" cellpadding=\"0\"><tr>"
+                "<td bgcolor=\"%1\" valign=\"middle\" style=\"padding:8px 16px;\">%2</td>"
+                "</tr></table></td>");
             const QString button = joined
-                ? QStringLiteral("<td bgcolor=\"%1\" style=\"padding:8px 16px;\">"
-                                 "<a href=\"singularity-channel:%2\" style=\"color:%3; text-decoration:none;\">"
-                                 "Joined</a></td>")
-                      .arg(QLatin1String(Theme::SurfaceHover), card.channelId, QLatin1String(Theme::TextPrimary))
-                : QStringLiteral("<td bgcolor=\"%1\" style=\"padding:8px 16px;\">"
-                                 "<a href=\"singularity-invite:%2/%3\" style=\"color:#ffffff; text-decoration:none; "
-                                 "font-weight:bold;\">%4</a></td>")
-                      .arg(QLatin1String(Theme::Green), code, message.id,
-                           m_invitesJoining.contains(code) ? QStringLiteral("Joining…") : QStringLiteral("Join"));
+                ? buttonBox.arg(QLatin1String(Theme::SurfaceHover),
+                                QStringLiteral("<a href=\"singularity-channel:%1\" style=\"color:%2; "
+                                               "text-decoration:none;\">Joined</a>")
+                                    .arg(card.channelId, QLatin1String(Theme::TextPrimary)))
+                : buttonBox.arg(QLatin1String(Theme::Green),
+                                QStringLiteral("<a href=\"singularity-invite:%1/%2\" style=\"color:#ffffff; "
+                                               "text-decoration:none; font-weight:bold;\">%3</a>")
+                                    .arg(code, message.id,
+                                         m_invitesJoining.contains(code) ? QStringLiteral("Joining…")
+                                                                         : QStringLiteral("Join")));
 
             inner = label.arg(isServer ? QStringLiteral("YOU'VE BEEN INVITED TO JOIN A SERVER")
                                        : QStringLiteral("YOU'VE BEEN INVITED TO JOIN A GROUP DM"))
