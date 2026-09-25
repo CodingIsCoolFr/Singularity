@@ -126,6 +126,18 @@ public:
     // POST /channels/{id}/invites - makes a share link for a channel.
     void createInvite(const QString &channelId, ObjectHandler onOk, ErrorHandler onError);
 
+    // GET /invites/{code}?with_counts=true&with_expiration=true - what an
+    // invite leads to (server, channel, how many online and in total)
+    // without joining. 10006 = the invite is unknown or has expired.
+    void fetchInvite(const QString &code, ObjectHandler onOk, ErrorHandler onError);
+
+    // POST /invites/{code} {"session_id"} - joins the server. `context` is the
+    // X-Context-Properties JSON (sent base64, as the real client does) naming
+    // where the join was pressed. A captcha demand comes back as a 400 with
+    // captcha_key; the person solves it and it is sent again with the proof.
+    void acceptInvite(const QString &code, const QString &sessionId, const QByteArray &context,
+                      ObjectHandler onOk, ErrorHandler onError, const CaptchaProof &captcha = {});
+
     // GET /entitlements/gift-codes/{code} - says what a gift is, WITHOUT
     // claiming it.
     //

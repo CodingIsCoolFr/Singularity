@@ -60,6 +60,7 @@
 #include <QFileInfo>
 #include <QGridLayout>
 #include <QLineEdit>
+#include <QLocale>
 #include <QScrollArea>
 #include <QTimer>
 #include <QToolButton>
@@ -1181,6 +1182,25 @@ QWidget *MainWindow::buildGuildRail(QWidget *parent)
 
     layout->addWidget(m_guildRail, 1);
 
+    // Under the servers, where Discord keeps its own: join one by invite.
+    auto *joinServer = new QToolButton(rail);
+    joinServer->setObjectName(QStringLiteral("RailJoinButton"));
+    joinServer->setText(QStringLiteral("+"));
+    joinServer->setToolTip(QStringLiteral("Join a server"));
+    joinServer->setCursor(Qt::PointingHandCursor);
+    joinServer->setFixedSize(GuildIconPixels, GuildIconPixels);
+    joinServer->setStyleSheet(QStringLiteral(
+        "QToolButton#RailJoinButton { background-color: %1; color: %2; border: none; "
+        "border-radius: %3px; font-size: 22px; }"
+        "QToolButton#RailJoinButton:hover { background-color: %2; color: %4; border-radius: %5px; }")
+                                  .arg(QLatin1String(Theme::SurfaceInput), QLatin1String(Theme::Green))
+                                  .arg(GuildIconPixels / 2)
+                                  .arg(QStringLiteral("#ffffff"))
+                                  .arg(GuildIconPixels / 3));
+    layout->addSpacing(6);
+    layout->addWidget(joinServer, 0, Qt::AlignHCenter);
+    connect(joinServer, &QToolButton::clicked, this, [this]() { showJoinServerDialog(); });
+
     connect(m_guildRail, &QListWidget::currentRowChanged, this, &MainWindow::onGuildSelected);
     connect(m_guildRail, &QListWidget::customContextMenuRequested, this, &MainWindow::showRailMenu);
 
@@ -2009,9 +2029,32 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
     }
 
     if (eventType == QLatin1String("GUILD_CREATE")) {
+        const QString guildId = data.value(QStringLiteral("id")).toString();
+        const bool joinedJustNow = !guildId.isEmpty() && m_store->guild(guildId).id.isEmpty();
         m_store->applyGuild(data);
-        if (data.value(QStringLiteral("id")).toString() == m_currentGuildId)
+        if (guildId == m_currentGuildId)
             populateChannelList(false);
+
+        // A server we were not in before: it needs a tile on the rail, and
+        // the invite cards for it now say Joined.
+        if (joinedJustNow) {
+            m_rebuildingRail = true;
+            populateGuildRail();
+            m_rebuildingRail = false;
+            for (auto it = m_invites.constBegin(); it != m_invites.constEnd(); ++it) {
+                if (it.value().guildId == guildId)
+                    redrawInviteWaiters(it.key());
+            }
+        }
+
+        // The server a join from here was waiting for: open it.
+        if (!guildId.isEmpty() && guildId == m_pendingJoinGuildId) {
+            const QString channelId = m_pendingJoinChannelId;
+            m_pendingJoinGuildId.clear();
+            m_pendingJoinChannelId.clear();
+            if (!channelId.isEmpty())
+                selectChannelEverywhere(channelId);
+        }
         return;
     }
 
@@ -3993,6 +4036,7 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
 
     body += stickersHtml(message);
     body += embedsHtml(message);
+    body += inviteCardsHtml(message);
     body += reactionsHtml(message);
 
     if (body.isEmpty())
@@ -4729,6 +4773,65 @@ void MainWindow::setTypingHint(const QString &text)
 // Profiles and links
 // ---------------------------------------------------------------------------
 
+namespace {
+
+// discord.gg/CODE, discord.com/invite/CODE and discordapp.com/invite/CODE, the
+// forms Discord's own client turns into an invite card. Not preceded by a
+// letter or a dot, so notdiscord.gg is left alone.
+const QRegularExpression &inviteLinkPattern()
+{
+    static const QRegularExpression pattern(
+        QStringLiteral(R"((?<![\w.])(?:https?://)?(?:www\.)?(?:discord\.gg|discord(?:app)?\.com/invite)/([A-Za-z0-9-]{2,32})(?![\w-]))"),
+        QRegularExpression::CaseInsensitiveOption);
+    return pattern;
+}
+
+// The codes in a message, first three, each once.
+QStringList inviteCodesIn(const QString &text)
+{
+    QStringList codes;
+    auto it = inviteLinkPattern().globalMatch(text);
+    while (it.hasNext() && codes.size() < 3) {
+        const QString code = it.next().captured(1);
+        if (!codes.contains(code))
+            codes.append(code);
+    }
+    return codes;
+}
+
+// What someone typed into "Join a server": a whole link or just the code.
+QString inviteCodeFrom(const QString &typed)
+{
+    const QString text = typed.trimmed();
+    const QRegularExpressionMatch link = inviteLinkPattern().match(text);
+    if (link.hasMatch())
+        return link.captured(1);
+    static const QRegularExpression bare(QStringLiteral(R"(^[A-Za-z0-9-]{2,32}$)"));
+    return bare.match(text).hasMatch() ? text : QString();
+}
+
+// X-Context-Properties, as the real client writes it (checked against
+// discord.py-self's tracking.py): compact JSON in this key order, sent as
+// base64. Where the join was pressed decides the "location".
+QByteArray joinGuildContext()
+{
+    return QByteArrayLiteral(R"({"location":"Join Guild"})");
+}
+
+QByteArray inviteButtonContext(const QString &guildId, const QString &channelId, int channelType,
+                               const QString &messageId)
+{
+    const auto quoted = [](const QString &value) {
+        return value.isEmpty() ? QStringLiteral("null") : QStringLiteral("\"%1\"").arg(value);
+    };
+    return QStringLiteral(R"({"location":"Invite Button Embed","location_guild_id":%1,)"
+                          R"("location_channel_id":%2,"location_channel_type":%3,"location_message_id":%4})")
+        .arg(quoted(guildId), quoted(channelId), QString::number(channelType), quoted(messageId))
+        .toUtf8();
+}
+
+} // namespace
+
 void MainWindow::handleAnchor(const QUrl &url)
 {
     const QString whole = url.toString();
@@ -4765,6 +4868,24 @@ void MainWindow::handleAnchor(const QUrl &url)
         if (!m_imageViewer)
             m_imageViewer = new ImageViewer(this);
         m_imageViewer->showImage(QUrl(target));
+        return;
+    }
+
+    // The Join button on an invite card: "singularity-invite:CODE/MESSAGEID".
+    if (url.scheme() == QLatin1String("singularity-invite")) {
+        const QStringList parts = whole.mid(QStringLiteral("singularity-invite:").size()).split(QLatin1Char('/'));
+        const QString code = parts.value(0);
+        const QString messageId = parts.value(1);
+        const ChannelInfo channel = m_store->channel(m_currentChannelId);
+        joinInvite(code, inviteButtonContext(channel.guildId, m_currentChannelId, channel.type, messageId));
+        return;
+    }
+
+    // An invite link opens the join box with it filled in, instead of a
+    // browser tab asking to open Discord.
+    if ((url.scheme() == QLatin1String("http") || url.scheme() == QLatin1String("https"))
+        && inviteLinkPattern().match(whole).hasMatch()) {
+        showJoinServerDialog(whole);
         return;
     }
 
@@ -7147,8 +7268,7 @@ bool MainWindow::takeCaptcha(const RestClient::Error &error, RestClient::Captcha
         this, error.body.value(QStringLiteral("captcha_sitekey")).toString(),
         error.body.value(QStringLiteral("captcha_rqdata")).toString());
     if (token.isEmpty()) {
-        wlog(QStringLiteral("gateway"),
-             QStringLiteral("Discord asked for a check before the Playing card, and it was not finished"));
+        wlog(QStringLiteral("ui"), QStringLiteral("Discord asked for a check, and it was not finished"));
         return false;
     }
     proof->key = token;
@@ -7466,6 +7586,311 @@ void MainWindow::createInvite(const QString &channelId)
                                          : QStringLiteral("Could not make an invite."),
                                      6000);
         });
+}
+
+// ---------------------------------------------------------------------------
+// Invites (the link helpers are with handleAnchor)
+// ---------------------------------------------------------------------------
+
+QString MainWindow::inviteCardsHtml(const MessageInfo &message)
+{
+    const QStringList codes = inviteCodesIn(message.content);
+    if (codes.isEmpty())
+        return {};
+
+    const QLocale locale;
+    QString html;
+    for (const QString &code : codes) {
+        const InviteCard card = m_invites.value(code);
+        if (!card.loaded) {
+            m_inviteWaiters[code].insert(message.id);
+            requestInvite(code);
+        }
+
+        QString inner;
+        const QString label = QStringLiteral("<div style=\"color:%1; font-size:11px; font-weight:bold;\">%2</div>")
+                                  .arg(QLatin1String(Theme::TextMuted));
+
+        if (!card.loaded) {
+            inner = label.arg(QStringLiteral("LOOKING UP THE INVITE…"));
+        } else if (!card.valid) {
+            inner = label.arg(QStringLiteral("YOU RECEIVED AN INVITE, BUT…"))
+                    + QStringLiteral("<div style=\"font-weight:bold; margin-top:6px;\">Invalid invite</div>"
+                                     "<div style=\"color:%1;\">It has expired, or it was taken down.</div>")
+                          .arg(QLatin1String(Theme::TextMuted));
+        } else {
+            const bool isServer = !card.guildId.isEmpty();
+            const bool joined = isServer ? !m_store->guild(card.guildId).id.isEmpty()
+                                         : !m_store->channel(card.channelId).id.isEmpty();
+
+            const QUrl iconUrl = isServer ? MediaCache::guildIconUrl(card.guildId, card.iconHash, 96) : QUrl();
+            const QString icon = iconUrl.isEmpty()
+                ? QStringLiteral("<table cellspacing=\"0\" cellpadding=\"0\"><tr><td width=\"48\" height=\"48\" "
+                                 "align=\"center\" bgcolor=\"%1\" style=\"font-weight:bold;\">%2</td></tr></table>")
+                      .arg(QLatin1String(Theme::SurfaceHover), card.guildName.left(1).toHtmlEscaped())
+                : QStringLiteral("<img src=\"%1\" width=\"48\" height=\"48\">").arg(iconUrl.toString().toHtmlEscaped());
+
+            QString counts;
+            if (card.online >= 0) {
+                counts += QStringLiteral("<span style=\"color:%1;\">&#9679;</span> %2 Online&#160;&#160; ")
+                              .arg(QLatin1String(Theme::Green), locale.toString(card.online));
+            }
+            if (card.members >= 0) {
+                counts += QStringLiteral("<span style=\"color:%1;\">&#9679;</span> %2 Members")
+                              .arg(QLatin1String(Theme::TextMuted), locale.toString(card.members));
+            }
+
+            // Joined goes to the server. Join joins it; the message id tells
+            // Discord which card was pressed, as the real client does.
+            const QString button = joined
+                ? QStringLiteral("<td bgcolor=\"%1\" style=\"padding:8px 16px;\">"
+                                 "<a href=\"singularity-channel:%2\" style=\"color:%3; text-decoration:none;\">"
+                                 "Joined</a></td>")
+                      .arg(QLatin1String(Theme::SurfaceHover), card.channelId, QLatin1String(Theme::TextPrimary))
+                : QStringLiteral("<td bgcolor=\"%1\" style=\"padding:8px 16px;\">"
+                                 "<a href=\"singularity-invite:%2/%3\" style=\"color:#ffffff; text-decoration:none; "
+                                 "font-weight:bold;\">%4</a></td>")
+                      .arg(QLatin1String(Theme::Green), code, message.id,
+                           m_invitesJoining.contains(code) ? QStringLiteral("Joining…") : QStringLiteral("Join"));
+
+            inner = label.arg(isServer ? QStringLiteral("YOU'VE BEEN INVITED TO JOIN A SERVER")
+                                       : QStringLiteral("YOU'VE BEEN INVITED TO JOIN A GROUP DM"))
+                    + QStringLiteral("<table cellspacing=\"0\" cellpadding=\"0\" style=\"margin-top:8px;\"><tr>"
+                                     "<td valign=\"middle\">%1</td>"
+                                     "<td valign=\"middle\" style=\"padding-left:12px; padding-right:24px;\">"
+                                     "<div style=\"font-weight:bold; font-size:15px;\">%2</div>"
+                                     "<div style=\"color:%3; font-size:12px;\">%4</div></td>"
+                                     "%5</tr></table>")
+                          .arg(icon, card.guildName.toHtmlEscaped(), QLatin1String(Theme::TextMuted), counts, button);
+        }
+
+        html += QStringLiteral("<table class=\"embed\" cellspacing=\"0\" cellpadding=\"0\"><tr>"
+                               "<td class=\"embed-inner\" bgcolor=\"%1\" style=\"padding:12px 16px;\">%2</td>"
+                               "</tr></table>")
+                    .arg(QLatin1String(Theme::SurfaceInput), inner);
+    }
+    return html;
+}
+
+void MainWindow::requestInvite(const QString &code)
+{
+    if (code.isEmpty() || m_invites.contains(code) || !m_rest)
+        return;
+    m_invites.insert(code, InviteCard{});
+
+    m_rest->fetchInvite(
+        code,
+        [this, code](const QJsonObject &invite) {
+            InviteCard card;
+            card.loaded = true;
+            const QJsonObject guild = invite.value(QStringLiteral("guild")).toObject();
+            const QJsonObject channel = invite.value(QStringLiteral("channel")).toObject();
+            card.guildId = guild.value(QStringLiteral("id")).toString();
+            card.guildName = guild.value(QStringLiteral("name")).toString();
+            card.iconHash = guild.value(QStringLiteral("icon")).toString();
+            card.channelId = channel.value(QStringLiteral("id")).toString();
+            card.channelType = channel.value(QStringLiteral("type")).toInt();
+            if (card.guildName.isEmpty())
+                card.guildName = channel.value(QStringLiteral("name")).toString();
+            card.online = invite.value(QStringLiteral("approximate_presence_count")).toInt(-1);
+            card.members = invite.value(QStringLiteral("approximate_member_count")).toInt(-1);
+            card.valid = !card.guildId.isEmpty() || !card.channelId.isEmpty();
+            m_invites.insert(code, card);
+            redrawInviteWaiters(code);
+        },
+        [this, code](const RestClient::Error &error) {
+            // A rate limit is not a dead invite: forget it so the next
+            // redraw asks again.
+            if (error.isRateLimit()) {
+                m_invites.remove(code);
+                return;
+            }
+            InviteCard card;
+            card.loaded = true;
+            m_invites.insert(code, card);
+            wlog(QStringLiteral("invite"), QStringLiteral("%1 did not resolve: HTTP %2 %3")
+                                               .arg(code).arg(error.httpStatus).arg(error.message));
+            redrawInviteWaiters(code);
+        });
+}
+
+void MainWindow::redrawInviteWaiters(const QString &code)
+{
+    const QSet<QString> waiting = m_inviteWaiters.value(code);
+    for (const QString &messageId : waiting) {
+        if (!replaceMessageInView(messageId)) {
+            scheduleRender();
+            return;
+        }
+    }
+}
+
+void MainWindow::joinInvite(const QString &code, const QByteArray &context,
+                            std::function<void(bool, const QString &)> onDone,
+                            const RestClient::CaptchaProof &captcha)
+{
+    if (!m_rest || code.isEmpty())
+        return;
+    if (m_invitesJoining.contains(code) && captcha.key.isEmpty())
+        return;
+    m_invitesJoining.insert(code);
+    redrawInviteWaiters(code);
+
+    const auto finish = [this, code, onDone](bool joined, const QString &problem) {
+        m_invitesJoining.remove(code);
+        redrawInviteWaiters(code);
+        if (onDone)
+            onDone(joined, problem);
+        else if (!problem.isEmpty())
+            flashStatus(problem, 8000);
+    };
+
+    m_rest->acceptInvite(
+        code, m_gateway ? m_gateway->sessionId() : QString(), context,
+        [this, code, finish](const QJsonObject &invite) {
+            const QJsonObject guild = invite.value(QStringLiteral("guild")).toObject();
+            QString guildId = guild.value(QStringLiteral("id")).toString();
+            if (guildId.isEmpty())
+                guildId = invite.value(QStringLiteral("guild_id")).toString();
+            const QString channelId = invite.value(QStringLiteral("channel")).toObject()
+                                          .value(QStringLiteral("id")).toString();
+            const QString name = guild.value(QStringLiteral("name")).toString();
+            wlog(QStringLiteral("invite"), QStringLiteral("joined %1 (%2) with %3, new member: %4")
+                                               .arg(name, guildId, code)
+                                               .arg(invite.value(QStringLiteral("new_member")).toBool()));
+
+            // Already in it: go straight there. Otherwise the server arrives
+            // over the gateway a moment later, and GUILD_CREATE opens it.
+            if (guildId.isEmpty() || !m_store->guild(guildId).id.isEmpty()) {
+                if (!channelId.isEmpty())
+                    selectChannelEverywhere(channelId);
+            } else {
+                m_pendingJoinGuildId = guildId;
+                m_pendingJoinChannelId = channelId;
+            }
+            flashStatus(name.isEmpty() ? QStringLiteral("Joined.") : QStringLiteral("Joined %1.").arg(name), 6000);
+            finish(true, QString());
+        },
+        [this, code, context, onDone, finish](const RestClient::Error &error) {
+            // Discord often wants a check before a join. The person solves
+            // it, and the same join goes again with the proof.
+            RestClient::CaptchaProof proof;
+            if (takeCaptcha(error, &proof)) {
+                m_invitesJoining.remove(code);
+                joinInvite(code, context, onDone, proof);
+                return;
+            }
+
+            const int discordCode = error.body.value(QStringLiteral("code")).toInt();
+            QString problem;
+            if (error.body.contains(QStringLiteral("captcha_key")))
+                problem = QStringLiteral("Discord asked for a check, and it was not finished, so you did not join.");
+            else if (discordCode == 10006 || error.httpStatus == 404)
+                problem = QStringLiteral("That invite is invalid or has expired.");
+            else if (discordCode == 30001)
+                problem = QStringLiteral("You are in as many servers as Discord allows (100, or 200 with Nitro).");
+            else if (discordCode == 40007)
+                problem = QStringLiteral("You are banned from that server.");
+            else if (error.isRateLimit())
+                problem = QStringLiteral("Discord says to slow down. Try again in a minute.");
+            else
+                problem = QStringLiteral("Could not join (HTTP %1): %2").arg(error.httpStatus).arg(error.message);
+
+            wlog(QStringLiteral("invite"), QStringLiteral("join with %1 failed: HTTP %2, code %3, %4")
+                                               .arg(code).arg(error.httpStatus).arg(discordCode).arg(error.message));
+            finish(false, problem);
+        },
+        captcha);
+}
+
+void MainWindow::showJoinServerDialog(const QString &prefill)
+{
+    auto *dialog = new QDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle(QStringLiteral("Join a Server"));
+    dialog->setMinimumWidth(440);
+
+    auto *layout = new QVBoxLayout(dialog);
+    layout->setContentsMargins(24, 20, 24, 20);
+    layout->setSpacing(10);
+
+    auto *title = new QLabel(QStringLiteral("Join a Server"), dialog);
+    title->setAlignment(Qt::AlignCenter);
+    title->setStyleSheet(QStringLiteral("font-size: 20px; font-weight: bold;"));
+    auto *intro = new QLabel(QStringLiteral("Enter an invite below to join an existing server."), dialog);
+    intro->setAlignment(Qt::AlignCenter);
+    intro->setStyleSheet(QStringLiteral("color: %1;").arg(QLatin1String(Theme::TextMuted)));
+
+    auto *fieldLabel = new QLabel(QStringLiteral("INVITE LINK"), dialog);
+    fieldLabel->setStyleSheet(QStringLiteral("font-size: 11px; font-weight: bold;"));
+    auto *field = new QLineEdit(prefill, dialog);
+    field->setPlaceholderText(QStringLiteral("https://discord.gg/hTKzmak"));
+    field->setClearButtonEnabled(true);
+
+    auto *problem = new QLabel(dialog);
+    problem->setWordWrap(true);
+    problem->setStyleSheet(QStringLiteral("color: #f23f43;"));
+    problem->hide();
+
+    auto *examples = new QLabel(QStringLiteral("<b style=\"font-size:11px;\">INVITES SHOULD LOOK LIKE</b><br>"
+                                               "hTKzmak<br>https://discord.gg/hTKzmak<br>https://discord.gg/cool-people"),
+                                dialog);
+    examples->setStyleSheet(QStringLiteral("color: %1;").arg(QLatin1String(Theme::TextMuted)));
+
+    auto *buttons = new QHBoxLayout();
+    auto *back = new QPushButton(QStringLiteral("Back"), dialog);
+    back->setFlat(true);
+    auto *join = new QPushButton(QStringLiteral("Join Server"), dialog);
+    join->setDefault(true);
+    join->setStyleSheet(QStringLiteral("QPushButton { background-color: %1; color: white; font-weight: bold; "
+                                       "border: none; border-radius: 4px; padding: 8px 18px; }"
+                                       "QPushButton:disabled { background-color: %2; }")
+                            .arg(QLatin1String(Theme::Green), QLatin1String(Theme::SurfaceHover)));
+    buttons->addWidget(back);
+    buttons->addStretch(1);
+    buttons->addWidget(join);
+
+    layout->addWidget(title);
+    layout->addWidget(intro);
+    layout->addSpacing(6);
+    layout->addWidget(fieldLabel);
+    layout->addWidget(field);
+    layout->addWidget(problem);
+    layout->addWidget(examples);
+    layout->addSpacing(6);
+    layout->addLayout(buttons);
+
+    connect(back, &QPushButton::clicked, dialog, &QDialog::reject);
+
+    const QPointer<QDialog> guard(dialog);
+    const auto attempt = [this, guard, field, problem, join]() {
+        const QString code = inviteCodeFrom(field->text());
+        if (code.isEmpty()) {
+            problem->setText(QStringLiteral("Please enter a valid invite link or invite code."));
+            problem->show();
+            return;
+        }
+        problem->hide();
+        join->setEnabled(false);
+        join->setText(QStringLiteral("Joining…"));
+        joinInvite(code, joinGuildContext(), [guard, problem, join](bool joined, const QString &why) {
+            if (!guard)
+                return;
+            if (joined) {
+                guard->accept();
+                return;
+            }
+            join->setEnabled(true);
+            join->setText(QStringLiteral("Join Server"));
+            problem->setText(why);
+            problem->show();
+        });
+    };
+    connect(join, &QPushButton::clicked, dialog, attempt);
+    connect(field, &QLineEdit::returnPressed, dialog, attempt);
+
+    dialog->show();
+    field->setFocus();
 }
 
 void MainWindow::showChannelSettings(const QString &channelId)

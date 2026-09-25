@@ -116,6 +116,16 @@ private:
     void leaveVoice();
     void updateVoicePanel();
     void createInvite(const QString &channelId);
+
+    // Invites: the "Join a server" box, the card under a message that holds
+    // a discord.gg link, and the join itself (with the captcha Discord often
+    // asks for, solved by the person in CaptchaDialog).
+    void showJoinServerDialog(const QString &prefill = {});
+    void requestInvite(const QString &code);
+    void redrawInviteWaiters(const QString &code);
+    void joinInvite(const QString &code, const QByteArray &context,
+                    std::function<void(bool joined, const QString &problem)> onDone = {},
+                    const RestClient::CaptchaProof &captcha = {});
     void showChannelSettings(const QString &channelId);
 
     void populateGuildRail();
@@ -199,6 +209,7 @@ private:
     QString renderContent(const QString &raw);
     QString stickersHtml(const MessageInfo &message) const;
     QString embedsHtml(const MessageInfo &message);
+    QString inviteCardsHtml(const MessageInfo &message);
     QString reactionsHtml(const MessageInfo &message) const;
     void updateUserPanel();
     void setTypingHint(const QString &text);
@@ -241,6 +252,28 @@ private:
     QString m_editingMessageId;
     QStringList m_pendingFiles;
     QHash<QString, int> m_uploadsInFlight;   // path -> percent, while going to GoFile
+
+    // What each invite code seen in chat leads to, fetched once per run.
+    struct InviteCard
+    {
+        bool loaded = false;
+        bool valid = false;
+        QString guildId;
+        QString guildName;
+        QString iconHash;
+        QString channelId;
+        int channelType = 0;
+        int online = -1;
+        int members = -1;
+    };
+    QHash<QString, InviteCard> m_invites;
+    QHash<QString, QSet<QString>> m_inviteWaiters;   // code -> message ids to redraw
+    QSet<QString> m_invitesJoining;                  // codes with a join in flight
+
+    // Set by a join, cleared when that server's GUILD_CREATE arrives: open
+    // it there, at the channel the invite pointed to.
+    QString m_pendingJoinGuildId;
+    QString m_pendingJoinChannelId;
     int m_selfPremiumType = 0;               // 0 none, 1 Classic, 2 Nitro, 3 Basic
     QLabel *m_channelTitle = nullptr;
     QLabel *m_channelTopic = nullptr;

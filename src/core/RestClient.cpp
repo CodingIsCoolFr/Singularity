@@ -351,6 +351,36 @@ void RestClient::createInvite(const QString &channelId, ObjectHandler onOk, Erro
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+void RestClient::fetchInvite(const QString &code, ObjectHandler onOk, ErrorHandler onError)
+{
+    const QString path = QStringLiteral("/invites/%1?with_counts=true&with_expiration=true")
+                             .arg(QString::fromUtf8(QUrl::toPercentEncoding(code)));
+    QNetworkReply *reply = m_network.get(buildRequest(path));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
+void RestClient::acceptInvite(const QString &code, const QString &sessionId, const QByteArray &context,
+                              ObjectHandler onOk, ErrorHandler onError, const CaptchaProof &captcha)
+{
+    QJsonObject body;
+    if (!sessionId.isEmpty())
+        body.insert(QStringLiteral("session_id"), sessionId);
+
+    const QString path = QStringLiteral("/invites/%1").arg(QString::fromUtf8(QUrl::toPercentEncoding(code)));
+    QNetworkRequest request = buildRequest(path);
+    if (!context.isEmpty())
+        request.setRawHeader("X-Context-Properties", context.toBase64());
+    if (!captcha.key.isEmpty()) {
+        request.setRawHeader("X-Captcha-Key", captcha.key.toUtf8());
+        if (!captcha.rqtoken.isEmpty())
+            request.setRawHeader("X-Captcha-Rqtoken", captcha.rqtoken.toUtf8());
+        if (!captcha.sessionId.isEmpty())
+            request.setRawHeader("X-Captcha-Session-Id", captcha.sessionId.toUtf8());
+    }
+    QNetworkReply *reply = m_network.post(request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::lookupGift(const QString &code, ObjectHandler onOk, ErrorHandler onError)
 {
     // The same query the official client sends when it renders a gift card.
