@@ -351,6 +351,15 @@ void RestClient::createInvite(const QString &channelId, ObjectHandler onOk, Erro
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+void RestClient::setMemberRole(const QString &guildId, const QString &userId, const QString &roleId, bool give,
+                               ObjectHandler onOk, ErrorHandler onError)
+{
+    const QString path = QStringLiteral("/guilds/%1/members/%2/roles/%3").arg(guildId, userId, roleId);
+    QNetworkReply *reply = give ? m_network.put(buildRequest(path), QByteArray())
+                                : m_network.deleteResource(buildRequest(path));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::ackBulk(const QList<QPair<QString, QString>> &channelsAndMessages, ObjectHandler onOk,
                          ErrorHandler onError)
 {

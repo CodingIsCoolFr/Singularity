@@ -2065,6 +2065,7 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
         for (const QJsonValue &role : data.value(QStringLiteral("roles")).toArray())
             roles.append(role.toString());
         m_notifyRules.setSelfRoles(data.value(QStringLiteral("guild_id")).toString(), roles);
+        m_store->setSelfRoles(data.value(QStringLiteral("guild_id")).toString(), roles);
         // Fall through: anything else that wants member updates still gets it.
     }
 

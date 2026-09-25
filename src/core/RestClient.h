@@ -126,6 +126,13 @@ public:
     // POST /channels/{id}/invites - makes a share link for a channel.
     void createInvite(const QString &channelId, ObjectHandler onOk, ErrorHandler onError);
 
+    // PUT / DELETE /guilds/{guild}/members/{user}/roles/{role} - hand a role
+    // to someone or take it away (discord.py-self add_role / remove_role).
+    // Needs Manage Roles, and only below your own highest role. Discord then
+    // sends GUILD_MEMBER_UPDATE to every client, so it shows everywhere.
+    void setMemberRole(const QString &guildId, const QString &userId, const QString &roleId, bool give,
+                       ObjectHandler onOk, ErrorHandler onError);
+
     // POST /read-states/ack-bulk {"read_states":[{channel_id, message_id,
     // read_state_type: 0}]} - marks many chats read at once, as Discord's
     // "Mark as read" on a folder and Vencord's Read All do. Up to 100 a call.

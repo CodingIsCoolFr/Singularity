@@ -55,6 +55,11 @@ private:
     void refreshArtwork();
     void rebuildBadges(int publicFlags);
     void rebuildRoles();
+
+    // Give or take away a role, when you have Manage Roles and the role is
+    // below your own highest one - Discord's own rule, so the × and + only
+    // show where Discord would allow them.
+    void changeRole(const QString &roleId, bool give);
     void rebuildConnections(const QJsonArray &connections);
     void rebuildActivity();
     void rebuildMutuals();

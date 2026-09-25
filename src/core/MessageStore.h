@@ -16,8 +16,27 @@ struct RoleInfo
     QString name;
     int colour = 0;
     int position = 0;
+    quint64 permissions = 0;   // Discord's permission bits
+    bool managed = false;      // a bot's or an integration's role: nobody can hand it out
 
     bool hasColour() const { return colour != 0; }
+};
+
+// What you may do with roles in one server, worked out the way Discord does:
+// the owner may do anything; otherwise Administrator or Manage Roles on any
+// role you hold (or @everyone), and then only roles below your highest one.
+struct RolePower
+{
+    bool owner = false;
+    bool canManage = false;
+    int highest = 0;   // position of your highest role
+
+    bool canAssign(const RoleInfo &role, const QString &guildId) const
+    {
+        if (!canManage || role.managed || role.id == guildId)   // guild id = @everyone
+            return false;
+        return owner || role.position < highest;
+    }
 };
 
 // One line of "what this person is doing right now".
@@ -175,6 +194,7 @@ struct GuildInfo
     QString iconHash;
 
     // The picture over the channel list, and the boost bar under it.
+    QString ownerId;
     QString bannerHash;              // "a_" prefix = animated
     int premiumTier = 0;             // boost level, 0 to 3
     int boostCount = 0;              // premium_subscription_count
@@ -315,6 +335,11 @@ public:
 
     QList<GuildInfo> guilds() const;
     GuildInfo guild(const QString &guildId) const;
+
+    // Your own roles in each server (READY's merged_members, then
+    // GUILD_MEMBER_UPDATE), and what they let you do with roles.
+    void setSelfRoles(const QString &guildId, const QStringList &roleIds);
+    RolePower rolePower(const QString &guildId) const;
     ChannelInfo channel(const QString &channelId) const;
     QList<ChannelInfo> channelsOfGuild(const QString &guildId) const;
     QList<ChannelGroup> groupedChannels(const QString &guildId) const;
@@ -466,6 +491,8 @@ private:
 
     QHash<QString, MemberList> m_memberLists;
     QHash<QString, GuildInfo> m_guilds;
+    QHash<QString, QStringList> m_selfRoles;   // guild id -> your role ids
+    QString m_selfUserId;
     QList<QString> m_guildOrder;
     QHash<QString, ChannelInfo> m_channels;
     QList<QString> m_directOrder;

@@ -458,6 +458,24 @@ void MessageStore::ingestReady(const QJsonObject &readyPayload)
     for (const QJsonValue &value : guilds)
         ingestGuild(value.toObject());
 
+    // Your own member record in each server: merged_members runs parallel to
+    // guilds, and it is where your roles are.
+    m_selfUserId = readyPayload.value(QStringLiteral("user")).toObject().value(QStringLiteral("id")).toString();
+    const QJsonArray merged = readyPayload.value(QStringLiteral("merged_members")).toArray();
+    for (int i = 0; i < guilds.size() && i < merged.size(); ++i) {
+        const QString guildId = guilds.at(i).toObject().value(QStringLiteral("id")).toString();
+        for (const QJsonValue &value : merged.at(i).toArray()) {
+            const QJsonObject member = value.toObject();
+            const QString who = member.value(QStringLiteral("user_id")).toString();
+            if (!who.isEmpty() && who != m_selfUserId)
+                continue;
+            QStringList roles;
+            for (const QJsonValue &role : member.value(QStringLiteral("roles")).toArray())
+                roles.append(role.toString());
+            m_selfRoles.insert(guildId, roles);
+        }
+    }
+
     const QJsonArray privateChannels = readyPayload.value(QStringLiteral("private_channels")).toArray();
     for (const QJsonValue &value : privateChannels) {
         const QJsonObject raw = value.toObject();
@@ -705,6 +723,7 @@ void MessageStore::ingestGuild(const QJsonObject &rawGuild)
         : rawGuild;
 
     guild.name = properties.value(QStringLiteral("name")).toString();
+    guild.ownerId = properties.value(QStringLiteral("owner_id")).toString();
     guild.iconHash = properties.value(QStringLiteral("icon")).toString();
     guild.bannerHash = properties.value(QStringLiteral("banner")).toString();
     guild.premiumTier = properties.value(QStringLiteral("premium_tier")).toInt();
@@ -729,6 +748,9 @@ void MessageStore::ingestGuild(const QJsonObject &rawGuild)
         role.name = rawRole.value(QStringLiteral("name")).toString();
         role.colour = rawRole.value(QStringLiteral("color")).toInt();
         role.position = rawRole.value(QStringLiteral("position")).toInt();
+        // A string, because the bits do not fit in a JSON number.
+        role.permissions = rawRole.value(QStringLiteral("permissions")).toString().toULongLong();
+        role.managed = rawRole.value(QStringLiteral("managed")).toBool();
         guild.roles.insert(role.id, role);
     }
 
@@ -1314,6 +1336,33 @@ bool MessageStore::isUnread(const QString &channelId) const
     if (mark.unread || mark.mentions > 0)
         return true;
     return newerId(m_channels.value(channelId).lastMessageId, mark.lastReadId);
+}
+
+void MessageStore::setSelfRoles(const QString &guildId, const QStringList &roleIds)
+{
+    if (!guildId.isEmpty())
+        m_selfRoles.insert(guildId, roleIds);
+}
+
+RolePower MessageStore::rolePower(const QString &guildId) const
+{
+    constexpr quint64 Administrator = 1ull << 3;
+    constexpr quint64 ManageRoles = 1ull << 28;
+
+    RolePower power;
+    const GuildInfo guild = m_guilds.value(guildId);
+    if (guild.id.isEmpty())
+        return power;
+    power.owner = !m_selfUserId.isEmpty() && guild.ownerId == m_selfUserId;
+
+    quint64 permissions = guild.roles.value(guildId).permissions;   // @everyone
+    for (const QString &roleId : m_selfRoles.value(guildId)) {
+        const RoleInfo role = guild.roles.value(roleId);
+        permissions |= role.permissions;
+        power.highest = qMax(power.highest, role.position);
+    }
+    power.canManage = power.owner || (permissions & (Administrator | ManageRoles)) != 0;
+    return power;
 }
 
 QList<QPair<QString, QString>> MessageStore::unreadChannels() const

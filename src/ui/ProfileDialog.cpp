@@ -26,7 +26,11 @@
 #include <QScrollArea>
 #include <QStackedWidget>
 #include <QStyle>
+#include <QToolButton>
+#include <QToolTip>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 namespace {
 
@@ -954,14 +958,119 @@ void ProfileDialog::rebuildRoles()
         roleIds << value.toString();
 
     const QList<RoleInfo> roles = m_store->resolveRoles(m_guildId, roleIds);
+    const RolePower power = m_guildId.isEmpty() ? RolePower{} : m_store->rolePower(m_guildId);
+
+    const QString smallButton = QStringLiteral(
+        "QToolButton { background: transparent; border: none; color: %1; font-size: 12px; padding: 0 2px; }"
+        "QToolButton:hover { color: %2; }")
+                                    .arg(QLatin1String(Theme::TextMuted), QLatin1String(Theme::TextPrimary));
+
     for (const RoleInfo &role : roles) {
         const QColor dot = role.hasColour() ? QColor::fromRgb(static_cast<QRgb>(role.colour))
                                             : QColor(Theme::TextMuted);
-        m_roleFlow->addWidget(makePill(role.name, dot, m_roleHost));
+        QWidget *pill = makePill(role.name, dot, m_roleHost);
+        if (power.canAssign(role, m_guildId)) {
+            auto *remove = new QToolButton(pill);
+            remove->setText(QStringLiteral("×"));
+            remove->setToolTip(QStringLiteral("Remove role"));
+            remove->setCursor(Qt::PointingHandCursor);
+            remove->setStyleSheet(smallButton);
+            const QString roleId = role.id;
+            connect(remove, &QToolButton::clicked, this, [this, roleId]() { changeRole(roleId, false); });
+            static_cast<QHBoxLayout *>(pill->layout())->addWidget(remove);
+        }
+        m_roleFlow->addWidget(pill);
     }
 
-    m_rolesSection->setVisible(!roles.isEmpty());
+    // "+": the roles you could hand out that they do not have yet.
+    bool offered = false;
+    if (power.canManage) {
+        const GuildInfo guild = m_store->guild(m_guildId);
+        QList<RoleInfo> candidates;
+        for (const RoleInfo &role : guild.roles) {
+            if (!roleIds.contains(role.id) && power.canAssign(role, m_guildId))
+                candidates.append(role);
+        }
+        std::sort(candidates.begin(), candidates.end(),
+                  [](const RoleInfo &a, const RoleInfo &b) { return a.position > b.position; });
+
+        if (!candidates.isEmpty()) {
+            offered = true;
+            auto *add = new QToolButton(m_roleHost);
+            add->setText(QStringLiteral("+"));
+            add->setToolTip(QStringLiteral("Add role"));
+            add->setCursor(Qt::PointingHandCursor);
+            add->setStyleSheet(QStringLiteral("QToolButton { background-color: %1; color: %2; border: none; "
+                                              "border-radius: 8px; font-size: 14px; padding: 1px 9px; }"
+                                              "QToolButton:hover { color: %3; }")
+                                   .arg(QLatin1String(Theme::SurfaceInput), QLatin1String(Theme::TextMuted),
+                                        QLatin1String(Theme::TextPrimary)));
+            connect(add, &QToolButton::clicked, this, [this, add, candidates]() {
+                QMenu menu(this);
+                for (const RoleInfo &role : candidates) {
+                    QPixmap dot(10, 10);
+                    dot.fill(Qt::transparent);
+                    QPainter paint(&dot);
+                    paint.setRenderHint(QPainter::Antialiasing, true);
+                    paint.setPen(Qt::NoPen);
+                    paint.setBrush(role.hasColour() ? QColor::fromRgb(QRgb(role.colour)) : QColor(Theme::TextMuted));
+                    paint.drawEllipse(0, 0, 10, 10);
+                    paint.end();
+                    QAction *action = menu.addAction(QIcon(dot), role.name);
+                    const QString roleId = role.id;
+                    connect(action, &QAction::triggered, this, [this, roleId]() { changeRole(roleId, true); });
+                }
+                menu.exec(add->mapToGlobal(QPoint(0, add->height())));
+            });
+            m_roleFlow->addWidget(add);
+        }
+    }
+
+    m_rolesSection->setVisible(!roles.isEmpty() || offered);
     m_roleHost->updateGeometry();
+}
+
+void ProfileDialog::changeRole(const QString &roleId, bool give)
+{
+    if (m_guildId.isEmpty() || m_userId.isEmpty() || !m_rest)
+        return;
+    const QString guildId = m_guildId;
+    const QString userId = m_userId;
+    const QString name = m_store->guild(guildId).roles.value(roleId).name;
+
+    m_rest->setMemberRole(
+        guildId, userId, roleId, give,
+        [this, guildId, userId, roleId, give, name](const QJsonObject &) {
+            wlog(QStringLiteral("roles"), QStringLiteral("%1 role %2 %3 %4")
+                                              .arg(give ? QStringLiteral("gave") : QStringLiteral("took"), name,
+                                                   give ? QStringLiteral("to") : QStringLiteral("from"), userId));
+            // The card may have moved on to someone else meanwhile.
+            if (m_guildId != guildId || m_userId != userId)
+                return;
+            QJsonObject member = m_profile.value(QStringLiteral("guild_member")).toObject();
+            QJsonArray roles = member.value(QStringLiteral("roles")).toArray();
+            if (give) {
+                roles.append(roleId);
+            } else {
+                for (int i = roles.size() - 1; i >= 0; --i) {
+                    if (roles.at(i).toString() == roleId)
+                        roles.removeAt(i);
+                }
+            }
+            member.insert(QStringLiteral("roles"), roles);
+            m_profile.insert(QStringLiteral("guild_member"), member);
+            rebuildRoles();
+        },
+        [name, give](const RestClient::Error &error) {
+            wlog(QStringLiteral("roles"), QStringLiteral("could not %1 %2: HTTP %3 %4")
+                                              .arg(give ? QStringLiteral("give") : QStringLiteral("take"), name)
+                                              .arg(error.httpStatus)
+                                              .arg(error.message));
+            const QString why = error.httpStatus == 403
+                ? QStringLiteral("Discord says you are not allowed to change that role.")
+                : QStringLiteral("Could not change the role: %1").arg(error.message.left(160));
+            QToolTip::showText(QCursor::pos(), why);
+        });
 }
 
 void ProfileDialog::rebuildConnections(const QJsonArray &connections)
