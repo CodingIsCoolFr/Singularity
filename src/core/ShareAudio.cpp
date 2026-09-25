@@ -15,7 +15,13 @@
 #include <audioclientactivationparams.h>
 #include <dwmapi.h>
 #include <mmdeviceapi.h>
+#include <mmreg.h>
+#include <ks.h>
+#include <ksmedia.h>
 #endif
+
+#include <algorithm>
+#include <cmath>
 
 namespace {
 
@@ -93,6 +99,57 @@ QString hresultText(HRESULT hr)
 {
     return QStringLiteral("0x%1").arg(quint32(hr), 8, 16, QLatin1Char('0'));
 }
+
+// The layout the sound is asked for in: 7.1, as 32 bit float.
+//
+// Asking a process loopback for stereo lets Windows fold the speaker's
+// channels down itself, and its fold is scaled so that all eight channels at
+// full volume could never clip. Nearly everything plays in just the front
+// two, so what comes out is about 13.5 dB quieter than the program really is
+// (measured: a movie in Stremio on an eight-channel SteelSeries Sonar device
+// peaked at -9.7 dB on the Windows mixer and at -23.2 dB in a stereo loopback
+// of the same eight seconds; the 7.1 loopback matched the mixer exactly).
+// Stereo programs on a stereo speaker still arrive in the front two only.
+constexpr int WideChannels = 8;
+constexpr DWORD WideMask = KSAUDIO_SPEAKER_7POINT1_SURROUND; // FL FR C LFE BL BR SL SR
+
+// Folds 7.1 to stereo the usual way (ITU-R BS.775: centre and surrounds at
+// -3 dB, the rumble channel left out) without scaling the fronts down, then
+// keeps the result from clipping. The limiter holds a gain that drops at once
+// when a peak would pass the ceiling and recovers over about a quarter second,
+// so a loud 5.1 scene is turned down briefly instead of crackling.
+class Downmix
+{
+public:
+    QByteArray fold(const float *in, UINT32 frames)
+    {
+        constexpr float Side = 0.70710678f;
+        constexpr float Ceiling = 0.98f;
+        constexpr float Recover = 1.0f / (0.25f * SampleRate);
+
+        QByteArray out(int(frames) * BytesPerFrame, Qt::Uninitialized);
+        auto *pcm = reinterpret_cast<qint16 *>(out.data());
+        for (UINT32 i = 0; i < frames; ++i) {
+            const float *f = in + i * WideChannels;
+            float left = f[0] + Side * (f[2] + f[4] + f[6]);
+            float right = f[1] + Side * (f[2] + f[5] + f[7]);
+
+            const float peak = std::max(std::abs(left), std::abs(right)) * m_gain;
+            if (peak > Ceiling)
+                m_gain *= Ceiling / peak;
+            left *= m_gain;
+            right *= m_gain;
+            m_gain = std::min(1.0f, m_gain + Recover);
+
+            pcm[2 * i] = qint16(std::lround(std::clamp(left, -1.0f, 1.0f) * 32767.0f));
+            pcm[2 * i + 1] = qint16(std::lround(std::clamp(right, -1.0f, 1.0f) * 32767.0f));
+        }
+        return out;
+    }
+
+private:
+    float m_gain = 1.0f;
+};
 
 QString exeNameOf(DWORD processId)
 {
@@ -262,6 +319,8 @@ void ShareAudio::run(Source source, quint32 processId)
     IAudioCaptureClient *capture = nullptr;
     HANDLE ready = nullptr;
     qint64 capturedBytes = 0;
+    bool folding = false;
+    Downmix downmix;
 
     HRESULT hr = ActivateAudioInterfaceAsync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
                                              __uuidof(IAudioClient), &activation, handler,
@@ -284,23 +343,63 @@ void ShareAudio::run(Source source, quint32 processId)
 
     {
         // A process loopback client has no mix format of its own to ask for,
-        // so it is told the one wanted and converts to it.
-        WAVEFORMATEX format{};
-        format.wFormatTag = WAVE_FORMAT_PCM;
-        format.nChannels = Channels;
-        format.nSamplesPerSec = SampleRate;
-        format.wBitsPerSample = 16;
-        format.nBlockAlign = BytesPerFrame;
-        format.nAvgBytesPerSec = SampleRate * BytesPerFrame;
+        // so it is told the one wanted and converts to it. 7.1 first, folded
+        // down here (see WideChannels); plain stereo if Windows refuses that.
+        constexpr DWORD Flags = AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+                                | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM;
+        constexpr REFERENCE_TIME Period = 200000; // 20 ms, in 100 ns units
 
-        hr = client->Initialize(AUDCLNT_SHAREMODE_SHARED,
-                                AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK
-                                    | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-                                200000, // 20 ms, in 100 ns units
-                                0, &format, nullptr);
-        if (FAILED(hr)) {
-            fail(QStringLiteral("initialise"), hr);
-            goto done;
+        WAVEFORMATEXTENSIBLE wide{};
+        wide.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+        wide.Format.nChannels = WideChannels;
+        wide.Format.nSamplesPerSec = SampleRate;
+        wide.Format.wBitsPerSample = 32;
+        wide.Format.nBlockAlign = WideChannels * 4;
+        wide.Format.nAvgBytesPerSec = SampleRate * wide.Format.nBlockAlign;
+        wide.Format.cbSize = sizeof(wide) - sizeof(WAVEFORMATEX);
+        wide.Samples.wValidBitsPerSample = 32;
+        wide.dwChannelMask = WideMask;
+        wide.SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
+
+        hr = client->Initialize(AUDCLNT_SHAREMODE_SHARED, Flags, Period, 0, &wide.Format, nullptr);
+        if (SUCCEEDED(hr)) {
+            folding = true;
+        } else {
+            wlog(QStringLiteral("share"),
+                 QStringLiteral("screen sound: 7.1 refused (%1), taking stereo from Windows").arg(hresultText(hr)));
+
+            // A refused Initialize leaves the client unusable; start over.
+            client->Release();
+            client = nullptr;
+            handler->Release();
+            handler = new ActivationHandler;
+            if (operation) {
+                operation->Release();
+                operation = nullptr;
+            }
+            hr = ActivateAudioInterfaceAsync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, __uuidof(IAudioClient),
+                                             &activation, handler, &operation);
+            if (FAILED(hr) || WaitForSingleObject(handler->done, 5000) != WAIT_OBJECT_0
+                || FAILED(handler->result) || !handler->client) {
+                fail(QStringLiteral("activation (stereo)"), FAILED(hr) ? hr : handler->result);
+                goto done;
+            }
+            client = handler->client;
+            client->AddRef();
+
+            WAVEFORMATEX format{};
+            format.wFormatTag = WAVE_FORMAT_PCM;
+            format.nChannels = Channels;
+            format.nSamplesPerSec = SampleRate;
+            format.wBitsPerSample = 16;
+            format.nBlockAlign = BytesPerFrame;
+            format.nAvgBytesPerSec = SampleRate * BytesPerFrame;
+
+            hr = client->Initialize(AUDCLNT_SHAREMODE_SHARED, Flags, Period, 0, &format, nullptr);
+            if (FAILED(hr)) {
+                fail(QStringLiteral("initialise"), hr);
+                goto done;
+            }
         }
     }
 
@@ -323,7 +422,9 @@ void ShareAudio::run(Source source, quint32 processId)
         goto done;
     }
 
-    wlog(QStringLiteral("share"), QStringLiteral("screen sound running: %1").arg(what));
+    wlog(QStringLiteral("share"), QStringLiteral("screen sound running: %1, %2")
+                                      .arg(what, folding ? QStringLiteral("taken as 7.1 and folded to stereo here")
+                                                         : QStringLiteral("stereo from Windows")));
 
     while (!m_stop.load()) {
         // A timeout rather than forever, so stop() is heard even while the
@@ -343,6 +444,8 @@ void ShareAudio::run(Source source, quint32 processId)
             QByteArray pcm;
             if (flags & AUDCLNT_BUFFERFLAGS_SILENT)
                 pcm = QByteArray(int(frames) * BytesPerFrame, '\0');
+            else if (folding)
+                pcm = downmix.fold(reinterpret_cast<const float *>(data), frames);
             else
                 pcm = QByteArray(reinterpret_cast<const char *>(data), int(frames) * BytesPerFrame);
             capture->ReleaseBuffer(frames);
