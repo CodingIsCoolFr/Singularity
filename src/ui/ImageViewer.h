@@ -7,6 +7,7 @@
 #include <functional>
 
 class AnimatedImage;
+class ClipPlayer;
 class QLabel;
 class QPushButton;
 
@@ -26,9 +27,11 @@ public:
 
 protected:
     void keyPressEvent(QKeyEvent *event) override;
+    void hideEvent(QHideEvent *event) override;
 
 private:
     class Canvas;
+    ClipPlayer *m_clip = nullptr;   // when what is shown is a clip, not a picture
 
     void updateZoomLabel();
     void saveAs();

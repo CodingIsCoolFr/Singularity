@@ -2,6 +2,7 @@
 
 #include "core/Logger.h"
 #include "ui/AnimatedImage.h"
+#include "ui/ClipPlayer.h"
 #include "ui/MediaCache.h"
 #include "ui/Theme.h"
 
@@ -52,6 +53,21 @@ public:
         m_fitted = false;
         fitToWindow();
     }
+
+    // A picture from a playing clip. The first one sizes the view.
+    void setVideoFrame(const QImage &frame)
+    {
+        const bool first = m_video.isNull();
+        m_video = frame;
+        if (first) {
+            m_fitted = false;
+            fitToWindow();
+        } else {
+            update();
+        }
+    }
+
+    void clearVideo() { m_video = QImage(); }
 
     bool hasImage() const { return !currentFrame().isNull(); }
     QSize imageSize() const { return currentFrame().size(); }
@@ -173,6 +189,8 @@ protected:
 private:
     QImage currentFrame() const
     {
+        if (!m_video.isNull())
+            return m_video;
         const QImage frame = m_source->currentFrame();
         return frame.isNull() ? m_still : frame;
     }
@@ -185,6 +203,7 @@ private:
 
     AnimatedImage *m_source = nullptr;
     QImage m_still;
+    QImage m_video;
     qreal m_scale = 1.0;
     QPointF m_offset;
     QPointF m_dragFrom;
@@ -225,6 +244,9 @@ ImageViewer::ImageViewer(QWidget *parent)
 
     auto *zoomOut = new QPushButton(QStringLiteral("−"), bar);
     zoomOut->setFixedSize(30, 28);
+    // The app's button padding is wider than 30 pixels, which left these two
+    // buttons blank.
+    zoomOut->setStyleSheet(QStringLiteral("padding: 0; font-size: 16px;"));
     zoomOut->setToolTip(QStringLiteral("Zoom out"));
     connect(zoomOut, &QPushButton::clicked, this, [this]() { m_canvas->zoomBy(1.0 / WheelStep); });
     barLayout->addWidget(zoomOut);
@@ -237,6 +259,7 @@ ImageViewer::ImageViewer(QWidget *parent)
 
     auto *zoomIn = new QPushButton(QStringLiteral("+"), bar);
     zoomIn->setFixedSize(30, 28);
+    zoomIn->setStyleSheet(QStringLiteral("padding: 0; font-size: 16px;"));
     zoomIn->setToolTip(QStringLiteral("Zoom in"));
     connect(zoomIn, &QPushButton::clicked, this, [this]() { m_canvas->zoomBy(WheelStep); });
     barLayout->addWidget(zoomIn);
@@ -273,7 +296,7 @@ ImageViewer::ImageViewer(QWidget *parent)
 
     // A late download replaces the placeholder.
     connect(&MediaCache::instance(), &MediaCache::ready, this, [this](const QUrl &url) {
-        if (url == m_url)
+        if (url == m_url && !m_clip)
             showImage(url);
     });
 }
@@ -289,6 +312,35 @@ void ImageViewer::showImage(const QUrl &url)
 
     const QString name = QFileInfo(url.path()).fileName();
     m_nameLabel->setText(name.isEmpty() ? url.toString() : name);
+
+    // A gif from Tenor is really a small mp4. The cache cannot decode that as
+    // a picture, so the viewer sat on "Loading..." for ever; it plays instead.
+    delete m_clip;
+    m_clip = nullptr;
+    m_canvas->clearVideo();
+    const QString path = url.path().toLower();
+    if (path.endsWith(QLatin1String(".mp4")) || path.endsWith(QLatin1String(".webm"))
+        || path.endsWith(QLatin1String(".mov"))) {
+        m_clip = new ClipPlayer(url, QSize(1920, 1080), this);
+        connect(m_clip, &ClipPlayer::frameReady, m_canvas, [this](const QImage &frame) {
+            m_canvas->setVideoFrame(frame);
+            updateZoomLabel();
+        });
+        connect(m_clip, &ClipPlayer::failed, this, [this](const QString &reason) {
+            wlog(QStringLiteral("viewer"),
+                 QStringLiteral("could not play %1: %2").arg(m_url.toString(), reason));
+        });
+        m_canvas->setImage(QImage(), QByteArray());
+        updateZoomLabel();
+        if (!isVisible()) {
+            if (parentWidget())
+                move(parentWidget()->geometry().center() - rect().center());
+            show();
+        }
+        raise();
+        activateWindow();
+        return;
+    }
 
     // Asking starts the download if it is not already here.
     //
@@ -320,7 +372,7 @@ void ImageViewer::updateZoomLabel()
 
 void ImageViewer::saveAs()
 {
-    const QByteArray animation = MediaCache::instance().animationData(m_url);
+    const QByteArray animation = m_clip ? m_clip->data() : MediaCache::instance().animationData(m_url);
     // Saving hands over what arrived, not the copy made for the message list.
     const QImage still = MediaCache::instance().fullImage(m_url);
     if (animation.isEmpty() && still.isNull())
@@ -346,6 +398,16 @@ void ImageViewer::saveAs()
     }
 
     still.save(path);
+}
+
+void ImageViewer::hideEvent(QHideEvent *event)
+{
+    // A closed viewer is only hidden; a clip left running would go on
+    // decoding full size for nobody.
+    delete m_clip;
+    m_clip = nullptr;
+    m_canvas->clearVideo();
+    QDialog::hideEvent(event);
 }
 
 void ImageViewer::keyPressEvent(QKeyEvent *event)

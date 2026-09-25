@@ -34,6 +34,9 @@ public:
     // Stops decoding while nobody can see the clip, and picks up where it was.
     void setPaused(bool paused);
 
+    // The file as downloaded, for saving. Empty until it has arrived.
+    QByteArray data() const { return m_data; }
+
 signals:
     void frameReady(const QImage &frame);
     void failed(const QString &reason);
@@ -43,6 +46,7 @@ private:
 
     QUrl m_url;
     QSize m_box;
+    QByteArray m_data;
     bool m_paused = false;
     QPointer<QNetworkReply> m_reply;
     ClipDecoder *m_decoder = nullptr;

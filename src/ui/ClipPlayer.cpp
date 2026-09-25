@@ -435,6 +435,7 @@ void ClipPlayer::onDownloaded()
         emit failed(QStringLiteral("the clip was empty or too large"));
         return;
     }
+    m_data = data;   // shared, not copied
 
     m_decoder = new ClipDecoder;
     m_decoder->moveToThread(clipThread());
