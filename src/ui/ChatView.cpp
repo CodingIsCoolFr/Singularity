@@ -1,19 +1,15 @@
 #include "ui/ChatView.h"
 
 #include "ui/AnimatedImage.h"
+#include "ui/ClipPlayer.h"
 #include "ui/MediaCache.h"
 #include "core/Logger.h"
 
-#include <QAudioOutput>
 #include <QElapsedTimer>
-#include <QMediaPlayer>
 #include <QPalette>
 #include <QScrollBar>
 #include <QTextDocument>
 #include <QTimer>
-#include <QVideoFrame>
-#include <QVideoSink>
-#include <private/qvideoframeconverter_p.h>
 
 #include <exception>
 #include <utility>
@@ -182,7 +178,6 @@ void ChatView::clearImageCache()
     m_animations.clear();
     qDeleteAll(m_videos);
     m_videos.clear();
-    m_videoFrameAt.clear();
     m_animationTimer.stop();
 }
 
@@ -273,66 +268,39 @@ void ChatView::adoptVideo(const QUrl &url)
     if (m_videos.contains(key) || m_videos.size() >= 4 || m_videosGivenUp.contains(key))
         return;
 
-    auto *player = new QMediaPlayer(this);
-    auto *sink = new QVideoSink(player);
-    auto *audio = new QAudioOutput(player);
-    audio->setMuted(true);
-    player->setAudioOutput(audio);
-    player->setVideoSink(sink);
-    player->setLoops(QMediaPlayer::Infinite);
+    // Our own player: decoded off the window thread, two helper threads, and
+    // every picture already shrunk to the box it is drawn in. See ClipPlayer.h
+    // for what Qt's player cost instead.
+    auto *player = new ClipPlayer(url, QSize(MaxPictureWidth, MaxPictureHeight), this);
+    player->setPaused(!isVisible());
 
-    connect(sink, &QVideoSink::videoFrameChanged, this, [this, url, key, player](const QVideoFrame &frame) {
-        // Nobody sees a frame drawn while the chat is hidden, and a looping
-        // clip keeps producing them all day.
-        if (!isVisible())
-            return;
-
-        // At most 30 pictures a second. Each one is a full-size copy off the
-        // graphics card, and clips come in at 60.
-        static QElapsedTimer clock;
-        if (!clock.isValid())
-            clock.start();
-        const qint64 now = clock.elapsed();
-        if (now - m_videoFrameAt.value(key, -1000) < 33)
-            return;
-        m_videoFrameAt.insert(key, now);
-
-        // toImage() can fail to get the memory for its copy. That comes out
-        // of it as an exception, and one that nobody catches ends the whole
-        // program - which is what happened on 2026-09-24 (0.6.96 and 0.6.97:
-        // Qt's QRhi readback in QVideoFrame::toImage threw std::bad_alloc on
-        // the window thread). The video stops and stays a still picture.
-        //
-        // Converted on the CPU, not the way toImage() does it. toImage() sends
-        // the frame to the graphics card, converts it there and reads it back,
-        // and the read back waits for the card. On an AMD machine that wait was
-        // 250 to 600 ms on the window thread, fifty times a minute, with a few
-        // clips in view (the 2026-09-25 log from a friend's PC). A clip in a
-        // message is small, and the CPU does it in about a millisecond.
-        QImage image;
-        try {
-            image = qImageFromVideoFrame(frame, /*forceCpu=*/true);
-        } catch (const std::exception &error) {
-            wlog(QStringLiteral("media"), QStringLiteral("stopped the video %1: copying a frame failed (%2)")
-                                              .arg(url.toString(), QString::fromLocal8Bit(error.what())));
-            m_videosGivenUp.insert(key);
-            m_videos.remove(key);
-            m_videoFrameAt.remove(key);
-            player->stop();
-            player->deleteLater();
-            return;
-        }
-        if (!image.isNull())
-            showVideoFrame(url, image);
+    connect(player, &ClipPlayer::frameReady, this, [this, url](const QImage &frame) {
+        if (isVisible())
+            showVideoFrame(url, frame);
     });
-    connect(player, &QMediaPlayer::errorOccurred, this, [url](QMediaPlayer::Error, const QString &reason) {
-        wlog(QStringLiteral("media"),
-             QStringLiteral("could not play %1: %2").arg(url.toString(), reason));
+    connect(player, &ClipPlayer::failed, this, [this, url, key, player](const QString &reason) {
+        wlog(QStringLiteral("media"), QStringLiteral("could not play %1: %2").arg(url.toString(), reason));
+        m_videosGivenUp.insert(key);
+        m_videos.remove(key);
+        player->deleteLater();
     });
 
     m_videos.insert(key, player);
-    player->setSource(url);
-    player->play();
+}
+
+void ChatView::showEvent(QShowEvent *event)
+{
+    QTextBrowser::showEvent(event);
+    for (ClipPlayer *player : std::as_const(m_videos))
+        player->setPaused(false);
+}
+
+void ChatView::hideEvent(QHideEvent *event)
+{
+    QTextBrowser::hideEvent(event);
+    // Nobody sees a clip while the chat is hidden, so nothing is decoded.
+    for (ClipPlayer *player : std::as_const(m_videos))
+        player->setPaused(true);
 }
 
 void ChatView::showVideoFrame(const QUrl &url, const QImage &frame)

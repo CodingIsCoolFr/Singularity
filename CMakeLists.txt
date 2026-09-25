@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(Singularity VERSION 0.8.0 LANGUAGES CXX)
+project(Singularity VERSION 0.8.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -103,6 +103,8 @@ qt_add_executable(Singularity WIN32
     src/ui/ChangelogDialog.cpp
     src/ui/ChatView.h
     src/ui/ChatView.cpp
+    src/ui/ClipPlayer.h
+    src/ui/ClipPlayer.cpp
     src/ui/CallView.h
     src/ui/CallView.cpp
     src/core/VideoDecoder.h
@@ -342,6 +344,7 @@ if(EXISTS "${FFMPEG_ROOT}/lib/avcodec.lib")
     target_include_directories(Singularity PRIVATE "${FFMPEG_ROOT}/include")
     target_link_libraries(Singularity PRIVATE
         "${FFMPEG_ROOT}/lib/avcodec.lib"
+        "${FFMPEG_ROOT}/lib/avformat.lib"
         "${FFMPEG_ROOT}/lib/avutil.lib"
         "${FFMPEG_ROOT}/lib/swscale.lib"
     )
@@ -351,6 +354,7 @@ if(EXISTS "${FFMPEG_ROOT}/lib/avcodec.lib")
     add_custom_command(TARGET Singularity POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${FFMPEG_ROOT}/bin/avcodec-62.dll"
+            "${FFMPEG_ROOT}/bin/avformat-62.dll"
             "${FFMPEG_ROOT}/bin/avutil-60.dll"
             "${FFMPEG_ROOT}/bin/swscale-9.dll"
             "${FFMPEG_ROOT}/bin/swresample-6.dll"
