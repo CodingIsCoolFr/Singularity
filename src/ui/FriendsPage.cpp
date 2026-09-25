@@ -268,6 +268,23 @@ FriendsPage::FriendsPage(MessageStore *store, RestClient *rest, QWidget *parent)
     });
 
     setTab(Tab::Online);
+
+    // This page shares its space with the chat and is usually hidden behind
+    // it, but a stacked page's minimum still counts: the tabs plus the 360
+    // pixel Active Now column held the whole window at 1483 pixels or wider,
+    // so snapping it onto a 1440-wide portrait monitor pushed 45 pixels onto
+    // the next screen (2026-09-25). A minimum of 1 says "do not size the
+    // window by me"; Active Now steps aside when there is no room, as it does
+    // in Discord.
+    setMinimumWidth(1);
+}
+
+void FriendsPage::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    constexpr int RoomForActiveNow = 900;
+    if (m_activity)
+        m_activity->setVisible(width() >= RoomForActiveNow);
 }
 
 QWidget *FriendsPage::buildTabBar()

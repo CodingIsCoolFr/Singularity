@@ -65,6 +65,7 @@ private:
     void rebuildActivity();
     void fitActivityWidth();
     bool eventFilter(QObject *watched, QEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
 
     MessageStore *m_store = nullptr;
     RestClient *m_rest = nullptr;

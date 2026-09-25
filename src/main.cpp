@@ -16,6 +16,8 @@
 
 #include <QApplication>
 #include <QEventLoop>
+#include <QFile>
+#include <QTextStream>
 #include <QFontDatabase>
 #include <QIcon>
 #include <QSurfaceFormat>
@@ -67,7 +69,7 @@ int main(int argc, char *argv[])
     CrashLog::install();
     app.setApplicationName(QStringLiteral("Singularity"));
     app.setOrganizationName(QStringLiteral("Singularity"));
-    app.setApplicationVersion(QStringLiteral("0.8.3"));
+    app.setApplicationVersion(QStringLiteral("0.8.4"));
     app.setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
 
     Theme::applySeed(QColor(AppConfig::instance().value(QStringLiteral("appearance/themeSeed"),
@@ -97,6 +99,42 @@ int main(int argc, char *argv[])
 
     // Touch the log first so the file exists even if startup fails early.
     wlog(QStringLiteral("app"), QStringLiteral("Singularity %1 starting").arg(app.applicationVersion()));
+
+    // --layout-report <file>: builds the main window without signing in or
+    // connecting to anything, writes the narrowest width each part of it will
+    // accept, and exits. For finding what stops the window fitting a narrow
+    // (portrait) monitor. Nothing here touches the account.
+    {
+        const int at = int(app.arguments().indexOf(QStringLiteral("--layout-report")));
+        if (at > 0 && at + 1 < app.arguments().size()) {
+            RestClient rest;
+            MessageStore store;
+            GatewayClient gateway;
+            PluginHost plugins(&rest, &gateway, &store);
+            MainWindow window(&rest, &gateway, &store, &plugins);
+            // Never shown: sizes are known without drawing, and showing it would
+            // start the background's OpenGL on a screen that may not exist.
+            window.resize(900, 800);
+            QFile out(app.arguments().at(at + 1));
+            if (out.open(QIODevice::WriteOnly | QIODevice::Text)) {
+                QTextStream text(&out);
+                text << "window minimumSizeHint " << window.minimumSizeHint().width() << " minimumWidth "
+                     << window.minimumWidth() << " actual " << window.width() << "\n";
+                const QList<QWidget *> all = window.findChildren<QWidget *>();
+                for (QWidget *w : all) {
+                    const int least = qMax(w->minimumSizeHint().width(), w->minimumWidth());
+                    if (least < 200)
+                        continue;
+                    int depth = 0;
+                    for (QWidget *p = w->parentWidget(); p && p != &window; p = p->parentWidget())
+                        ++depth;
+                    text << depth << " " << w->metaObject()->className() << " '" << w->objectName()
+                         << "' min " << least << " now " << w->width() << "\n";
+                }
+            }
+            return 0;
+        }
+    }
 
     // One copy at a time. A second launch brings the running copy forward and
     // leaves; a newer version (from the updater) or a restart for an account
