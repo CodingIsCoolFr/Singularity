@@ -261,4 +261,37 @@
                         "Disk MB":  490
                     }
                 ]
+},
+{
+    "Date":  "2026-09-26T09:09:26",
+    "Label":  "0.8.16: Singularity in a call watching one camera, Discord open not in a call",
+    "Seconds":  60,
+    "Machine":  "13th Gen Intel(R) Core(TM) i9-13900K, 32 GB RAM, 32 logical cores",
+    "Windows":  "Microsoft Windows 11 Pro",
+    "Singularity":  "0.8.16",
+    "Discord":  "app-1.0.9259",
+    "Results":  [
+                    {
+                        "App":  "Singularity",
+                        "RAM avg MB":  367,
+                        "RAM peak MB":  369,
+                        "Private MB":  409,
+                        "CPU avg %":  0.96,
+                        "CPU peak %":  1.4,
+                        "Processes":  1,
+                        "Threads":  31,
+                        "Disk MB":  203
+                    },
+                    {
+                        "App":  "Discord",
+                        "RAM avg MB":  2010,
+                        "RAM peak MB":  2045,
+                        "Private MB":  979,
+                        "CPU avg %":  0.11,
+                        "CPU peak %":  0.42,
+                        "Processes":  6,
+                        "Threads":  273,
+                        "Disk MB":  490
+                    }
+                ]
 }]

@@ -34,6 +34,7 @@
 #include "ui/ProfileDialog.h"
 #include "ui/SettingsDialog.h"
 #include "ui/Theme.h"
+#include "ui/UiTime.h"
 
 #include <QAction>
 #include <QApplication>
@@ -3686,6 +3687,8 @@ void MainWindow::reportMemory()
          QStringLiteral("window thread: worst stall %1 ms, %2 stalls over 33 ms in the last minute")
              .arg(m_uiWorstStallMs)
              .arg(m_uiStalls));
+    // And where its time went, in the same minute.
+    wlog(QStringLiteral("perf"), SingularityApplication::takeReport());
     m_uiWorstStallMs = 0;
     m_uiStalls = 0;
 

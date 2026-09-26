@@ -12,6 +12,7 @@
 #include "ui/LoginDialog.h"
 #include "ui/MainWindow.h"
 #include "ui/Theme.h"
+#include "ui/UiTime.h"
 #include "ui/UpdateFlow.h"
 
 #include <QApplication>
@@ -71,7 +72,8 @@ int main(int argc, char *argv[])
             qputenv("QT_SCALE_FACTOR", QByteArray::number(zoom / 100.0));
     }
 
-    QApplication app(argc, argv);
+    // Times the window thread's work; see ui/UiTime.h.
+    SingularityApplication app(argc, argv);
 
     // Taken back out once read: every program started from here (a restart,
     // the updater, a browser) would inherit it, and the next copy decides its
@@ -90,7 +92,7 @@ int main(int argc, char *argv[])
     CrashLog::install();
     app.setApplicationName(QStringLiteral("Singularity"));
     app.setOrganizationName(QStringLiteral("Singularity"));
-    app.setApplicationVersion(QStringLiteral("0.8.16"));
+    app.setApplicationVersion(QStringLiteral("0.8.17"));
     app.setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
 
     Theme::applySeed(QColor(AppConfig::instance().value(QStringLiteral("appearance/themeSeed"),
