@@ -48,6 +48,14 @@ void waitForUpdate();
 // copy, from any shortcut or pin - finds it and opens that instead.
 inline constexpr const char *ReadyMarker = "ready-to-open";
 
+// Discord's startup window: checks before the program opens, and when there
+// is a new version, downloads and installs it right there. True means it is
+// installed and the caller should open it (newerInstalledCopy) and exit.
+bool checkAtStartup();
+
+// Told when a background update starts downloading, with its version.
+void setDownloadingHandler(std::function<void(const QString &version)> handler);
+
 // Told when a background update has finished installing, with its version.
 void setStagedHandler(std::function<void(const QString &version)> handler);
 

@@ -120,6 +120,7 @@ void Updater::onCheckFinished(QNetworkReply *reply, bool quiet)
         wlog(QStringLiteral("update"), QStringLiteral("check failed: %1").arg(reply->errorString()));
         if (!quiet)
             emit failed(reply->errorString());
+        emit checkFinished(false);
         return;
     }
 
@@ -128,6 +129,7 @@ void Updater::onCheckFinished(QNetworkReply *reply, bool quiet)
     if (tag.isEmpty()) {
         if (!quiet)
             emit failed(QStringLiteral("The update channel returned nothing usable."));
+        emit checkFinished(false);
         return;
     }
 
@@ -137,6 +139,7 @@ void Updater::onCheckFinished(QNetworkReply *reply, bool quiet)
              QStringLiteral("latest is %1, running %2, nothing to do").arg(tag, current));
         if (!quiet)
             emit upToDate();
+        emit checkFinished(false);
         return;
     }
 
@@ -164,6 +167,7 @@ void Updater::onCheckFinished(QNetworkReply *reply, bool quiet)
     if (m_assetUrl.isEmpty()) {
         if (!quiet)
             emit failed(QStringLiteral("Version %1 exists but has no installer attached.").arg(tag));
+        emit checkFinished(false);
         return;
     }
 
@@ -172,6 +176,7 @@ void Updater::onCheckFinished(QNetworkReply *reply, bool quiet)
 
     wlog(QStringLiteral("update"), QStringLiteral("version %1 is available, running %2").arg(tag, current));
     emit updateAvailable(tag, m_notes, m_assetSize);
+    emit checkFinished(true);
 }
 
 void Updater::download()

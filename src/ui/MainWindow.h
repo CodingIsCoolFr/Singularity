@@ -428,6 +428,7 @@ private:
     class ScreenShare *m_share = nullptr;
     VoiceConnection *m_shareVoice = nullptr;
     QPushButton *m_shareButton = nullptr;
+    QPushButton *m_updateButton = nullptr;   // Discord's green "update ready" arrow
     QPushButton *m_cameraButton = nullptr;
     class CameraShare *m_camera = nullptr;
     class QCamera *m_webcam = nullptr;

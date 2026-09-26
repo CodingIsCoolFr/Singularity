@@ -93,7 +93,7 @@ int main(int argc, char *argv[])
     CrashLog::install();
     app.setApplicationName(QStringLiteral("Singularity"));
     app.setOrganizationName(QStringLiteral("Singularity"));
-    app.setApplicationVersion(QStringLiteral("0.8.23"));
+    app.setApplicationVersion(QStringLiteral("0.8.24"));
     app.setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
 
     Theme::applySeed(QColor(AppConfig::instance().value(QStringLiteral("appearance/themeSeed"),
@@ -192,9 +192,22 @@ int main(int argc, char *argv[])
     // Names whatever freezes the window, in the log, the moment it happens.
     HangWatch::start();
 
-    // A quiet look for a newer version, a few seconds in, and again while the
-    // program stays open. The sign-in window runs its own event loop, so the
-    // first look still fires there. Already being current says nothing.
+    // Discord's startup window: look for a new version before anything opens,
+    // and when there is one, install it and open that instead. Not on a
+    // restart (--replace): that is an update or an account switch that has
+    // just happened, and looking again would only slow it down.
+    if (!replaceRunning && UpdateFlow::checkAtStartup()) {
+        const QString newer = UpdateFlow::newerInstalledCopy(app.applicationVersion());
+        QStringList args = app.arguments().mid(1);
+        args << QStringLiteral("--replace");
+        if (!newer.isEmpty() && QProcess::startDetached(newer, args)) {
+            wlog(QStringLiteral("update"), QStringLiteral("updated at startup; opening %1").arg(newer));
+            return 0;
+        }
+        wlog(QStringLiteral("update"), QStringLiteral("updated at startup but could not open the new version"));
+    }
+
+    // Looks again while the program stays open, every hour, as Discord does.
     UpdateFlow::watch();
 
     RestClient rest;

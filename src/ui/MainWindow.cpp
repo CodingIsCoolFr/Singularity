@@ -381,8 +381,25 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
             });
 
     // A background update finished: said once, quietly, at the bottom.
+    UpdateFlow::setDownloadingHandler([this](const QString &version) {
+        if (!m_updateButton)
+            return;
+        if (version.isEmpty()) {   // the download or install failed; it tries again later
+            m_updateButton->hide();
+            return;
+        }
+        m_updateButton->setEnabled(false);
+        m_updateButton->setToolTip(QStringLiteral("Downloading Singularity %1...").arg(version));
+        m_updateButton->show();
+    });
     UpdateFlow::setStagedHandler([this](const QString &version) {
-        flashStatus(QStringLiteral("Singularity %1 is ready. It opens the next time you start Singularity.")
+        if (m_updateButton) {
+            m_updateButton->setEnabled(true);
+            m_updateButton->setToolTip(
+                QStringLiteral("Singularity %1 is ready. Click to restart and update.").arg(version));
+            m_updateButton->show();
+        }
+        flashStatus(QStringLiteral("Singularity %1 is ready. Click the green arrow to restart, or it opens next time.")
                         .arg(version),
                     10000);
     });
@@ -1208,6 +1225,37 @@ QWidget *MainWindow::buildGuildRail(QWidget *parent)
         "QPushButton#RailReadAll:hover { color: %2; }")
                                      .arg(QLatin1String(Theme::TextMuted), QLatin1String(Theme::TextPrimary)));
     connect(readAllButton, &QPushButton::clicked, this, &MainWindow::readAll);
+
+    // Discord's green download icon (AutoUpdateStore: UPDATE_AVAILABLE shows
+    // it dimmed while the update comes down, UPDATE_DOWNLOADED makes it a
+    // button that restarts into the new version, asking first during a call).
+    m_updateButton = new QPushButton(QStringLiteral("⬇"), rail);
+    m_updateButton->setObjectName(QStringLiteral("RailUpdate"));
+    m_updateButton->setFixedSize(36, 36);
+    m_updateButton->setCursor(Qt::PointingHandCursor);
+    m_updateButton->setStyleSheet(QStringLiteral(
+        "QPushButton#RailUpdate { background: transparent; border: 2px solid %1; border-radius: 18px; color: %1; "
+        "font-size: 16px; font-weight: 700; }"
+        "QPushButton#RailUpdate:hover { background: %1; color: #07090d; }"
+        "QPushButton#RailUpdate:disabled { border-color: %2; color: %2; }")
+                                      .arg(QLatin1String(Theme::Green), QLatin1String(Theme::TextFaint)));
+    m_updateButton->hide();
+    connect(m_updateButton, &QPushButton::clicked, this, [this]() {
+        if (!m_voiceChannelId.isEmpty()) {
+            const auto answer = QMessageBox::question(
+                this, QStringLiteral("Restart to update"),
+                QStringLiteral("You're in a voice call. Restarting to update will disconnect you. Restart now?"),
+                QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
+            if (answer != QMessageBox::Yes)
+                return;
+        }
+        wlog(QStringLiteral("update"), QStringLiteral("Restart to update pressed"));
+        // This copy restarts; the restart finds the new version and opens it.
+        restartInto({});
+    });
+    layout->addWidget(m_updateButton, 0, Qt::AlignHCenter);
+    layout->addSpacing(6);
+
     layout->addWidget(readAllButton, 0, Qt::AlignHCenter);
 
     m_guildRail = new QListWidget(rail);

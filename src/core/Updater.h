@@ -50,6 +50,9 @@ public:
 signals:
     void updateAvailable(const QString &version, const QString &notes, qint64 bytes);
     void upToDate();
+    // Every check ends with this, quiet or not, found or not - after
+    // updateAvailable when there is one. The startup window waits on it.
+    void checkFinished(bool updateFound);
     void progress(qint64 received, qint64 total);
     void readyToInstall(const QString &installerPath);
     void failed(const QString &reason);

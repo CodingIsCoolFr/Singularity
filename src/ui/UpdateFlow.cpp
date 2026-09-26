@@ -49,6 +49,10 @@ bool g_quiet = false;
 bool g_background = false;
 QString g_staged;
 std::function<void(const QString &)> g_stagedHandler;
+std::function<void(const QString &)> g_downloadingHandler;
+// Set while the startup window waits: told when the background install
+// has finished, well or badly.
+std::function<void(bool)> g_startupDone;
 
 // The window the current check was asked from, if there is one.
 //
@@ -545,6 +549,10 @@ Updater *updater()
         if (g_background) {
             g_background = false;
             wlog(QStringLiteral("update"), QStringLiteral("background update failed, will try again: %1").arg(reason));
+            if (g_startupDone)
+                g_startupDone(false);
+            if (g_downloadingHandler)
+                g_downloadingHandler(QString());   // empty: it failed, hide the arrow
             return;
         }
         restoreHidden();
@@ -569,6 +577,8 @@ Updater *updater()
                              wlog(QStringLiteral("update"),
                                   QStringLiteral("%1 found; installing it in the background to open next time")
                                       .arg(version));
+                             if (g_downloadingHandler)
+                                 g_downloadingHandler(bare);
                              updater()->download();
                              return;
                          }
@@ -653,6 +663,10 @@ Updater *updater()
                          QStringLiteral("background install of %1 stopped with code %2; will try again")
                              .arg(version)
                              .arg(code));
+                    if (g_startupDone)
+                        g_startupDone(false);
+                    if (g_downloadingHandler)
+                        g_downloadingHandler(QString());   // empty: it failed, hide the arrow
                     return;
                 }
                 QFile marker(QDir(dest).filePath(QLatin1String(UpdateFlow::ReadyMarker)));
@@ -663,12 +677,18 @@ Updater *updater()
                      QStringLiteral("%1 is installed and opens the next time Singularity starts").arg(version));
                 if (g_stagedHandler)
                     g_stagedHandler(version);
+                if (g_startupDone)
+                    g_startupDone(true);
             });
             QObject::connect(install, &QProcess::errorOccurred, qApp, [install](QProcess::ProcessError) {
                 g_background = false;
                 wlog(QStringLiteral("update"),
                      QStringLiteral("could not start the background installer: %1").arg(install->errorString()));
                 install->deleteLater();
+                if (g_startupDone)
+                    g_startupDone(false);
+                if (g_downloadingHandler)
+                    g_downloadingHandler(QString());   // empty: it failed, hide the arrow
             });
             wlog(QStringLiteral("update"), QStringLiteral("installing %1 in the background into %2").arg(version, dest));
             install->start();
@@ -754,6 +774,71 @@ void UpdateFlow::setStagedHandler(std::function<void(const QString &version)> ha
     g_stagedHandler = std::move(handler);
 }
 
+void UpdateFlow::setDownloadingHandler(std::function<void(const QString &version)> handler)
+{
+    g_downloadingHandler = std::move(handler);
+}
+
+// Discord's splash, in Singularity's install screen: "Checking for
+// updates...", and when there is one, "Downloading update..." with a real
+// bar, then "Starting...". It never holds the program hostage: no answer in
+// six seconds, or a download that fails, and this copy simply opens.
+bool UpdateFlow::checkAtStartup()
+{
+    Updater *u = updater();
+
+    auto *screen = new InstallScreen;
+    g_install = screen;   // the shared progress handler fills its bar
+    screen->setStep(QStringLiteral("Checking for updates..."));
+    screen->place();
+    screen->show();
+
+    QEventLoop loop;
+    QTimer limit;
+    limit.setSingleShot(true);
+    QObject::connect(&limit, &QTimer::timeout, &loop, [&loop]() {
+        wlog(QStringLiteral("update"), QStringLiteral("startup check gave up waiting; opening this version"));
+        loop.quit();
+    });
+
+    bool settled = false;
+    const QMetaObject::Connection checked =
+        QObject::connect(u, &Updater::checkFinished, &loop, [&](bool found) {
+            if (!found) {
+                settled = true;
+                loop.quit();
+                return;
+            }
+            // Found: the quiet path below downloads and installs it.
+            screen->setStep(QStringLiteral("Downloading update..."));
+            limit.start(3 * 60 * 1000);
+        });
+    const QMetaObject::Connection failed = QObject::connect(u, &Updater::failed, &loop, [&loop]() { loop.quit(); });
+    g_startupDone = [&loop, screen](bool ok) {
+        if (ok)
+            screen->setStep(QStringLiteral("Starting..."));
+        loop.quit();
+    };
+
+    // The same quiet check as while running, which installs a new version
+    // beside this one without starting it.
+    g_quiet = true;
+    limit.start(6000);
+    u->check(true);
+    if (!settled)
+        loop.exec();
+
+    QObject::disconnect(checked);
+    QObject::disconnect(failed);
+    g_startupDone = nullptr;
+
+    // Closed either way: the new version opens its own windows, and this one
+    // must not be left behind if opening it fails.
+    screen->close();
+    g_install = nullptr;
+    return !g_staged.isEmpty();
+}
+
 QString UpdateFlow::newerInstalledCopy(const QString &myVersion)
 {
     // The same folder rules as the install: a copy under versions\<n> lives
@@ -816,10 +901,14 @@ void UpdateFlow::watch()
     // look is what a launch finds. The repeat is an update published while
     // the program is already open, which otherwise sits there until somebody
     // opens the menu.
-    QTimer::singleShot(8000, qApp, []() { UpdateFlow::run(true, nullptr); });
+    //
+    // Discord's rhythm (AutoUpdateManager: once connected, then every hour).
+    // The startup window has already looked, so the first one here is a few
+    // minutes in, for a start whose check timed out.
+    QTimer::singleShot(5 * 60 * 1000, qApp, []() { UpdateFlow::run(true, nullptr); });
 
     auto *timer = new QTimer(qApp);
-    timer->setInterval(2 * 60 * 1000);
+    timer->setInterval(60 * 60 * 1000);
     QObject::connect(timer, &QTimer::timeout, qApp, []() { UpdateFlow::run(true, nullptr); });
     timer->start();
 }
