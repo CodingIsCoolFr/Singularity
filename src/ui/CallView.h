@@ -37,6 +37,11 @@ public:
     void setStageSuppressed(bool suppressed);
 
     void setSpeaking(const QSet<QString> &userIds);
+
+    // Discord's "Turn Off Video" on a person: their camera shows as their
+    // picture instead, and it is not downloaded at all.
+    void setVideoHidden(const QSet<QString> &userIds);
+    bool isVideoHidden(const QString &userId) const { return m_videoHidden.contains(userId); }
     void setFocusedUser(const QString &userId, Surface surface = Surface::Camera);
     QString focusedUser() const { return m_focusedUser; }
 
@@ -137,6 +142,7 @@ private:
     Surface m_hoverSurface = Surface::Camera;
     QList<Tile> m_tiles;
     QSet<QString> m_speaking;
+    QSet<QString> m_videoHidden;
     QHash<QString, QImage> m_cameraFrames;
     QHash<QString, QImage> m_shareFrames;
 };

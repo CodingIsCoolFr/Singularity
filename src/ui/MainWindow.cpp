@@ -1079,6 +1079,10 @@ void MainWindow::buildUi()
     m_chatSplitter->setHandleWidth(8);
 
     m_callView = new CallView(m_store, m_chatSplitter);
+    {
+        const QStringList hidden = AppConfig::instance().value(QStringLiteral("voice/videoHidden")).toStringList();
+        m_callView->setVideoHidden(QSet<QString>(hidden.begin(), hidden.end()));
+    }
     connect(m_callView, &CallView::profileRequested, this,
             [this](const QString &userId) { showProfile(userId, QCursor::pos()); });
     connect(m_callView, &CallView::volumeMenuRequested, this, &MainWindow::showPersonMenu);
@@ -8477,6 +8481,20 @@ void MainWindow::refreshVolumePopup()
     }
 }
 
+// Remembered across calls and restarts, as a list in the settings file.
+void MainWindow::setVideoHidden(const QString &userId, bool hidden)
+{
+    QStringList list = AppConfig::instance().value(QStringLiteral("voice/videoHidden")).toStringList();
+    list.removeAll(userId);
+    if (hidden)
+        list.append(userId);
+    AppConfig::instance().setValue(QStringLiteral("voice/videoHidden"), list);
+    if (m_callView)
+        m_callView->setVideoHidden(QSet<QString>(list.begin(), list.end()));
+    wlog(QStringLiteral("video"), QStringLiteral("%1 video for %2").arg(hidden ? QStringLiteral("turned off")
+                                                                              : QStringLiteral("turned on"), userId));
+}
+
 void MainWindow::showPersonMenu(const QString &userId, const QPoint &globalPos)
 {
     showPersonMenuAt(userId, globalPos, QString());
@@ -8502,6 +8520,21 @@ void MainWindow::showPersonMenuAt(const QString &userId, const QPoint &globalPos
             menu.addAction(QStringLiteral("User volume"), this, [this, userId, globalPos]() {
                 showUserVolumeMenu(userId, globalPos);
             });
+
+            // Discord's call options for this person: their camera and their
+            // stream, each turned off here only. They are not told.
+            const VoiceStateInfo state = m_store->voiceState(userId);
+            if (state.video && m_callView) {
+                const bool hidden = m_callView->isVideoHidden(userId);
+                menu.addAction(hidden ? QStringLiteral("Turn On Video") : QStringLiteral("Turn Off Video"), this,
+                               [this, userId, hidden]() { setVideoHidden(userId, !hidden); });
+            }
+            if (state.streaming) {
+                if (m_watchingUserId == userId)
+                    menu.addAction(QStringLiteral("Stop Watching Stream"), this, [this]() { stopWatchingStream(); });
+                else
+                    menu.addAction(QStringLiteral("Watch Stream"), this, [this, userId]() { watchStream(userId); });
+            }
         }
 
         menu.addSeparator();

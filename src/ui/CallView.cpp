@@ -116,6 +116,17 @@ void CallView::setSpeaking(const QSet<QString> &userIds)
     update();
 }
 
+void CallView::setVideoHidden(const QSet<QString> &userIds)
+{
+    if (m_videoHidden == userIds)
+        return;
+    m_videoHidden = userIds;
+    for (const QString &userId : userIds)
+        m_cameraFrames.remove(userId);
+    refresh();
+    publishViews();
+}
+
 void CallView::setFocusedUser(const QString &userId, Surface surface)
 {
     if (m_focusedUser == userId && m_focusedSurface == surface)
@@ -133,6 +144,8 @@ void CallView::setFrame(const QString &userId, const QImage &image, Surface surf
 
     if (surface == Surface::Share)
         m_shareFrames.insert(userId, image);
+    else if (m_videoHidden.contains(userId))
+        return;   // a picture still on its way after Turn Off Video
     else
         m_cameraFrames.insert(userId, image);
 
@@ -189,7 +202,8 @@ void CallView::refresh()
         person.userId = userId;
         person.name = name;
         person.surface = Surface::Camera;
-        person.video = state.video;
+        // A camera turned off here is drawn as the person's picture.
+        person.video = state.video && !m_videoHidden.contains(userId);
         person.muted = state.muted;
         person.deafened = state.deafened;
         person.speaking = m_speaking.contains(userId);

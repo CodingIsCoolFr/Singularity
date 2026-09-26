@@ -531,6 +531,8 @@ private:
     void showUserVolumeMenu(const QString &userId, const QPoint &globalPos);
     void showPersonMenu(const QString &userId, const QPoint &globalPos);
     void showPersonMenuAt(const QString &userId, const QPoint &globalPos, const QString &closeChannelId);
+    // "Turn Off Video" / "Turn On Video" on a person in the call.
+    void setVideoHidden(const QString &userId, bool hidden);
     void closeDirectMessage(const QString &channelId);
     void applyChannelClosed(const QString &channelId);
     void openDirectWith(const QString &userId);
