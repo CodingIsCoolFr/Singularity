@@ -18,7 +18,7 @@
 ;     iscc installer\Singularity.iss
 
 #define AppName       "Singularity"
-#define AppVersion    "0.8.12"
+#define AppVersion    "0.8.13"
 #define AppPublisher  "Singularity"
 #define AppExe        "Singularity.exe"
 

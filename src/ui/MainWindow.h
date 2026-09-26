@@ -140,6 +140,17 @@ private:
     // The server menu under the server's name, as in Discord: Mark As Read,
     // Copy Server ID, Leave Server.
     void showGuildMenu(const QPoint &globalPos);
+
+    // Telling Discord what was read, the way its own client does it: a queue,
+    // sent a hundred at a time with a second between, and a batch Discord
+    // says came too fast is sent again when Discord says to. Read All used to
+    // fire every batch at once and 33 of 34 were refused.
+    void queueAcks(const QList<QPair<QString, QString>> &channelsAndMessages);
+    void sendNextAckBatch();
+    QList<QPair<QString, QString>> m_ackQueue;
+    bool m_ackSending = false;
+    int m_ackSent = 0;
+    int m_ackGivenUp = 0;
     void markGuildRead(const QString &guildId);
     // Asks first, then leaves. guildGone tidies up after a leave, a kick or a
     // ban (GUILD_DELETE without "unavailable").

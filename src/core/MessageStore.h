@@ -396,6 +396,7 @@ public:
     void ingestReadState(const QJsonObject &readyPayload);
     void noteIncoming(const QString &channelId, const QString &messageId, bool mention, bool seen);
     void markChannelRead(const QString &channelId, const QString &messageId);
+    void markChannelsRead(const QList<QPair<QString, QString>> &channelsAndMessages);
     bool isUnread(const QString &channelId) const;
 
     // Every chat with something unread, each with the newest message id

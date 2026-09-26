@@ -1360,6 +1360,25 @@ void MessageStore::markChannelRead(const QString &channelId, const QString &mess
     emit readStateChanged();
 }
 
+void MessageStore::markChannelsRead(const QList<QPair<QString, QString>> &channelsAndMessages)
+{
+    // The same as markChannelRead for each, with one change signal at the
+    // end. One per channel redrew the rail and channel list 3,394 times for
+    // Read All and froze the window for half a second.
+    for (const auto &pair : channelsAndMessages) {
+        if (pair.first.isEmpty())
+            continue;
+        ReadMark mark = m_reads.value(pair.first);
+        if (!pair.second.isEmpty())
+            mark.lastReadId = pair.second;
+        mark.mentions = 0;
+        mark.unread = false;
+        m_reads.insert(pair.first, mark);
+    }
+    if (!channelsAndMessages.isEmpty())
+        emit readStateChanged();
+}
+
 bool MessageStore::isUnread(const QString &channelId) const
 {
     const ReadMark mark = m_reads.value(channelId);

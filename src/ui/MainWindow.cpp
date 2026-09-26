@@ -6628,21 +6628,80 @@ void MainWindow::readAll()
         return;
     }
 
-    // Marked here at once; Discord is told in batches of a hundred, its limit.
-    for (const auto &pair : unread)
-        m_store->markChannelRead(pair.first, pair.second);
-    for (int from = 0; from < unread.size(); from += 100) {
-        const QList<QPair<QString, QString>> batch = unread.mid(from, 100);
-        m_rest->ackBulk(
-            batch, [](const QJsonObject &) {},
-            [this, count = batch.size()](const RestClient::Error &error) {
-                wlog(QStringLiteral("ui"), QStringLiteral("Read All: Discord refused %1 chats: HTTP %2 %3")
-                                               .arg(count).arg(error.httpStatus).arg(error.message));
-                flashStatus(QStringLiteral("Some chats could not be marked read on Discord."), 6000);
-            });
+    // Marked here at once, with one redraw; Discord is told through the queue.
+    m_store->markChannelsRead(unread);
+    wlog(QStringLiteral("ui"), QStringLiteral("Read All: %1 chats marked read here").arg(unread.size()));
+    queueAcks(unread);
+}
+
+void MainWindow::queueAcks(const QList<QPair<QString, QString>> &channelsAndMessages)
+{
+    // One entry per chat: a chat already waiting just gets the newer message.
+    QHash<QString, int> waitingAt;
+    for (int i = 0; i < m_ackQueue.size(); ++i)
+        waitingAt.insert(m_ackQueue.at(i).first, i);
+    for (const auto &pair : channelsAndMessages) {
+        const auto at = waitingAt.constFind(pair.first);
+        if (at != waitingAt.constEnd()) {
+            m_ackQueue[at.value()].second = pair.second;
+            continue;
+        }
+        waitingAt.insert(pair.first, int(m_ackQueue.size()));
+        m_ackQueue.append(pair);
     }
-    wlog(QStringLiteral("ui"), QStringLiteral("Read All: %1 chats marked read").arg(unread.size()));
-    flashStatus(QStringLiteral("Marked %1 chats as read.").arg(unread.size()), 4000);
+    if (!m_ackSending) {
+        m_ackSent = 0;
+        m_ackGivenUp = 0;
+        sendNextAckBatch();
+    }
+}
+
+void MainWindow::sendNextAckBatch()
+{
+    if (m_ackQueue.isEmpty()) {
+        m_ackSending = false;
+        wlog(QStringLiteral("ui"), QStringLiteral("read marks: Discord has %1 chats%2")
+                                       .arg(m_ackSent)
+                                       .arg(m_ackGivenUp ? QStringLiteral(", %1 refused").arg(m_ackGivenUp)
+                                                         : QString()));
+        flashStatus(m_ackGivenUp == 0
+                        ? QStringLiteral("Marked %1 chats as read.").arg(m_ackSent)
+                        : QStringLiteral("Marked %1 chats as read; Discord refused %2.").arg(m_ackSent).arg(m_ackGivenUp),
+                    5000);
+        return;
+    }
+
+    m_ackSending = true;
+    const QList<QPair<QString, QString>> batch = m_ackQueue.mid(0, 100);
+    if (m_ackSent + m_ackQueue.size() > 100) {
+        flashStatus(QStringLiteral("Marking as read on Discord... %1 left").arg(m_ackQueue.size()), 3000);
+    }
+
+    m_rest->ackBulk(
+        batch,
+        [this, count = batch.size()](const QJsonObject &) {
+            m_ackQueue.remove(0, qMin(count, int(m_ackQueue.size())));
+            m_ackSent += count;
+            // Discord's client waits a second between batches.
+            QTimer::singleShot(1000, this, &MainWindow::sendNextAckBatch);
+        },
+        [this, count = batch.size()](const RestClient::Error &error) {
+            if (error.httpStatus == 429) {
+                // Too fast: the same batch again when Discord says.
+                const double wait = error.body.value(QStringLiteral("retry_after")).toDouble(1.0);
+                const int ms = qBound(500, int(wait * 1000) + 250, 60000);
+                wlog(QStringLiteral("ui"), QStringLiteral("read marks: Discord asked us to wait %1 ms").arg(ms));
+                QTimer::singleShot(ms, this, &MainWindow::sendNextAckBatch);
+                return;
+            }
+            wlog(QStringLiteral("ui"), QStringLiteral("read marks: Discord refused %1 chats: HTTP %2 %3")
+                                           .arg(count)
+                                           .arg(error.httpStatus)
+                                           .arg(error.message.left(160)));
+            m_ackQueue.remove(0, qMin(count, int(m_ackQueue.size())));
+            m_ackGivenUp += count;
+            QTimer::singleShot(1000, this, &MainWindow::sendNextAckBatch);
+        });
 }
 
 void MainWindow::markGuildRead(const QString &guildId)
@@ -6656,16 +6715,8 @@ void MainWindow::markGuildRead(const QString &guildId)
         flashStatus(QStringLiteral("Nothing here is unread."), 3000);
         return;
     }
-    for (const auto &pair : std::as_const(unread))
-        m_store->markChannelRead(pair.first, pair.second);
-    for (int from = 0; from < unread.size(); from += 100) {
-        m_rest->ackBulk(unread.mid(from, 100), [](const QJsonObject &) {},
-                        [this](const RestClient::Error &error) {
-                            wlog(QStringLiteral("ui"), QStringLiteral("Mark as read refused: HTTP %1 %2")
-                                                           .arg(error.httpStatus)
-                                                           .arg(error.message));
-                        });
-    }
+    m_store->markChannelsRead(unread);
+    queueAcks(unread);
     refreshUnreadMarks();
 }
 
