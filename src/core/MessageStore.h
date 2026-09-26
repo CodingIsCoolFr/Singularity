@@ -297,6 +297,15 @@ struct MessageInfo
     bool edited = false;
     bool deleted = false;   // set by the MessageLogger plugin
     bool pendingLocal = false;
+
+    // A forwarded message: message_reference type 1. Its own content is
+    // empty; what it carries is a copy of the original taken when it was
+    // forwarded (message_snapshots), which never changes afterwards. A
+    // snapshot has words, pictures, embeds and stickers, but no author or id.
+    QList<MessageInfo> snapshots;
+    QString forwardedFromChannelId;
+    QString forwardedFromGuildId;
+    QString forwardedFromMessageId;
 };
 
 // In-memory mirror of everything the UI needs to draw. The store is

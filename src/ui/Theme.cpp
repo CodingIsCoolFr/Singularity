@@ -953,6 +953,23 @@ table.embed { margin: 6px 0 4px 0; }
     background-color: @input220;
     padding: 8px 12px;
 }
+/* A forwarded message: a thin bar on the left and the original inside. */
+table.fwd { margin: 4px 0 4px 0; }
+.fwd-inner { padding: 2px 0 2px 12px; }
+.fwd-tag {
+    color: @faint;
+    font-family: "Poppins", "Segoe UI", sans-serif;
+    font-size: 12px;
+    margin-bottom: 2px;
+}
+.fwd-src {
+    color: @faint;
+    font-family: "Poppins", "Segoe UI", sans-serif;
+    font-size: 11px;
+    margin-top: 4px;
+}
+a.fwd-link { color: @faint; text-decoration: none; }
+
 .embed-provider {
     color: @faint;
     font-family: "Poppins", "Segoe UI", sans-serif;

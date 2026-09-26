@@ -65,6 +65,10 @@ public:
                      const QStringList &files, ObjectHandler onOk, ErrorHandler onError,
                      const QString &stickerId = {}, const CaptchaProof &captcha = {});
 
+    // Forwards a message into another channel, as Discord's Forward does.
+    void forwardMessage(const QString &toChannelId, const QString &fromChannelId, const QString &fromGuildId,
+                        const QString &messageId, ObjectHandler onOk, ErrorHandler onError);
+
     // Discord's GIF picker.
     //
     // gifCategories is the first page: {"categories": [{name, src}], "gifs":

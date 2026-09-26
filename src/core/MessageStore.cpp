@@ -1167,6 +1167,21 @@ MessageInfo MessageStore::parseMessage(const QJsonObject &raw)
             message.reactions.append(reaction);
     }
 
+    // --- forwarded --------------------------------------------------------
+    // Type 1 is a forward; 0 (or none) is a reply, which is not this.
+    const QJsonObject reference = raw.value(QStringLiteral("message_reference")).toObject();
+    if (reference.value(QStringLiteral("type")).toInt() == 1) {
+        message.forwardedFromChannelId = reference.value(QStringLiteral("channel_id")).toString();
+        message.forwardedFromGuildId = reference.value(QStringLiteral("guild_id")).toString();
+        message.forwardedFromMessageId = reference.value(QStringLiteral("message_id")).toString();
+    }
+    const QJsonArray snapshots = raw.value(QStringLiteral("message_snapshots")).toArray();
+    for (const QJsonValue &value : snapshots) {
+        const QJsonObject inner = value.toObject().value(QStringLiteral("message")).toObject();
+        if (!inner.isEmpty())
+            message.snapshots.append(parseMessage(inner));
+    }
+
     return message;
 }
 

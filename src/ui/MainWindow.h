@@ -73,6 +73,8 @@ private slots:
     void sendCurrentMessage();
     void showMessageMenu(const QPoint &pos);
     void beginReply(const QString &messageId);
+    // "Forward" on a message: pick up to five places, optionally add a line.
+    void forwardMessage(const QString &messageId);
     void beginEdit(const QString &messageId);
     void clearComposerContext();
     void chooseAttachment();

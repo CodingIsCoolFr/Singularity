@@ -100,6 +100,35 @@ void RestClient::fetchMessages(const QString &channelId, int limit, ArrayHandler
     dispatch(reply, nullptr, std::move(onOk), std::move(onError));
 }
 
+void RestClient::forwardMessage(const QString &toChannelId, const QString &fromChannelId,
+                                const QString &fromGuildId, const QString &messageId, ObjectHandler onOk,
+                                ErrorHandler onError)
+{
+    const qint64 nonce = QDateTime::currentMSecsSinceEpoch() * 1000
+        + QRandomGenerator::global()->bounded(1000);
+
+    // What the official client sends: no words of its own, and a reference of
+    // type 1 (FORWARD). Discord copies the original into message_snapshots.
+    QJsonObject reference{
+        {QStringLiteral("type"), 1},
+        {QStringLiteral("message_id"), messageId},
+        {QStringLiteral("channel_id"), fromChannelId},
+    };
+    if (!fromGuildId.isEmpty())
+        reference.insert(QStringLiteral("guild_id"), fromGuildId);
+
+    const QJsonObject body{
+        {QStringLiteral("content"), QString()},
+        {QStringLiteral("nonce"), QString::number(nonce)},
+        {QStringLiteral("tts"), false},
+        {QStringLiteral("flags"), 0},
+        {QStringLiteral("message_reference"), reference},
+    };
+    QNetworkReply *reply = m_network.post(buildRequest(QStringLiteral("/channels/%1/messages").arg(toChannelId)),
+                                          QJsonDocument(body).toJson(QJsonDocument::Compact));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::sendMessage(const QString &channelId, const QString &content, const QString &replyTo,
                              const QStringList &files, ObjectHandler onOk, ErrorHandler onError,
                              const QString &stickerId, const CaptchaProof &captcha)

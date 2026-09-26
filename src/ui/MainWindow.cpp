@@ -4088,20 +4088,60 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
     // Body -----------------------------------------------------------------
     QString body = renderContent(message.content, true);
 
-    for (const Attachment &attachment : message.attachments) {
-        const QString safeUrl = attachment.url.toHtmlEscaped();
-        const QString label = attachment.filename.isEmpty() ? QStringLiteral("file")
-                                                            : attachment.filename.toHtmlEscaped();
+    const auto attachmentsHtml = [](const QList<Attachment> &attachments) {
+        QString html;
+        for (const Attachment &attachment : attachments) {
+            const QString safeUrl = attachment.url.toHtmlEscaped();
+            const QString label = attachment.filename.isEmpty() ? QStringLiteral("file")
+                                                                : attachment.filename.toHtmlEscaped();
 
-        if (attachment.isImage() && ChatView::isAllowedImageHost(QUrl(attachment.url))) {
-            // Wrapped so a click opens the big view rather than a browser.
-            body += QStringLiteral("<div class=\"attach\"><a href=\"singularity-image:%1\">"
-                                   "<img src=\"%1\"></a></div>")
-                        .arg(safeUrl);
-        } else {
-            body += QStringLiteral("<div class=\"file\"><a href=\"%1\">%2</a>%3</div>")
-                        .arg(safeUrl, label, humanSize(attachment.size));
+            if (attachment.isImage() && ChatView::isAllowedImageHost(QUrl(attachment.url))) {
+                // Wrapped so a click opens the big view rather than a browser.
+                html += QStringLiteral("<div class=\"attach\"><a href=\"singularity-image:%1\">"
+                                       "<img src=\"%1\"></a></div>")
+                            .arg(safeUrl);
+            } else {
+                html += QStringLiteral("<div class=\"file\"><a href=\"%1\">%2</a>%3</div>")
+                            .arg(safeUrl, label, humanSize(attachment.size));
+            }
         }
+        return html;
+    };
+
+    body += attachmentsHtml(message.attachments);
+
+    // A forward, drawn the way Discord draws it: a grey bar down the left,
+    // "Forwarded" in italics, the original's words and pictures, and where it
+    // came from underneath. The outer message is empty, so this is all of it.
+    for (const MessageInfo &snapshot : message.snapshots) {
+        QString inner = QStringLiteral("<div class=\"fwd-tag\">&#8618; <i>Forwarded</i></div>");
+        const QString words = renderContent(snapshot.content, true);
+        if (!words.isEmpty())
+            inner += QStringLiteral("<div>%1</div>").arg(words);
+        inner += attachmentsHtml(snapshot.attachments);
+        inner += stickersHtml(snapshot);
+        inner += embedsHtml(snapshot);
+
+        // Where it came from: the channel, when we know it, and when it was
+        // first sent. The channel name opens that channel.
+        QStringList origin;
+        const ChannelInfo source = m_store->channel(message.forwardedFromChannelId);
+        if (!source.id.isEmpty() && !source.isDirect() && !source.name.isEmpty()) {
+            origin << QStringLiteral("<a href=\"singularity-channel:%1\" class=\"fwd-link\">#%2</a>")
+                          .arg(source.id, source.name.toHtmlEscaped());
+        }
+        if (snapshot.timestamp.isValid()) {
+            const bool today = snapshot.timestamp.date() == QDate::currentDate();
+            origin << QLocale().toString(snapshot.timestamp, today ? QStringLiteral("h:mm AP")
+                                                                   : QStringLiteral("M/d/yy, h:mm AP"));
+        }
+        if (!origin.isEmpty())
+            inner += QStringLiteral("<div class=\"fwd-src\">%1</div>").arg(origin.join(QStringLiteral(" &#8226; ")));
+
+        body += QStringLiteral("<table class=\"fwd\" cellspacing=\"0\" cellpadding=\"0\"><tr>"
+                               "<td width=\"3\" bgcolor=\"%1\"></td>"
+                               "<td class=\"fwd-inner\">%2</td></tr></table>")
+                    .arg(QLatin1String(Theme::Border), inner);
     }
 
     body += stickersHtml(message);
@@ -5256,6 +5296,158 @@ void MainWindow::clearComposerContext()
     refreshComposerContext();
 }
 
+// Discord's Forward: a list of places with a search box, up to five ticked,
+// and an optional line of your own that goes after the forward as an
+// ordinary message.
+void MainWindow::forwardMessage(const QString &messageId)
+{
+    const QString fromChannelId = m_currentChannelId;
+    const ChannelInfo from = m_store->channel(fromChannelId);
+    if (fromChannelId.isEmpty() || messageId.isEmpty())
+        return;
+
+    struct Place
+    {
+        QString channelId;
+        QString label;
+        QString search;
+    };
+    QList<Place> places;
+
+    // Direct messages, most recent first.
+    QList<ChannelInfo> direct = m_store->directChannels();
+    std::sort(direct.begin(), direct.end(), [](const ChannelInfo &a, const ChannelInfo &b) {
+        return a.lastMessageId.size() != b.lastMessageId.size() ? a.lastMessageId.size() > b.lastMessageId.size()
+                                                                : a.lastMessageId > b.lastMessageId;
+    });
+    for (const ChannelInfo &channel : direct) {
+        QString name = channel.name;
+        if (name.isEmpty()) {
+            QStringList people;
+            for (const QString &userId : channel.recipientIds)
+                people << m_store->userName(userId);
+            people.removeAll(QString());
+            name = people.join(QStringLiteral(", "));
+        }
+        if (name.isEmpty())
+            continue;
+        places.append({channel.id, QStringLiteral("@ ") + name, name});
+    }
+
+    // Text channels, the server you are in first.
+    QList<GuildInfo> guilds = m_store->guilds();
+    std::stable_sort(guilds.begin(), guilds.end(), [&from](const GuildInfo &a, const GuildInfo &b) {
+        return (a.id == from.guildId) > (b.id == from.guildId);
+    });
+    for (const GuildInfo &guild : guilds) {
+        for (const ChannelInfo &channel : m_store->channelsOfGuild(guild.id)) {
+            if (!channel.isTextLike() || channel.isDirect() || channel.name.isEmpty())
+                continue;
+            places.append({channel.id, QStringLiteral("# %1   —   %2").arg(channel.name, guild.name),
+                           channel.name + QLatin1Char(' ') + guild.name});
+        }
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("Forward to"));
+    dialog.resize(460, 520);
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(16, 16, 16, 16);
+    layout->setSpacing(10);
+
+    auto *title = new QLabel(QStringLiteral("Forward to"), &dialog);
+    title->setStyleSheet(QStringLiteral("font-size: 18px; font-weight: 600;"));
+    layout->addWidget(title);
+
+    auto *search = new QLineEdit(&dialog);
+    search->setPlaceholderText(QStringLiteral("Search"));
+    search->setClearButtonEnabled(true);
+    layout->addWidget(search);
+
+    // A click on a row picks it and a second click lets it go, like the
+    // round tick boxes in Discord's list.
+    auto *list = new QListWidget(&dialog);
+    list->setUniformItemSizes(true);
+    list->setSelectionMode(QAbstractItemView::MultiSelection);
+    for (const Place &place : std::as_const(places)) {
+        auto *item = new QListWidgetItem(place.label, list);
+        item->setData(Qt::UserRole, place.channelId);
+        item->setData(Qt::UserRole + 1, place.search);
+    }
+    layout->addWidget(list, 1);
+
+    auto *note = new QLineEdit(&dialog);
+    note->setPlaceholderText(QStringLiteral("Add an optional message..."));
+    layout->addWidget(note);
+
+    auto *buttons = new QHBoxLayout;
+    auto *count = new QLabel(&dialog);
+    auto *cancel = new QPushButton(QStringLiteral("Cancel"), &dialog);
+    auto *send = new QPushButton(QStringLiteral("Send"), &dialog);
+    send->setObjectName(QStringLiteral("PrimaryButton"));
+    send->setEnabled(false);
+    buttons->addWidget(count, 1);
+    buttons->addWidget(cancel);
+    buttons->addWidget(send);
+    layout->addLayout(buttons);
+
+    // Discord lets one forward go to five places at most.
+    static constexpr int MostPlaces = 5;
+    const auto chosen = [list]() {
+        QStringList ids;
+        for (QListWidgetItem *item : list->selectedItems())
+            ids << item->data(Qt::UserRole).toString();
+        return ids;
+    };
+    connect(list, &QListWidget::itemSelectionChanged, &dialog, [list, count, send]() {
+        QList<QListWidgetItem *> picked = list->selectedItems();
+        if (picked.size() > MostPlaces && list->currentItem()) {
+            QSignalBlocker block(list);
+            list->currentItem()->setSelected(false);
+            picked = list->selectedItems();
+        }
+        count->setText(picked.isEmpty() ? QString()
+                                        : QStringLiteral("%1 of %2 picked").arg(picked.size()).arg(MostPlaces));
+        send->setEnabled(!picked.isEmpty());
+    });
+    connect(search, &QLineEdit::textChanged, &dialog, [list](const QString &text) {
+        for (int row = 0; row < list->count(); ++row) {
+            QListWidgetItem *item = list->item(row);
+            item->setHidden(!text.isEmpty()
+                            && !item->data(Qt::UserRole + 1).toString().contains(text, Qt::CaseInsensitive)
+                            && !item->isSelected());
+        }
+    });
+    connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
+    connect(send, &QPushButton::clicked, &dialog, &QDialog::accept);
+    search->setFocus();
+
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const QStringList targets = chosen();
+    const QString line = note->text().trimmed();
+    for (const QString &target : targets) {
+        m_rest->forwardMessage(
+            target, fromChannelId, from.guildId, messageId,
+            [this, target, line](const QJsonObject &) {
+                // The line goes after the forward, so it reads underneath it.
+                if (!line.isEmpty())
+                    m_rest->sendMessage(target, line, QString(), {}, [](const QJsonObject &) {},
+                                        [](const RestClient::Error &) {});
+            },
+            [this](const RestClient::Error &error) {
+                wlog(QStringLiteral("rest"), QStringLiteral("forward failed: HTTP %1 %2")
+                                                 .arg(error.httpStatus)
+                                                 .arg(error.message.left(160)));
+                flashStatus(QStringLiteral("Could not forward (%1).").arg(error.message.left(120)), 6000);
+            });
+    }
+    flashStatus(targets.size() == 1 ? QStringLiteral("Forwarded.")
+                                    : QStringLiteral("Forwarded to %1 places.").arg(targets.size()),
+                3000);
+}
+
 void MainWindow::beginReply(const QString &messageId)
 {
     m_editingMessageId.clear();
@@ -6239,6 +6431,9 @@ void MainWindow::showMessageMenu(const QPoint &pos)
     QMenu menu(this);
     connect(menu.addAction(QStringLiteral("Reply")), &QAction::triggered, this, [this, messageId]() {
         beginReply(messageId);
+    });
+    connect(menu.addAction(QStringLiteral("Forward")), &QAction::triggered, this, [this, messageId]() {
+        forwardMessage(messageId);
     });
     if (mine) {
         connect(menu.addAction(QStringLiteral("Edit")), &QAction::triggered, this, [this, messageId]() {
