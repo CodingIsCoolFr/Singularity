@@ -467,6 +467,9 @@ private:
     QPushButton *m_panelDeafen = nullptr;
     void setSelfMuted(bool on);
     void setSelfDeafened(bool on);
+    // Whether the microphone was muted before Deafen muted it. Undeafen puts
+    // it back to this, the way Discord does.
+    bool m_mutedBeforeDeafen = false;
     void setActivityShared(bool on);
     QSlider *m_outputVolumeSlider = nullptr;
     QSlider *m_streamVolumeSlider = nullptr;

@@ -4815,6 +4815,14 @@ void MainWindow::manageAccounts()
 
 void MainWindow::setSelfMuted(bool on)
 {
+    // Unmuting while deafened undeafens as well, as in Discord: you cannot
+    // talk to people you have chosen not to hear.
+    if (!on && m_deafenButton && m_deafenButton->isChecked()) {
+        m_mutedBeforeDeafen = false;
+        setSelfDeafened(false);
+        return;
+    }
+
     if (m_voice)
         m_voice->setMuted(on);
     if (m_muteButton && m_muteButton->isChecked() != on) {
@@ -4846,11 +4854,15 @@ void MainWindow::setSelfDeafened(bool on)
         QSignalBlocker block(m_panelDeafen);
         m_panelDeafen->setChecked(on);
     }
-    if (on)
+    // Deafen mutes too. Undeafen gives the microphone back unless it was
+    // already muted before deafening. It used to stay muted either way.
+    if (on) {
+        if (m_muteButton)
+            m_mutedBeforeDeafen = m_muteButton->isChecked();
         setSelfMuted(true);
-    else if (!m_voiceChannelId.isEmpty())
-        m_gateway->joinVoice(m_voiceGuildId, m_voiceChannelId,
-                             m_muteButton && m_muteButton->isChecked(), false);
+    } else {
+        setSelfMuted(m_mutedBeforeDeafen);
+    }
 }
 
 void MainWindow::setActivityShared(bool on)
