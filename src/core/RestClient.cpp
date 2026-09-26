@@ -100,6 +100,21 @@ void RestClient::fetchMessages(const QString &channelId, int limit, ArrayHandler
     dispatch(reply, nullptr, std::move(onOk), std::move(onError));
 }
 
+void RestClient::uploadStreamPreview(const QString &streamKey, const QByteArray &jpeg, ObjectHandler onOk,
+                                     ErrorHandler onError)
+{
+    // What the official client posts: a data URL of a JPEG, under
+    // "thumbnail". Phones and anyone not watching yet see this picture on
+    // the stream's tile; without it the tile is black.
+    const QJsonObject body{
+        {QStringLiteral("thumbnail"),
+         QStringLiteral("data:image/jpeg;base64,") + QString::fromLatin1(jpeg.toBase64())},
+    };
+    QNetworkReply *reply = m_network.post(buildRequest(QStringLiteral("/streams/%1/preview").arg(streamKey)),
+                                          QJsonDocument(body).toJson(QJsonDocument::Compact));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::forwardMessage(const QString &toChannelId, const QString &fromChannelId,
                                 const QString &fromGuildId, const QString &messageId, ObjectHandler onOk,
                                 ErrorHandler onError)

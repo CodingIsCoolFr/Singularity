@@ -416,6 +416,15 @@ private:
     QString m_myStreamToken;
     QString m_myStreamEndpoint;
 
+    // Our Go Live tile's still picture, as the official client keeps it: one
+    // a moment after the share starts, then a fresh one every five minutes
+    // (every minute after a failure). Without it phones, and anyone not yet
+    // watching, see a black tile.
+    QImage m_lastSharePicture;
+    QTimer m_streamPreviewTimer;
+    int m_streamPreviewTries = 0;
+    void uploadStreamPreview();
+
     // What the picker chose, held until the server answers.
     QString m_shareMonitorId;
     int m_shareWidth = 0;

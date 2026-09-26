@@ -414,6 +414,7 @@ private:
     quint16 m_videoSequence = 0;
     quint32 m_videoTimestamp = 0;
     bool m_sendingVideo = false;
+    QByteArray m_lastSinkWants;   // the last op 15 logged while sending
     int m_sendWidth = 0;
     int m_sendHeight = 0;
     int m_statVideoSent = 0;

@@ -37,6 +37,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QBuffer>
 #include <QCheckBox>
 #include <QClipboard>
 #include <QDragEnterEvent>
@@ -488,9 +489,13 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     // Our own tile, filled from our own capture. Nothing comes back off the
     // network for a stream we are the one sending.
     connect(m_share, &ScreenShare::preview, this, [this](const QImage &frame) {
+        m_lastSharePicture = frame;
         if (m_callView && !m_selfUserId.isEmpty())
             m_callView->setFrame(m_selfUserId, frame, CallView::Surface::Share);
     });
+
+    m_streamPreviewTimer.setSingleShot(true);
+    connect(&m_streamPreviewTimer, &QTimer::timeout, this, &MainWindow::uploadStreamPreview);
 
     connect(m_share, &ScreenShare::started, this,
             [this](int width, int height, const QString &encoder, bool hardware) {
@@ -516,6 +521,10 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
                                          ? QStringLiteral(", no sound")
                                          : QStringLiteral(", with %1").arg(m_shareSoundName)),
                             5000);
+
+                // The tile's still picture, once a few pictures exist.
+                m_streamPreviewTries = 0;
+                m_streamPreviewTimer.start(1500);
                 updateVoicePanel();
             });
 
@@ -6966,6 +6975,65 @@ void MainWindow::startScreenShare()
     updateVoicePanel();
 }
 
+// The official client's stream preview, copied: fitted inside 512 x 288, a
+// JPEG, and never a black picture - it waits for one that has something in
+// it (a game still loading, a window not drawn yet).
+void MainWindow::uploadStreamPreview()
+{
+    const QString key = m_myStreamKey;
+    if (key.isEmpty())
+        return;
+
+    const auto hasSomething = [](const QImage &image) {
+        if (image.isNull())
+            return false;
+        // Not called "small": windows.h defines that as a macro.
+        const QImage tiny = image.scaled(32, 18, Qt::IgnoreAspectRatio, Qt::FastTransformation)
+                                .convertToFormat(QImage::Format_RGB32);
+        for (int y = 0; y < tiny.height(); ++y) {
+            const QRgb *row = reinterpret_cast<const QRgb *>(tiny.constScanLine(y));
+            for (int x = 0; x < tiny.width(); ++x) {
+                if (qRed(row[x]) + qGreen(row[x]) + qBlue(row[x]) > 24)
+                    return true;
+            }
+        }
+        return false;
+    };
+
+    if (!hasSomething(m_lastSharePicture)) {
+        // Discord gives up after sixty frames; this gives it a minute.
+        if (++m_streamPreviewTries < 60)
+            m_streamPreviewTimer.start(1000);
+        else
+            m_streamPreviewTimer.start(5 * 60 * 1000);
+        return;
+    }
+
+    const QImage fitted = (m_lastSharePicture.width() <= 512 && m_lastSharePicture.height() <= 288)
+                              ? m_lastSharePicture
+                              : m_lastSharePicture.scaled(512, 288, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    QByteArray jpeg;
+    QBuffer buffer(&jpeg);
+    buffer.open(QIODevice::WriteOnly);
+    fitted.convertToFormat(QImage::Format_RGB32).save(&buffer, "JPEG", 92);
+
+    m_rest->uploadStreamPreview(
+        key, jpeg,
+        [this, key, size = jpeg.size(), w = fitted.width(), h = fitted.height()](const QJsonObject &) {
+            wlog(QStringLiteral("share"),
+                 QStringLiteral("stream preview sent: %1x%2, %3 KB").arg(w).arg(h).arg(size / 1024));
+            if (m_myStreamKey == key)
+                m_streamPreviewTimer.start(5 * 60 * 1000);
+        },
+        [this, key](const RestClient::Error &error) {
+            wlog(QStringLiteral("share"), QStringLiteral("stream preview refused: HTTP %1 %2")
+                                              .arg(error.httpStatus)
+                                              .arg(error.message.left(160)));
+            if (m_myStreamKey == key)
+                m_streamPreviewTimer.start(60 * 1000);
+        });
+}
+
 void MainWindow::stopScreenShare()
 {
     if (m_myStreamKey.isEmpty())
@@ -6983,6 +7051,8 @@ void MainWindow::stopScreenShare()
     }
 
     m_gateway->stopStream(m_myStreamKey);
+    m_streamPreviewTimer.stop();
+    m_lastSharePicture = QImage();
 
     m_myStreamKey.clear();
     m_myStreamServerId.clear();

@@ -168,6 +168,15 @@ bool VideoEncoder::tryCodec(const char *name, int width, int height, int fps, in
     // buy little on text and window edges, which is most of a shared screen.
     av_opt_set(context->priv_data, "profile", "baseline", 0);
 
+    // A keyframe asked for (a viewer's PLI) must be an IDR, with the
+    // parameter sets in front of it. Left alone, NVENC, AMF and Quick Sync
+    // answer with an ordinary intra frame: a desktop decoder starts from that
+    // anyway, but Discord's phone app (libwebrtc) only starts from an IDR, so
+    // it kept asking and never showed a picture. Encoders without the option
+    // ignore it.
+    av_opt_set_int(context->priv_data, "forced-idr", 1, 0);
+    av_opt_set_int(context->priv_data, "forced_idr", 1, 0);
+
     if (qstrcmp(name, "h264_nvenc") == 0) {
         av_opt_set(context->priv_data, "preset", "p4", 0);
         av_opt_set(context->priv_data, "tune", "ull", 0);       // ultra low latency

@@ -65,6 +65,12 @@ public:
                      const QStringList &files, ObjectHandler onOk, ErrorHandler onError,
                      const QString &stickerId = {}, const CaptchaProof &captcha = {});
 
+    // The still picture shown on our Go Live tile until someone watches it.
+    // POST /streams/{key}/preview, as the official client does at the start
+    // and then every five minutes.
+    void uploadStreamPreview(const QString &streamKey, const QByteArray &jpeg, ObjectHandler onOk,
+                             ErrorHandler onError);
+
     // Forwards a message into another channel, as Discord's Forward does.
     void forwardMessage(const QString &toChannelId, const QString &fromChannelId, const QString &fromGuildId,
                         const QString &messageId, ObjectHandler onOk, ErrorHandler onError);

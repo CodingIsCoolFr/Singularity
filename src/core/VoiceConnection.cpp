@@ -879,6 +879,18 @@ void VoiceConnection::onTextMessage(const QString &message)
     if (op != OpHeartbeatAck)
         wlog(QStringLiteral("voice"), QStringLiteral("received op %1").arg(op));
 
+    // While we are the one sending pictures, what the server says viewers
+    // want of them, word for word and only when it changes. This is how a
+    // viewer who gets nothing (a phone asking for a smaller layer than the
+    // one we send) shows up in our own log.
+    if (op == OpMediaSinkWants && m_sendingVideo) {
+        const QByteArray wants = QJsonDocument(data).toJson(QJsonDocument::Compact);
+        if (wants != m_lastSinkWants) {
+            m_lastSinkWants = wants;
+            wlog(QStringLiteral("share"), QStringLiteral("viewers want: %1").arg(QString::fromUtf8(wants.left(400))));
+        }
+    }
+
     switch (op) {
     case OpHello: {
         const int interval = data.value(QStringLiteral("heartbeat_interval")).toInt(13750);
