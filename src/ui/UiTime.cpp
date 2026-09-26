@@ -102,13 +102,15 @@ bool SingularityApplication::notify(QObject *receiver, QEvent *event)
     if (!receiver || !event || QThread::currentThread() != thread())
         return QApplication::notify(receiver, event);
 
-    s_stack.append({uiClock().nsecsElapsed(), 0});
-    const bool handled = QApplication::notify(receiver, event);
-    const Frame frame = s_stack.takeLast();
-    const qint64 total = uiClock().nsecsElapsed() - frame.start;
-    if (!s_stack.isEmpty())
-        s_stack.last().inside += total;
+    // A deletion is not timed at all: the receiver is gone when it returns.
+    if (event->type() == QEvent::DeferredDelete)
+        return QApplication::notify(receiver, event);
 
+    // Worked out BEFORE the event is delivered, and nothing about the
+    // receiver or the event is touched afterwards. Handling an event can
+    // delete the object it was sent to (or its parent), and asking a deleted
+    // object for its metaObject() afterwards was an access violation in
+    // Qt6Core - the crash of 26 September 2026, 13:14:59, in 0.8.17-0.8.21.
     Key key;
     key.event = int(event->type());
     const QObject *owner = receiver;
@@ -117,6 +119,14 @@ bool SingularityApplication::notify(QObject *receiver, QEvent *event)
         key.timer = true;
     }
     key.type = owner->metaObject();
+
+    s_stack.append({uiClock().nsecsElapsed(), 0});
+    const bool handled = QApplication::notify(receiver, event);
+    const Frame frame = s_stack.takeLast();
+    const qint64 total = uiClock().nsecsElapsed() - frame.start;
+    if (!s_stack.isEmpty())
+        s_stack.last().inside += total;
+
     s_spent[key] += total - frame.inside;
     return handled;
 }
