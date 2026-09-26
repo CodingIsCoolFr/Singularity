@@ -374,6 +374,8 @@ public:
     // CHANNEL_DELETE, and closing a direct message. Returns false when the
     // channel was already gone, so a second notice does not rebuild the list.
     bool forgetChannel(const QString &channelId);
+    // A server we left or were removed from (GUILD_DELETE), and its channels.
+    bool forgetGuild(const QString &guildId);
 
     void setHistory(const QString &channelId, const QJsonArray &rawMessages);
 

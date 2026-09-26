@@ -137,6 +137,15 @@ private:
     // "Read All" above the rail: every unread chat marked read in one go.
     void readAll();
 
+    // The server menu under the server's name, as in Discord: Mark As Read,
+    // Copy Server ID, Leave Server.
+    void showGuildMenu(const QPoint &globalPos);
+    void markGuildRead(const QString &guildId);
+    // Asks first, then leaves. guildGone tidies up after a leave, a kick or a
+    // ban (GUILD_DELETE without "unavailable").
+    void leaveGuild(const QString &guildId);
+    void guildGone(const QString &guildId);
+
     void showJoinServerDialog(const QString &prefill = {});
     void requestInvite(const QString &code);
     void redrawInviteWaiters(const QString &code);

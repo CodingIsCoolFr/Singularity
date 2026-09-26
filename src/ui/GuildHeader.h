@@ -30,10 +30,22 @@ public:
     // its own.
     static int boostGoal(const GuildInfo &guild);
 
+signals:
+    // The server's name was clicked: Discord opens its server menu there.
+    // `globalPos` is just under the name row.
+    void menuRequested(const QPoint &globalPos);
+
 protected:
     void paintEvent(QPaintEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
+    void leaveEvent(QEvent *event) override;
 
 private:
+    bool overTitle(const QPoint &pos) const;
+    bool m_isGuild = false;
+    bool m_hoverTitle = false;
+
     int bannerHeight() const;
     int boostRowHeight() const;
 

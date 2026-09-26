@@ -5,6 +5,7 @@
 #include "ui/Theme.h"
 
 #include <QLinearGradient>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 
@@ -27,6 +28,7 @@ GuildHeader::GuildHeader(QWidget *parent)
 {
     setObjectName(QStringLiteral("SidebarHeader"));
     setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    setMouseTracking(true);
 
     // The banner arrives after the header is drawn; draw again when it does.
     connect(&MediaCache::instance(), &MediaCache::ready, this, [this](const QUrl &url) {
@@ -70,8 +72,44 @@ int GuildHeader::boostGoal(const GuildInfo &guild)
     return goal;
 }
 
+bool GuildHeader::overTitle(const QPoint &pos) const
+{
+    return m_isGuild && pos.y() >= 0 && pos.y() < TitleRow;
+}
+
+void GuildHeader::mouseMoveEvent(QMouseEvent *event)
+{
+    const bool over = overTitle(event->position().toPoint());
+    if (over != m_hoverTitle) {
+        m_hoverTitle = over;
+        setCursor(over ? Qt::PointingHandCursor : Qt::ArrowCursor);
+        update(0, 0, width(), TitleRow);
+    }
+    QWidget::mouseMoveEvent(event);
+}
+
+void GuildHeader::leaveEvent(QEvent *event)
+{
+    if (m_hoverTitle) {
+        m_hoverTitle = false;
+        unsetCursor();
+        update(0, 0, width(), TitleRow);
+    }
+    QWidget::leaveEvent(event);
+}
+
+void GuildHeader::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton && overTitle(event->position().toPoint())) {
+        emit menuRequested(mapToGlobal(QPoint(Side / 2, TitleRow - 4)));
+        return;
+    }
+    QWidget::mouseReleaseEvent(event);
+}
+
 void GuildHeader::setDirectMessages()
 {
+    m_isGuild = false;
     m_title = QStringLiteral("Direct messages");
     m_bannerUrl.clear();
     m_banner = QImage();
@@ -82,6 +120,7 @@ void GuildHeader::setDirectMessages()
 
 void GuildHeader::setGuild(const GuildInfo &guild)
 {
+    m_isGuild = true;
     m_title = guild.name;
     m_bannerUrl = MediaCache::bannerUrl(guild.id, guild.bannerHash, 480);
     m_banner = m_bannerUrl.isEmpty() ? QImage() : MediaCache::instance().image(m_bannerUrl);
@@ -142,15 +181,31 @@ void GuildHeader::paintEvent(QPaintEvent *)
         p.fillRect(area, shade);
     }
 
-    // The server's name, over the banner or on its own row.
+    // The server's name, over the banner or on its own row. On a server it is
+    // a button, as in Discord: a faint wash on hover and a chevron at the end.
+    if (m_isGuild && m_hoverTitle)
+        p.fillRect(QRect(0, 0, w, TitleRow), QColor(255, 255, 255, 18));
+
     QFont title = font();
     title.setPixelSize(15);
     title.setWeight(QFont::DemiBold);
     p.setFont(title);
     p.setPen(QColor(Theme::TextPrimary));
-    const QRect titleBox(Side, 0, w - 2 * Side, TitleRow);
+    constexpr int Chevron = 10;
+    const QRect titleBox(Side, 0, w - 2 * Side - (m_isGuild ? Chevron + 8 : 0), TitleRow);
     p.drawText(titleBox, Qt::AlignLeft | Qt::AlignVCenter,
                p.fontMetrics().elidedText(m_title, Qt::ElideRight, titleBox.width()));
+
+    if (m_isGuild) {
+        const QPointF mid(w - Side - Chevron / 2.0, TitleRow / 2.0 + 1);
+        QPainterPath chevron;
+        chevron.moveTo(mid.x() - Chevron / 2.0, mid.y() - 2.5);
+        chevron.lineTo(mid.x(), mid.y() + 2.5);
+        chevron.lineTo(mid.x() + Chevron / 2.0, mid.y() - 2.5);
+        p.setPen(QPen(QColor(Theme::TextPrimary), 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        p.drawPath(chevron);
+    }
 
     if (!m_showBoosts)
         return;

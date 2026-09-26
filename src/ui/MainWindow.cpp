@@ -1263,6 +1263,7 @@ QWidget *MainWindow::buildSidebar(QWidget *parent)
 
     m_sidebarHeader = new GuildHeader(sidebar);
     m_sidebarHeader->setDirectMessages();
+    connect(m_sidebarHeader, &GuildHeader::menuRequested, this, &MainWindow::showGuildMenu);
     layout->addWidget(m_sidebarHeader);
 
     m_channelList = new QListWidget(sidebar);
@@ -2091,6 +2092,14 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
         // Fall through: anything else that wants member updates still gets it.
     }
 
+    // Left, kicked or banned - from here or any other device. "unavailable"
+    // means an outage instead, and the server comes back by itself.
+    if (eventType == QLatin1String("GUILD_DELETE")) {
+        if (!data.value(QStringLiteral("unavailable")).toBool())
+            guildGone(data.value(QStringLiteral("id")).toString());
+        return;
+    }
+
     if (eventType == QLatin1String("GUILD_CREATE")) {
         const QString guildId = data.value(QStringLiteral("id")).toString();
         m_notifyRules.applyGuild(data);
@@ -2699,16 +2708,59 @@ void MainWindow::showRailMenu(const QPoint &where)
             continue;
         if (!moveTo)
             moveTo = menu.addMenu(QStringLiteral("Move to folder"));
-        moveTargets.insert(moveTo->addAction(entry.folder.name), entry.folder.id);
+
+        // Most folders made in Discord have no name, and Discord shows those
+        // by the servers in them. An empty name here was a blank line, which
+        // is why the list looked empty.
+        QString label = entry.folder.name.trimmed();
+        if (label.isEmpty()) {
+            QStringList names;
+            for (const QString &guildId : entry.folder.guildIds) {
+                const QString name = m_store->guild(guildId).name;
+                if (!name.isEmpty())
+                    names << name;
+                if (names.size() == 3)
+                    break;
+            }
+            label = names.isEmpty() ? QStringLiteral("Folder") : names.join(QStringLiteral(", "));
+            if (entry.folder.guildIds.size() > names.size() && !names.isEmpty())
+                label += QStringLiteral(" and %1 more").arg(entry.folder.guildIds.size() - names.size());
+        }
+        QAction *target = moveTo->addAction(QFontMetrics(moveTo->font()).elidedText(label, Qt::ElideRight, 320));
+        target->setToolTip(label);
+        moveTargets.insert(target, entry.folder.id);
     }
 
     QAction *takeOut = nullptr;
     if (!inFolder.isEmpty())
         takeOut = menu.addAction(QStringLiteral("Take out of folder"));
 
+    menu.addSeparator();
+    QAction *markRead = menu.addAction(QStringLiteral("Mark As Read"));
+    markRead->setEnabled(m_store->guildHasUnread(id));
+    QAction *copyId = menu.addAction(QStringLiteral("Copy Server ID"));
+    QAction *leave = nullptr;
+    if (m_store->guild(id).ownerId != m_selfUserId) {
+        menu.addSeparator();
+        leave = menu.addAction(QStringLiteral("Leave Server"));
+    }
+
     QAction *chosen = menu.exec(m_guildRail->mapToGlobal(where));
     if (!chosen)
         return;
+
+    if (chosen == markRead) {
+        markGuildRead(id);
+        return;
+    }
+    if (chosen == copyId) {
+        QApplication::clipboard()->setText(id);
+        return;
+    }
+    if (chosen == leave) {
+        leaveGuild(id);
+        return;
+    }
 
     if (chosen == newFolder) {
         bool ok = false;
@@ -6591,6 +6643,116 @@ void MainWindow::readAll()
     }
     wlog(QStringLiteral("ui"), QStringLiteral("Read All: %1 chats marked read").arg(unread.size()));
     flashStatus(QStringLiteral("Marked %1 chats as read.").arg(unread.size()), 4000);
+}
+
+void MainWindow::markGuildRead(const QString &guildId)
+{
+    QList<QPair<QString, QString>> unread;
+    for (const auto &pair : m_store->unreadChannels()) {
+        if (m_store->channel(pair.first).guildId == guildId)
+            unread.append(pair);
+    }
+    if (unread.isEmpty()) {
+        flashStatus(QStringLiteral("Nothing here is unread."), 3000);
+        return;
+    }
+    for (const auto &pair : std::as_const(unread))
+        m_store->markChannelRead(pair.first, pair.second);
+    for (int from = 0; from < unread.size(); from += 100) {
+        m_rest->ackBulk(unread.mid(from, 100), [](const QJsonObject &) {},
+                        [this](const RestClient::Error &error) {
+                            wlog(QStringLiteral("ui"), QStringLiteral("Mark as read refused: HTTP %1 %2")
+                                                           .arg(error.httpStatus)
+                                                           .arg(error.message));
+                        });
+    }
+    refreshUnreadMarks();
+}
+
+void MainWindow::showGuildMenu(const QPoint &globalPos)
+{
+    const QString guildId = m_currentGuildId;
+    const GuildInfo guild = m_store->guild(guildId);
+    if (guild.id.isEmpty())
+        return;
+
+    QMenu menu(this);
+    QAction *markRead = menu.addAction(QStringLiteral("Mark As Read"));
+    markRead->setEnabled(m_store->guildHasUnread(guildId));
+    QAction *copyId = menu.addAction(QStringLiteral("Copy Server ID"));
+    QAction *leave = nullptr;
+    if (guild.ownerId != m_selfUserId) {
+        menu.addSeparator();
+        leave = menu.addAction(QStringLiteral("Leave Server"));
+    }
+
+    QAction *chosen = menu.exec(globalPos);
+    if (!chosen)
+        return;
+    if (chosen == markRead)
+        markGuildRead(guildId);
+    else if (chosen == copyId)
+        QApplication::clipboard()->setText(guildId);
+    else if (chosen == leave)
+        leaveGuild(guildId);
+}
+
+void MainWindow::leaveGuild(const QString &guildId)
+{
+    const GuildInfo guild = m_store->guild(guildId);
+    if (guild.id.isEmpty())
+        return;
+
+    // Discord will not let the owner leave; ownership has to go first.
+    if (guild.ownerId == m_selfUserId) {
+        QMessageBox::information(this, QStringLiteral("Leave Server"),
+                                 QStringLiteral("You own %1. Transfer ownership or delete the server in "
+                                                "Discord before leaving it.")
+                                     .arg(guild.name));
+        return;
+    }
+
+    // Discord's own wording.
+    QMessageBox ask(QMessageBox::Warning, QStringLiteral("Leave '%1'").arg(guild.name),
+                    QStringLiteral("Are you sure you want to leave %1? You won't be able to rejoin this "
+                                   "server unless you are re-invited.")
+                        .arg(guild.name),
+                    QMessageBox::NoButton, this);
+    QPushButton *confirm = ask.addButton(QStringLiteral("Leave Server"), QMessageBox::DestructiveRole);
+    ask.addButton(QStringLiteral("Cancel"), QMessageBox::RejectRole);
+    ask.exec();
+    if (ask.clickedButton() != confirm)
+        return;
+
+    if (guildId == m_voiceGuildId)
+        leaveVoice();
+
+    const QString name = guild.name;
+    m_rest->leaveGuild(
+        guildId,
+        [this, guildId, name](const QJsonObject &) {
+            wlog(QStringLiteral("ui"), QStringLiteral("left server %1").arg(guildId));
+            guildGone(guildId);
+            flashStatus(QStringLiteral("You left %1.").arg(name), 4000);
+        },
+        [this](const RestClient::Error &error) {
+            wlog(QStringLiteral("ui"), QStringLiteral("leaving a server failed: HTTP %1 %2")
+                                           .arg(error.httpStatus)
+                                           .arg(error.message.left(160)));
+            flashStatus(QStringLiteral("Could not leave the server (%1).").arg(error.message.left(120)), 6000);
+        });
+}
+
+void MainWindow::guildGone(const QString &guildId)
+{
+    if (!m_store->forgetGuild(guildId))
+        return;
+    const bool wasOpen = guildId == m_currentGuildId;
+    m_rebuildingRail = true;
+    populateGuildRail();
+    m_rebuildingRail = false;
+    if (wasOpen && m_guildRail->count() > 0)
+        m_guildRail->setCurrentRow(0);   // back to direct messages
 }
 
 void MainWindow::refreshUnreadMarks()

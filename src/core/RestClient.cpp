@@ -100,6 +100,15 @@ void RestClient::fetchMessages(const QString &channelId, int limit, ArrayHandler
     dispatch(reply, nullptr, std::move(onOk), std::move(onError));
 }
 
+void RestClient::leaveGuild(const QString &guildId, ObjectHandler onOk, ErrorHandler onError)
+{
+    // The official client's Leave Server: DELETE with {"lurking": false}.
+    QNetworkReply *reply = m_network.sendCustomRequest(
+        buildRequest(QStringLiteral("/users/@me/guilds/%1").arg(guildId)), QByteArrayLiteral("DELETE"),
+        QJsonDocument(QJsonObject{{QStringLiteral("lurking"), false}}).toJson(QJsonDocument::Compact));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::uploadStreamPreview(const QString &streamKey, const QByteArray &jpeg, ObjectHandler onOk,
                                      ErrorHandler onError)
 {

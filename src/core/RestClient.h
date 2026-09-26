@@ -65,6 +65,9 @@ public:
                      const QStringList &files, ObjectHandler onOk, ErrorHandler onError,
                      const QString &stickerId = {}, const CaptchaProof &captcha = {});
 
+    // Leave Server. Discord then sends GUILD_DELETE to every session.
+    void leaveGuild(const QString &guildId, ObjectHandler onOk, ErrorHandler onError);
+
     // The still picture shown on our Go Live tile until someone watches it.
     // POST /streams/{key}/preview, as the official client does at the start
     // and then every five minutes.
