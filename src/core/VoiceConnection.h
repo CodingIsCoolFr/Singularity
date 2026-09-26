@@ -136,7 +136,9 @@ public:
     // Used on the second connection that a Go Live stream runs over. Calling
     // this tells the server we have pictures to send and what size they are;
     // after it, every call to sendPicture() puts one on the wire.
-    void startSendingVideo(int width, int height);
+    // `fps` and `bitrate` are what the encoder really runs at; the Video
+    // payload tells the server so, as Discord's client does.
+    void startSendingVideo(int width, int height, int fps = 30, int bitrate = 2500000);
     void stopSendingVideo();
     bool isSendingVideo() const { return m_publicSending.load(); }
 
@@ -415,6 +417,8 @@ private:
     quint32 m_videoTimestamp = 0;
     bool m_sendingVideo = false;
     QByteArray m_lastSinkWants;   // the last op 15 logged while sending
+    int m_sendFps = 30;
+    int m_sendBitrate = 2500000;
     int m_sendWidth = 0;
     int m_sendHeight = 0;
     int m_statVideoSent = 0;

@@ -161,11 +161,12 @@ QByteArray buildVideoRtpHeader(quint16 sequence, quint32 timestamp, quint32 ssrc
 //   7  whether this is a camera or a screen. One means a screen. A client
 //      that only has this byte to go on will otherwise not show the share.
 //   11 which quality layer, the text "100", the only layer we send, and the
-//      same name used when the stream was offered
+//      same name used when the stream was offered. A resent packet names it
+//      under 12 instead, "repaired stream id", as WebRTC and Discord do.
 //
 // Thirteen bytes of elements, padded with zeros out to four 32-bit words,
 // which is what the length in the preamble counts.
-QByteArray videoExtensionBody(quint16 sequence, bool screen)
+QByteArray videoExtensionBody(quint16 sequence, bool screen, bool resent = false)
 {
     QByteArray body;
     body.reserve(16);
@@ -182,7 +183,7 @@ QByteArray videoExtensionBody(quint16 sequence, bool screen)
     body.append(static_cast<char>(0x70));   // id 7, one byte
     body.append(static_cast<char>(screen ? 1 : 0));
 
-    body.append(static_cast<char>(0xB2));   // id 11, three bytes
+    body.append(static_cast<char>(resent ? 0xC2 : 0xB2));   // id 12 or 11, three bytes
     body.append('1');
     body.append('0');
     body.append('0');
@@ -782,20 +783,21 @@ void VoiceConnection::sendIdentify()
              .arg(m_guildId, m_userId, m_sessionId)
              .arg(m_token.size()));
 
-    // The layers we are willing to be sent. Naming a full quality one and a
-    // half quality one lets the server drop us to the smaller picture when the
-    // connection cannot carry the larger, rather than sending nothing.
+    // The layers we will send, and only those. Discord's client
+    // (MediaEngineStore.getVideoStreamParameters) offers rid "100", typed
+    // `screen` on a Go Live connection and `video` otherwise, and adds a
+    // half-size rid "50" only when it really encodes one (camera simulcast).
     //
-    // A Go Live viewer offers `screen` rather than `video`; the server still
-    // answers with `video` as the actual media type.
+    // We used to offer "50" as well and never send it. The server then
+    // believed a small layer existed and gave it to everyone who asked for a
+    // small picture - a camera in a grid of tiles, a phone - and they got
+    // nothing: a black tile, while a viewer asking for full size (us) saw it
+    // fine. That was "I can see his camera and nobody else can" (2026-09-26).
     const QString streamType = m_viewerOnly ? QStringLiteral("screen") : QStringLiteral("video");
     QJsonArray streams;
     streams.append(QJsonObject{{QStringLiteral("type"), streamType},
                                {QStringLiteral("rid"), QStringLiteral("100")},
                                {QStringLiteral("quality"), 100}});
-    streams.append(QJsonObject{{QStringLiteral("type"), streamType},
-                               {QStringLiteral("rid"), QStringLiteral("50")},
-                               {QStringLiteral("quality"), 50}});
 
     sendJson(QJsonObject{
         {QStringLiteral("op"), OpIdentify},
@@ -2842,8 +2844,8 @@ void VoiceConnection::sendVideoState()
             {QStringLiteral("active"), true},
             {QStringLiteral("quality"), 100},
             {QStringLiteral("rtx_ssrc"), static_cast<qint64>(m_rtxSsrc)},
-            {QStringLiteral("max_bitrate"), 2500000},
-            {QStringLiteral("max_framerate"), 30},
+            {QStringLiteral("max_bitrate"), m_sendBitrate},
+            {QStringLiteral("max_framerate"), m_sendFps},
             {QStringLiteral("max_resolution"),
              QJsonObject{{QStringLiteral("type"), QStringLiteral("fixed")},
                          {QStringLiteral("width"), m_sendWidth},
@@ -2869,10 +2871,12 @@ void VoiceConnection::sendVideoState()
 // Sending a picture
 // ---------------------------------------------------------------------------
 
-void VoiceConnection::startSendingVideo(int width, int height)
+void VoiceConnection::startSendingVideo(int width, int height, int fps, int bitrate)
 {
-    if (postToOwnThread([this, width, height]() { startSendingVideo(width, height); }))
+    if (postToOwnThread([this, width, height, fps, bitrate]() { startSendingVideo(width, height, fps, bitrate); }))
         return;
+    m_sendFps = qBound(1, fps, 60);
+    m_sendBitrate = qMax(100000, bitrate);
 
     if (m_ssrc == 0) {
         wlog(QStringLiteral("share"),
@@ -3122,7 +3126,7 @@ void VoiceConnection::resendVideo(const QList<quint16> &sequences)
         QByteArray clear = header;
         clear.append(videoExtensionPreamble());
 
-        QByteArray body = videoExtensionBody(++m_transportSequence, m_viewerOnly);
+        QByteArray body = videoExtensionBody(++m_transportSequence, m_viewerOnly, true);
         body.append(static_cast<char>(seq >> 8));
         body.append(static_cast<char>(seq & 0xFF));
         body.append(kept.payload);

@@ -504,7 +504,7 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
                          .arg(encoder, hardware ? QStringLiteral("hardware")
                                                 : QStringLiteral("software")));
                 if (m_shareVoice)
-                    m_shareVoice->startSendingVideo(width, height);
+                    m_shareVoice->startSendingVideo(width, height, m_shareFps, m_shareBitrate);
 
                 // Sound starts with the picture, once the stream connection
                 // holds its keys, so nothing piles up waiting for them.
@@ -561,8 +561,9 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
             [voice = m_voice](const QList<QByteArray> &units, bool) { voice->sendPicture(units); });
     connect(m_camera, &CameraShare::started, this, [this](int width, int height, const QString &encoder) {
         wlog(QStringLiteral("camera"), QStringLiteral("encoding with %1").arg(encoder));
+        // The camera runs at 20 pictures a second and 1.5 Mbit (CameraShare).
         if (m_voice)
-            m_voice->startSendingVideo(width, height);
+            m_voice->startSendingVideo(width, height, 20, 1500000);
         m_gateway->setSelfVideo(true);
         flashStatus(QStringLiteral("Camera on — %1x%2").arg(width).arg(height), 4000);
         updateVoicePanel();
