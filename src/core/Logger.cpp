@@ -8,6 +8,23 @@
 namespace {
 constexpr int MaxHistoryLines = 2000;
 bool g_sideFile = false;
+
+// The last five runs are kept: singularity.prev.log is the one before this,
+// then prev2 up to prev5. Keeping only one lost a crash on 26 September
+// 2026: the copy that crashed was followed by a launch that only handed over
+// to a newer version, and that launch's few lines pushed the crash's log out.
+void keepPreviousLogs(const QString &dir, const QString &current)
+{
+    constexpr int Kept = 5;
+    const auto name = [&dir](int n) {
+        return dir + (n == 1 ? QStringLiteral("/singularity.prev.log")
+                             : QStringLiteral("/singularity.prev%1.log").arg(n));
+    };
+    QFile::remove(name(Kept));
+    for (int n = Kept - 1; n >= 1; --n)
+        QFile::rename(name(n), name(n + 1));
+    QFile::rename(current, name(1));
+}
 }
 
 void Logger::useSideFile()
@@ -26,11 +43,8 @@ Logger::Logger()
     // The last run's log is kept as singularity.prev.log. After a crash the
     // program is usually started again at once, and truncating would wipe
     // the only record of what went wrong.
-    const QString previous = dir + QStringLiteral("/singularity.prev.log");
-    if (!g_sideFile && QFileInfo(path).size() > 0) {
-        QFile::remove(previous);
-        QFile::rename(path, previous);
-    }
+    if (!g_sideFile && QFileInfo(path).size() > 0)
+        keepPreviousLogs(dir, path);
 
     m_file.setFileName(path);
     // Truncate on every start so the file always describes this run.
@@ -103,16 +117,12 @@ void Logger::claimMainFile()
     const QString side = m_file.fileName();
     const QString dir = QFileInfo(side).absolutePath();
     const QString path = dir + QStringLiteral("/singularity.log");
-    const QString previous = dir + QStringLiteral("/singularity.prev.log");
-
     m_stream.flush();
     m_file.close();
     QFile::remove(side);
 
-    if (QFileInfo(path).size() > 0) {
-        QFile::remove(previous);
-        QFile::rename(path, previous);
-    }
+    if (QFileInfo(path).size() > 0)
+        keepPreviousLogs(dir, path);
 
     m_file.setFileName(path);
     if (m_file.open(QIODevice::WriteOnly | QIODevice::Text)) {
