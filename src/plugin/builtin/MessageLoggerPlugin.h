@@ -4,8 +4,8 @@
 
 #include <QSet>
 
-// Keeps deleted messages on screen instead of letting them vanish, and marks
-// edited messages so you can see something changed.
+// Keeps deleted messages on screen instead of letting them vanish, and tags
+// them so you can see they are gone.
 class MessageLoggerPlugin : public Plugin
 {
 public:
@@ -13,7 +13,7 @@ public:
     QString name() const override { return QStringLiteral("Message logger"); }
     QString description() const override
     {
-        return QStringLiteral("Keeps deleted messages visible and tags edited ones.");
+        return QStringLiteral("Keeps deleted messages visible and tags them.");
     }
     bool enabledByDefault() const override { return true; }
 
@@ -21,7 +21,7 @@ public:
     void onGatewayEvent(const QString &eventType, const QJsonObject &data) override;
     bool onBeforeMessageDelete(const QString &channelId, const QString &messageId) override;
     QString decorateMessageHeader(const MessageInfo &message) override;
-    // Deleted and edited tags matter just as much on a grouped row.
+    // The deleted tag matters just as much on a grouped row.
     QString decorateMessageGutter(const MessageInfo &message) override
     {
         return decorateMessageHeader(message);

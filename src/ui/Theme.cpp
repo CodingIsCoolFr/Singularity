@@ -923,7 +923,8 @@ a.namelink { color: @lightGray; text-decoration: none; }
 }
 
 /* The strip left of a grouped message. */
-td.gut { padding-right: 6px; }
+/* The small time sits level with the first line of text beside it. */
+td.gut { padding-right: 6px; padding-top: 4px; }
 .gutter {
     color: @faint;
     font-family: "Poppins", "Segoe UI", sans-serif;

@@ -4221,6 +4221,11 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
     // Body -----------------------------------------------------------------
     QString body = renderContent(message.content, true);
 
+    // Discord writes "(edited)" small and faint straight after the words, not
+    // beside the name or the time.
+    if (message.edited && !body.isEmpty())
+        body += QStringLiteral("&#160;<span class=\"tag-edited\">(edited)</span>");
+
     const auto attachmentsHtml = [](const QList<Attachment> &attachments) {
         QString html;
         for (const Attachment &attachment : attachments) {
@@ -4295,7 +4300,7 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
     if (grouped) {
         return QStringLiteral(
                    "<table class=\"row\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\">"
-                   "<tr><td width=\"56\" valign=\"top\" class=\"gut\">%1</td>"
+                   "<tr><td width=\"56\" valign=\"top\" nowrap class=\"gut\">%1</td>"
                    "<td valign=\"top\"><div class=\"%2\">%3</div></td></tr></table>")
             .arg(m_plugins->runDecorateGutter(message), bodyClass, body);
     }
@@ -6857,6 +6862,28 @@ void MainWindow::showMessageMenu(const QPoint &pos)
     const ChannelInfo channel = m_store->channel(m_currentChannelId);
 
     QMenu menu(this);
+
+    // Discord puts the link under the pointer first: Copy Link and Open Link
+    // for a web link, Copy Image Link for a picture. The message's own link
+    // is a different thing and keeps its own name further down.
+    const QString anchor = m_messageView->anchorAt(pos);
+    QString pointedUrl;
+    bool pointedImage = false;
+    if (anchor.startsWith(QLatin1String("http://")) || anchor.startsWith(QLatin1String("https://"))) {
+        pointedUrl = anchor;
+    } else if (anchor.startsWith(QLatin1String("singularity-image:"))) {
+        pointedUrl = anchor.mid(int(qstrlen("singularity-image:")));
+        pointedImage = true;
+    }
+    if (!pointedUrl.isEmpty()) {
+        connect(menu.addAction(pointedImage ? QStringLiteral("Copy Image Link") : QStringLiteral("Copy Link")),
+                &QAction::triggered, this, [pointedUrl]() { QApplication::clipboard()->setText(pointedUrl); });
+        connect(menu.addAction(pointedImage ? QStringLiteral("Open Image in Browser")
+                                            : QStringLiteral("Open Link")),
+                &QAction::triggered, this, [pointedUrl]() { QDesktopServices::openUrl(QUrl(pointedUrl)); });
+        menu.addSeparator();
+    }
+
     connect(menu.addAction(QStringLiteral("Reply")), &QAction::triggered, this, [this, messageId]() {
         beginReply(messageId);
     });
@@ -6885,8 +6912,43 @@ void MainWindow::showMessageMenu(const QPoint &pos)
     const QString link = channel.guildId.isEmpty()
         ? QStringLiteral("https://discord.com/channels/@me/%1/%2").arg(channel.id, message.id)
         : QStringLiteral("https://discord.com/channels/%1/%2/%3").arg(channel.guildId, channel.id, message.id);
-    connect(menu.addAction(QStringLiteral("Copy link")), &QAction::triggered, this, [link]() {
+    connect(menu.addAction(QStringLiteral("Copy Message Link")), &QAction::triggered, this, [link]() {
         QApplication::clipboard()->setText(link);
+    });
+
+    // Right-clicking beside a link rather than on it still offers it. One
+    // link gets a plain entry; several get a list to pick from.
+    if (pointedUrl.isEmpty()) {
+        static const QRegularExpression webLink(QStringLiteral(R"(https?://[^\s<>]+)"));
+        QStringList urls;
+        auto it = webLink.globalMatch(message.content);
+        while (it.hasNext()) {
+            QString url = it.next().captured(0);
+            // Punctuation after a link belongs to the sentence, not the link.
+            while (!url.isEmpty() && QStringLiteral(".,;:!?)]'\"*_~|").contains(url.back())
+                   && !(url.back() == QLatin1Char(')') && url.count(QLatin1Char('(')) >= url.count(QLatin1Char(')'))))
+                url.chop(1);
+            if (!url.isEmpty() && !urls.contains(url))
+                urls.append(url);
+        }
+        const auto shortName = [](const QString &url) {
+            return url.size() > 60 ? url.left(57) + QStringLiteral("...") : url;
+        };
+        if (urls.size() == 1) {
+            const QString url = urls.first();
+            connect(menu.addAction(QStringLiteral("Copy Link")), &QAction::triggered, this,
+                    [url]() { QApplication::clipboard()->setText(url); });
+        } else if (urls.size() > 1) {
+            QMenu *copyLinks = menu.addMenu(QStringLiteral("Copy Link"));
+            for (const QString &url : urls) {
+                connect(copyLinks->addAction(shortName(url)), &QAction::triggered, this,
+                        [url]() { QApplication::clipboard()->setText(url); });
+            }
+        }
+    }
+
+    connect(menu.addAction(QStringLiteral("Copy Message ID")), &QAction::triggered, this, [messageId]() {
+        QApplication::clipboard()->setText(messageId);
     });
 
     QMenu *react = menu.addMenu(QStringLiteral("Add reaction"));

@@ -231,8 +231,13 @@ QString PluginHost::runDecorateGutter(const MessageInfo &message)
         if (!entry->enabled)
             continue;
         const QString part = entry->plugin->decorateMessageGutter(message);
-        if (!part.isEmpty())
-            result += part;
+        if (part.isEmpty())
+            continue;
+        // The strip is narrow, so each tag gets its own line. Run together
+        // they read as one word: "3:12 PMdeleted".
+        if (!result.isEmpty())
+            result += QStringLiteral("<br>");
+        result += part;
     }
     return result;
 }

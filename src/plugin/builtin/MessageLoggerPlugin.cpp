@@ -39,10 +39,9 @@ bool MessageLoggerPlugin::onBeforeMessageDelete(const QString &channelId, const 
 
 QString MessageLoggerPlugin::decorateMessageHeader(const MessageInfo &message)
 {
-    QString result;
+    // "(edited)" is drawn by the message itself now, after the words, the way
+    // Discord does it. Only the deleted tag is this plugin's.
     if (message.deleted || m_deletedIds.contains(message.id))
-        result += QStringLiteral("<span class=\"tag-deleted\">deleted</span>");
-    if (message.edited)
-        result += QStringLiteral("<span class=\"tag-edited\">edited</span>");
-    return result;
+        return QStringLiteral("<span class=\"tag-deleted\">deleted</span>");
+    return {};
 }
