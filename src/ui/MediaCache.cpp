@@ -20,6 +20,13 @@ const QStringList kAllowedSuffixes{
     QStringLiteral(".discordapp.com"),
     QStringLiteral(".discordapp.net"),
     QStringLiteral(".tenor.com"),
+    // Discord's GIF picker moved from Tenor to Klipy. Its client trusts these
+    // for GIF pictures (media.tenor.com, media.tenor.co, c.tenor.com,
+    // static.klipy.com, media.giphy.com, i.giphy.com); without them every
+    // tile in the GIF tab stayed empty and nothing said why.
+    QStringLiteral(".tenor.co"),
+    QStringLiteral(".klipy.com"),
+    QStringLiteral(".giphy.com"),
     // Album art for a listening activity. Discord hands the key as "spotify:".
     QStringLiteral(".scdn.co"),
     // The Singularity mark, used as the Playing card's picture.
@@ -223,8 +230,21 @@ QImage MediaCache::image(const QUrl &url)
 
     // A picture that already failed is never retried, or a dead link would
     // start a download on every repaint.
-    if (m_failed.contains(key) || m_inFlight.contains(key) || !isAllowedHost(url))
+    if (m_failed.contains(key) || m_inFlight.contains(key))
         return {};
+
+    // Said once per host, so a picture that is skipped is never a mystery
+    // again: the whole GIF tab once stayed blank with nothing in the log.
+    if (!isAllowedHost(url)) {
+        m_failed.insert(key);
+        static QSet<QString> saidHosts;
+        if (!saidHosts.contains(url.host())) {
+            saidHosts.insert(url.host());
+            wlog(QStringLiteral("media"), QStringLiteral("not fetching from %1 (not a host we load pictures from): %2")
+                                              .arg(url.host(), key.left(160)));
+        }
+        return {};
+    }
 
     // Films are not pictures, and fetching ten megabytes to find that out is
     // a poor way to learn it. A channel with a few videos in it was pulling

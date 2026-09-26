@@ -54,7 +54,8 @@ public:
 
 signals:
     void pluginLogged(const QString &pluginId, const QString &line);
-    void notificationRequested(const QString &pluginId, const QString &title, const QString &text);
+    void notificationRequested(const QString &pluginId, const QString &title, const QString &text,
+                               const QString &channelId);
     void pluginToggled(const QString &pluginId, bool enabled);
     void repaintRequested();
 

@@ -40,8 +40,8 @@ public:
     void log(const QString &line) const;
 
     // A Windows notification, like the ones Discord shows. Clicking it brings
-    // Singularity forward.
-    void notify(const QString &title, const QString &text) const;
+    // Singularity forward, and opens `channelId` when one is given.
+    void notify(const QString &title, const QString &text, const QString &channelId = QString()) const;
 
 private:
     QString m_pluginId;

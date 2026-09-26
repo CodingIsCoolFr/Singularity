@@ -295,25 +295,26 @@ void RestClient::openDirectMessage(const QString &userId, ObjectHandler onOk, Er
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
-// The GIF picker, the way the official client fills it. Every answer is in
-// Tenor's "tinygif" size: small moving pictures made for a grid of tiles.
+// The GIF picker, the way the official client fills it (no provider: the
+// server picks, and it is Klipy now). Asked for as "tinywebp", small moving
+// WebP pictures - the format Discord's own client asks for on Linux.
 void RestClient::gifCategories(ObjectHandler onOk, ErrorHandler onError)
 {
     QNetworkReply *reply = m_network.get(
-        buildRequest(QStringLiteral("/gifs/trending?provider=tenor&locale=en-US&media_format=tinygif")));
+        buildRequest(QStringLiteral("/gifs/trending?locale=en-US&media_format=tinywebp")));
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
 void RestClient::trendingGifs(ArrayHandler onOk, ErrorHandler onError)
 {
     QNetworkReply *reply = m_network.get(buildRequest(
-        QStringLiteral("/gifs/trending-gifs?provider=tenor&locale=en-US&media_format=tinygif&limit=50")));
+        QStringLiteral("/gifs/trending-gifs?locale=en-US&media_format=tinywebp&limit=50")));
     dispatch(reply, nullptr, std::move(onOk), std::move(onError));
 }
 
 void RestClient::searchGifs(const QString &query, ArrayHandler onOk, ErrorHandler onError)
 {
-    const QString path = QStringLiteral("/gifs/search?q=%1&provider=tenor&locale=en-US&media_format=tinygif&limit=50")
+    const QString path = QStringLiteral("/gifs/search?q=%1&locale=en-US&media_format=tinywebp&limit=50")
                              .arg(QString::fromUtf8(QUrl::toPercentEncoding(query.trimmed())));
     QNetworkReply *reply = m_network.get(buildRequest(path));
     dispatch(reply, nullptr, std::move(onOk), std::move(onError));

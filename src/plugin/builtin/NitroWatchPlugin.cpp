@@ -440,6 +440,15 @@ void NitroWatchPlugin::offer(const QString &code, const QString &fromUserId,
             where = QStringLiteral(" in #%1").arg(channel.name);
     }
 
+    // A Windows notification as well as the alert, like a message's: the
+    // alert is easy to miss behind a full-screen game, the notification is
+    // not. Clicking it opens the chat the gift was posted in, where the alert
+    // is waiting with its Claim button.
+    if (context())
+        context()->notify(QStringLiteral("Nitro gift: %1").arg(gift.what),
+                          QStringLiteral("%1 posted one%2. Open Singularity to claim it.").arg(who, where),
+                          channelId);
+
     // One alert at a time. A newer gift is the one worth looking at.
     if (m_alert)
         m_alert->deleteLater();

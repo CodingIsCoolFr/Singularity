@@ -33,10 +33,10 @@ void PluginContext::log(const QString &line) const
         emit m_host->pluginLogged(m_pluginId, line);
 }
 
-void PluginContext::notify(const QString &title, const QString &text) const
+void PluginContext::notify(const QString &title, const QString &text, const QString &channelId) const
 {
     if (m_host)
-        emit m_host->notificationRequested(m_pluginId, title, text);
+        emit m_host->notificationRequested(m_pluginId, title, text, channelId);
 }
 
 // ---------------------------------------------------------------------------

@@ -374,9 +374,9 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     // a tray icon, so the icon is made the first time one is needed and then
     // stays, like Discord's; clicking either brings the window forward.
     connect(m_plugins, &PluginHost::notificationRequested, this,
-            [this](const QString &id, const QString &title, const QString &text) {
+            [this](const QString &id, const QString &title, const QString &text, const QString &channelId) {
                 wlog(QStringLiteral("notify"), QStringLiteral("[%1] %2: %3").arg(id, title, text));
-                showDesktopNotification(title, text, QString());
+                showDesktopNotification(title, text, channelId);
             });
 
     connect(m_store, &MessageStore::readStateChanged, this, &MainWindow::refreshUnreadMarks);
@@ -6296,8 +6296,11 @@ void MainWindow::showEmojiMenu()
             GifBoard::Tile tile;
             tile.id = gif.value(QStringLiteral("id")).toVariant().toString();
             tile.page = gif.value(QStringLiteral("url")).toString();
+            // src is in the format asked for (a small WebP); gif_src when src
+            // turns out to be a video, which the tiles cannot draw.
             tile.picture = QUrl(gif.value(QStringLiteral("src")).toString());
-            if (!tile.picture.toString().endsWith(QLatin1String(".gif")))
+            const QString srcPath = tile.picture.path().toLower();
+            if (!srcPath.endsWith(QLatin1String(".webp")) && !srcPath.endsWith(QLatin1String(".gif")))
                 tile.picture = QUrl(gif.value(QStringLiteral("gif_src")).toString());
             tile.width = gif.value(QStringLiteral("width")).toInt();
             tile.height = gif.value(QStringLiteral("height")).toInt();
@@ -6495,7 +6498,7 @@ void MainWindow::showEmojiMenu()
                 }, [](const RestClient::Error &) {});
             }
             if (gifTab) {
-                search->setPlaceholderText(QStringLiteral("Search Tenor"));
+                search->setPlaceholderText(QStringLiteral("Search GIFs"));
                 popup->setProperty("gifTrending", false);
                 loadGifs();
             } else if (kind == QLatin1String("sticker")) {
