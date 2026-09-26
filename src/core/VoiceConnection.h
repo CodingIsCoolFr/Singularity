@@ -100,6 +100,11 @@ public:
     // Until this is first called, every camera is wanted at its best.
     void setVideoViews(const QHash<QString, int> &pixelsByUser);
 
+    // People whose video is turned off here: on the call connection their
+    // camera, on a stream connection their stream's picture (the sound
+    // keeps playing). Discord's setDisableLocalVideo, per connection.
+    void setVideoOff(const QSet<QString> &userIds);
+
     // Safe to ask from any thread. These read copies the connection keeps up
     // to date for the window, because the real fields belong to the media
     // thread and change while it works.
@@ -382,6 +387,7 @@ private:
     quint32 chosenVideoSsrc(const QString &userId) const;
     QHash<QString, int> m_videoViews;
     bool m_videoViewsKnown = false;
+    QSet<QString> m_videoOff;
     QSet<quint32> m_lastWantedVideo;
 
     // Held by pointer because a decoder cannot be copied, and a QHash copies

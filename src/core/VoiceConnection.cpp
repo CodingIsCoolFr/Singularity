@@ -3237,8 +3237,24 @@ void VoiceConnection::setVideoViews(const QHash<QString, int> &pixelsByUser)
 // stage, the small one for the row underneath, and nothing at all for tiles
 // scrolled out of view. A call of forty cameras is then a handful of small
 // streams rather than forty full ones.
+void VoiceConnection::setVideoOff(const QSet<QString> &userIds)
+{
+    if (postToOwnThread([this, userIds]() { setVideoOff(userIds); }))
+        return;
+    if (m_videoOff == userIds)
+        return;
+    m_videoOff = userIds;
+    if (!m_bestVideoSsrc.isEmpty())
+        refreshVideoWants();
+}
+
 quint32 VoiceConnection::chosenVideoSsrc(const QString &userId) const
 {
+    // Turned off here (Discord's setLocalVideoDisabled): asked for at 0, so
+    // the server stops sending it. Their sound is untouched.
+    if (m_videoOff.contains(userId))
+        return 0;
+
     const quint32 best = m_bestVideoSsrc.value(userId);
     if (!m_videoViewsKnown || m_viewerOnly || best == 0)
         return best;

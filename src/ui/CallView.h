@@ -42,6 +42,11 @@ public:
     // picture instead, and it is not downloaded at all.
     void setVideoHidden(const QSet<QString> &userIds);
     bool isVideoHidden(const QString &userId) const { return m_videoHidden.contains(userId); }
+
+    // The same for a person's stream: its tile stays (the sound keeps
+    // playing) but shows "stream video turned off" instead of the picture.
+    void setStreamHidden(const QSet<QString> &userIds);
+    bool isStreamHidden(const QString &userId) const { return m_streamHidden.contains(userId); }
     void setFocusedUser(const QString &userId, Surface surface = Surface::Camera);
     QString focusedUser() const { return m_focusedUser; }
 
@@ -143,6 +148,7 @@ private:
     QList<Tile> m_tiles;
     QSet<QString> m_speaking;
     QSet<QString> m_videoHidden;
+    QSet<QString> m_streamHidden;
     QHash<QString, QImage> m_cameraFrames;
     QHash<QString, QImage> m_shareFrames;
 };

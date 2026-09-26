@@ -127,6 +127,16 @@ void CallView::setVideoHidden(const QSet<QString> &userIds)
     publishViews();
 }
 
+void CallView::setStreamHidden(const QSet<QString> &userIds)
+{
+    if (m_streamHidden == userIds)
+        return;
+    m_streamHidden = userIds;
+    for (const QString &userId : userIds)
+        m_shareFrames.remove(userId);
+    update();
+}
+
 void CallView::setFocusedUser(const QString &userId, Surface surface)
 {
     if (m_focusedUser == userId && m_focusedSurface == surface)
@@ -142,6 +152,8 @@ void CallView::setFrame(const QString &userId, const QImage &image, Surface surf
     if (userId.isEmpty() || image.isNull())
         return;
 
+    if (surface == Surface::Share && m_streamHidden.contains(userId))
+        return;   // a picture still on its way after the stream video was turned off
     if (surface == Surface::Share)
         m_shareFrames.insert(userId, image);
     else if (m_videoHidden.contains(userId))
@@ -570,15 +582,17 @@ void CallView::paintTile(QPainter &painter, const Tile &tile) const
                               faceSize, faceSize);
         painter.drawPixmap(avatarBox, face);
 
-        if ((tile.streaming || tile.video) && tile.featured) {
+        const bool streamOff = tile.surface == Surface::Share && m_streamHidden.contains(tile.userId);
+        if (((tile.streaming || tile.video) && tile.featured) || streamOff) {
             QFont note = font();
-            note.setPixelSize(13);
+            note.setPixelSize(tile.featured ? 13 : 11);
             painter.setFont(note);
             painter.setPen(QColor(Theme::TextMuted));
-            painter.drawText(QRect(tile.box.left() + 20, avatarBox.bottom() + 10, tile.box.width() - 40, 20),
+            painter.drawText(QRect(tile.box.left() + 20, avatarBox.bottom() + 6, tile.box.width() - 40, 20),
                              Qt::AlignHCenter | Qt::AlignVCenter,
-                             tile.surface == Surface::Share ? QStringLiteral("waiting for the screen...")
-                                                            : QStringLiteral("waiting for the camera..."));
+                             streamOff ? QStringLiteral("stream video turned off")
+                             : tile.surface == Surface::Share ? QStringLiteral("waiting for the screen...")
+                                                              : QStringLiteral("waiting for the camera..."));
         }
     }
 
