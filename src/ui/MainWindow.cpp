@@ -6287,7 +6287,9 @@ void MainWindow::showEmojiMenu()
 
     auto *gifTimer = new QTimer(popup);
     gifTimer->setSingleShot(true);
-    gifTimer->setInterval(280);
+    // Long enough that a word being typed is one search, not one per letter;
+    // Discord rate limits GIF searches tightly.
+    gifTimer->setInterval(500);
 
     // A gif from any of Discord's GIF answers, as a tile. Discord's list is
     // {id, url, src, gif_src, preview, width, height}; src is in the size we

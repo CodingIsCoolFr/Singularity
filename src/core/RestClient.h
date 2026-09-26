@@ -2,7 +2,9 @@
 
 #include <QHash>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
+#include <QPair>
 #include <QNetworkAccessManager>
 #include <QObject>
 #include <QString>
@@ -277,6 +279,11 @@ private:
     void dispatch(QNetworkReply *reply, ObjectHandler onObject, ArrayHandler onArray, ErrorHandler onError);
 
     QNetworkAccessManager m_network;
+
+    // GIF answers by request path, with when they arrived. See gifGet.
+    QHash<QString, QPair<qint64, QJsonDocument>> m_gifCache;
+    void gifGet(const QString &path, ObjectHandler onObject, ArrayHandler onArray, ErrorHandler onError,
+                int attempt = 0);
     QString m_token;
 
     void noteOwnRemoval(const QString &id);

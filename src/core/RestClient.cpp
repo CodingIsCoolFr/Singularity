@@ -1,6 +1,7 @@
 #include "core/RestClient.h"
 
 #include "core/DiscordIdentity.h"
+#include "core/Logger.h"
 
 #include <QDateTime>
 #include <QFile>
@@ -10,6 +11,7 @@
 #include <QMimeDatabase>
 #include <QNetworkReply>
 #include <QRandomGenerator>
+#include <QTimer>
 #include <QUrl>
 
 RestClient::RestClient(QObject *parent)
@@ -298,26 +300,83 @@ void RestClient::openDirectMessage(const QString &userId, ObjectHandler onOk, Er
 // The GIF picker, the way the official client fills it (no provider: the
 // server picks, and it is Klipy now). Asked for as "tinywebp", small moving
 // WebP pictures - the format Discord's own client asks for on Linux.
+// Every GIF answer is remembered for ten minutes, and a "too fast" (429) is
+// waited out and asked again, up to three times, rather than shown as an
+// error. The picker asked afresh on every tab click and after every pause in
+// typing, and Discord's GIF endpoints are rate limited tightly: the tab
+// ended up on "The resource is being rate limited." The official client
+// keeps its trending page in a store for the same reason.
+void RestClient::gifGet(const QString &path, ObjectHandler onObject, ArrayHandler onArray, ErrorHandler onError,
+                        int attempt)
+{
+    constexpr qint64 KeepMs = 10 * 60 * 1000;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const auto cached = m_gifCache.constFind(path);
+    if (cached != m_gifCache.constEnd() && now - cached->first < KeepMs) {
+            const QJsonDocument doc = cached->second;
+        // Answered on the next pass of the event loop, like a real reply, so
+        // callers never see their handler run before the call returns.
+        QTimer::singleShot(0, this, [doc, onObject, onArray]() {
+            if (doc.isArray() && onArray)
+                onArray(doc.array());
+            else if (doc.isObject() && onObject)
+                onObject(doc.object());
+        });
+        return;
+    }
+
+    // The answer is kept on the way through to the caller.
+    ObjectHandler keepObject = nullptr;
+    if (onObject) {
+        keepObject = [this, path, onObject](const QJsonObject &object) {
+            m_gifCache.insert(path, {QDateTime::currentMSecsSinceEpoch(), QJsonDocument(object)});
+            onObject(object);
+        };
+    }
+    ArrayHandler keepArray = nullptr;
+    if (onArray) {
+        keepArray = [this, path, onArray](const QJsonArray &array) {
+            m_gifCache.insert(path, {QDateTime::currentMSecsSinceEpoch(), QJsonDocument(array)});
+            onArray(array);
+        };
+    }
+    // "Too fast" is waited out: Discord says for how long.
+    ErrorHandler waitOrFail = [this, path, onObject, onArray, onError, attempt](const Error &error) {
+        if (error.httpStatus == 429 && attempt < 3) {
+            const double wait = error.body.value(QStringLiteral("retry_after")).toDouble(1.0);
+            const int ms = qBound(300, int(wait * 1000) + 250, 30000);
+            wlog(QStringLiteral("gifs"),
+                 QStringLiteral("Discord asked us to wait %1 ms before asking for GIFs again").arg(ms));
+            QTimer::singleShot(ms, this, [this, path, onObject, onArray, onError, attempt]() {
+                gifGet(path, onObject, onArray, onError, attempt + 1);
+            });
+            return;
+        }
+        if (onError)
+            onError(error);
+    };
+
+    QNetworkReply *reply = m_network.get(buildRequest(path));
+    dispatch(reply, std::move(keepObject), std::move(keepArray), std::move(waitOrFail));
+}
+
 void RestClient::gifCategories(ObjectHandler onOk, ErrorHandler onError)
 {
-    QNetworkReply *reply = m_network.get(
-        buildRequest(QStringLiteral("/gifs/trending?locale=en-US&media_format=tinywebp")));
-    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+    gifGet(QStringLiteral("/gifs/trending?locale=en-US&media_format=tinywebp"), std::move(onOk), nullptr,
+           std::move(onError));
 }
 
 void RestClient::trendingGifs(ArrayHandler onOk, ErrorHandler onError)
 {
-    QNetworkReply *reply = m_network.get(buildRequest(
-        QStringLiteral("/gifs/trending-gifs?locale=en-US&media_format=tinywebp&limit=50")));
-    dispatch(reply, nullptr, std::move(onOk), std::move(onError));
+    gifGet(QStringLiteral("/gifs/trending-gifs?locale=en-US&media_format=tinywebp&limit=50"), nullptr,
+           std::move(onOk), std::move(onError));
 }
 
 void RestClient::searchGifs(const QString &query, ArrayHandler onOk, ErrorHandler onError)
 {
     const QString path = QStringLiteral("/gifs/search?q=%1&locale=en-US&media_format=tinywebp&limit=50")
-                             .arg(QString::fromUtf8(QUrl::toPercentEncoding(query.trimmed())));
-    QNetworkReply *reply = m_network.get(buildRequest(path));
-    dispatch(reply, nullptr, std::move(onOk), std::move(onError));
+                             .arg(QString::fromUtf8(QUrl::toPercentEncoding(query.trimmed().toLower())));
+    gifGet(path, nullptr, std::move(onOk), std::move(onError));
 }
 
 void RestClient::selectGif(const QString &gifId, const QString &query)
