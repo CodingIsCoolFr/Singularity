@@ -146,6 +146,7 @@ private slots:
 
 private:
     void setState(State state);
+    void closeKeepingSession();
     void openSocket();
     void scheduleReconnect();
     void sendJson(const QJsonObject &payload);

@@ -209,6 +209,20 @@ void GatewayClient::shutdown()
              : QStringLiteral("the close did not finish in 1.5 s; Discord will time the session out"));
 }
 
+// Closing so that the same session can be resumed on a new socket.
+//
+// Not with 1000. Discord ends a session the moment its socket closes with 1000
+// or 1001, which is right for quitting (see above) and wrong here: Discord
+// asked us to reconnect (op 7), we closed politely with 1000, and the resume
+// on the new socket was refused (op 9) because we had just ended the session
+// ourselves. Ending the session also ends its voice connection, so every
+// routine op 7 threw us out of the call for five seconds (2026-09-25 20:32).
+// Any 4000-range code keeps it; discord.js and others close with one here.
+void GatewayClient::closeKeepingSession()
+{
+    m_socket.close(static_cast<QWebSocketProtocol::CloseCode>(4000), QStringLiteral("resuming"));
+}
+
 void GatewayClient::setState(State state)
 {
     if (m_state == state)
@@ -429,7 +443,7 @@ void GatewayClient::onTextMessage(const QString &message)
              QStringLiteral("opcode 7: reconnecting immediately and keeping the voice channel"));
         m_canResume = true;
         m_reconnectImmediately = true;
-        m_socket.close();
+        closeKeepingSession();
         break;
 
     case OpInvalidSession: {
@@ -441,7 +455,10 @@ void GatewayClient::onTextMessage(const QString &message)
             m_sessionId.clear();
             m_lastSequence = -1;
         }
-        m_socket.close();
+        if (resumable)
+            closeKeepingSession();
+        else
+            m_socket.close();
         break;
     }
 
