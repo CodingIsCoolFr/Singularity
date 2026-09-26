@@ -112,16 +112,25 @@ void ProfilePreview::paintEvent(QPaintEvent *)
     painter.setClipPath(shape);
 
     // --- banner: the picture if there is one, otherwise the colour.
-    const QRect banner(0, 0, width(), BannerHeight);
-    painter.fillRect(banner, m_bannerColour.isValid() ? m_bannerColour : QColor(Theme::SurfaceRail));
+    //
+    // A picture gets Discord's banner shape, five wide by two tall, so on the
+    // wide My Account card most of it shows. It used to be squeezed into a
+    // 106-pixel strip and drawn past it unclipped, which ran it underneath
+    // the name. A plain colour keeps the short strip.
     QImage bannerFrame = m_banner->currentFrame();
     if (bannerFrame.isNull())
         bannerFrame = m_bannerStill;
+    const int bannerHeight = bannerFrame.isNull() ? BannerHeight : qMax(BannerHeight, width() * 2 / 5);
+    const QRect banner(0, 0, width(), bannerHeight);
+    painter.fillRect(banner, m_bannerColour.isValid() ? m_bannerColour : QColor(Theme::SurfaceRail));
     if (!bannerFrame.isNull()) {
         const QImage scaled = bannerFrame.scaled(banner.size(), Qt::KeepAspectRatioByExpanding,
                                                  Qt::SmoothTransformation);
+        painter.save();
+        painter.setClipRect(banner, Qt::IntersectClip);
         painter.drawImage(QPoint((banner.width() - scaled.width()) / 2, (banner.height() - scaled.height()) / 2),
                           scaled);
+        painter.restore();
     }
 
     // --- avatar, sitting half over the banner in a ring of the card colour.
@@ -147,8 +156,8 @@ void ProfilePreview::paintEvent(QPaintEvent *)
     if (framed)
         painter.drawImage(frame, decoration.scaled(frame.size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
 
-    // --- the words.
-    int y = frame.bottom() + 14;
+    // --- the words, under the avatar and under the banner, whichever is lower.
+    int y = qMax(frame.bottom() + 14, banner.bottom() + 12);
     const int left = 16;
     const int textWidth = width() - 2 * left;
 

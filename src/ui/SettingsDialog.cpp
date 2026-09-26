@@ -337,7 +337,8 @@ QWidget *SettingsDialog::buildAccountPage()
 
     // The same card as Profiles shows, as Discord puts at the top of this page.
     m_accountCard = new ProfilePreview(page);
-    m_accountCard->setFixedSize(440, 250);
+    // Tall enough for the 5:2 banner with the name and handle underneath it.
+    m_accountCard->setFixedSize(440, 258);
     layout->addWidget(m_accountCard);
 
     auto *editProfile = new QPushButton(QStringLiteral("Edit User Profile"), page);
