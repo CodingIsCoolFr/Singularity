@@ -26,7 +26,10 @@ constexpr int MaxPictureHeight = 280;
 // Redrawing the document is not free, so animations share one modest tick
 // rather than each running at its own speed.
 constexpr int AnimationFrameMs = 66;   // about 15 times a second
-constexpr int MaxConcurrentAnimations = 8;
+// At most this many moving pictures at once, and at most this many pixels of
+// them redrawn per frame: about four full-size GIFs, or dozens of emoji.
+constexpr int MaxConcurrentAnimations = 48;
+constexpr qint64 AnimationPixelBudget = 4LL * 340 * 280;
 
 bool looksLikeAvatar(const QUrl &url)
 {
@@ -161,10 +164,19 @@ void ChatView::setAnimationsEnabled(bool enabled)
 
     // Let the current frames stand, and stop spending time on new ones.
     m_animationTimer.stop();
-    qDeleteAll(m_animations);
-    m_animations.clear();
+    dropAnimations();
     qDeleteAll(m_videos);
     m_videos.clear();
+}
+
+void ChatView::dropAnimations()
+{
+    qDeleteAll(m_animations);
+    m_animations.clear();
+    m_animationOrder.clear();
+    m_animationPixels.clear();
+    m_animationPixelTotal = 0;
+    m_animationsDropped.clear();
 }
 
 void ChatView::clearImageCache()
@@ -175,8 +187,7 @@ void ChatView::clearImageCache()
     m_preparedBytes = 0;
     m_arrived.clear();
     m_arrivalTimer.stop();
-    qDeleteAll(m_animations);
-    m_animations.clear();
+    dropAnimations();
     qDeleteAll(m_videos);
     m_videos.clear();
     m_animationTimer.stop();
@@ -346,11 +357,11 @@ void ChatView::adoptAnimation(const QUrl &url)
     if (looksLikeAvatar(url))
         return;
 
-    const QByteArray bytes = MediaCache::instance().animationData(url);
-    if (bytes.isEmpty())
+    if (m_animationsDropped.contains(key))
         return;
 
-    if (m_animations.size() >= MaxConcurrentAnimations)
+    const QByteArray bytes = MediaCache::instance().animationData(url);
+    if (bytes.isEmpty())
         return;
 
     auto *animation = new AnimatedImage(this);
@@ -360,6 +371,26 @@ void ChatView::adoptAnimation(const QUrl &url)
     }
 
     m_animations.insert(key, animation);
+    const QSize box = boxFor(url);
+    const qint64 pixels = qint64(box.width()) * box.height();
+    m_animationOrder.append(key);
+    m_animationPixels.insert(key, pixels);
+    m_animationPixelTotal += pixels;
+
+    // Too many, or too many pixels a frame: the oldest stop, so the newest -
+    // at the bottom, where the reading happens - keep moving. This used to be
+    // a flat eight, first come first served, and the first eight were the
+    // oldest messages in the channel: a fresh animated emoji at the bottom
+    // stood still because a GIF far up the history had its place. Counting
+    // pixels lets dozens of emoji move where two GIFs would use the same.
+    while (m_animationOrder.size() > 1
+           && (m_animationOrder.size() > MaxConcurrentAnimations || m_animationPixelTotal > AnimationPixelBudget)) {
+        const QString oldest = m_animationOrder.takeFirst();
+        m_animationPixelTotal -= m_animationPixels.take(oldest);
+        delete m_animations.take(oldest);
+        m_animationsDropped.insert(oldest);
+    }
+
     if (!m_animationTimer.isActive())
         m_animationTimer.start();
 }

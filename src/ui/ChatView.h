@@ -60,6 +60,16 @@ private:
 
     QSet<QString> m_wanted;
     QHash<QString, AnimatedImage *> m_animations;
+    // Which moving pictures play, oldest adopted first, and how many pixels
+    // each costs per frame. When there are too many the oldest stop - the
+    // newest messages are the ones at the bottom, where people are looking.
+    // A stopped one keeps its last frame and is not started again until the
+    // channel is drawn afresh, or they would take turns evicting each other.
+    QList<QString> m_animationOrder;
+    QHash<QString, qint64> m_animationPixels;
+    qint64 m_animationPixelTotal = 0;
+    QSet<QString> m_animationsDropped;
+    void dropAnimations();
 
     // gifv cards are mp4s. One player each, muted and looping.
     QHash<QString, ClipPlayer *> m_videos;

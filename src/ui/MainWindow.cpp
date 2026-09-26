@@ -5757,6 +5757,7 @@ public:
         QString filter;
         QString face;
         QUrl icon;
+        bool animated = false;
     };
 
     QList<Cell> cells;
@@ -5768,8 +5769,11 @@ public:
         setMouseTracking(true);
     }
 
+    ~EmojiBoard() override { stopMoving(); }
+
     void setQuery(const QString &query)
     {
+        stopMoving();
         m_shown.clear();
         for (int index = 0; index < cells.size(); ++index) {
             if (query.isEmpty() || cells.at(index).filter.contains(query, Qt::CaseInsensitive))
@@ -5794,6 +5798,8 @@ protected:
         painter.setFont(font);
         painter.setPen(Qt::white);
 
+        syncMoving();
+
         for (int row = first; row <= last; ++row) {
             for (int column = 0; column < Columns; ++column) {
                 const int slot = row * Columns + column;
@@ -5807,11 +5813,75 @@ protected:
                     painter.drawText(box, Qt::AlignCenter, cell.face);
                     continue;
                 }
-                const QImage picture = MediaCache::instance().image(cell.icon);
+                QImage picture;
+                if (AnimatedImage *moving = m_moving.value(cell.icon.toString()))
+                    picture = moving->currentFrame();
+                if (picture.isNull())
+                    picture = MediaCache::instance().image(cell.icon);
                 if (!picture.isNull())
                     painter.drawImage(box.adjusted(6, 6, -6, -6), picture);
             }
         }
+    }
+
+    void hideEvent(QHideEvent *event) override
+    {
+        stopMoving();
+        QWidget::hideEvent(event);
+    }
+
+    // Animated server emoji move while they are on screen, as in Discord's
+    // picker. Only the rows in view play: a server with hundreds of animated
+    // emoji would otherwise decode all of them the whole time the picker is
+    // open. Ones scrolled away stop and let go of their frames.
+    void syncMoving()
+    {
+        const QRect seen = visibleRegion().boundingRect();
+        QSet<QString> wanted;
+        if (!seen.isEmpty() && !m_shown.isEmpty()) {
+            const int firstRow = qMax(0, seen.top() / CellSize);
+            const int lastRow = qMin((int(m_shown.size()) + Columns - 1) / Columns - 1, seen.bottom() / CellSize);
+            for (int row = firstRow; row <= lastRow; ++row) {
+                for (int column = 0; column < Columns; ++column) {
+                    const int slot = row * Columns + column;
+                    if (slot >= m_shown.size())
+                        break;
+                    const Cell &cell = cells.at(m_shown.at(slot));
+                    if (!cell.animated || cell.icon.isEmpty())
+                        continue;
+                    const QString key = cell.icon.toString();
+                    wanted.insert(key);
+                    if (m_moving.contains(key))
+                        continue;
+                    const QByteArray bytes = MediaCache::instance().animationData(cell.icon);
+                    if (bytes.isEmpty())
+                        continue;   // not here yet; the arrival repaints and this tries again
+                    auto *moving = new AnimatedImage(this);
+                    if (!moving->setData(bytes) || !moving->isAnimated()) {
+                        delete moving;
+                        continue;
+                    }
+                    const QRect box(column * CellSize, row * CellSize, CellSize, CellSize);
+                    connect(moving, &AnimatedImage::frameChanged, this, [this, box]() { update(box); });
+                    moving->setPlaying(true);
+                    m_moving.insert(key, moving);
+                }
+            }
+        }
+        for (auto it = m_moving.begin(); it != m_moving.end();) {
+            if (wanted.contains(it.key())) {
+                ++it;
+            } else {
+                delete it.value();
+                it = m_moving.erase(it);
+            }
+        }
+    }
+
+    void stopMoving()
+    {
+        qDeleteAll(m_moving);
+        m_moving.clear();
     }
 
     void mouseMoveEvent(QMouseEvent *event) override
@@ -5853,6 +5923,7 @@ private:
 
     QList<int> m_shown;
     int m_hover = -1;
+    QHash<QString, AnimatedImage *> m_moving;   // playing now, by picture address
 
     int slotAt(const QPoint &pos) const
     {
@@ -6149,6 +6220,7 @@ void MainWindow::showEmojiMenu()
             cell.insert = emoji.animated ? QStringLiteral("<a:%1:%2>").arg(emoji.name, emoji.id)
                                          : QStringLiteral("<:%1:%2>").arg(emoji.name, emoji.id);
             cell.filter = server.name + QLatin1Char(' ') + emoji.name;
+            cell.animated = emoji.animated;
             const QString ext = emoji.animated ? QStringLiteral("gif") : QStringLiteral("png");
             cell.icon = QUrl(QStringLiteral("https://cdn.discordapp.com/emojis/%1.%2?size=64")
                                  .arg(emoji.id, ext));
