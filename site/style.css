@@ -212,14 +212,21 @@ header.hero {
     edge anywhere for the eye to catch. The program's sign-in window does the
     same thing, and for the same reason: a bordered card over a picture always
     looks pasted on. */
+/*  The shade reaches 140px left of the words and fades in there, and fades
+    out top and bottom, so the text never sits on a hard edge. */
 .hero-inner {
-    max-width: 660px;
-    padding: 34px 120px 36px 0;
+    max-width: 800px;
+    margin-left: -140px;
+    padding: 58px 120px 60px 140px;
     background: linear-gradient(90deg,
-        rgba(5, 7, 11, 0.92) 0%,
-        rgba(5, 7, 11, 0.80) 42%,
-        rgba(5, 7, 11, 0.32) 76%,
+        transparent 0%,
+        rgba(5, 7, 11, 0.88) 15%,
+        rgba(5, 7, 11, 0.92) 22%,
+        rgba(5, 7, 11, 0.80) 52%,
+        rgba(5, 7, 11, 0.32) 82%,
         transparent 100%);
+    -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 44px, #000 calc(100% - 44px), transparent 100%);
+    mask-image: linear-gradient(180deg, transparent 0, #000 44px, #000 calc(100% - 44px), transparent 100%);
 }
 
 h1 {
@@ -520,7 +527,16 @@ footer a { color: var(--dim); }
 footer .push { margin-left: auto; }
 
 @media (max-width: 780px) {
-    .hero-inner { padding-right: 26px; }
+    /* No room to reach left on a phone: the page would scroll sideways. */
+    .hero-inner {
+        margin-left: 0;
+        padding: 52px 26px 54px 0;
+        background: linear-gradient(90deg,
+            rgba(5, 7, 11, 0.92) 0%,
+            rgba(5, 7, 11, 0.80) 42%,
+            rgba(5, 7, 11, 0.32) 76%,
+            transparent 100%);
+    }
     section { padding: 66px 0; }
     body { font-size: 16px; }
 }
