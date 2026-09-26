@@ -180,8 +180,32 @@ void MessageStore::setPresence(const QString &userId, const QJsonObject &rawPres
     info.status = rawPresence.value(QStringLiteral("status")).toString();
 
     const QJsonArray activities = rawPresence.value(QStringLiteral("activities")).toArray();
-    for (const QJsonValue &value : activities)
-        info.activities.append(parseActivity(value.toObject()));
+    for (const QJsonValue &value : activities) {
+        const ActivityInfo activity = parseActivity(value.toObject());
+
+        // One card per app. Discord merges the activities of every session a
+        // person has open, and a session that just ended - the copy that
+        // closed for an update a moment ago - stays in that list until
+        // Discord lets it go. That showed "Playing Singularity" twice, with
+        // two versions. The newer of the two (the later start) is the one
+        // still running.
+        bool replaced = false;
+        if (!activity.isCustomStatus() && (!activity.applicationId.isEmpty() || !activity.name.isEmpty())) {
+            for (ActivityInfo &kept : info.activities) {
+                const bool sameApp = !activity.applicationId.isEmpty()
+                    ? kept.applicationId == activity.applicationId
+                    : (kept.applicationId.isEmpty() && kept.name == activity.name);
+                if (kept.type != activity.type || !sameApp)
+                    continue;
+                if (activity.startMs > kept.startMs)
+                    kept = activity;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced)
+            info.activities.append(activity);
+    }
 
     m_presences.insert(userId, info);
     emit userChanged(userId);
@@ -1182,6 +1206,8 @@ MessageInfo MessageStore::parseMessage(const QJsonObject &raw)
             message.reactions.append(reaction);
     }
 
+    message.components = raw.value(QStringLiteral("components")).toArray();
+
     // --- forwarded --------------------------------------------------------
     // Type 1 is a forward; 0 (or none) is a reply, which is not this.
     const QJsonObject reference = raw.value(QStringLiteral("message_reference")).toObject();
@@ -1580,6 +1606,8 @@ void MessageStore::updateMessage(const QJsonObject &rawMessage)
         // MESSAGE_UPDATE is a partial object. Only touch fields that arrived.
         if (rawMessage.contains(QStringLiteral("content")))
             item.content = rawMessage.value(QStringLiteral("content")).toString();
+        if (rawMessage.contains(QStringLiteral("components")))
+            item.components = rawMessage.value(QStringLiteral("components")).toArray();
         item.edited = true;
         emit messageChanged(channelId, messageId);
         return;

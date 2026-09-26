@@ -1,5 +1,9 @@
 #pragma once
 
+#include <QString>
+
+#include <functional>
+
 class QWidget;
 
 // The question-and-answer part of updating, kept away from any one window.
@@ -37,5 +41,18 @@ bool updating();
 // Waits, with the event loop running, until the update fails (the windows
 // come back) or finishes (the program quits so the new copy can start).
 void waitForUpdate();
+
+// Updates the way Discord does. The quiet check installs a new version in
+// the background, beside the running one, without starting it, and leaves
+// this file in its folder once it is complete. The next launch - of any older
+// copy, from any shortcut or pin - finds it and opens that instead.
+inline constexpr const char *ReadyMarker = "ready-to-open";
+
+// Told when a background update has finished installing, with its version.
+void setStagedHandler(std::function<void(const QString &version)> handler);
+
+// At startup: a newer complete version beside this one, if there is one. The
+// caller starts it and exits. Empty when this copy is the newest.
+QString newerInstalledCopy(const QString &myVersion);
 
 } // namespace UpdateFlow

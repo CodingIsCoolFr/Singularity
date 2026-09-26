@@ -248,6 +248,10 @@ private:
     QString renderContent(const QString &raw, bool jumbo = false);
     QString stickersHtml(const MessageInfo &message) const;
     QString embedsHtml(const MessageInfo &message);
+    // Buttons and Discord's Components V2 layout: containers, text blocks,
+    // sections, dividers, pictures. See MessageInfo::components.
+    QString componentsHtml(const QJsonArray &components, int depth = 0);
+    QString textDisplayHtml(const QString &markdown);
     QString inviteCardsHtml(const MessageInfo &message);
     QString reactionsHtml(const MessageInfo &message) const;
     void updateUserPanel();

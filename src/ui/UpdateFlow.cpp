@@ -11,6 +11,9 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QVersionNumber>
 #include <QApplication>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -40,6 +43,12 @@ namespace {
 // The check that is in flight. A quiet one stays silent when nothing is new
 // and does not ask again about a version that was already declined.
 bool g_quiet = false;
+
+// A background update in progress (download, then install), the version
+// already installed that way, and who to tell when it is ready.
+bool g_background = false;
+QString g_staged;
+std::function<void(const QString &)> g_stagedHandler;
 
 // The window the current check was asked from, if there is one.
 //
@@ -531,18 +540,36 @@ Updater *updater()
     });
 
     QObject::connect(instance, &Updater::failed, qApp, [](const QString &reason) {
+        // A background update that fails is tried again at the next check,
+        // two minutes on; nobody asked for it, so nobody is told.
+        if (g_background) {
+            g_background = false;
+            wlog(QStringLiteral("update"), QStringLiteral("background update failed, will try again: %1").arg(reason));
+            return;
+        }
         restoreHidden();
         QMessageBox::warning(g_owner, QStringLiteral("Could not check for updates"), reason);
     });
 
     QObject::connect(instance, &Updater::updateAvailable, qApp,
                      [](const QString &version, const QString &notes, qint64 bytes) {
-                         // No on one version should not ask about that same
-                         // version again. A newer tag is a different string,
-                         // so it still asks. The menu check always asks.
-                         if (g_quiet
-                             && AppConfig::instance().value(QStringLiteral("update/declined")).toString()
-                                    == version) {
+                         // Found by the quiet check: updated the way Discord
+                         // updates, without asking. The new version is
+                         // installed beside this one while it keeps running,
+                         // and it is the one that opens next time. Nothing
+                         // on screen, nothing interrupted. The menu's check
+                         // still offers to update right now.
+                         if (g_quiet) {
+                             QString bare = version;
+                             if (bare.startsWith(QLatin1Char('v'), Qt::CaseInsensitive))
+                                 bare.remove(0, 1);
+                             if (g_background || g_staged == bare)
+                                 return;
+                             g_background = true;
+                             wlog(QStringLiteral("update"),
+                                  QStringLiteral("%1 found; installing it in the background to open next time")
+                                      .arg(version));
+                             updater()->download();
                              return;
                          }
 
@@ -600,6 +627,53 @@ Updater *updater()
             version.remove(0, 1);
         const QString dest = QDir::cleanPath(root.filePath(QStringLiteral("versions/") + version));
         QDir().mkpath(dest);
+
+        if (g_background) {
+            // Beside this copy, silently, and not started: /NOLAUNCH. When it
+            // has finished, a marker file says the folder is complete, and
+            // the next launch of any older copy hands over to it.
+            auto *install = new QProcess(qApp);
+            install->setProgram(path);
+            install->setArguments({
+                QStringLiteral("/VERYSILENT"),
+                QStringLiteral("/SUPPRESSMSGBOXES"),
+                QStringLiteral("/NORESTART"),
+                QStringLiteral("/NOCLOSEAPPLICATIONS"),
+                QStringLiteral("/NORESTARTAPPLICATIONS"),
+                QStringLiteral("/SKIPWAIT=1"),
+                QStringLiteral("/NOLAUNCH"),
+                QStringLiteral("/DIR=") + QDir::toNativeSeparators(dest),
+            });
+            QObject::connect(install, &QProcess::finished, qApp,
+                             [install, dest, version](int code, QProcess::ExitStatus) {
+                install->deleteLater();
+                g_background = false;
+                if (code != 0) {
+                    wlog(QStringLiteral("update"),
+                         QStringLiteral("background install of %1 stopped with code %2; will try again")
+                             .arg(version)
+                             .arg(code));
+                    return;
+                }
+                QFile marker(QDir(dest).filePath(QLatin1String(UpdateFlow::ReadyMarker)));
+                if (marker.open(QIODevice::WriteOnly))
+                    marker.write(version.toUtf8());
+                g_staged = version;
+                wlog(QStringLiteral("update"),
+                     QStringLiteral("%1 is installed and opens the next time Singularity starts").arg(version));
+                if (g_stagedHandler)
+                    g_stagedHandler(version);
+            });
+            QObject::connect(install, &QProcess::errorOccurred, qApp, [install](QProcess::ProcessError) {
+                g_background = false;
+                wlog(QStringLiteral("update"),
+                     QStringLiteral("could not start the background installer: %1").arg(install->errorString()));
+                install->deleteLater();
+            });
+            wlog(QStringLiteral("update"), QStringLiteral("installing %1 in the background into %2").arg(version, dest));
+            install->start();
+            return;
+        }
 
         if (g_offer)
             g_offer->close();
@@ -673,6 +747,46 @@ void UpdateFlow::run(bool quiet, QWidget *parent)
     g_owner = parent;
     g_quiet = quiet;
     u->check(quiet);
+}
+
+void UpdateFlow::setStagedHandler(std::function<void(const QString &version)> handler)
+{
+    g_stagedHandler = std::move(handler);
+}
+
+QString UpdateFlow::newerInstalledCopy(const QString &myVersion)
+{
+    // The same folder rules as the install: a copy under versions\<n> lives
+    // in the folder above that, and a first install lives in its own folder
+    // with versions\ inside it.
+    QDir root(QCoreApplication::applicationDirPath());
+    if (root.cdUp() && root.dirName() == QLatin1String("versions"))
+        root.cdUp();
+    else
+        root.setPath(QCoreApplication::applicationDirPath());
+
+    QDir versions(root.filePath(QStringLiteral("versions")));
+    if (!versions.exists())
+        return {};
+
+    const QVersionNumber mine = QVersionNumber::fromString(myVersion);
+    QVersionNumber best = mine;
+    QString bestExe;
+    const QStringList folders = versions.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QString &name : folders) {
+        const QVersionNumber version = QVersionNumber::fromString(name);
+        if (version.isNull() || QVersionNumber::compare(version, best) <= 0)
+            continue;
+        const QDir folder(versions.filePath(name));
+        // Only a folder the background install finished: a half-copied one
+        // (an install still running, or one that was cut off) never opens.
+        const QString exe = folder.filePath(QStringLiteral("Singularity.exe"));
+        if (!QFileInfo::exists(folder.filePath(QLatin1String(ReadyMarker))) || !QFileInfo::exists(exe))
+            continue;
+        best = version;
+        bestExe = exe;
+    }
+    return bestExe;
 }
 
 bool UpdateFlow::updating()

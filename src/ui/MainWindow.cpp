@@ -380,6 +380,13 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
                 showDesktopNotification(title, text, channelId);
             });
 
+    // A background update finished: said once, quietly, at the bottom.
+    UpdateFlow::setStagedHandler([this](const QString &version) {
+        flashStatus(QStringLiteral("Singularity %1 is ready. It opens the next time you start Singularity.")
+                        .arg(version),
+                    10000);
+    });
+
     connect(m_store, &MessageStore::readStateChanged, this, &MainWindow::refreshUnreadMarks);
     connect(m_store, &MessageStore::directOrderChanged, this, [this]() {
         if (!m_currentGuildId.isEmpty() || !m_channelList)
@@ -4186,6 +4193,7 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
         inner += attachmentsHtml(snapshot.attachments);
         inner += stickersHtml(snapshot);
         inner += embedsHtml(snapshot);
+        inner += componentsHtml(snapshot.components);
 
         // Where it came from: the channel, when we know it, and when it was
         // first sent. The channel name opens that channel.
@@ -4211,6 +4219,7 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
 
     body += stickersHtml(message);
     body += embedsHtml(message);
+    body += componentsHtml(message.components);
     body += inviteCardsHtml(message);
     body += reactionsHtml(message);
 
@@ -4256,6 +4265,178 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
                "<div class=\"%6\">%7</div></td>"
                "</tr></table>")
         .arg(avatarCell, profileLink, authorClass, displayName, decorations, bodyClass, body);
+}
+
+// A Components V2 text block is markdown with a little more than a message
+// has: # / ## / ### headings and -# small print, a line at a time.
+QString MainWindow::textDisplayHtml(const QString &markdown)
+{
+    QStringList lines;
+    for (const QString &line : markdown.split(QLatin1Char('\n'))) {
+        struct Prefix { const char *mark; int px; bool bold; bool faint; };
+        static const Prefix prefixes[] = {
+            {"### ", 15, true, false}, {"## ", 17, true, false}, {"# ", 20, true, false}, {"-# ", 11, false, true},
+        };
+        bool done = false;
+        for (const Prefix &prefix : prefixes) {
+            if (!line.startsWith(QLatin1String(prefix.mark)))
+                continue;
+            const QString inner = renderContent(line.mid(int(qstrlen(prefix.mark))));
+            lines << QStringLiteral("<span style=\"font-size:%1px;%2%3\">%4</span>")
+                         .arg(prefix.px)
+                         .arg(prefix.bold ? QStringLiteral(" font-weight:700;") : QString())
+                         .arg(prefix.faint ? QStringLiteral(" color:%1;").arg(QLatin1String(Theme::TextFaint)) : QString())
+                         .arg(inner);
+            done = true;
+            break;
+        }
+        if (!done)
+            lines << renderContent(line);
+    }
+    return lines.join(QStringLiteral("<br>"));
+}
+
+// Discord's message components, drawn with what Qt's rich text can do.
+//
+//   1  a row of buttons or a menu        10 a block of text (markdown)
+//   9  a section: text with a picture    11 a thumbnail picture
+//      or button beside it               12 a gallery of pictures
+//   13 a file                            14 a divider or a gap
+//   17 a container: a box with a coloured edge, holding the rest
+//
+// Buttons show what they say. Link buttons (style 5) open their address;
+// the others would send an interaction to the bot, which is not wired yet.
+QString MainWindow::componentsHtml(const QJsonArray &components, int depth)
+{
+    if (components.isEmpty() || depth > 6)
+        return {};
+
+    const auto mediaUrl = [](const QJsonObject &media) {
+        QString url = media.value(QStringLiteral("proxy_url")).toString();
+        if (url.isEmpty())
+            url = media.value(QStringLiteral("url")).toString();
+        return url;
+    };
+    const auto picture = [](const QString &url, int width) {
+        if (url.isEmpty() || !ChatView::isAllowedImageHost(QUrl(url)))
+            return QString();
+        const QString safe = url.toHtmlEscaped();
+        return width > 0 ? QStringLiteral("<a href=\"singularity-image:%1\"><img src=\"%1\" width=\"%2\"></a>").arg(safe).arg(width)
+                         : QStringLiteral("<a href=\"singularity-image:%1\"><img src=\"%1\"></a>").arg(safe);
+    };
+    const auto button = [this](const QJsonObject &b) {
+        QString label = b.value(QStringLiteral("label")).toString().toHtmlEscaped();
+        const QJsonObject emoji = b.value(QStringLiteral("emoji")).toObject();
+        if (!emoji.isEmpty()) {
+            const QString id = emoji.value(QStringLiteral("id")).toString();
+            const QString face = id.isEmpty()
+                ? emoji.value(QStringLiteral("name")).toString().toHtmlEscaped()
+                : QStringLiteral("<img src=\"https://cdn.discordapp.com/emojis/%1.%2?size=48\" width=\"18\" height=\"18\">")
+                      .arg(id, emoji.value(QStringLiteral("animated")).toBool() ? QStringLiteral("gif") : QStringLiteral("png"));
+            label = label.isEmpty() ? face : face + QStringLiteral("&#160;") + label;
+        }
+        const int style = b.value(QStringLiteral("style")).toInt(2);
+        const bool disabled = b.value(QStringLiteral("disabled")).toBool();
+        const char *fill = Theme::SurfaceHover;
+        if (style == 1) fill = Theme::Accent;
+        else if (style == 3) fill = Theme::Green;
+        else if (style == 4) fill = Theme::Red;
+        const char *ink = (style == 1) ? Theme::Dark : Theme::TextPrimary;
+        const QString pill = QStringLiteral("<span style=\"background-color:%1; color:%2; padding:4px 12px;%3\">&#160;%4&#160;</span>")
+                                 .arg(QLatin1String(fill), QLatin1String(ink),
+                                      disabled ? QStringLiteral(" color:%1;").arg(QLatin1String(Theme::TextFaint)) : QString(),
+                                      label.isEmpty() ? QStringLiteral("&#8943;") : label);
+        const QString url = b.value(QStringLiteral("url")).toString();
+        if (style == 5 && !url.isEmpty()) {
+            return QStringLiteral("<a href=\"%1\" style=\"text-decoration:none;\">%2</a>")
+                .arg(url.toHtmlEscaped(),
+                     QStringLiteral("<span style=\"background-color:%1; color:%2; padding:4px 12px;\">&#160;%3 &#8599;&#160;</span>")
+                         .arg(QLatin1String(Theme::SurfaceHover), QLatin1String(Theme::TextPrimary), label));
+        }
+        return pill;
+    };
+
+    QString html;
+    for (const QJsonValue &value : components) {
+        const QJsonObject c = value.toObject();
+        switch (c.value(QStringLiteral("type")).toInt()) {
+        case 1: {   // a row of buttons, or one menu
+            QStringList parts;
+            for (const QJsonValue &inner : c.value(QStringLiteral("components")).toArray()) {
+                const QJsonObject item = inner.toObject();
+                const int type = item.value(QStringLiteral("type")).toInt();
+                if (type == 2) {
+                    parts << button(item);
+                } else if (type >= 3 && type <= 8) {
+                    QString hint = item.value(QStringLiteral("placeholder")).toString();
+                    if (hint.isEmpty())
+                        hint = QStringLiteral("Make a selection");
+                    parts << QStringLiteral("<span style=\"background-color:%1; color:%2; padding:4px 12px;\">&#160;%3 &#9662;&#160;</span>")
+                                 .arg(QLatin1String(Theme::SurfaceInput), QLatin1String(Theme::TextMuted), hint.toHtmlEscaped());
+                }
+            }
+            if (!parts.isEmpty())
+                html += QStringLiteral("<div style=\"margin-top:6px; margin-bottom:2px;\">%1</div>")
+                            .arg(parts.join(QStringLiteral("&#160;&#160;")));
+            break;
+        }
+        case 10:    // text
+            html += QStringLiteral("<div style=\"margin-top:2px; margin-bottom:2px;\">%1</div>")
+                        .arg(textDisplayHtml(c.value(QStringLiteral("content")).toString()));
+            break;
+        case 9: {   // text with a picture or a button beside it
+            const QString text = componentsHtml(c.value(QStringLiteral("components")).toArray(), depth + 1);
+            const QJsonObject accessory = c.value(QStringLiteral("accessory")).toObject();
+            QString side;
+            if (accessory.value(QStringLiteral("type")).toInt() == 11)
+                side = picture(mediaUrl(accessory.value(QStringLiteral("media")).toObject()), 80);
+            else if (accessory.value(QStringLiteral("type")).toInt() == 2)
+                side = button(accessory);
+            html += side.isEmpty()
+                ? text
+                : QStringLiteral("<table width=\"100%\" cellspacing=\"0\" cellpadding=\"0\"><tr><td valign=\"top\">%1</td>"
+                                 "<td valign=\"top\" align=\"right\" style=\"padding-left:12px;\">%2</td></tr></table>")
+                      .arg(text, side);
+            break;
+        }
+        case 11:    // a thumbnail on its own
+            html += picture(mediaUrl(c.value(QStringLiteral("media")).toObject()), 80);
+            break;
+        case 12: {  // a gallery
+            for (const QJsonValue &item : c.value(QStringLiteral("items")).toArray()) {
+                const QString img = picture(mediaUrl(item.toObject().value(QStringLiteral("media")).toObject()), 0);
+                if (!img.isEmpty())
+                    html += QStringLiteral("<div class=\"attach\">%1</div>").arg(img);
+            }
+            break;
+        }
+        case 13: {  // a file
+            const QJsonObject file = c.value(QStringLiteral("file")).toObject();
+            QString name = c.value(QStringLiteral("name")).toString();
+            if (name.isEmpty())
+                name = file.value(QStringLiteral("url")).toString().section(QLatin1Char('/'), -1);
+            html += QStringLiteral("<div class=\"file\">&#128206; %1</div>").arg(name.toHtmlEscaped());
+            break;
+        }
+        case 14:    // a divider, or just space
+            html += c.value(QStringLiteral("divider")).toBool(true)
+                ? QStringLiteral("<hr style=\"margin-top:6px; margin-bottom:6px;\">")
+                : QStringLiteral("<div style=\"margin-top:%1px;\"></div>")
+                      .arg(c.value(QStringLiteral("spacing")).toInt(1) == 2 ? 16 : 8);
+            break;
+        case 17: {  // a box with a coloured edge, like an embed
+            const int accent = c.value(QStringLiteral("accent_color")).toInt(-1);
+            const QString edge = accent >= 0 ? QColor(QRgb(accent)).name() : QString::fromLatin1(Theme::Border);
+            html += QStringLiteral("<table class=\"embed\" cellspacing=\"0\" cellpadding=\"0\"><tr>"
+                                   "<td width=\"4\" bgcolor=\"%1\"></td><td class=\"embed-inner\">%2</td></tr></table>")
+                        .arg(edge, componentsHtml(c.value(QStringLiteral("components")).toArray(), depth + 1));
+            break;
+        }
+        default:
+            break;
+        }
+    }
+    return html;
 }
 
 QString MainWindow::stickersHtml(const MessageInfo &message) const
@@ -4587,6 +4768,50 @@ QString MainWindow::renderContent(const QString &raw, bool jumbo)
                            .arg(id, animated ? QStringLiteral("gif") : QStringLiteral("png"), emojiSource)
                            .arg(emojiPx);
             last = match.capturedEnd();
+        }
+        rebuilt += text.mid(last);
+        text = rebuilt;
+    }
+
+    // Discord timestamps: <t:seconds> and <t:seconds:style>, shown in the
+    // reader's own time, with Discord's styles (t T d D f F R).
+    static const QRegularExpression timeRe(QStringLiteral("&lt;t:(-?\\d{1,13})(?::([tTdDfFR]))?&gt;"));
+    {
+        QString rebuilt;
+        int last = 0;
+        auto it = timeRe.globalMatch(text);
+        while (it.hasNext()) {
+            const QRegularExpressionMatch match = it.next();
+            const QDateTime when = QDateTime::fromSecsSinceEpoch(match.captured(1).toLongLong()).toLocalTime();
+            const QString style = match.captured(2).isEmpty() ? QStringLiteral("f") : match.captured(2);
+            QString shown;
+            const QLocale locale;
+            if (style == QLatin1String("t"))
+                shown = locale.toString(when, QStringLiteral("h:mm AP"));
+            else if (style == QLatin1String("T"))
+                shown = locale.toString(when, QStringLiteral("h:mm:ss AP"));
+            else if (style == QLatin1String("d"))
+                shown = locale.toString(when, QStringLiteral("M/d/yyyy"));
+            else if (style == QLatin1String("D"))
+                shown = locale.toString(when, QStringLiteral("MMMM d, yyyy"));
+            else if (style == QLatin1String("F"))
+                shown = locale.toString(when, QStringLiteral("dddd, MMMM d, yyyy h:mm AP"));
+            else if (style == QLatin1String("R")) {
+                const qint64 secs = QDateTime::currentDateTime().secsTo(when);
+                const qint64 a = qAbs(secs);
+                const auto unit = [](qint64 n, const char *one) {
+                    return QStringLiteral("%1 %2%3").arg(n).arg(QLatin1String(one)).arg(n == 1 ? QString() : QStringLiteral("s"));
+                };
+                const QString amount = a < 60 ? unit(a, "second") : a < 3600 ? unit(a / 60, "minute")
+                    : a < 86400 ? unit(a / 3600, "hour") : a < 2592000 ? unit(a / 86400, "day")
+                    : a < 31536000 ? unit(a / 2592000, "month") : unit(a / 31536000, "year");
+                shown = secs >= 0 ? QStringLiteral("in ") + amount : amount + QStringLiteral(" ago");
+            } else
+                shown = locale.toString(when, QStringLiteral("MMMM d, yyyy h:mm AP"));
+            rebuilt += text.mid(last, match.capturedStart() - last);
+            rebuilt += QStringLiteral("<span style=\"background-color:%1;\">%2</span>")
+                           .arg(QLatin1String(Theme::SurfaceInput), shown.toHtmlEscaped());
+            last = int(match.capturedEnd());
         }
         rebuilt += text.mid(last);
         text = rebuilt;

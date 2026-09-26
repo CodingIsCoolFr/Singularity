@@ -21,6 +21,7 @@
 #include <QTextStream>
 #include <QFontDatabase>
 #include <QIcon>
+#include <QProcess>
 #include <QSettings>
 #include <QSurfaceFormat>
 #include <QTimer>
@@ -92,7 +93,7 @@ int main(int argc, char *argv[])
     CrashLog::install();
     app.setApplicationName(QStringLiteral("Singularity"));
     app.setOrganizationName(QStringLiteral("Singularity"));
-    app.setApplicationVersion(QStringLiteral("0.8.18"));
+    app.setApplicationVersion(QStringLiteral("0.8.19"));
     app.setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
 
     Theme::applySeed(QColor(AppConfig::instance().value(QStringLiteral("appearance/themeSeed"),
@@ -122,6 +123,22 @@ int main(int argc, char *argv[])
 
     // Touch the log first so the file exists even if startup fails early.
     wlog(QStringLiteral("app"), QStringLiteral("Singularity %1 starting").arg(app.applicationVersion()));
+
+    // A newer version installed in the background while an older one was
+    // open: this launch opens that one instead, whichever shortcut or
+    // taskbar pin started it. That is the "close it and open it again and
+    // it has updated" Discord does. The new copy repoints the shortcuts.
+    if (!app.arguments().contains(QStringLiteral("--layout-report"))) {
+        const QString newer = UpdateFlow::newerInstalledCopy(app.applicationVersion());
+        if (!newer.isEmpty()) {
+            const QStringList args = app.arguments().mid(1);
+            if (QProcess::startDetached(newer, args)) {
+                wlog(QStringLiteral("app"), QStringLiteral("a newer version is installed; opening %1 instead").arg(newer));
+                return 0;
+            }
+            wlog(QStringLiteral("app"), QStringLiteral("could not open the newer version at %1").arg(newer));
+        }
+    }
     if (zoom != 100)
         wlog(QStringLiteral("app"), QStringLiteral("app zoom %1%").arg(zoom));
 

@@ -18,7 +18,7 @@
 ;     iscc installer\Singularity.iss
 
 #define AppName       "Singularity"
-#define AppVersion    "0.8.18"
+#define AppVersion    "0.8.19"
 #define AppPublisher  "Singularity"
 #define AppExe        "Singularity.exe"
 
@@ -187,7 +187,10 @@ end;
 // and is waiting to be started again.
 function InstalledSilently: Boolean;
 begin
-  Result := WizardSilent;
+  // /NOLAUNCH: the running program is installing the next version in the
+  // background to open next time, so starting it now would pull the rug
+  // from under whatever the person is doing.
+  Result := WizardSilent and (Pos('/NOLAUNCH', UpperCase(GetCmdTail)) = 0);
 end;
 
 procedure LoadFrames;

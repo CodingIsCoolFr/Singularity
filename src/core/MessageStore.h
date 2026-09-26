@@ -303,6 +303,12 @@ struct MessageInfo
     // forwarded (message_snapshots), which never changes afterwards. A
     // snapshot has words, pictures, embeds and stickers, but no author or id.
     QList<MessageInfo> snapshots;
+
+    // Buttons under a message, and Discord's "Components V2" layout (boxes,
+    // text blocks, dividers, pictures), kept as Discord sent them and drawn
+    // by the chat. A bot like Dyno sends a V2 message with no content and no
+    // embeds at all, which is why it used to read "(no text)".
+    QJsonArray components;
     QString forwardedFromChannelId;
     QString forwardedFromGuildId;
     QString forwardedFromMessageId;
