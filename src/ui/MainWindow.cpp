@@ -221,16 +221,96 @@ QString elapsedWords(qint64 seconds)
     return QStringLiteral("%1 days").arg(hours / 24);
 }
 
-QPushButton *captionButton(QWidget *parent, const QString &name, const QString &text)
+// The caption marks used to be font glyphs. A dash, a square and a cross each
+// sit on the baseline with their own side bearings, so none of them landed in
+// the middle of the button. These are drawn from the button's centre.
+class CaptionButton : public QPushButton
 {
-    auto *button = new QPushButton(text, parent);
-    button->setObjectName(name);
-    button->setFlat(true);
-    button->setFocusPolicy(Qt::NoFocus);
-    button->setFixedSize(46, 32);
-    button->setCursor(Qt::ArrowCursor);
-    return button;
-}
+public:
+    enum Kind { Minimize, Maximize, Close };
+
+    CaptionButton(Kind kind, QWidget *parent)
+        : QPushButton(parent)
+        , m_kind(kind)
+    {
+        setObjectName(kind == Minimize ? QStringLiteral("CaptionMin")
+                      : kind == Maximize ? QStringLiteral("CaptionMax")
+                                         : QStringLiteral("CaptionClose"));
+        setFlat(true);
+        setFocusPolicy(Qt::NoFocus);
+        setFixedSize(46, 32);
+        setCursor(Qt::ArrowCursor);
+    }
+
+    void setRestore(bool restore)
+    {
+        if (m_restore == restore)
+            return;
+        m_restore = restore;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        QPushButton::paintEvent(event);
+
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+
+        const bool hot = underMouse() || isDown();
+        QColor ink(Theme::TextMuted);
+        if (m_kind == Close && hot)
+            ink = QColor(255, 255, 255);
+        else if (hot)
+            ink = QColor(Theme::TextPrimary);
+
+        QPen pen(ink);
+        pen.setWidthF(1.6);
+        pen.setCapStyle(Qt::RoundCap);
+        pen.setJoinStyle(Qt::RoundJoin);
+        painter.setPen(pen);
+        painter.setBrush(Qt::NoBrush);
+
+        const QPointF c = QRectF(rect()).center();
+        switch (m_kind) {
+        case Minimize:
+            painter.drawLine(QPointF(c.x() - 5.0, c.y()), QPointF(c.x() + 5.0, c.y()));
+            break;
+        case Maximize:
+            if (m_restore)
+                paintRestore(painter, c);
+            else
+                painter.drawRect(QRectF(c.x() - 4.5, c.y() - 4.5, 9.0, 9.0));
+            break;
+        case Close: {
+            const qreal arm = 4.25;
+            painter.drawLine(QPointF(c.x() - arm, c.y() - arm), QPointF(c.x() + arm, c.y() + arm));
+            painter.drawLine(QPointF(c.x() + arm, c.y() - arm), QPointF(c.x() - arm, c.y() + arm));
+            break;
+        }
+        }
+    }
+
+private:
+    static void paintRestore(QPainter &painter, const QPointF &c)
+    {
+        // Two squares, the rear one peeking over the top right. The pair is
+        // centred as one shape, not as the front square alone.
+        const qreal side = 7.0;
+        const qreal overlap = 3.0;
+        const qreal span = side + overlap;
+        const QPointF o(c.x() - span / 2.0, c.y() - span / 2.0);
+        const QRectF back(o.x() + overlap, o.y(), side, side);
+        const QRectF front(o.x(), o.y() + overlap, side, side);
+        painter.drawLine(back.topLeft(), back.topRight());
+        painter.drawLine(back.topRight(), back.bottomRight());
+        painter.drawRect(front);
+    }
+
+    Kind m_kind;
+    bool m_restore = false;
+};
 
 bool containsGlobal(const QWidget *widget, const QPoint &global)
 {
@@ -1063,9 +1143,9 @@ void MainWindow::buildUi()
     dragStrip->setFixedHeight(32);
     titleLayout->addWidget(dragStrip, 1, Qt::AlignVCenter);
 
-    auto *minBtn = captionButton(m_backdrop, QStringLiteral("CaptionMin"), QStringLiteral("–"));
-    m_captionMax = captionButton(m_backdrop, QStringLiteral("CaptionMax"), QStringLiteral("□"));
-    auto *closeBtn = captionButton(m_backdrop, QStringLiteral("CaptionClose"), QStringLiteral("✕"));
+    auto *minBtn = new CaptionButton(CaptionButton::Minimize, m_backdrop);
+    m_captionMax = new CaptionButton(CaptionButton::Maximize, m_backdrop);
+    auto *closeBtn = new CaptionButton(CaptionButton::Close, m_backdrop);
     connect(minBtn, &QPushButton::clicked, this, &QWidget::showMinimized);
     connect(m_captionMax, &QPushButton::clicked, this, [this]() {
         if (isMaximized())
@@ -9809,8 +9889,8 @@ void MainWindow::changeEvent(QEvent *event)
     if (event->type() != QEvent::WindowStateChange)
         return;
 
-    if (m_captionMax)
-        m_captionMax->setText(isMaximized() ? QStringLiteral("❐") : QStringLiteral("□"));
+    if (auto *max = dynamic_cast<CaptionButton *>(m_captionMax))
+        max->setRestore(isMaximized());
     layoutTitleRow();
 
 #ifdef Q_OS_WIN
