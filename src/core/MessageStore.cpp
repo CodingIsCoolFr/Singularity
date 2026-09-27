@@ -1083,6 +1083,7 @@ MessageInfo MessageStore::parseMessage(const QJsonObject &raw)
     message.id = raw.value(QStringLiteral("id")).toString();
     message.channelId = raw.value(QStringLiteral("channel_id")).toString();
     message.content = raw.value(QStringLiteral("content")).toString();
+    message.type = raw.value(QStringLiteral("type")).toInt();
 
     const QJsonObject author = raw.value(QStringLiteral("author")).toObject();
     message.authorId = author.value(QStringLiteral("id")).toString();

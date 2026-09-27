@@ -262,6 +262,15 @@ private:
     QString inviteCardsHtml(const MessageInfo &message);
     QString activityInviteHtml(const MessageInfo &message) const;
     QString reactionsHtml(const MessageInfo &message) const;
+
+    // Discord's "Wave to …" on a new 1:1 DM, and "Wave back" when they waved
+    // first. Sends the Wumpus Wave sticker; a 👋 if Discord refuses it.
+    QString emptyChannelHtml() const;
+    QString wavePromptHtml(const QList<MessageInfo> &messages) const;
+    void sendWave();
+    bool isOneToOneDm() const;
+    static bool messageHasWave(const MessageInfo &message);
+    QString m_waveSentChannelId;
     void updateUserPanel();
     void setTypingHint(const QString &text);
     void handleAnchor(const QUrl &url);

@@ -1055,6 +1055,14 @@ a.cmpbtn {
     text-decoration: none;
     padding: 4px 12px;
 }
+a.wave {
+    color: @text;
+    background-color: @input;
+    font-family: "Poppins", "Segoe UI", sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    text-decoration: none;
+}
 
 /* Underlined, not just tinted. In a grey scheme a colour alone is not enough
    to mark a link apart from the words around it. */

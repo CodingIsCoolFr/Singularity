@@ -306,6 +306,9 @@ struct MessageInfo
     QString authorName;
     QString authorAvatar;
     QString content;
+    // Discord's message type: 0 default, 19 reply, 20 slash command. Anything
+    // else is a system line (friend accepted, pin, boost, and the rest).
+    int type = 0;
     QDateTime timestamp;
     QList<Attachment> attachments;
     QList<EmbedInfo> embeds;

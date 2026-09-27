@@ -3974,7 +3974,7 @@ void MainWindow::renderChannel()
 
     const QList<MessageInfo> all = m_store->messages(m_currentChannelId);
     if (all.isEmpty()) {
-        m_messageView->setHtml(QStringLiteral("<p class=\"system\">No messages here yet.</p>"));
+        m_messageView->setHtml(emptyChannelHtml());
         m_hasLastRendered = false;
         m_renderedCount = 0;
         m_renderedChannelId = m_currentChannelId;
@@ -4039,6 +4039,8 @@ void MainWindow::renderChannel()
         previous = message;
         havePrevious = true;
     }
+
+    html += wavePromptHtml(all);
 
     const qint64 builtMs = clock.elapsed();
 
@@ -4301,6 +4303,14 @@ void MainWindow::appendMessageToView(const MessageInfo &message, bool grouped)
     // they come back down, which is when the window returns to the end.
     if (!m_windowAtTail)
         return;
+
+    // The empty-DM Wave line is not a message frame. A first message, or a
+    // wave landing, has to rebuild so that line comes and goes with the chat.
+    if (m_renderedCount == 0 || messageHasWave(message)
+        || (isOneToOneDm() && m_store->messages(m_currentChannelId).size() <= 11)) {
+        renderChannel();
+        return;
+    }
 
     QScrollBar *bar = m_messageView->verticalScrollBar();
     const bool wasAtBottom = bar->value() >= bar->maximum() - 40;
@@ -4754,6 +4764,145 @@ QString MainWindow::reactionsHtml(const MessageInfo &message) const
 
     html += QStringLiteral("</div>");
     return html;
+}
+
+namespace {
+
+// Wumpus Wave from the default "Wumpus Beyond" pack. Discord's empty-DM
+// button sends this sticker. format_type 3 (Lottie) — we cannot draw it,
+// but Discord still accepts it as a wave.
+constexpr auto kWaveStickerId = "749054660769218631";
+
+bool isUserChat(const MessageInfo &message)
+{
+    // 0 default, 19 reply, 20 slash, 23 context-menu command.
+    switch (message.type) {
+    case 0:
+    case 19:
+    case 20:
+    case 23:
+        return true;
+    default:
+        return false;
+    }
+}
+
+} // namespace
+
+bool MainWindow::messageHasWave(const MessageInfo &message)
+{
+    for (const StickerInfo &sticker : message.stickers) {
+        if (sticker.id == QLatin1String(kWaveStickerId))
+            return true;
+    }
+    return false;
+}
+
+bool MainWindow::isOneToOneDm() const
+{
+    if (m_currentChannelId.isEmpty() || !m_store)
+        return false;
+    const ChannelInfo channel = m_store->channel(m_currentChannelId);
+    return channel.type == 1 && channel.recipientIds.size() == 1;
+}
+
+QString MainWindow::emptyChannelHtml() const
+{
+    const QString wave = wavePromptHtml({});
+    if (!wave.isEmpty()) {
+        const ChannelInfo channel = m_store->channel(m_currentChannelId);
+        const UserInfo other = m_store->user(channel.recipientIds.first());
+        QString name = other.displayName();
+        if (name.isEmpty())
+            name = channel.name;
+        if (name.isEmpty())
+            name = QStringLiteral("them");
+        return QStringLiteral("<p class=\"system\">This is the beginning of your direct message "
+                              "history with %1.</p>%2")
+            .arg(name.toHtmlEscaped(), wave);
+    }
+    return QStringLiteral("<p class=\"system\">No messages here yet.</p>");
+}
+
+QString MainWindow::wavePromptHtml(const QList<MessageInfo> &messages) const
+{
+    if (!isOneToOneDm())
+        return {};
+    if (m_waveSentChannelId == m_currentChannelId)
+        return {};
+
+    bool weWaved = false;
+    bool theyWaved = false;
+    for (const MessageInfo &message : messages) {
+        const bool wave = messageHasWave(message);
+        if (message.authorId == m_selfUserId) {
+            if (wave || isUserChat(message))
+                weWaved = true;
+        } else if (wave) {
+            theyWaved = true;
+        }
+    }
+    if (weWaved)
+        return {};
+    // A new DM (a handful of lines, including "accepted your friend request")
+    // still gets Wave to. An old chat does not grow a button at the bottom.
+    if (!theyWaved && messages.size() > 10)
+        return {};
+
+    const ChannelInfo channel = m_store->channel(m_currentChannelId);
+    const UserInfo other = m_store->user(channel.recipientIds.first());
+    QString name = other.displayName();
+    if (name.isEmpty())
+        name = channel.name;
+    if (name.isEmpty())
+        name = QStringLiteral("them");
+
+    const QString label = theyWaved ? QStringLiteral("👋 Wave back")
+                                    : QStringLiteral("👋 Wave to %1").arg(name.toHtmlEscaped());
+    return QStringLiteral("<p><a class=\"wave\" href=\"singularity-wave:\">%1</a></p>").arg(label);
+}
+
+void MainWindow::sendWave()
+{
+    if (m_currentChannelId.isEmpty() || !m_rest)
+        return;
+
+    const QString channelId = m_currentChannelId;
+    m_waveSentChannelId = channelId;
+    wlog(QStringLiteral("ui"), QStringLiteral("waving in %1").arg(channelId));
+
+    const auto fail = [this, channelId](const QString &why) {
+        if (m_waveSentChannelId == channelId)
+            m_waveSentChannelId.clear();
+        flashStatus(why, 5000);
+        if (channelId == m_currentChannelId)
+            renderChannel();
+    };
+
+    m_rest->sendMessage(
+        channelId, QString(), QString(), {},
+        [this, channelId](const QJsonObject &) {
+            wlog(QStringLiteral("ui"), QStringLiteral("wave sticker sent"));
+            if (channelId == m_currentChannelId)
+                renderChannel();
+        },
+        [this, channelId, fail](const RestClient::Error &error) {
+            // Standard stickers can be refused without Nitro. A wave emoji
+            // still says it, and Discord accepts that from anyone.
+            wlog(QStringLiteral("ui"),
+                 QStringLiteral("wave sticker refused (HTTP %1), sending 👋 instead")
+                     .arg(error.httpStatus));
+            m_rest->sendMessage(
+                channelId, QStringLiteral("👋"), QString(), {},
+                [this, channelId](const QJsonObject &) {
+                    if (channelId == m_currentChannelId)
+                        renderChannel();
+                },
+                [fail](const RestClient::Error &again) {
+                    fail(QStringLiteral("Wave failed (%1).").arg(again.message.left(120)));
+                });
+        },
+        QString::fromLatin1(kWaveStickerId));
 }
 
 QString MainWindow::embedsHtml(const MessageInfo &message)
@@ -5674,6 +5823,11 @@ void MainWindow::handleAnchor(const QUrl &url)
             id = whole.mid(QStringLiteral("singularity-game:").size());
         if (!id.isEmpty())
             QDesktopServices::openUrl(QUrl(QStringLiteral("https://discord.com/application-directory/%1").arg(id)));
+        return;
+    }
+
+    if (url.scheme() == QLatin1String("singularity-wave")) {
+        sendWave();
         return;
     }
 
