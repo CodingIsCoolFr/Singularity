@@ -660,8 +660,8 @@ QMainWindow[glass="true"] #VoicePanel {
 #VoiceChannel { color: @muted; font-size: 11px; background: transparent; }
 
 #VoicePanel QPushButton {
-    padding: 2px 6px;
-    min-height: 26px;
+    padding: 4px 12px;
+    min-height: 32px;
     font-size: 11px;
     font-weight: 600;
     border-radius: 8px;
@@ -1043,6 +1043,13 @@ a.fwd-link { color: @faint; text-decoration: none; }
     font-family: "Poppins", "Segoe UI", sans-serif;
     font-weight: 600;
     text-decoration: none;
+}
+a.cmpbtn {
+    font-family: "Poppins", "Segoe UI", sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+    text-decoration: none;
+    padding: 4px 12px;
 }
 
 /* Underlined, not just tinted. In a grey scheme a colour alone is not enough

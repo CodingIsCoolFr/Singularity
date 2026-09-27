@@ -1098,6 +1098,8 @@ MessageInfo MessageStore::parseMessage(const QJsonObject &raw)
 
     message.edited = !raw.value(QStringLiteral("edited_timestamp")).isNull()
         && raw.contains(QStringLiteral("edited_timestamp"));
+    message.applicationId = raw.value(QStringLiteral("application_id")).toString();
+    message.flags = raw.value(QStringLiteral("flags")).toInt();
 
     const QJsonArray attachments = raw.value(QStringLiteral("attachments")).toArray();
     for (const QJsonValue &value : attachments) {
@@ -1608,6 +1610,10 @@ void MessageStore::updateMessage(const QJsonObject &rawMessage)
             item.content = rawMessage.value(QStringLiteral("content")).toString();
         if (rawMessage.contains(QStringLiteral("components")))
             item.components = rawMessage.value(QStringLiteral("components")).toArray();
+        if (rawMessage.contains(QStringLiteral("application_id")))
+            item.applicationId = rawMessage.value(QStringLiteral("application_id")).toString();
+        if (rawMessage.contains(QStringLiteral("flags")))
+            item.flags = rawMessage.value(QStringLiteral("flags")).toInt();
         item.edited = true;
         emit messageChanged(channelId, messageId);
         return;

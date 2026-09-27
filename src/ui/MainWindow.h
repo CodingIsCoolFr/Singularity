@@ -250,7 +250,11 @@ private:
     QString embedsHtml(const MessageInfo &message);
     // Buttons and Discord's Components V2 layout: containers, text blocks,
     // sections, dividers, pictures. See MessageInfo::components.
-    QString componentsHtml(const QJsonArray &components, int depth = 0);
+    QString componentsHtml(const QJsonArray &components, const QString &messageId,
+                           const QString &applicationId, int messageFlags, int depth = 0);
+    void pressMessageButton(const QString &messageId, const QString &applicationId, int messageFlags,
+                            const QString &customId);
+    void showInteractionModal(const QJsonObject &data);
     QString textDisplayHtml(const QString &markdown);
     QString inviteCardsHtml(const MessageInfo &message);
     QString reactionsHtml(const MessageInfo &message) const;
@@ -647,6 +651,14 @@ private:
 
     // This session's token, for adding it to the account switcher. Never logged.
     QString m_sessionToken;
+
+    // The button press that is waiting on the bot, so a popup that comes back
+    // can be sent to the same place.
+    QString m_buttonChannelId;
+    QString m_buttonGuildId;
+    QString m_buttonMessageId;
+    QString m_buttonApplicationId;
+    int m_buttonMessageFlags = 0;
 
     // Folder sync with Discord. Nothing is ever sent until Discord's own
     // arrangement has been read at sign-in, so an old copy on this machine

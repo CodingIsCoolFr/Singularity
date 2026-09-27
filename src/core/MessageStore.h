@@ -326,6 +326,9 @@ struct MessageInfo
     // by the chat. A bot like Dyno sends a V2 message with no content and no
     // embeds at all, which is why it used to read "(no text)".
     QJsonArray components;
+    // The application that owns the buttons. A press is sent to this id.
+    QString applicationId;
+    int flags = 0;
     QString forwardedFromChannelId;
     QString forwardedFromGuildId;
     QString forwardedFromMessageId;

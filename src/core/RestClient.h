@@ -257,6 +257,10 @@ public:
     void proxyApplicationAsset(const QString &applicationId, const QString &url, ArrayHandler onOk,
                                ErrorHandler onError);
 
+    // POST /interactions. A button press or a filled-in popup. 204 means
+    // Discord accepted it; the bot's answer arrives on the gateway.
+    void createInteraction(const QJsonObject &body, ObjectHandler onOk, ErrorHandler onError);
+
     // Private notes you keep about someone. Only you can read them.
     void fetchNote(const QString &userId, ObjectHandler onOk, ErrorHandler onError);
     void saveNote(const QString &userId, const QString &note, ObjectHandler onOk, ErrorHandler onError);

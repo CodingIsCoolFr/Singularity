@@ -82,7 +82,9 @@
 #include <QHBoxLayout>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPlainTextEdit>
 #include <QPointer>
+#include <QUrlQuery>
 #include <QToolTip>
 #include <QKeyEvent>
 #include <QLabel>
@@ -1659,7 +1661,7 @@ QWidget *MainWindow::buildVoicePanel(QWidget *parent)
     auto *panel = new QFrame(parent);
     panel->setObjectName(QStringLiteral("VoicePanel"));
     panel->setVisible(false);
-    panel->setFixedHeight(168);
+    panel->setFixedHeight(196);
 
     // Two rows, because three buttons and a channel name do not fit across a
     // 240 pixel sidebar.
@@ -1695,41 +1697,41 @@ QWidget *MainWindow::buildVoicePanel(QWidget *parent)
     // top of "Leave". A grid gives each one an equal share of whatever width
     // there is, so a narrower sidebar makes them smaller rather than broken.
     auto *buttons = new QGridLayout;
-    buttons->setContentsMargins(0, 0, 0, 0);
-    buttons->setHorizontalSpacing(6);
-    buttons->setVerticalSpacing(6);
+    buttons->setContentsMargins(0, 4, 0, 0);
+    buttons->setHorizontalSpacing(12);
+    buttons->setVerticalSpacing(10);
     buttons->setColumnStretch(0, 1);
     buttons->setColumnStretch(1, 1);
 
     m_muteButton = new QPushButton(QStringLiteral("Mute"), panel);
-    m_muteButton->setFixedHeight(26);
+    m_muteButton->setFixedHeight(32);
     m_muteButton->setCheckable(true);
     m_muteButton->setToolTip(QStringLiteral("Stop sending your voice"));
     connect(m_muteButton, &QPushButton::toggled, this, [this](bool on) { setSelfMuted(on); });
     buttons->addWidget(m_muteButton, 0, 0);
 
     m_deafenButton = new QPushButton(QStringLiteral("Deafen"), panel);
-    m_deafenButton->setFixedHeight(26);
+    m_deafenButton->setFixedHeight(32);
     m_deafenButton->setCheckable(true);
     m_deafenButton->setToolTip(QStringLiteral("Stop hearing everyone"));
     connect(m_deafenButton, &QPushButton::toggled, this, [this](bool on) { setSelfDeafened(on); });
     buttons->addWidget(m_deafenButton, 0, 1);
 
     m_shareButton = new QPushButton(QStringLiteral("Share"), panel);
-    m_shareButton->setFixedHeight(26);
+    m_shareButton->setFixedHeight(32);
     m_shareButton->setToolTip(QStringLiteral("Show your screen to everyone in this call"));
     connect(m_shareButton, &QPushButton::clicked, this, &MainWindow::startScreenShare);
     buttons->addWidget(m_shareButton, 1, 0);
 
     m_cameraButton = new QPushButton(QStringLiteral("Camera"), panel);
-    m_cameraButton->setFixedHeight(26);
+    m_cameraButton->setFixedHeight(32);
     m_cameraButton->setCheckable(true);
     m_cameraButton->setToolTip(QStringLiteral("Show your camera to everyone in this call"));
     connect(m_cameraButton, &QPushButton::clicked, this, &MainWindow::toggleCamera);
     buttons->addWidget(m_cameraButton, 1, 1);
 
     auto *leave = new QPushButton(QStringLiteral("Leave"), panel);
-    leave->setFixedHeight(26);
+    leave->setFixedHeight(32);
     leave->setToolTip(QStringLiteral("Leave the call"));
     connect(leave, &QPushButton::clicked, this, &MainWindow::leaveVoice);
     buttons->addWidget(leave, 2, 0, 1, 2);
@@ -2150,6 +2152,24 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
             && m_voice->state() != VoiceConnection::State::Connected)
             m_rejoinVoiceAfterGateway = true;
         rejoinVoiceIfNeeded();
+        return;
+    }
+
+    if (eventType == QLatin1String("INTERACTION_MODAL_CREATE")) {
+        showInteractionModal(data);
+        return;
+    }
+
+    if (eventType == QLatin1String("INTERACTION_IFRAME_MODAL_CREATE")) {
+        flashStatus(QStringLiteral("That button opened a page this client cannot show."), 5000);
+        return;
+    }
+
+    if (eventType == QLatin1String("INTERACTION_FAILURE")) {
+        const int reason = data.value(QStringLiteral("reason_code")).toInt();
+        flashStatus(reason == 2 ? QStringLiteral("The bot did not answer in time.")
+                                 : QStringLiteral("That button did not go through."),
+                    5000);
         return;
     }
 
@@ -4355,7 +4375,7 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
         inner += attachmentsHtml(snapshot.attachments);
         inner += stickersHtml(snapshot);
         inner += embedsHtml(snapshot);
-        inner += componentsHtml(snapshot.components);
+        inner += componentsHtml(snapshot.components, message.id, message.applicationId, message.flags);
 
         // Where it came from: the channel, when we know it, and when it was
         // first sent. The channel name opens that channel.
@@ -4381,7 +4401,7 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
 
     body += stickersHtml(message);
     body += embedsHtml(message);
-    body += componentsHtml(message.components);
+    body += componentsHtml(message.components, message.id, message.applicationId, message.flags);
     body += inviteCardsHtml(message);
     body += reactionsHtml(message);
 
@@ -4466,9 +4486,12 @@ QString MainWindow::textDisplayHtml(const QString &markdown)
 //   13 a file                            14 a divider or a gap
 //   17 a container: a box with a coloured edge, holding the rest
 //
-// Buttons show what they say. Link buttons (style 5) open their address;
-// the others would send an interaction to the bot, which is not wired yet.
-QString MainWindow::componentsHtml(const QJsonArray &components, int depth)
+// Buttons show what they say. A link button opens its address. Any other
+// button sends the press to the bot, the way Discord does when you click it.
+// The style sits on the link itself. A span inside the link is not a link
+// to Qt, so the pill used to draw and then ignore the click.
+QString MainWindow::componentsHtml(const QJsonArray &components, const QString &messageId,
+                                   const QString &applicationId, int messageFlags, int depth)
 {
     if (components.isEmpty() || depth > 6)
         return {};
@@ -4486,7 +4509,7 @@ QString MainWindow::componentsHtml(const QJsonArray &components, int depth)
         return width > 0 ? QStringLiteral("<a href=\"singularity-image:%1\"><img src=\"%1\" width=\"%2\"></a>").arg(safe).arg(width)
                          : QStringLiteral("<a href=\"singularity-image:%1\"><img src=\"%1\"></a>").arg(safe);
     };
-    const auto button = [this](const QJsonObject &b) {
+    const auto button = [messageId, applicationId, messageFlags](const QJsonObject &b) {
         QString label = b.value(QStringLiteral("label")).toString().toHtmlEscaped();
         const QJsonObject emoji = b.value(QStringLiteral("emoji")).toObject();
         if (!emoji.isEmpty()) {
@@ -4503,19 +4526,37 @@ QString MainWindow::componentsHtml(const QJsonArray &components, int depth)
         if (style == 1) fill = Theme::Accent;
         else if (style == 3) fill = Theme::Green;
         else if (style == 4) fill = Theme::Red;
-        const char *ink = (style == 1) ? Theme::Dark : Theme::TextPrimary;
-        const QString pill = QStringLiteral("<span style=\"background-color:%1; color:%2; padding:4px 12px;%3\">&#160;%4&#160;</span>")
-                                 .arg(QLatin1String(fill), QLatin1String(ink),
-                                      disabled ? QStringLiteral(" color:%1;").arg(QLatin1String(Theme::TextFaint)) : QString(),
-                                      label.isEmpty() ? QStringLiteral("&#8943;") : label);
+        const char *ink = disabled ? Theme::TextFaint
+                                   : (style == 1) ? Theme::Dark : Theme::TextPrimary;
         const QString url = b.value(QStringLiteral("url")).toString();
-        if (style == 5 && !url.isEmpty()) {
-            return QStringLiteral("<a href=\"%1\" style=\"text-decoration:none;\">%2</a>")
-                .arg(url.toHtmlEscaped(),
-                     QStringLiteral("<span style=\"background-color:%1; color:%2; padding:4px 12px;\">&#160;%3 &#8599;&#160;</span>")
-                         .arg(QLatin1String(Theme::SurfaceHover), QLatin1String(Theme::TextPrimary), label));
+        const bool link = style == 5 && !url.isEmpty();
+        QString href;
+        if (!disabled && link) {
+            href = url;
+        } else if (!disabled && !messageId.isEmpty()) {
+            const QString customId = b.value(QStringLiteral("custom_id")).toString();
+            if (!customId.isEmpty()) {
+                QUrl press;
+                press.setScheme(QStringLiteral("singularity-press"));
+                press.setHost(QStringLiteral("button"));
+                QUrlQuery query;
+                query.addQueryItem(QStringLiteral("m"), messageId);
+                query.addQueryItem(QStringLiteral("a"), applicationId);
+                query.addQueryItem(QStringLiteral("f"), QString::number(messageFlags));
+                query.addQueryItem(QStringLiteral("c"), customId);
+                press.setQuery(query);
+                href = press.toString(QUrl::FullyEncoded);
+            }
         }
-        return pill;
+        const QString face = QStringLiteral("&#160;%1%2&#160;")
+                                 .arg(label.isEmpty() ? QStringLiteral("&#8943;") : label,
+                                      link ? QStringLiteral(" &#8599;") : QString());
+        const QString look = QStringLiteral("text-decoration:none; background-color:%1; color:%2; padding:4px 12px;")
+                                 .arg(QLatin1String(fill), QLatin1String(ink));
+        if (href.isEmpty())
+            return QStringLiteral("<span style=\"%1\">%2</span>").arg(look, face);
+        return QStringLiteral("<a class=\"cmpbtn\" href=\"%1\" style=\"%2\">%3</a>")
+            .arg(href.toHtmlEscaped(), look, face);
     };
 
     QString html;
@@ -4547,7 +4588,8 @@ QString MainWindow::componentsHtml(const QJsonArray &components, int depth)
                         .arg(textDisplayHtml(c.value(QStringLiteral("content")).toString()));
             break;
         case 9: {   // text with a picture or a button beside it
-            const QString text = componentsHtml(c.value(QStringLiteral("components")).toArray(), depth + 1);
+            const QString text = componentsHtml(c.value(QStringLiteral("components")).toArray(),
+                                                 messageId, applicationId, messageFlags, depth + 1);
             const QJsonObject accessory = c.value(QStringLiteral("accessory")).toObject();
             QString side;
             if (accessory.value(QStringLiteral("type")).toInt() == 11)
@@ -4591,7 +4633,8 @@ QString MainWindow::componentsHtml(const QJsonArray &components, int depth)
             const QString edge = accent >= 0 ? QColor(QRgb(accent)).name() : QString::fromLatin1(Theme::Border);
             html += QStringLiteral("<table class=\"embed\" cellspacing=\"0\" cellpadding=\"0\"><tr>"
                                    "<td width=\"4\" bgcolor=\"%1\"></td><td class=\"embed-inner\">%2</td></tr></table>")
-                        .arg(edge, componentsHtml(c.value(QStringLiteral("components")).toArray(), depth + 1));
+                        .arg(edge, componentsHtml(c.value(QStringLiteral("components")).toArray(),
+                                                   messageId, applicationId, messageFlags, depth + 1));
             break;
         }
         default:
@@ -5549,6 +5592,17 @@ void MainWindow::handleAnchor(const QUrl &url)
 {
     const QString whole = url.toString();
 
+    // A button that is not a link. The query carries which message and which
+    // custom id, so the press can be sent to the bot that owns it.
+    if (url.scheme() == QLatin1String("singularity-press")) {
+        const QUrlQuery query(url);
+        pressMessageButton(query.queryItemValue(QStringLiteral("m")),
+                           query.queryItemValue(QStringLiteral("a")),
+                           query.queryItemValue(QStringLiteral("f")).toInt(),
+                           query.queryItemValue(QStringLiteral("c"), QUrl::FullyDecoded));
+        return;
+    }
+
     // Our own scheme: open the profile card for that person.
     if (url.scheme() == QLatin1String("singularity-user")) {
         QString userId = url.path();
@@ -5602,9 +5656,220 @@ void MainWindow::handleAnchor(const QUrl &url)
         return;
     }
 
+    // A link to a channel opens it here. Discord does the same for a button
+    // that points at a channel, instead of handing it to a browser.
+    static const QRegularExpression channelLink(QStringLiteral(
+        R"(^https?://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/channels/[^/]+/(\d+))"));
+    const QRegularExpressionMatch channelHit = channelLink.match(whole);
+    if (channelHit.hasMatch()) {
+        selectChannelEverywhere(channelHit.captured(1));
+        return;
+    }
+
     // Anything else is a real web link, opened in the normal browser.
     if (url.scheme() == QLatin1String("http") || url.scheme() == QLatin1String("https"))
         QDesktopServices::openUrl(url);
+}
+
+void MainWindow::pressMessageButton(const QString &messageId, const QString &applicationId,
+                                    int messageFlags, const QString &customId)
+{
+    if (messageId.isEmpty() || customId.isEmpty())
+        return;
+    if (applicationId.isEmpty()) {
+        flashStatus(QStringLiteral("That button has no bot to send the press to."), 4000);
+        return;
+    }
+    if (!m_gateway || m_gateway->sessionId().isEmpty()) {
+        flashStatus(QStringLiteral("Not connected yet."), 3000);
+        return;
+    }
+
+    m_buttonChannelId = m_currentChannelId;
+    m_buttonGuildId = m_currentGuildId;
+    m_buttonMessageId = messageId;
+    m_buttonApplicationId = applicationId;
+    m_buttonMessageFlags = messageFlags;
+
+    QJsonObject body{
+        {QStringLiteral("type"), 3},
+        {QStringLiteral("application_id"), applicationId},
+        {QStringLiteral("channel_id"), m_currentChannelId},
+        {QStringLiteral("message_id"), messageId},
+        {QStringLiteral("message_flags"), messageFlags},
+        {QStringLiteral("session_id"), m_gateway->sessionId()},
+        {QStringLiteral("data"), QJsonObject{
+            {QStringLiteral("component_type"), 2},
+            {QStringLiteral("custom_id"), customId},
+        }},
+    };
+    // A direct message has no server. Sending a made-up guild id is a refusal.
+    bool guildIsNumber = !m_currentGuildId.isEmpty();
+    for (const QChar c : m_currentGuildId) {
+        if (!c.isDigit())
+            guildIsNumber = false;
+    }
+    if (guildIsNumber)
+        body.insert(QStringLiteral("guild_id"), m_currentGuildId);
+
+    flashStatus(QStringLiteral("Sending..."), 3000);
+    m_rest->createInteraction(
+        body,
+        [this](const QJsonObject &) { flashStatus(QStringLiteral("Sent."), 2000); },
+        [this](const RestClient::Error &error) {
+            const QString why = error.message.isEmpty() ? QStringLiteral("Discord refused that button.")
+                                                        : error.message;
+            flashStatus(why, 5000);
+        });
+}
+
+void MainWindow::showInteractionModal(const QJsonObject &data)
+{
+    const QString title = data.value(QStringLiteral("title")).toString();
+    const QString modalCustomId = data.value(QStringLiteral("custom_id")).toString();
+    const QString interactionId = data.value(QStringLiteral("id")).toString();
+
+    struct Field {
+        QString customId;
+        QString label;
+        QString placeholder;
+        QString value;
+        bool paragraph = false;
+        bool required = true;
+        int maxLength = 0;
+    };
+    QList<Field> fields;
+    const auto takeInput = [&fields](const QJsonObject &input, const QString &labelOverride) {
+        if (input.value(QStringLiteral("type")).toInt() != 4)
+            return;
+        Field field;
+        field.customId = input.value(QStringLiteral("custom_id")).toString();
+        field.label = labelOverride.isEmpty() ? input.value(QStringLiteral("label")).toString() : labelOverride;
+        if (field.label.isEmpty())
+            field.label = field.customId;
+        field.placeholder = input.value(QStringLiteral("placeholder")).toString();
+        field.value = input.value(QStringLiteral("value")).toString();
+        field.paragraph = input.value(QStringLiteral("style")).toInt() == 2;
+        field.required = input.value(QStringLiteral("required")).toBool(true);
+        field.maxLength = input.value(QStringLiteral("max_length")).toInt();
+        if (!field.customId.isEmpty())
+            fields.append(field);
+    };
+    for (const QJsonValue &row : data.value(QStringLiteral("components")).toArray()) {
+        const QJsonObject component = row.toObject();
+        const int type = component.value(QStringLiteral("type")).toInt();
+        if (type == 4)
+            takeInput(component, {});
+        else if (type == 18)
+            takeInput(component.value(QStringLiteral("component")).toObject(),
+                      component.value(QStringLiteral("label")).toString());
+        else if (type == 1) {
+            for (const QJsonValue &child : component.value(QStringLiteral("components")).toArray())
+                takeInput(child.toObject(), {});
+        }
+    }
+    if (fields.isEmpty()) {
+        flashStatus(title.isEmpty() ? QStringLiteral("The bot answered in a way this client cannot show.")
+                                     : title,
+                    5000);
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(title.isEmpty() ? QStringLiteral("The bot") : title);
+    dialog.setMinimumWidth(440);
+    auto *layout = new QVBoxLayout(&dialog);
+    QList<QWidget *> editors;
+    for (const Field &field : fields) {
+        layout->addWidget(new QLabel(field.required ? field.label + QStringLiteral(" *") : field.label, &dialog));
+        if (field.paragraph) {
+            auto *edit = new QPlainTextEdit(field.value, &dialog);
+            edit->setPlaceholderText(field.placeholder);
+            edit->setFixedHeight(96);
+            layout->addWidget(edit);
+            editors.append(edit);
+        } else {
+            auto *edit = new QLineEdit(field.value, &dialog);
+            edit->setPlaceholderText(field.placeholder);
+            if (field.maxLength > 0)
+                edit->setMaxLength(field.maxLength);
+            layout->addWidget(edit);
+            editors.append(edit);
+        }
+    }
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, [&]() {
+        for (int i = 0; i < fields.size(); ++i) {
+            const QString value = editors.at(i)->inherits("QPlainTextEdit")
+                ? static_cast<QPlainTextEdit *>(editors.at(i))->toPlainText()
+                : static_cast<QLineEdit *>(editors.at(i))->text();
+            if (fields.at(i).required && value.trimmed().isEmpty()) {
+                flashStatus(QStringLiteral("Fill in %1.").arg(fields.at(i).label), 4000);
+                return;
+            }
+        }
+        dialog.accept();
+    });
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    QJsonArray rows;
+    for (int i = 0; i < fields.size(); ++i) {
+        const QString value = editors.at(i)->inherits("QPlainTextEdit")
+            ? static_cast<QPlainTextEdit *>(editors.at(i))->toPlainText()
+            : static_cast<QLineEdit *>(editors.at(i))->text();
+        rows.append(QJsonObject{
+            {QStringLiteral("type"), 1},
+            {QStringLiteral("components"), QJsonArray{QJsonObject{
+                {QStringLiteral("type"), 4},
+                {QStringLiteral("custom_id"), fields.at(i).customId},
+                {QStringLiteral("value"), value},
+            }}},
+        });
+    }
+
+    QString applicationId = data.value(QStringLiteral("application")).toObject()
+                                .value(QStringLiteral("id")).toString();
+    if (applicationId.isEmpty())
+        applicationId = m_buttonApplicationId;
+    QString channelId = data.value(QStringLiteral("channel_id")).toString();
+    if (channelId.isEmpty())
+        channelId = m_buttonChannelId;
+
+    QJsonObject body{
+        {QStringLiteral("type"), 5},
+        {QStringLiteral("application_id"), applicationId},
+        {QStringLiteral("channel_id"), channelId},
+        {QStringLiteral("session_id"), m_gateway ? m_gateway->sessionId() : QString()},
+        {QStringLiteral("data"), QJsonObject{
+            {QStringLiteral("id"), interactionId},
+            {QStringLiteral("custom_id"), modalCustomId},
+            {QStringLiteral("components"), rows},
+        }},
+    };
+    if (!m_buttonMessageId.isEmpty()) {
+        body.insert(QStringLiteral("message_id"), m_buttonMessageId);
+        body.insert(QStringLiteral("message_flags"), m_buttonMessageFlags);
+    }
+    bool guildIsNumber = !m_buttonGuildId.isEmpty();
+    for (const QChar c : m_buttonGuildId) {
+        if (!c.isDigit())
+            guildIsNumber = false;
+    }
+    if (guildIsNumber)
+        body.insert(QStringLiteral("guild_id"), m_buttonGuildId);
+
+    flashStatus(QStringLiteral("Sending..."), 3000);
+    m_rest->createInteraction(
+        body,
+        [this](const QJsonObject &) { flashStatus(QStringLiteral("Sent."), 2500); },
+        [this](const RestClient::Error &error) {
+            flashStatus(error.message.isEmpty() ? QStringLiteral("Discord refused that form.")
+                                                : error.message,
+                        5000);
+        });
 }
 
 void MainWindow::showProfile(const QString &userId, const QPoint &globalPos)
@@ -9207,7 +9472,7 @@ void MainWindow::updateVoicePanel()
         m_streamControls->setVisible(watching);
     // A second row of buttons needs its height, or the panel clips them.
     if (m_voicePanel && connected)
-        m_voicePanel->setFixedHeight(watching ? 218 : 164);
+        m_voicePanel->setFixedHeight(watching ? 250 : 196);
 
     if (!connected)
         return;

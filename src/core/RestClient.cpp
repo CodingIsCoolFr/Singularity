@@ -723,6 +723,19 @@ void RestClient::createApplication(const QString &name, ObjectHandler onOk, Erro
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+void RestClient::createInteraction(const QJsonObject &body, ObjectHandler onOk, ErrorHandler onError)
+{
+    QJsonObject sent = body;
+    if (!sent.contains(QStringLiteral("nonce"))) {
+        const qint64 nonce = QDateTime::currentMSecsSinceEpoch() * 1000
+            + QRandomGenerator::global()->bounded(1000);
+        sent.insert(QStringLiteral("nonce"), QString::number(nonce));
+    }
+    const QByteArray json = QJsonDocument(sent).toJson(QJsonDocument::Compact);
+    QNetworkReply *reply = m_network.post(buildRequest(QStringLiteral("/interactions")), json);
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::proxyApplicationAsset(const QString &applicationId, const QString &url, ArrayHandler onOk,
                                        ErrorHandler onError)
 {
