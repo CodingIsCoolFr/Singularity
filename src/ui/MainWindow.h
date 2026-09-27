@@ -18,7 +18,7 @@
 
 class PluginHost;
 
-class AuroraWidget;
+class Backdrop;
 class QDragEnterEvent;
 class QDragMoveEvent;
 class QDropEvent;
@@ -513,7 +513,14 @@ private:
     QPushButton *m_stopWatchButton = nullptr;
     QLabel *m_voiceState = nullptr;
     CallView *m_callView = nullptr;
-    AuroraWidget *m_aurora = nullptr;
+    Backdrop *m_backdrop = nullptr;
+
+    // The frame pacer's beat (SingularityApplication::setFramePace): thirty
+    // redraws a second over a picture, sixty while a stream is the big tile,
+    // and off behind the black hole (see updateFramePace).
+    bool m_paceHole = false;
+    bool m_paceStream = false;
+    void updateFramePace();
     QSplitter *m_chatSplitter = nullptr;
 
     void tryStartVoice();

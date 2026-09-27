@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(Singularity VERSION 0.8.27 LANGUAGES CXX)
+project(Singularity VERSION 0.8.28 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -92,6 +92,8 @@ qt_add_executable(Singularity WIN32
 
     src/ui/Theme.h
     src/ui/Theme.cpp
+    src/ui/Backdrop.h
+    src/ui/Backdrop.cpp
     src/ui/AuroraWidget.h
     src/ui/AuroraWidget.cpp
     src/ui/LoginDialog.h

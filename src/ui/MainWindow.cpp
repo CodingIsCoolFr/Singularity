@@ -8,7 +8,7 @@
 #include "ui/ChatView.h"
 #include "ui/FriendsPage.h"
 #include "ui/ImageViewer.h"
-#include "ui/AuroraWidget.h"
+#include "ui/Backdrop.h"
 #include "ui/CaptchaDialog.h"
 #include "core/CameraShare.h"
 #include "core/ScreenShare.h"
@@ -1028,22 +1028,18 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
 
 void MainWindow::buildUi()
 {
-    // On Windows, a translucent child of QOpenGLWidget paints whatever is
-    // BEHIND the GL widget (the black window fill), not the FBO. A full-size
-    // #Chrome overlay is why the disk vanished with no click: it covered
-    // every pixel. The hole is the window. Cards are opaque islands. Layout
-    // stretch and margins have no widget, so those pixels are the shader.
-    m_aurora = new AuroraWidget(this);
-    m_aurora->setAttribute(Qt::WA_OpaquePaintEvent, true);
-    m_aurora->setAttribute(Qt::WA_NoSystemBackground, true);
-    m_aurora->setAttribute(Qt::WA_StyledBackground, false);
-    m_aurora->setAutoFillBackground(false);
-    m_aurora->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    setCentralWidget(m_aurora);
+    // The window stands on the Backdrop: your picture drawn with QPainter, or
+    // the black hole's OpenGL widget as its bottom-most child. See Backdrop.h
+    // for why a picture no longer goes through the graphics card. Cards are
+    // opaque islands; layout stretch and margins have no widget, so those
+    // pixels are the background.
+    m_backdrop = new Backdrop(this);
+    m_backdrop->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    setCentralWidget(m_backdrop);
 
-    m_aurora->installEventFilter(this);
+    m_backdrop->installEventFilter(this);
 
-    auto *shell = new QVBoxLayout(m_aurora);
+    auto *shell = new QVBoxLayout(m_backdrop);
     shell->setContentsMargins(0, 0, 0, 0);
     shell->setSpacing(0);
 
@@ -1053,7 +1049,7 @@ void MainWindow::buildUi()
     titleLayout->setAlignment(Qt::AlignVCenter);
     layoutTitleRow();
 
-    m_menuBar = new QMenuBar(m_aurora);
+    m_menuBar = new QMenuBar(m_backdrop);
     m_menuBar->setObjectName(QStringLiteral("AppMenu"));
     m_menuBar->setNativeMenuBar(false);
     m_menuBar->setFixedHeight(32);
@@ -1062,14 +1058,14 @@ void MainWindow::buildUi()
     // Empty strip between the menu and the caption buttons. A press here is
     // the caption, so the window can be dragged and snapped. The menu and the
     // buttons are not part of that strip: a press on them has to reach them.
-    auto *dragStrip = new TitleDragArea(m_aurora);
+    auto *dragStrip = new TitleDragArea(m_backdrop);
     dragStrip->setObjectName(QStringLiteral("TitleDrag"));
     dragStrip->setFixedHeight(32);
     titleLayout->addWidget(dragStrip, 1, Qt::AlignVCenter);
 
-    auto *minBtn = captionButton(m_aurora, QStringLiteral("CaptionMin"), QStringLiteral("–"));
-    m_captionMax = captionButton(m_aurora, QStringLiteral("CaptionMax"), QStringLiteral("□"));
-    auto *closeBtn = captionButton(m_aurora, QStringLiteral("CaptionClose"), QStringLiteral("✕"));
+    auto *minBtn = captionButton(m_backdrop, QStringLiteral("CaptionMin"), QStringLiteral("–"));
+    m_captionMax = captionButton(m_backdrop, QStringLiteral("CaptionMax"), QStringLiteral("□"));
+    auto *closeBtn = captionButton(m_backdrop, QStringLiteral("CaptionClose"), QStringLiteral("✕"));
     connect(minBtn, &QPushButton::clicked, this, &QWidget::showMinimized);
     connect(m_captionMax, &QPushButton::clicked, this, [this]() {
         if (isMaximized())
@@ -1087,10 +1083,10 @@ void MainWindow::buildUi()
     rootLayout->setContentsMargins(14, 8, 14, 8);
     rootLayout->setSpacing(12);
 
-    rootLayout->addWidget(buildGuildRail(m_aurora));
-    rootLayout->addWidget(buildSidebar(m_aurora));
+    rootLayout->addWidget(buildGuildRail(m_backdrop));
+    rootLayout->addWidget(buildSidebar(m_backdrop));
 
-    auto *chatCard = new QFrame(m_aurora);
+    auto *chatCard = new QFrame(m_backdrop);
     chatCard->setObjectName(QStringLiteral("ChatColumn"));
     chatCard->setAttribute(Qt::WA_StyledBackground, true);
     chatCard->setAutoFillBackground(true);
@@ -1119,6 +1115,8 @@ void MainWindow::buildUi()
                 if (m_share)
                     m_share->setPreviewLarge(!m_selfUserId.isEmpty() && userId == m_selfUserId
                                              && surface == CallView::Surface::Share);
+                m_paceStream = !userId.isEmpty() && surface == CallView::Surface::Share;
+                updateFramePace();
             });
     // Only the cameras on screen are downloaded, at the size they are drawn.
     connect(m_callView, &CallView::videoViewsChanged, this, [this](const QHash<QString, int> &views) {
@@ -1166,7 +1164,7 @@ void MainWindow::buildUi()
     // The people, down the right. Outside the chat card rather than inside it
     // so it keeps its own background and full height, the way the sidebar on
     // the left does.
-    m_members = new MemberListPanel(m_store, m_aurora);
+    m_members = new MemberListPanel(m_store, m_backdrop);
     connect(m_members, &MemberListPanel::profileRequested, this,
             [this](const QString &userId) { showProfile(userId, QCursor::pos()); });
     connect(m_members, &MemberListPanel::volumeMenuRequested, this, &MainWindow::showPersonMenu);
@@ -1174,7 +1172,7 @@ void MainWindow::buildUi()
 
     shell->addLayout(rootLayout, 1);
 
-    auto *statusChip = new QWidget(m_aurora);
+    auto *statusChip = new QWidget(m_backdrop);
     statusChip->setObjectName(QStringLiteral("StatusChip"));
     statusChip->setFixedHeight(26);
     auto *statusLayout = new QHBoxLayout(statusChip);
@@ -1195,8 +1193,8 @@ void MainWindow::buildUi()
     statusRow->addWidget(statusChip);
     shell->addLayout(statusRow);
 
-    m_aurora->setHoleColors(Theme::holeAccent(), Theme::holeDisk(), Theme::holeGrade());
-    m_aurora->setRunning(
+    m_backdrop->setHoleColors(Theme::holeAccent(), Theme::holeDisk(), Theme::holeGrade());
+    m_backdrop->setRunning(
         AppConfig::instance().value(QStringLiteral("appearance/animatedBackground"), true).toBool());
     applyBackgroundSettings();
 }
@@ -7573,7 +7571,7 @@ void MainWindow::stopWatchingStream()
 
 void MainWindow::applyBackgroundSettings()
 {
-    if (!m_aurora)
+    if (!m_backdrop)
         return;
 
     AppConfig &config = AppConfig::instance();
@@ -7593,9 +7591,27 @@ void MainWindow::applyBackgroundSettings()
              QStringLiteral("the chosen background is no longer there: %1").arg(path));
     }
 
-    m_aurora->setBackgroundPicture(usable ? path : QString(), dim);
-    m_aurora->setBackgroundMode(usable ? AuroraWidget::Background::Picture
-                                       : AuroraWidget::Background::Hole);
+    m_backdrop->setBackground(usable ? path : QString(), dim);
+    m_paceHole = !usable;
+    updateFramePace();
+}
+
+void MainWindow::updateFramePace()
+{
+    // Off behind the black hole. That background is an OpenGL widget, and Qt
+    // repaints every widget in the window when the OpenGL widget and anything
+    // else change in the same redraw - gathering redraws together there made
+    // things worse, not better (scratchpad pacetest: 12 % of a core became 24).
+    // Over a picture: thirty a second, sixty while a stream is the big tile.
+    const int ms = m_paceHole ? 0 : m_paceStream ? 16 : 33;
+    if (SingularityApplication::framePace() == ms)
+        return;
+    SingularityApplication::setFramePace(ms);
+    wlog(QStringLiteral("perf"), QStringLiteral("redraw pace %1 ms (%2)")
+                                     .arg(ms)
+                                     .arg(m_paceHole     ? QStringLiteral("off: black hole background")
+                                          : m_paceStream ? QStringLiteral("watching a stream")
+                                                         : QStringLiteral("normal")));
 }
 
 // ---------------------------------------------------------------------------
@@ -9684,16 +9700,12 @@ void MainWindow::applyAppearance()
         m_messageView->setAnimationsEnabled(
             config.value(QStringLiteral("appearance/playAnimations"), true).toBool());
     }
-    if (m_aurora) {
-        m_aurora->setAttribute(Qt::WA_OpaquePaintEvent, true);
-        m_aurora->setAttribute(Qt::WA_NoSystemBackground, true);
-        m_aurora->setAttribute(Qt::WA_StyledBackground, false);
-        m_aurora->setAutoFillBackground(false);
-        m_aurora->setHoleColors(Theme::holeAccent(), Theme::holeDisk(), Theme::holeGrade());
-        m_aurora->setRunning(
+    if (m_backdrop) {
+        m_backdrop->setHoleColors(Theme::holeAccent(), Theme::holeDisk(), Theme::holeGrade());
+        m_backdrop->setRunning(
             config.value(QStringLiteral("appearance/animatedBackground"), true).toBool());
         applyBackgroundSettings();
-        m_aurora->update();
+        m_backdrop->update();
     }
 
     renderChannel();

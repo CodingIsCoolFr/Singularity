@@ -7,6 +7,7 @@
 #include <QMetaObject>
 #include <QThread>
 #include <QTimer>
+#include <QWidget>
 
 #include <algorithm>
 
@@ -55,6 +56,43 @@ QHash<Key, qint64> s_spent;       // nanoseconds, exclusive
 QList<Frame> s_stack;
 qint64 s_windowStart = 0;         // wall clock, ns
 qint64 s_threadCpuStart = -1;     // the window thread's own CPU time, ns
+
+// The frame pacer (see the header). Off until the main window chooses: the
+// sign-in window stands on the black hole, where pacing does harm.
+int s_paceMs = 0;
+qint64 s_lastInputMs = -100000;   // when a person last did something
+int s_redraws = 0;                // window redraws since the last report
+int s_held = 0;                   // redraw requests folded into a later one
+
+// Per window: when it last redrew, and whether a held redraw is booked.
+struct Pace
+{
+    qint64 lastMs = -100000;
+    bool booked = false;
+};
+QHash<const QObject *, Pace> s_pace;
+
+// How long after a person's input redraws go out at once.
+constexpr qint64 InputGraceMs = 250;
+
+bool isInput(QEvent::Type type)
+{
+    switch (type) {
+    case QEvent::KeyPress:
+    case QEvent::KeyRelease:
+    case QEvent::MouseButtonPress:
+    case QEvent::MouseButtonRelease:
+    case QEvent::MouseButtonDblClick:
+    case QEvent::MouseMove:
+    case QEvent::Wheel:
+    case QEvent::InputMethod:
+    case QEvent::TouchBegin:
+    case QEvent::TouchUpdate:
+        return true;
+    default:
+        return false;
+    }
+}
 
 qint64 threadCpuNs()
 {
@@ -105,6 +143,40 @@ bool SingularityApplication::notify(QObject *receiver, QEvent *event)
     // A deletion is not timed at all: the receiver is gone when it returns.
     if (event->type() == QEvent::DeferredDelete)
         return QApplication::notify(receiver, event);
+
+    const qint64 nowMs = uiClock().elapsed();
+    if (isInput(event->type()))
+        s_lastInputMs = nowMs;
+
+    // The frame pacer. A window's redraw request that comes too soon after
+    // its last redraw is held, and one redraw is booked for the moment the
+    // beat allows. Qt does not post another request while one is pending, so
+    // everything that changes meanwhile is gathered into that one redraw.
+    if (event->type() == QEvent::UpdateRequest && receiver->isWidgetType()
+        && static_cast<QWidget *>(receiver)->isWindow()) {
+        if (!s_pace.contains(receiver)) {
+            QObject::connect(receiver, &QObject::destroyed, [receiver]() { s_pace.remove(receiver); });
+        }
+        Pace &pace = s_pace[receiver];
+        const bool someoneActing = nowMs - s_lastInputMs < InputGraceMs;
+        const qint64 due = pace.lastMs + s_paceMs;
+        if (s_paceMs > 0 && !someoneActing && nowMs < due) {
+            ++s_held;
+            if (!pace.booked) {
+                pace.booked = true;
+                auto *window = static_cast<QWidget *>(receiver);
+                QTimer::singleShot(int(due - nowMs), Qt::PreciseTimer, window, [window]() {
+                    s_pace[window].booked = false;
+                    // Stamped as allowed now, so this one is not held again.
+                    s_pace[window].lastMs = -100000;
+                    QCoreApplication::postEvent(window, new QEvent(QEvent::UpdateRequest), Qt::LowEventPriority);
+                });
+            }
+            return true;
+        }
+        pace.lastMs = nowMs;
+        ++s_redraws;
+    }
 
     // Worked out BEFORE the event is delivered, and nothing about the
     // receiver or the event is touched afterwards. Handling an event can
@@ -159,6 +231,16 @@ QString SingularityApplication::takeReport()
         line = QStringLiteral("window thread used %1% of a core").arg(share(cpu - s_threadCpuStart));
     else
         line = QStringLiteral("window thread");
+
+    // How often whole windows were redrawn, and how many requests the pacer
+    // folded into those instead of drawing them one by one.
+    const double seconds = double(wall) / 1e9;
+    line += QStringLiteral(", %1 redraws a second (%2 more folded in, pace %3 ms)")
+                .arg(s_redraws / seconds, 0, 'f', 1)
+                .arg(s_held / seconds, 0, 'f', 1)
+                .arg(s_paceMs);
+    s_redraws = 0;
+    s_held = 0;
     if (!parts.isEmpty())
         line += QStringLiteral("; biggest: ") + parts.join(QStringLiteral(", "));
 
@@ -166,4 +248,14 @@ QString SingularityApplication::takeReport()
     s_windowStart = now;
     s_threadCpuStart = cpu;
     return line;
+}
+
+void SingularityApplication::setFramePace(int ms)
+{
+    s_paceMs = qBound(0, ms, 200);
+}
+
+int SingularityApplication::framePace()
+{
+    return s_paceMs;
 }
