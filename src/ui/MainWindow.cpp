@@ -10000,15 +10000,26 @@ void MainWindow::openPlugins()
 
 void MainWindow::openSettings()
 {
+    QElapsedTimer clock;
+    clock.start();
+    wlog(QStringLiteral("ui"), QStringLiteral("settings opening"));
+
+    // A GIF wallpaper is decoded on this thread. Leave it paused while the
+    // modal is up so a frame inflate does not land in the same stall as the
+    // dialog constructing itself.
+    const bool playBackground =
+        AppConfig::instance().value(QStringLiteral("appearance/animatedBackground"), true).toBool();
+    if (m_backdrop)
+        m_backdrop->setRunning(false);
+
     // Keep one dialog. A stack QDialog is created and destroyed at the same
     // address every open; Windows UI Automation then hits Qt's accessibility
     // cache for that pointer and QWidget::accessibleName crashes on a null
     // widget (Qt6Widgets, same fault offset across dumps).
     if (!m_settingsDialog) {
         m_settingsDialog = new SettingsDialog(m_store, m_rest, m_plugins, m_selfUserId, this);
-        connect(m_settingsDialog, &SettingsDialog::appearanceChanged, this, &MainWindow::applyAppearance);
         connect(m_settingsDialog, &SettingsDialog::logOutRequested, this, &MainWindow::logOut);
-    connect(m_settingsDialog, &SettingsDialog::restartRequested, this, [this]() { restartInto({}); });
+        connect(m_settingsDialog, &SettingsDialog::restartRequested, this, [this]() { restartInto({}); });
         connect(m_settingsDialog, &SettingsDialog::testNotificationRequested, this, [this]() {
             showDesktopNotification(QStringLiteral("Singularity"),
                                     QStringLiteral("This is what a new message looks like."), QString());
@@ -10032,11 +10043,35 @@ void MainWindow::openSettings()
         // the next time you join one.
         connect(m_settingsDialog, &SettingsDialog::voiceSettingsChanged, this, &MainWindow::applyVoiceSettings);
     }
+
+    wlog(QStringLiteral("ui"), QStringLiteral("settings ready in %1 ms").arg(clock.elapsed()));
+
+    // Applying the theme while the modal is up restyles every widget and
+    // rebuilds the conversation (QTextEngine). Opening Settings without
+    // touching Appearance used to pay that cost on close for no reason, and
+    // dragging Dim paid it on every tick. Config is written as they click;
+    // the window is restyled once, after the dialog hides.
+    bool appearanceTouched = false;
+    const QMetaObject::Connection mark =
+        connect(m_settingsDialog, &SettingsDialog::appearanceChanged, this, [&]() { appearanceTouched = true; });
+
     m_settingsDialog->exec();
-    // Chip clicks already wrote the seed. Re-polish after the modal hides:
-    // setStyleSheet during QDialog::exec can leave the main window on the
-    // unpolished black fill, which is the "close Settings, hole gone" bug.
-    applyAppearance();
+    disconnect(mark);
+
+    if (m_backdrop)
+        m_backdrop->setRunning(playBackground);
+
+    if (appearanceTouched) {
+        // Chip clicks already wrote the seed. Re-polish after the modal hides:
+        // setStyleSheet during QDialog::exec can leave the main window on the
+        // unpolished black fill, which is the "close Settings, hole gone" bug.
+        applyAppearance();
+    }
+
+    wlog(QStringLiteral("ui"),
+         QStringLiteral("settings closed after %1 ms%2")
+             .arg(clock.elapsed())
+             .arg(appearanceTouched ? QStringLiteral(", appearance applied") : QString()));
 }
 
 void MainWindow::applyAppearance()

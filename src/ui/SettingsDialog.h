@@ -9,6 +9,8 @@
 
 #include <functional>
 
+#include <QList>
+
 class AudioMeter;
 class ProfilePreview;
 class QFrame;
@@ -108,7 +110,12 @@ private:
     QWidget *buildPluginsPage();
     QWidget *buildAdvancedPage();
 
-    void addSection(const QString &title, QWidget *page);
+    // Pages other than My Account are built the first time they are shown.
+    // Building Voice, Appearance and Plugins up front enumerated devices,
+    // decoded the wallpaper GIF and created every plugin pane before the
+    // window had painted, which is the hitch opening Settings used to be.
+    void addSection(const QString &title, std::function<QWidget *()> builder);
+    void ensurePage(int row);
     void startMicTest();
     void stopMicTest();
     void refreshAudioDevices();
@@ -121,6 +128,7 @@ private:
 
     QListWidget *m_sections = nullptr;
     QStackedWidget *m_pages = nullptr;
+    QList<std::function<QWidget *()>> m_pageBuilders;
 
     // My Account and Profiles pages.
     struct LoadedProfile

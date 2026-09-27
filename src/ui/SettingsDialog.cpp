@@ -13,6 +13,7 @@
 #include "ui/Theme.h"
 
 #include <QApplication>
+#include <QElapsedTimer>
 #include <QTimer>
 #include <QAudioDevice>
 #include <QCameraDevice>
@@ -165,16 +166,17 @@ SettingsDialog::SettingsDialog(MessageStore *store, RestClient *rest, PluginHost
     pageColumn->addWidget(buildSaveBar());
     root->addLayout(pageColumn, 1);
 
-    addSection(QStringLiteral("My Account"), buildAccountPage());
+    addSection(QStringLiteral("My Account"), [this]() { return buildAccountPage(); });
     m_profilesRow = m_sections->count();
-    addSection(QStringLiteral("Profiles"), buildProfilesPage());
-    addSection(QStringLiteral("Voice & Video"), buildVoicePage());
-    addSection(QStringLiteral("Notifications"), buildNotificationsPage());
-    addSection(QStringLiteral("Appearance"), buildAppearancePage());
-    addSection(QStringLiteral("Plugins"), buildPluginsPage());
-    addSection(QStringLiteral("Advanced"), buildAdvancedPage());
+    addSection(QStringLiteral("Profiles"), [this]() { return buildProfilesPage(); });
+    addSection(QStringLiteral("Voice & Video"), [this]() { return buildVoicePage(); });
+    addSection(QStringLiteral("Notifications"), [this]() { return buildNotificationsPage(); });
+    addSection(QStringLiteral("Appearance"), [this]() { return buildAppearancePage(); });
+    addSection(QStringLiteral("Plugins"), [this]() { return buildPluginsPage(); });
+    addSection(QStringLiteral("Advanced"), [this]() { return buildAdvancedPage(); });
 
     connect(m_sections, &QListWidget::currentRowChanged, this, [this](int row) {
+        ensurePage(row);
         m_pages->setCurrentIndex(row);
         // The microphone is only held open while its page is in front.
         if (m_sections->item(row) && m_sections->item(row)->text() != QLatin1String("Voice & Video"))
@@ -276,7 +278,7 @@ SettingsDialog::~SettingsDialog()
     stopMicTest();
 }
 
-void SettingsDialog::addSection(const QString &title, QWidget *page)
+void SettingsDialog::addSection(const QString &title, std::function<QWidget *()> builder)
 {
     m_sections->addItem(title);
 
@@ -285,8 +287,25 @@ void SettingsDialog::addSection(const QString &title, QWidget *page)
     scroll->setWidgetResizable(true);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setWidget(page);
     m_pages->addWidget(scroll);
+    m_pageBuilders.append(std::move(builder));
+}
+
+void SettingsDialog::ensurePage(int row)
+{
+    if (row < 0 || row >= m_pageBuilders.size())
+        return;
+    auto *scroll = qobject_cast<QScrollArea *>(m_pages->widget(row));
+    if (!scroll || scroll->widget())
+        return;
+
+    QElapsedTimer clock;
+    clock.start();
+    scroll->setWidget(m_pageBuilders[row]());
+    wlog(QStringLiteral("ui"),
+         QStringLiteral("settings page \"%1\" built in %2 ms")
+             .arg(m_sections->item(row) ? m_sections->item(row)->text() : QString::number(row))
+             .arg(clock.elapsed()));
 }
 
 // ---------------------------------------------------------------------------
@@ -660,7 +679,9 @@ QWidget *SettingsDialog::buildSaveBar()
 void SettingsDialog::showEvent(QShowEvent *event)
 {
     QDialog::showEvent(event);
-    loadProfile(true);
+    // Paint the window first. Filling Profiles and talking to Discord here
+    // used to hitch the first frame, with nothing in the log to name it.
+    QTimer::singleShot(0, this, [this]() { loadProfile(true); });
 }
 
 bool SettingsDialog::eventFilter(QObject *watched, QEvent *event)
@@ -864,6 +885,7 @@ void SettingsDialog::animateDecorationTile(int row)
 
 void SettingsDialog::loadProfile(bool force)
 {
+    ensurePage(m_profilesRow);
     if (!m_rest || m_selfUserId.isEmpty() || !m_displayName)
         return;
     if (!force && profileDirty())
@@ -1450,6 +1472,8 @@ QWidget *SettingsDialog::buildVoicePage()
 
 void SettingsDialog::refreshAudioDevices()
 {
+    if (!m_inputDevice || !m_outputDevice)
+        return;
     const QByteArray savedInput =
         AppConfig::instance().value(QStringLiteral("voice/inputDevice")).toByteArray();
     const QByteArray savedOutput =
@@ -1517,6 +1541,8 @@ void SettingsDialog::stopMicTest()
     if (!m_meter->isRunning())
         return;
     m_meter->stop();
+    if (!m_micTestButton)
+        return;
     m_micTestButton->setText(QStringLiteral("Let's check"));
     m_micHint->setText(QStringLiteral("Press the button and say something. The bar turns green when you "
                                       "are loud enough to count as speaking."));
@@ -1644,7 +1670,7 @@ QWidget *SettingsDialog::buildAppearancePage()
     auto *chatSizeValue = sliderHeader(QStringLiteral("Chat text size"));
     auto *chatSize = makeSlider(12, 24, config.value(QStringLiteral("appearance/fontSize"), 14).toInt(), page);
     layout->addWidget(chatSize);
-    layout->addWidget(hint(QStringLiteral("Messages, names and emoji in the conversation. Changes at once."),
+    layout->addWidget(hint(QStringLiteral("Messages, names and emoji in the conversation. Takes effect when Settings closes."),
                            page));
     chatSizeValue->setText(QStringLiteral("%1 px").arg(chatSize->value()));
 
