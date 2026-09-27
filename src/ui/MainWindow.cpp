@@ -4912,30 +4912,54 @@ void MainWindow::sendWave()
             renderChannel();
     };
 
+    const auto ok = [this, channelId](const QJsonObject &) {
+        wlog(QStringLiteral("ui"), QStringLiteral("wave sent"));
+        if (channelId == m_currentChannelId)
+            renderChannel();
+    };
+
+    const QString sticker = QString::fromLatin1(kWaveStickerId);
+
     m_rest->sendMessage(
-        channelId, QString(), QString(), {},
-        [this, channelId](const QJsonObject &) {
-            wlog(QStringLiteral("ui"), QStringLiteral("wave sticker sent"));
-            if (channelId == m_currentChannelId)
-                renderChannel();
-        },
-        [this, channelId, fail](const RestClient::Error &error) {
+        channelId, QString(), QString(), {}, ok,
+        [this, channelId, sticker, ok, fail](const RestClient::Error &error) {
+            RestClient::CaptchaProof proof;
+            if (CaptchaDialog::isDemand(error.body)) {
+                if (!takeCaptcha(error, &proof)) {
+                    fail(QStringLiteral("Discord asked for a check, and it was not finished."));
+                    return;
+                }
+                m_rest->sendMessage(channelId, QString(), QString(), {}, ok,
+                                    [fail](const RestClient::Error &) { fail(QStringLiteral("Wave failed.")); },
+                                    sticker, proof);
+                return;
+            }
+
             // Standard stickers can be refused without Nitro. A wave emoji
             // still says it, and Discord accepts that from anyone.
             wlog(QStringLiteral("ui"),
                  QStringLiteral("wave sticker refused (HTTP %1), sending 👋 instead")
                      .arg(error.httpStatus));
             m_rest->sendMessage(
-                channelId, QStringLiteral("👋"), QString(), {},
-                [this, channelId](const QJsonObject &) {
-                    if (channelId == m_currentChannelId)
-                        renderChannel();
-                },
-                [fail](const RestClient::Error &again) {
-                    fail(QStringLiteral("Wave failed (%1).").arg(again.message.left(120)));
+                channelId, QStringLiteral("👋"), QString(), {}, ok,
+                [this, channelId, ok, fail](const RestClient::Error &again) {
+                    RestClient::CaptchaProof proof;
+                    if (CaptchaDialog::isDemand(again.body)) {
+                        if (!takeCaptcha(again, &proof)) {
+                            fail(QStringLiteral("Discord asked for a check, and it was not finished."));
+                            return;
+                        }
+                        m_rest->sendMessage(channelId, QStringLiteral("👋"), QString(), {}, ok,
+                                            [fail](const RestClient::Error &) {
+                                                fail(QStringLiteral("Wave failed."));
+                                            },
+                                            QString(), proof);
+                        return;
+                    }
+                    fail(QStringLiteral("Wave failed."));
                 });
         },
-        QString::fromLatin1(kWaveStickerId));
+        sticker);
 }
 
 QString MainWindow::embedsHtml(const MessageInfo &message)
