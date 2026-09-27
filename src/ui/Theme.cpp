@@ -541,17 +541,21 @@ QDialog { background-color: @chat; }
 #AppMenu {
     background-color: @chat;
     color: @muted;
-    padding: 0 6px;
+    padding: 0 12px;
     border: 1px solid @accent22;
     border-radius: 8px;
+    min-height: 32px;
+    max-height: 32px;
+    font-size: 13px;
 }
-#AppMenu::item {
-    background: transparent;
-    padding: 4px 12px;
-    border-radius: 8px;
-    color: @muted;
+#AppMenu:hover, #AppMenu:pressed {
+    background-color: @hover;
+    color: @text;
 }
-#AppMenu::item:selected { background-color: @hover; color: @text; }
+#AppMenu::menu-indicator {
+    image: none;
+    width: 0px;
+}
 
 /* Solid while the black hole is up. A see-through widget above that OpenGL
    surface paints black on Windows. Active Now cards stay solid either way:

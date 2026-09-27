@@ -1131,11 +1131,18 @@ void MainWindow::buildUi()
     titleLayout->setAlignment(Qt::AlignVCenter);
     layoutTitleRow();
 
-    m_menuBar = new QMenuBar(m_backdrop);
-    m_menuBar->setObjectName(QStringLiteral("AppMenu"));
-    m_menuBar->setNativeMenuBar(false);
-    m_menuBar->setFixedHeight(32);
-    titleLayout->addWidget(m_menuBar, 0, Qt::AlignVCenter);
+    // A menu bar paints its title high in the strip. A tool button is the
+    // same 32 px as the caption marks, with the word in the middle.
+    m_appMenu = new QToolButton(m_backdrop);
+    m_appMenu->setObjectName(QStringLiteral("AppMenu"));
+    m_appMenu->setText(QStringLiteral("Singularity"));
+    m_appMenu->setPopupMode(QToolButton::InstantPopup);
+    m_appMenu->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    m_appMenu->setFixedHeight(32);
+    m_appMenu->setFocusPolicy(Qt::NoFocus);
+    m_appMenu->setCursor(Qt::ArrowCursor);
+    m_appMenu->setAutoRaise(false);
+    titleLayout->addWidget(m_appMenu, 0, Qt::AlignVCenter);
 
     // Empty strip between the menu and the caption buttons. A press here is
     // the caption, so the window can be dragged and snapped. The menu and the
@@ -1935,9 +1942,9 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
 
 void MainWindow::buildMenu()
 {
-    if (!m_menuBar)
+    if (!m_appMenu)
         return;
-    QMenu *fileMenu = m_menuBar->addMenu(QStringLiteral("&Singularity"));
+    auto *fileMenu = new QMenu(m_appMenu);
 
     auto *settingsAction = fileMenu->addAction(QStringLiteral("Settings..."));
     settingsAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+,")));
@@ -1972,6 +1979,15 @@ void MainWindow::buildMenu()
     auto *quitAction = fileMenu->addAction(QStringLiteral("Quit"));
     quitAction->setShortcut(QKeySequence::Quit);
     connect(quitAction, &QAction::triggered, this, &QWidget::close);
+
+    // Shortcuts live on the window. A tool button's menu is not a menu bar,
+    // so they would otherwise only fire while the menu is open.
+    addAction(settingsAction);
+    addAction(pluginsAction);
+    addAction(logAction);
+    addAction(quitAction);
+
+    m_appMenu->setMenu(fileMenu);
 }
 
 void MainWindow::startSession(const QString &token)
@@ -10444,7 +10460,7 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
                 for (QWidget *widget = childAt(local); widget && widget != this;
                      widget = widget->parentWidget()) {
                     const QString name = widget->objectName();
-                    if (widget == m_menuBar || name.startsWith(QLatin1String("Caption"))) {
+                    if (widget == m_appMenu || name.startsWith(QLatin1String("Caption"))) {
                         *result = HTCLIENT;
                         return true;
                     }

@@ -38,7 +38,7 @@ class QListWidgetItem;
 class QHBoxLayout;
 class QTextEdit;
 class QLabel;
-class QMenuBar;
+class QToolButton;
 class QShowEvent;
 
 // The one window: server rail, channel sidebar, message view, composer.
@@ -333,7 +333,7 @@ private:
     QLabel *m_typingLabel = nullptr;
     QLabel *m_statusDot = nullptr;
     QLabel *m_statusMessage = nullptr;
-    QMenuBar *m_menuBar = nullptr;
+    QToolButton *m_appMenu = nullptr;
     QWidget *m_titleBar = nullptr;
 
     QPushButton *m_captionMax = nullptr;
