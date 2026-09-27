@@ -99,9 +99,10 @@ void Updater::check(bool quiet)
     request.setRawHeader("Accept", "application/vnd.github+json");
     request.setRawHeader("User-Agent", "Singularity");
 
-    // Twenty seconds with nothing arriving and Qt gives up on its own. The
-    // reply is a few kilobytes; a healthy one takes well under a second.
-    request.setTransferTimeout(20000);
+    // Ten seconds with nothing arriving and Qt gives up on its own; the check
+    // is then asked once more on a new connection. The reply is a few
+    // kilobytes, and a healthy one takes well under a second.
+    request.setTransferTimeout(10000);
 
     m_replyIsCheck = true;
     m_replyAge.start();
@@ -116,7 +117,24 @@ void Updater::check(bool quiet)
 
 void Updater::onCheckFinished(QNetworkReply *reply, bool quiet)
 {
-    if (reply->error() != QNetworkReply::NoError) {
+    // One check in a row of quick ones sat for the full twenty seconds and
+    // failed (27 September, 09:44), while GitHub answered the others in well
+    // under a second. That is a kept-alive connection that had quietly died.
+    // Ask once more on a fresh connection before saying anything.
+    const QNetworkReply::NetworkError error = reply->error();
+    const bool timedOut = error == QNetworkReply::OperationCanceledError || error == QNetworkReply::TimeoutError;
+    if (timedOut && !m_checkRetried) {
+        wlog(QStringLiteral("update"), QStringLiteral("check timed out; asking again on a new connection"));
+        m_network.clearConnectionCache();
+        m_checkRetried = true;
+        check(quiet);
+        return;
+    }
+    if (error == QNetworkReply::NoError)
+        m_checkRetried = false;
+
+    if (error != QNetworkReply::NoError) {
+        m_checkRetried = false;
         wlog(QStringLiteral("update"), QStringLiteral("check failed: %1").arg(reply->errorString()));
         if (!quiet)
             emit failed(reply->errorString());

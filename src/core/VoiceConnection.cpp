@@ -95,8 +95,18 @@ constexpr int FrameMs = 20;
 constexpr int RtpHeaderSize = 12;
 constexpr int NonceTailSize = 4;
 
-// How long to keep sending after you stop talking, so words are not clipped.
-constexpr int SilenceFramesBeforeStop = 10;   // 200 ms
+// The voice gate, with Discord's own numbers. Its MediaEngineStore sets
+// vadLeading 5 and vadTrailing 25, in 20 ms frames: sound is kept from 100 ms
+// before the voice starts, and sending carries on for 500 ms after it stops.
+constexpr int VadLeadingFrames = 5;    // 100 ms
+constexpr int VadTrailingFrames = 25;  // 500 ms
+
+// After the voice stops, five frames of Opus silence before going quiet.
+// Discord's voice docs ask for exactly this, "to avoid unintended Opus
+// interpolation with subsequent transmissions". DAVE leaves these three
+// bytes unsealed (libdave's decryptor passes them straight through).
+constexpr int SilenceFramesAfterSpeech = 5;
+constexpr char OpusSilence[3] = {char(0xF8), char(0xFF), char(0xFE)};
 
 // How much of someone's sound is held back before it plays is no longer a
 // constant here. It used to be two frames to start and three at most, with
@@ -1734,6 +1744,10 @@ void VoiceConnection::stopAudio()
     m_buffers.clear();
     m_captureBuffer.clear();
     m_externalPcm.clear();
+    m_heldFrames.clear();
+    m_micFrameIndex = 0;
+    m_lastLoudFrame = -1000000;
+    m_silenceFramesLeft = 0;
 
     QMutexLocker lock(&m_sharedSoundMutex);
     m_sharedSound.clear();
@@ -1773,8 +1787,10 @@ void VoiceConnection::onSendTick()
     }
 
     m_captureBuffer.append(m_inputStream->readAll());
+    m_statBurst = qMax(m_statBurst, int(m_captureBuffer.size() / FrameBytes));
 
     while (m_captureBuffer.size() >= FrameBytes) {
+        ++m_statCaptured;
         QByteArray frame = m_captureBuffer.left(FrameBytes);
         m_captureBuffer.remove(0, FrameBytes);
 
@@ -1817,7 +1833,14 @@ void VoiceConnection::onSendTick()
         const double level = std::sqrt(sum / count);
         const bool loudEnough = level * 3.0 >= (m_sensitivity / 100.0);
 
+        // Time moves on whether or not this frame is sent, so a pause reaches
+        // the listener as a pause.
+        m_rtpTimestamp += FrameSamples;
+
         if (m_muted) {
+            m_heldFrames.clear();
+            m_lastLoudFrame = -1000000;
+            m_silenceFramesLeft = 0;
             if (m_speaking) {
                 m_speaking = false;
                 sendSpeaking(false);
@@ -1825,51 +1848,57 @@ void VoiceConnection::onSendTick()
             continue;
         }
 
-        if (loudEnough) {
-            m_silentFrames = 0;
-            if (!m_speaking) {
-                m_speaking = true;
-                sendSpeaking(true);
-            }
-        } else if (m_speaking) {
-            // Keep going briefly so the end of a word is not cut off.
-            if (++m_silentFrames > SilenceFramesBeforeStop) {
-                m_speaking = false;
-                sendSpeaking(false);
-            }
-        }
-
-        m_rtpTimestamp += FrameSamples;
-        m_rtpSequence++;
-
-        if (!m_speaking)
+        // The gate. Every frame waits VadLeadingFrames behind the newest one,
+        // and goes out if anything loud came up to VadTrailingFrames before
+        // it or up to VadLeadingFrames after it. So the soft start of a word
+        // is sent, and so is a breath in the middle of a sentence.
+        //
+        // It used to decide on the frame itself, with nothing held back and
+        // only 200 ms of tail: the first sound of every word was cut, and
+        // every short pause shut the voice off and on again. Listeners heard
+        // that as a choppy, lagging microphone.
+        ++m_micFrameIndex;
+        if (loudEnough)
+            m_lastLoudFrame = m_micFrameIndex;
+        m_heldFrames.append({frame, m_rtpTimestamp});
+        if (m_heldFrames.size() <= VadLeadingFrames)
             continue;
 
+        HeldFrame out = m_heldFrames.takeFirst();
+        const qint64 outIndex = m_micFrameIndex - VadLeadingFrames;
+        const bool open = m_lastLoudFrame >= outIndex - VadTrailingFrames;
+
+        if (!open) {
+            // Discord's rule for the end of a burst: five frames of Opus
+            // silence, so the listener's decoder does not smear the last word
+            // into the next one. Then the speaking light goes off.
+            if (m_speaking) {
+                if (m_silenceFramesLeft > 0) {
+                    sendOpusPacket(QByteArray(OpusSilence, 3), out.timestamp);
+                    --m_silenceFramesLeft;
+                }
+                if (m_silenceFramesLeft == 0) {
+                    m_speaking = false;
+                    sendSpeaking(false);
+                }
+            }
+            continue;
+        }
+
+        if (!m_speaking) {
+            m_speaking = true;
+            sendSpeaking(true);
+        }
+        m_silenceFramesLeft = SilenceFramesAfterSpeech;
+        ++m_statGateOpen;
+
         unsigned char encoded[4000];
-        const int encodedBytes = opus_encode(m_encoder, samples, FrameSamples, encoded, sizeof(encoded));
+        const int encodedBytes = opus_encode(m_encoder, reinterpret_cast<const qint16 *>(out.samples.constData()),
+                                             FrameSamples, encoded, sizeof(encoded));
         if (encodedBytes <= 0)
             continue;
 
-        QByteArray voice(reinterpret_cast<const char *>(encoded), encodedBytes);
-
-        // On an encrypted call the sound is sealed for the other people first,
-        // so Discord's servers only ever carry something they cannot read.
-        // The transport encryption below is applied on top of that.
-        if (m_daveVersion > 0) {
-            voice = m_dave->encrypt(voice, m_ssrc);
-            if (voice.isEmpty()) {
-                ++m_statSealFailed;   // keys not ready, stay quiet rather than leak
-                continue;
-            }
-        }
-
-        const QByteArray header = buildRtpHeader(m_rtpSequence, m_rtpTimestamp, m_ssrc);
-        const QByteArray packet = encryptFrame(header, voice);
-        if (packet.isEmpty())
-            continue;
-
-        m_udp.writeDatagram(packet, QHostAddress(m_serverAddress), m_serverPort);
-        ++m_statSent;
+        sendOpusPacket(QByteArray(reinterpret_cast<const char *>(encoded), encodedBytes), out.timestamp);
     }
 
     // Every 250 ticks is five seconds.
@@ -1896,10 +1925,30 @@ void VoiceConnection::reportAudioStats()
     // happening was suppressed by the one case it was needed for.
     const int video = m_statVideoSent + m_statVideoSealFailed;
 
-    if (m_statSent == 0 && m_statPlayed == 0 && lost == 0 && video == 0)
+    if (m_statSent == 0 && m_statPlayed == 0 && lost == 0 && video == 0) {
+        m_statCaptured = 0;
+        m_statBurst = 0;
+        m_statGateOpen = 0;
         return;
+    }
 
     QString line = QStringLiteral("sent %1, played %2").arg(m_statSent).arg(m_statPlayed);
+
+    // The microphone itself. Five seconds is 250 frames; far fewer means the
+    // device is not keeping up, and "bunched" above 3 means sound arrived in
+    // lumps rather than a steady flow. "gate open" is how much of it was
+    // loud enough to send.
+    if (m_statCaptured > 0) {
+        line += QStringLiteral(" (mic gave %1 frames, bunched up to %2, gate open for %3, sensitivity %4)")
+                    .arg(m_statCaptured)
+                    .arg(m_statBurst)
+                    .arg(m_statGateOpen)
+                    .arg(m_sensitivity);
+    }
+    m_statCaptured = 0;
+    m_statBurst = 0;
+    m_statGateOpen = 0;
+
     if (m_statSealFailed > 0)
         line += QStringLiteral(", %1 of ours unsealed (no group key)").arg(m_statSealFailed);
     if (m_statNoOwner > 0)
@@ -2626,7 +2675,6 @@ void VoiceConnection::sendSharedSound()
         }
 
         m_rtpTimestamp += FrameSamples;
-        m_rtpSequence++;
 
         if (!m_speaking)
             continue;
@@ -2636,21 +2684,8 @@ void VoiceConnection::sendSharedSound()
         if (encodedBytes <= 0)
             continue;
 
-        QByteArray sound(reinterpret_cast<const char *>(encoded), encodedBytes);
-        if (m_daveVersion > 0) {
-            sound = m_dave->encrypt(sound, m_ssrc);
-            if (sound.isEmpty()) {
-                ++m_statSealFailed;
-                continue;
-            }
-        }
-
-        const QByteArray packet = encryptFrame(buildRtpHeader(m_rtpSequence, m_rtpTimestamp, m_ssrc), sound);
-        if (packet.isEmpty())
+        if (!sendOpusPacket(QByteArray(reinterpret_cast<const char *>(encoded), encodedBytes), m_rtpTimestamp))
             continue;
-
-        m_udp.writeDatagram(packet, QHostAddress(m_serverAddress), m_serverPort);
-        ++m_statSent;
 
         if (!m_saidSharedSound) {
             m_saidSharedSound = true;
@@ -3472,6 +3507,40 @@ void VoiceConnection::handleIncomingRtcp(const QByteArray &packet)
 
     wlog(QStringLiteral("share"), QStringLiteral("a viewer asked for a keyframe"));
     emit keyframeWanted();
+}
+
+// The sequence number counts packets sent and nothing else. RFC 3550 5.1: it
+// "increments by one for each RTP data packet sent". The timestamp is what
+// carries the pause.
+//
+// It used to go up for every 20 ms of microphone, sent or not, so every pause
+// arrived as a run of "lost" packets - fifty of them after a second of quiet.
+// A listener's jitter buffer treats that as a bad network, and the start of
+// each sentence came out through loss concealment.
+bool VoiceConnection::sendOpusPacket(QByteArray opus, quint32 timestamp)
+{
+    const bool silence = opus.size() == 3 && std::memcmp(opus.constData(), OpusSilence, 3) == 0;
+
+    // On an encrypted call the sound is sealed for the other people first,
+    // so Discord's servers only ever carry something they cannot read. The
+    // transport encryption below goes on top of that.
+    if (m_daveVersion > 0 && !silence) {
+        opus = m_dave->encrypt(opus, m_ssrc);
+        if (opus.isEmpty()) {
+            ++m_statSealFailed;   // keys not ready, stay quiet rather than leak
+            return false;
+        }
+    }
+
+    const quint16 sequence = static_cast<quint16>(m_rtpSequence + 1);
+    const QByteArray packet = encryptFrame(buildRtpHeader(sequence, timestamp, m_ssrc), opus);
+    if (packet.isEmpty())
+        return false;
+
+    m_rtpSequence = sequence;
+    m_udp.writeDatagram(packet, QHostAddress(m_serverAddress), m_serverPort);
+    ++m_statSent;
+    return true;
 }
 
 void VoiceConnection::sendSpeaking(bool speaking)

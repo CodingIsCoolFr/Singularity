@@ -78,6 +78,7 @@ private:
     // check that has gone quiet for long is abandoned rather than waited on:
     // one lost reply used to block every later check, including the menu's.
     bool m_replyIsCheck = false;
+    bool m_checkRetried = false;   // this check has already been asked a second time
     QElapsedTimer m_replyAge;
 
     QString m_latestVersion;

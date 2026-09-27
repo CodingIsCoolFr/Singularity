@@ -533,6 +533,24 @@ private:
     int m_silentFrames = 0;
     MicrophoneProcessor m_micProcessor;
 
+    // The voice gate, the way Discord's is set up (vadLeading 5, vadTrailing
+    // 25 in its MediaEngineStore). The microphone runs a hundred milliseconds
+    // behind so the gate can open before the first word, not on it.
+    struct HeldFrame {
+        QByteArray samples;
+        quint32 timestamp = 0;
+    };
+    QList<HeldFrame> m_heldFrames;
+    qint64 m_micFrameIndex = 0;
+    qint64 m_lastLoudFrame = -1000000;
+    int m_silenceFramesLeft = 0;   // Opus silence still to send after a stop
+    int m_statGateOpen = 0;        // frames in the last report the gate let through
+    int m_statCaptured = 0;        // frames the microphone delivered
+    int m_statBurst = 0;           // most frames one beat found waiting
+
+    // One Opus frame onto the wire, sealed for the call when it needs to be.
+    bool sendOpusPacket(QByteArray opus, quint32 timestamp);
+
     int m_inputVolume = 100;
     int m_outputVolume = 100;
     QHash<QString, int> m_userVolume;
