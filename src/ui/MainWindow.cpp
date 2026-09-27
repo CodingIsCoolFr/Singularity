@@ -60,6 +60,7 @@
 #include <QAbstractTextDocumentLayout>
 #include <QFontMetricsF>
 
+#include <algorithm>
 #include <cmath>
 #include <QCamera>
 #include <QFileDialog>
@@ -104,6 +105,9 @@
 #include <QStatusBar>
 #include <QTextCursor>
 #include <QTextDocument>
+#include <QTextCharFormat>
+#include <QTextBlock>
+#include <QTextFragment>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -446,6 +450,16 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         if (m_currentChannelId.isEmpty() || !m_store->hasHistory(m_currentChannelId))
             return;
         renderChannel();
+    });
+
+    m_mentionSearchTimer.setSingleShot(true);
+    m_mentionSearchTimer.setInterval(220);
+    connect(&m_mentionSearchTimer, &QTimer::timeout, this, [this]() {
+        QString query;
+        int atPos = -1;
+        if (!mentionQuery(&atPos, &query) || query.isEmpty() || m_currentGuildId.isEmpty() || !m_gateway)
+            return;
+        m_gateway->searchGuildMembers(m_currentGuildId, query);
     });
 
     connect(m_plugins, &PluginHost::repaintRequested, this, [this]() { scheduleRender(); });
@@ -2617,8 +2631,22 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
     // about. Their user part is all the sidebar needs - name and picture.
     if (eventType == QLatin1String("GUILD_MEMBERS_CHUNK")) {
         const QJsonArray members = data.value(QStringLiteral("members")).toArray();
-        for (const QJsonValue &value : members)
-            m_store->rememberUser(value.toObject().value(QStringLiteral("user")).toObject());
+        const bool forMention = data.value(QStringLiteral("nonce")).toString() == QLatin1String("s-mention");
+        if (forMention)
+            m_mentionSearchHits.clear();
+        for (const QJsonValue &value : members) {
+            const QJsonObject member = value.toObject();
+            m_store->rememberUser(member.value(QStringLiteral("user")).toObject());
+            if (forMention) {
+                const QJsonObject user = member.value(QStringLiteral("user")).toObject();
+                const QString id = user.value(QStringLiteral("id")).toString();
+                QString label = member.value(QStringLiteral("nick")).toString();
+                if (label.isEmpty())
+                    label = m_store->userName(id);
+                if (!id.isEmpty() && !label.isEmpty())
+                    m_mentionSearchHits.append({id, label});
+            }
+        }
         const int missing = data.value(QStringLiteral("not_found")).toArray().size();
         wlog(QStringLiteral("gateway"), QStringLiteral("learned %1 people in guild %2%3")
                                             .arg(members.size())
@@ -2628,6 +2656,8 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
         if (!m_voiceRefreshTimer.isActive())
             m_voiceRefreshTimer.start(400);
         m_mentionRefresh.start();
+        if (forMention && m_mentionPopup && m_mentionPopup->isVisible())
+            updateMentionPopup();
         return;
     }
 
@@ -3467,6 +3497,9 @@ void MainWindow::onChannelSelected(int row)
 
 void MainWindow::openChannel(const QString &channelId)
 {
+    hideMentionPopup();
+    m_mentionSearchHits.clear();
+
     // The Friends row is not a channel, it swaps the whole chat area.
     if (channelId == QLatin1String("singularity:friends")) {
         m_currentChannelId.clear();
@@ -6309,6 +6342,8 @@ void MainWindow::selectChannelEverywhere(const QString &channelId)
 
 void MainWindow::onComposerChanged()
 {
+    updateMentionPopup();
+
     if (m_currentChannelId.isEmpty() || m_composer->toPlainText().trimmed().isEmpty())
         return;
 
@@ -6318,6 +6353,245 @@ void MainWindow::onComposerChanged()
 
     if (m_plugins->runBeforeTyping(m_currentChannelId))
         m_rest->sendTyping(m_currentChannelId);
+}
+
+namespace {
+constexpr int kMentionId = QTextFormat::UserProperty + 50;
+constexpr int kMentionKind = QTextFormat::UserProperty + 51;
+}
+
+bool MainWindow::mentionQuery(int *atPos, QString *query) const
+{
+    if (!m_composer || !atPos || !query)
+        return false;
+
+    const QTextCursor cursor = m_composer->textCursor();
+    const int pos = cursor.position();
+    const QString text = m_composer->toPlainText();
+    const int at = text.lastIndexOf(QLatin1Char('@'), qMax(0, pos - 1));
+    if (at < 0 || at >= pos)
+        return false;
+    if (at > 0) {
+        const QChar before = text.at(at - 1);
+        if (!before.isSpace() && before != QLatin1Char('\n'))
+            return false;
+    }
+
+    QTextCursor probe(m_composer->document());
+    probe.setPosition(at + 1);
+    if (!probe.charFormat().property(kMentionId).toString().isEmpty()
+        || probe.charFormat().property(kMentionKind).toString() == QLatin1String("everyone")
+        || probe.charFormat().property(kMentionKind).toString() == QLatin1String("here")) {
+        return false;
+    }
+
+    const QString rest = text.mid(at + 1, pos - at - 1);
+    if (rest.contains(QLatin1Char(' ')) || rest.contains(QLatin1Char('\n')))
+        return false;
+
+    *atPos = at;
+    *query = rest;
+    return true;
+}
+
+QString MainWindow::composerPayload() const
+{
+    if (!m_composer)
+        return {};
+
+    QString out;
+    const QTextDocument *doc = m_composer->document();
+    for (QTextBlock block = doc->begin(); block.isValid(); block = block.next()) {
+        if (block != doc->begin())
+            out += QLatin1Char('\n');
+        for (auto it = block.begin(); !it.atEnd(); ++it) {
+            const QTextFragment frag = it.fragment();
+            const QString id = frag.charFormat().property(kMentionId).toString();
+            const QString kind = frag.charFormat().property(kMentionKind).toString();
+            if (kind == QLatin1String("user") && !id.isEmpty())
+                out += QStringLiteral("<@%1>").arg(id);
+            else if (kind == QLatin1String("role") && !id.isEmpty())
+                out += QStringLiteral("<@&%1>").arg(id);
+            else
+                out += frag.text();
+        }
+    }
+    return out;
+}
+
+void MainWindow::hideMentionPopup()
+{
+    if (m_mentionPopup)
+        m_mentionPopup->hide();
+    m_mentionAtPos = -1;
+}
+
+void MainWindow::insertPickedMention()
+{
+    if (!m_mentionPopup || !m_mentionPopup->currentItem() || m_mentionAtPos < 0)
+        return;
+
+    const QListWidgetItem *item = m_mentionPopup->currentItem();
+    const QString id = item->data(Qt::UserRole).toString();
+    const QString kind = item->data(Qt::UserRole + 1).toString();
+    const QString label = item->data(Qt::UserRole + 2).toString();
+
+    QTextCursor cursor = m_composer->textCursor();
+    cursor.setPosition(m_mentionAtPos);
+    cursor.setPosition(m_composer->textCursor().position(), QTextCursor::KeepAnchor);
+    cursor.removeSelectedText();
+
+    QTextCharFormat fmt;
+    fmt.setForeground(QColor(QLatin1String(Theme::Accent)));
+    fmt.setFontWeight(QFont::DemiBold);
+    fmt.setProperty(kMentionKind, kind);
+    if (!id.isEmpty())
+        fmt.setProperty(kMentionId, id);
+
+    cursor.insertText(QLatin1Char('@') + label, fmt);
+    cursor.setCharFormat(QTextCharFormat());
+    cursor.insertText(QStringLiteral(" "));
+    m_composer->setTextCursor(cursor);
+    hideMentionPopup();
+}
+
+void MainWindow::updateMentionPopup()
+{
+    QString query;
+    int atPos = -1;
+    if (!mentionQuery(&atPos, &query)) {
+        hideMentionPopup();
+        return;
+    }
+    m_mentionAtPos = atPos;
+
+    struct Hit {
+        QString id;
+        QString kind;
+        QString label;
+        QString filter;
+        bool prefix = false;
+    };
+    QList<Hit> hits;
+    QSet<QString> seen;
+
+    const auto consider = [&](const QString &id, const QString &kind, const QString &label,
+                              const QString &filter) {
+        if (label.isEmpty() || seen.contains(kind + id + label))
+            return;
+        if (!query.isEmpty() && !filter.contains(query, Qt::CaseInsensitive))
+            return;
+        seen.insert(kind + id + label);
+        Hit hit{id, kind, label, filter, filter.startsWith(query, Qt::CaseInsensitive)};
+        hits.append(hit);
+    };
+
+    const ChannelInfo channel = m_store->channel(m_currentChannelId);
+    const bool inGuild = !channel.guildId.isEmpty();
+
+    if (inGuild) {
+        if (QStringLiteral("everyone").startsWith(query, Qt::CaseInsensitive))
+            consider({}, QStringLiteral("everyone"), QStringLiteral("everyone"), QStringLiteral("everyone"));
+        if (QStringLiteral("here").startsWith(query, Qt::CaseInsensitive))
+            consider({}, QStringLiteral("here"), QStringLiteral("here"), QStringLiteral("here"));
+
+        const MemberList list = m_store->memberList(channel.guildId);
+        for (const MemberRow &row : list.rows) {
+            if (row.heading || row.userId.isEmpty())
+                continue;
+            QString label = row.nickname;
+            if (label.isEmpty())
+                label = m_store->userName(row.userId);
+            const UserInfo info = m_store->user(row.userId);
+            consider(row.userId, QStringLiteral("user"), label,
+                     label + QLatin1Char(' ') + info.username);
+        }
+
+        for (const auto &hit : m_mentionSearchHits) {
+            consider(hit.first, QStringLiteral("user"), hit.second, hit.second);
+        }
+    } else {
+        for (const QString &userId : channel.recipientIds) {
+            const UserInfo info = m_store->user(userId);
+            const QString label = info.displayName().isEmpty() ? info.username : info.displayName();
+            consider(userId, QStringLiteral("user"), label, label + QLatin1Char(' ') + info.username);
+        }
+    }
+
+    const QList<MessageInfo> recent = m_store->messages(m_currentChannelId);
+    const int from = qMax(0, int(recent.size()) - 80);
+    for (int i = recent.size() - 1; i >= from; --i) {
+        const MessageInfo &message = recent.at(i);
+        if (message.authorId.isEmpty())
+            continue;
+        QString label = message.authorName;
+        if (label.isEmpty())
+            label = m_store->userName(message.authorId);
+        consider(message.authorId, QStringLiteral("user"), label, label);
+    }
+
+    std::sort(hits.begin(), hits.end(), [](const Hit &a, const Hit &b) {
+        if (a.prefix != b.prefix)
+            return a.prefix;
+        return a.label.localeAwareCompare(b.label) < 0;
+    });
+    if (hits.size() > 12)
+        hits = hits.mid(0, 12);
+
+    if (hits.isEmpty()) {
+        hideMentionPopup();
+        if (!query.isEmpty() && inGuild)
+            m_mentionSearchTimer.start();
+        return;
+    }
+
+    if (!m_mentionPopup) {
+        m_mentionPopup = new QListWidget(this);
+        m_mentionPopup->setObjectName(QStringLiteral("MentionPopup"));
+        m_mentionPopup->setFocusPolicy(Qt::NoFocus);
+        m_mentionPopup->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        m_mentionPopup->setStyleSheet(QStringLiteral(
+            "QListWidget#MentionPopup { background-color: %1; color: %2; border: 1px solid %3; "
+            "border-radius: 10px; padding: 4px; font-family: \"Segoe UI\"; font-size: 13px; }"
+            "QListWidget#MentionPopup::item { padding: 6px 10px; border-radius: 6px; }"
+            "QListWidget#MentionPopup::item:selected { background: %4; }")
+                                          .arg(QLatin1String(Theme::SurfaceSidebar),
+                                               QLatin1String(Theme::TextPrimary),
+                                               QLatin1String(Theme::Border),
+                                               QLatin1String(Theme::SurfaceHover)));
+        connect(m_mentionPopup, &QListWidget::itemClicked, this, [this](QListWidgetItem *) {
+            insertPickedMention();
+        });
+    }
+
+    const QString previous = m_mentionPopup->currentItem()
+                                 ? m_mentionPopup->currentItem()->data(Qt::UserRole).toString()
+                                 : QString();
+    m_mentionPopup->clear();
+    int select = 0;
+    for (int i = 0; i < hits.size(); ++i) {
+        const Hit &hit = hits.at(i);
+        auto *item = new QListWidgetItem(QLatin1Char('@') + hit.label, m_mentionPopup);
+        item->setData(Qt::UserRole, hit.id);
+        item->setData(Qt::UserRole + 1, hit.kind);
+        item->setData(Qt::UserRole + 2, hit.label);
+        if (hit.id == previous)
+            select = i;
+    }
+    m_mentionPopup->setCurrentRow(select);
+
+    const int rowH = 28;
+    const int height = qMin(8, hits.size()) * rowH + 10;
+    const int width = qBound(220, m_composer->width(), 320);
+    m_mentionPopup->setFixedSize(width, height);
+
+    const QPoint topLeft = m_composer->mapTo(this, QPoint(0, 0));
+    m_mentionPopup->move(topLeft.x(), topLeft.y() - height - 6);
+    m_mentionPopup->raise();
+    m_mentionPopup->show();
+
+    if (!query.isEmpty() && inGuild)
+        m_mentionSearchTimer.start();
 }
 
 QString MainWindow::messageIdAt(const QPoint &viewportPos) const
@@ -8025,7 +8299,7 @@ void MainWindow::sendCurrentMessage()
     if (m_currentChannelId.isEmpty())
         return;
 
-    QString content = m_composer->toPlainText();
+    QString content = composerPayload();
     const bool editing = !m_editingMessageId.isEmpty();
     if (content.trimmed().isEmpty() && (editing || m_pendingFiles.isEmpty()))
         return;
@@ -8179,6 +8453,28 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 
     if (watched == m_composer && event->type() == QEvent::KeyPress) {
         auto *keyEvent = static_cast<QKeyEvent *>(event);
+        if (m_mentionPopup && m_mentionPopup->isVisible()) {
+            const int key = keyEvent->key();
+            if (key == Qt::Key_Down) {
+                const int row = qMin(m_mentionPopup->currentRow() + 1, m_mentionPopup->count() - 1);
+                m_mentionPopup->setCurrentRow(row);
+                return true;
+            }
+            if (key == Qt::Key_Up) {
+                m_mentionPopup->setCurrentRow(qMax(0, m_mentionPopup->currentRow() - 1));
+                return true;
+            }
+            if (key == Qt::Key_Escape) {
+                hideMentionPopup();
+                return true;
+            }
+            if (key == Qt::Key_Tab
+                || ((key == Qt::Key_Return || key == Qt::Key_Enter)
+                    && !(keyEvent->modifiers() & Qt::ShiftModifier))) {
+                insertPickedMention();
+                return true;
+            }
+        }
         const bool isEnter = keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter;
         if (isEnter && !(keyEvent->modifiers() & Qt::ShiftModifier)) {
             sendCurrentMessage();

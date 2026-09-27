@@ -42,6 +42,10 @@ public:
     // GUILD_MEMBERS_CHUNK. Sent in batches of 100, Discord's limit.
     void requestGuildMembers(const QString &guildId, const QStringList &userIds);
 
+    // Opcode 8 with a name query. Used by the @ picker so someone who is not
+    // on the first page of the member list can still be found.
+    void searchGuildMembers(const QString &guildId, const QString &query);
+
     // For quitting: stop(), then wait (at most 1.5 s) until the close frame
     // has actually left. See the .cpp for why the waiting is the point.
     void shutdown();

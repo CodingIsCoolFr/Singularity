@@ -71,6 +71,11 @@ private slots:
     void onChannelSelected(int row);
     void onComposerChanged();
     void sendCurrentMessage();
+    QString composerPayload() const;
+    void updateMentionPopup();
+    void hideMentionPopup();
+    void insertPickedMention();
+    bool mentionQuery(int *atPos, QString *query) const;
     void showMessageMenu(const QPoint &pos);
     void beginReply(const QString &messageId);
     // "Forward" on a message: pick up to five places, optionally add a line.
@@ -305,6 +310,10 @@ private:
     class QSystemTrayIcon *m_tray = nullptr;        // made on the first notification
     ChatView *m_messageView = nullptr;
     QTextEdit *m_composer = nullptr;
+    QListWidget *m_mentionPopup = nullptr;
+    int m_mentionAtPos = -1;
+    QTimer m_mentionSearchTimer;
+    QList<QPair<QString, QString>> m_mentionSearchHits;
     QWidget *m_composerContext = nullptr;
     QLabel *m_composerContextText = nullptr;
     QLabel *m_attachmentLabel = nullptr;

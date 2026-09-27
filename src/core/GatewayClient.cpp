@@ -860,6 +860,24 @@ void GatewayClient::requestGuildMembers(const QString &guildId, const QStringLis
     }
 }
 
+void GatewayClient::searchGuildMembers(const QString &guildId, const QString &query)
+{
+    if (guildId.isEmpty() || query.isEmpty())
+        return;
+
+    sendJson(QJsonObject{
+        {QStringLiteral("op"), OpRequestGuildMembers},
+        {QStringLiteral("d"),
+         QJsonObject{
+             {QStringLiteral("guild_id"), guildId},
+             {QStringLiteral("query"), query},
+             {QStringLiteral("limit"), 15},
+             {QStringLiteral("presences"), false},
+             {QStringLiteral("nonce"), QStringLiteral("s-mention")},
+         }},
+    });
+}
+
 QString GatewayClient::streamKeyFor(const QString &guildId, const QString &channelId,
                                     const QString &userId)
 {
