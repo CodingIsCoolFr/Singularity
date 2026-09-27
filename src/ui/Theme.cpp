@@ -148,10 +148,6 @@ QString expand(const QString &sheet)
         // Enough to read a name over wherever the hole happens to be bright,
         // little enough that it still reads as glass rather than a panel.
         {QStringLiteral("@glass150"), rgbaOf(chat, 178)},
-        // The big panels over a picture. The picture is already darkened by
-        // the dim slider, so this veil is lighter than the member list's:
-        // heavy on both and the picture disappears again.
-        {QStringLiteral("@glassPanel"), rgbaOf(chat, 132)},
         {QStringLiteral("@accent22"), rgbaOf(accent, 22)},
         {QStringLiteral("@accent28"), rgbaOf(accent, 28)},
         {QStringLiteral("@accent38"), rgbaOf(accent, 38)},
@@ -558,12 +554,11 @@ QDialog { background-color: @chat; }
 #AppMenu::item:selected { background-color: @hover; color: @text; }
 
 /* Solid while the black hole is up. A see-through widget above that OpenGL
-   surface paints black on Windows.
+   surface paints black on Windows. Active Now cards stay solid either way:
+   they are short blocks of text and a wash behind them turns to mud.
 
-   Over a picture the same panels are glass, switched by the glass property
-   on the main window. A picture is painted by an ordinary widget, so the
-   colour here really does let it through. Active Now cards keep the solid
-   fill: they are short blocks of text and a wash behind them turns to mud. */
+   Over a picture the same panels are clear. The dim slider is the only
+   darkening, so a second veil would put the boxes back. */
 #GuildRail, #Sidebar, #ChatColumn, #ActivityCard {
     background-color: @chat;
     border: 1px solid @accent38;
@@ -571,8 +566,10 @@ QDialog { background-color: @chat; }
 }
 QMainWindow[glass="true"] #GuildRail,
 QMainWindow[glass="true"] #Sidebar,
-QMainWindow[glass="true"] #ChatColumn {
-    background-color: @glassPanel;
+QMainWindow[glass="true"] #ChatColumn,
+QMainWindow[glass="true"] #MemberPanel {
+    background-color: transparent;
+    border: none;
 }
 
 /* The member list is glass rather than a panel.
@@ -631,6 +628,10 @@ QMainWindow[glass="true"] #ChatColumn {
     border-bottom-left-radius: 18px;
     border-bottom-right-radius: 18px;
 }
+QMainWindow[glass="true"] #UserPanel {
+    background-color: transparent;
+    border: none;
+}
 #SelfName   { color: @text; font-size: 13px; font-weight: 600; background: transparent; }
 #SelfStatus { color: @faint; font-size: 11px; background: transparent; }
 #UserPanel QPushButton {
@@ -650,6 +651,10 @@ QMainWindow[glass="true"] #ChatColumn {
 #VoicePanel {
     background-color: @voicePanel;
     border-top: 1px solid @accent40;
+}
+QMainWindow[glass="true"] #VoicePanel {
+    background-color: transparent;
+    border: none;
 }
 #VoiceHeading { color: @text; font-size: 12px; font-weight: 700; background: transparent; }
 #VoiceChannel { color: @muted; font-size: 11px; background: transparent; }
@@ -702,6 +707,11 @@ QTextBrowser {
 #ComposerBox:focus-within {
     border-color: @accent;
     background-color: @input250;
+}
+QMainWindow[glass="true"] #ComposerBox,
+QMainWindow[glass="true"] #ComposerBox:focus-within {
+    background-color: transparent;
+    border-color: transparent;
 }
 QTextEdit#MessageInput {
     background-color: transparent;

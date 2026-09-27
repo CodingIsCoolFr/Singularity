@@ -43,6 +43,17 @@ QColor withAlpha(const char *hex, int alpha)
     return colour;
 }
 
+// The main window sets this while a picture is the background. An empty
+// call tile is then just a face on that picture, not a dark plate over it.
+bool pictureBehind(const QWidget *widget)
+{
+    for (const QWidget *w = widget; w; w = w->parentWidget()) {
+        if (w->property("glass").toBool())
+            return true;
+    }
+    return false;
+}
+
 } // namespace
 
 CallView::CallView(MessageStore *store, QWidget *parent)
@@ -558,9 +569,13 @@ void CallView::paintTile(QPainter &painter, const Tile &tile) const
 
     painter.save();
     painter.setClipPath(clip, painter.hasClipping() ? Qt::IntersectClip : Qt::ReplaceClip);
-    painter.fillPath(clip, withAlpha(Theme::SurfaceChat, 230));
 
     const QImage live = framesFor(tile.surface).value(tile.userId);
+    // No camera yet: the rounded plate was a box sitting on the picture.
+    const bool clearPlate = pictureBehind(this) && live.isNull();
+    if (!clearPlate)
+        painter.fillPath(clip, withAlpha(Theme::SurfaceChat, 230));
+
     if (!live.isNull()) {
         // Shared screens keep their whole picture. Cameras fill the tile.
         const Qt::AspectRatioMode mode =
@@ -597,10 +612,13 @@ void CallView::paintTile(QPainter &painter, const Tile &tile) const
     }
 
     // Name plate, darker at the bottom so white text on a bright share still reads.
-    QLinearGradient fade(tile.box.bottomLeft(), QPoint(tile.box.left(), tile.box.bottom() - 72));
-    fade.setColorAt(0.0, QColor(0, 0, 0, tile.featured ? 170 : 140));
-    fade.setColorAt(1.0, QColor(0, 0, 0, 0));
-    painter.fillRect(QRect(tile.box.left(), tile.box.bottom() - 72, tile.box.width(), 72), fade);
+    // Skipped on a clear plate: the fade is itself a dark box.
+    if (!clearPlate) {
+        QLinearGradient fade(tile.box.bottomLeft(), QPoint(tile.box.left(), tile.box.bottom() - 72));
+        fade.setColorAt(0.0, QColor(0, 0, 0, tile.featured ? 170 : 140));
+        fade.setColorAt(1.0, QColor(0, 0, 0, 0));
+        painter.fillRect(QRect(tile.box.left(), tile.box.bottom() - 72, tile.box.width(), 72), fade);
+    }
 
     QFont nameFont = font();
     nameFont.setPixelSize(tile.featured ? 16 : 12);
@@ -619,16 +637,20 @@ void CallView::paintTile(QPainter &painter, const Tile &tile) const
     painter.restore();
 
     const bool hovered = tile.userId == m_hoverUserId && tile.surface == m_hoverSurface;
-    QPen edge(tile.speaking ? QColor(Theme::Green)
-                            : ((tile.userId == m_focusedUser && tile.surface == m_focusedSurface)
-                                   ? QColor(Theme::Accent)
-                                   : withAlpha(Theme::Border, 180)));
-    if (hovered && !tile.speaking)
-        edge.setColor(QColor(Theme::AccentHover));
-    edge.setWidthF(tile.featured ? 2.4 : 1.6);
-    painter.setPen(edge);
-    painter.setBrush(Qt::NoBrush);
-    painter.drawRoundedRect(QRectF(tile.box).adjusted(1, 1, -1, -1), radius, radius);
+    const bool focused = tile.userId == m_focusedUser && tile.surface == m_focusedSurface;
+    // A clear plate keeps an edge only while it means something: speaking,
+    // focused, or under the pointer. Otherwise the outline is the box again.
+    if (!clearPlate || tile.speaking || focused || hovered) {
+        QPen edge(tile.speaking ? QColor(Theme::Green)
+                                : (focused ? QColor(Theme::Accent)
+                                           : withAlpha(Theme::Border, 180)));
+        if (hovered && !tile.speaking)
+            edge.setColor(QColor(Theme::AccentHover));
+        edge.setWidthF(tile.featured ? 2.4 : 1.6);
+        painter.setPen(edge);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRoundedRect(QRectF(tile.box).adjusted(1, 1, -1, -1), radius, radius);
+    }
 
     paintMarks(painter, tile);
 }
