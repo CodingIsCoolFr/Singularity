@@ -1831,7 +1831,7 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
 
     m_messageView = new ChatView(chat);
     m_messageView->document()->setDefaultStyleSheet(Theme::messageViewCss(
-        AppConfig::instance().value(QStringLiteral("appearance/fontSize"), 14).toInt()));
+        AppConfig::instance().value(QStringLiteral("appearance/fontSize"), 15).toInt()));
     m_messageView->document()->setDocumentMargin(0);
     m_messageView->setAnimationsEnabled(
         AppConfig::instance().value(QStringLiteral("appearance/playAnimations"), true).toBool());
@@ -4416,6 +4416,7 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
     body += embedsHtml(message);
     body += componentsHtml(message.components, message.id, message.applicationId, message.flags);
     body += inviteCardsHtml(message);
+    body += activityInviteHtml(message);
     body += reactionsHtml(message);
 
     if (body.isEmpty())
@@ -4717,7 +4718,7 @@ QString MainWindow::reactionsHtml(const MessageInfo &message) const
             const QString ext = (reaction.animated && animate) ? QStringLiteral("gif")
                                                                : QStringLiteral("png");
             const int textSize =
-                qBound(12, AppConfig::instance().value(QStringLiteral("appearance/fontSize"), 14).toInt(), 24);
+                qBound(12, AppConfig::instance().value(QStringLiteral("appearance/fontSize"), 15).toInt(), 24);
             const int pixels = qRound(textSize * 16 / 14.0);
             face = QStringLiteral("<img src=\"https://cdn.discordapp.com/emojis/%1.%2?size=48#e%3\" "
                                   "width=\"%3\" height=\"%3\">")
@@ -4972,7 +4973,7 @@ QString MainWindow::renderContent(const QString &raw, bool jumbo)
     // Emoji follow the chat text size, in Discord's proportions: inline ones a
     // little over the line height, and a message of up to 27 emoji and
     // nothing else shown at three times the text.
-    const int textSize = qBound(12, AppConfig::instance().value(QStringLiteral("appearance/fontSize"), 14).toInt(), 24);
+    const int textSize = qBound(12, AppConfig::instance().value(QStringLiteral("appearance/fontSize"), 15).toInt(), 24);
     const int emojiOnly = jumbo ? emojiOnlyCount(raw) : 0;
     const int emojiPx = (emojiOnly > 0 && emojiOnly <= 27) ? qRound(textSize * 48 / 14.0)
                                                           : qRound(textSize * 22 / 14.0);
@@ -5659,6 +5660,20 @@ void MainWindow::handleAnchor(const QUrl &url)
         const QUrlQuery query(url);
         toggleReaction(query.queryItemValue(QStringLiteral("m")),
                        query.queryItemValue(QStringLiteral("e"), QUrl::FullyDecoded));
+        return;
+    }
+
+    // A game invite's Launch Game. Discord would start the installed copy;
+    // we open the application's page, which is what we can do without its
+    // launcher.
+    if (url.scheme() == QLatin1String("singularity-game")) {
+        QString id = url.path();
+        if (id.startsWith(QLatin1Char('/')))
+            id.remove(0, 1);
+        if (id.isEmpty())
+            id = whole.mid(QStringLiteral("singularity-game:").size());
+        if (!id.isEmpty())
+            QDesktopServices::openUrl(QUrl(QStringLiteral("https://discord.com/application-directory/%1").arg(id)));
         return;
     }
 
@@ -9937,6 +9952,86 @@ QString MainWindow::inviteCardsHtml(const MessageInfo &message)
     return html;
 }
 
+QString MainWindow::activityInviteHtml(const MessageInfo &message) const
+{
+    if (message.activityApplicationName.isEmpty() && message.activityApplicationId.isEmpty())
+        return {};
+
+    const QString name = message.activityApplicationName.isEmpty()
+        ? QStringLiteral("Game")
+        : message.activityApplicationName;
+
+    bool stillGoing = false;
+    const PresenceInfo presence = m_store->presence(message.authorId);
+    for (const ActivityInfo &activity : presence.activities) {
+        if (activity.isCustomStatus())
+            continue;
+        if (!message.activityApplicationId.isEmpty() && activity.applicationId == message.activityApplicationId) {
+            stillGoing = true;
+            break;
+        }
+        if (!message.activityApplicationName.isEmpty()
+            && activity.name.compare(message.activityApplicationName, Qt::CaseInsensitive) == 0) {
+            stillGoing = true;
+            break;
+        }
+    }
+
+    QString subtitle = QStringLiteral("Game has ended. Start a new one?");
+    if (stillGoing) {
+        if (message.activityType == 2)
+            subtitle = QStringLiteral("Spectate");
+        else if (message.activityType == 3)
+            subtitle = QStringLiteral("Listen along");
+        else
+            subtitle = QStringLiteral("Playing");
+    }
+
+    QString icon;
+    if (!message.activityApplicationId.isEmpty() && !message.activityApplicationIcon.isEmpty()) {
+        const QString url = QStringLiteral("https://cdn.discordapp.com/app-icons/%1/%2.png?size=64")
+                                .arg(message.activityApplicationId, message.activityApplicationIcon);
+        icon = QStringLiteral("<img src=\"%1\" width=\"48\" height=\"48\">").arg(url.toHtmlEscaped());
+    } else {
+        icon = QStringLiteral("<table cellspacing=\"0\" cellpadding=\"0\"><tr>"
+                              "<td width=\"48\" height=\"48\" align=\"center\" bgcolor=\"%1\" "
+                              "style=\"font-weight:bold; color:%2;\">%3</td></tr></table>")
+                   .arg(QLatin1String(Theme::SurfaceHover), QLatin1String(Theme::TextPrimary),
+                        name.left(3).toHtmlEscaped());
+    }
+
+    const QString href = message.activityApplicationId.isEmpty()
+        ? QString()
+        : QStringLiteral("singularity-game:%1").arg(message.activityApplicationId);
+    const QString launch = href.isEmpty()
+        ? QStringLiteral("<span style=\"color:%1;\">Launch Game</span>").arg(QLatin1String(Theme::Dark))
+        : QStringLiteral("<a href=\"%1\" style=\"color:%2; text-decoration:none; font-weight:bold;\">Launch Game</a>")
+              .arg(href.toHtmlEscaped(), QLatin1String(Theme::Dark));
+    const QString pad = href.isEmpty()
+        ? QStringLiteral("<span style=\"color:%1;\">&#127918;</span>").arg(QLatin1String(Theme::TextPrimary))
+        : QStringLiteral("<a href=\"%1\" style=\"color:%2; text-decoration:none;\">&#127918;</a>")
+              .arg(href.toHtmlEscaped(), QLatin1String(Theme::TextPrimary));
+
+    const QString inner = QStringLiteral(
+        "<table cellspacing=\"0\" cellpadding=\"0\"><tr>"
+        "<td valign=\"middle\">%1</td>"
+        "<td valign=\"middle\" style=\"padding-left:12px;\">"
+        "<div style=\"font-weight:bold; font-size:15px;\">%2</div>"
+        "<div style=\"color:%3; font-size:12px;\">%4</div></td></tr></table>"
+        "<table cellspacing=\"0\" cellpadding=\"0\" style=\"margin-top:10px;\" width=\"100%\"><tr>"
+        "<td bgcolor=\"#ffffff\" valign=\"middle\" align=\"center\" style=\"padding:8px 16px;\">%5</td>"
+        "<td width=\"8\"></td>"
+        "<td width=\"40\" bgcolor=\"%6\" valign=\"middle\" align=\"center\" style=\"padding:8px;\">%7</td>"
+        "</tr></table>")
+                              .arg(icon, name.toHtmlEscaped(), QLatin1String(Theme::TextMuted),
+                                   subtitle.toHtmlEscaped(), launch, QLatin1String(Theme::SurfaceHover), pad);
+
+    return QStringLiteral("<table class=\"embed\" cellspacing=\"0\" cellpadding=\"0\"><tr>"
+                          "<td class=\"embed-inner\" bgcolor=\"%1\" style=\"padding:12px 16px;\">%2</td>"
+                          "</tr></table>")
+        .arg(QLatin1String(Theme::SurfaceInput), inner);
+}
+
 void MainWindow::requestInvite(const QString &code)
 {
     if (code.isEmpty() || m_invites.contains(code) || !m_rest)
@@ -10279,7 +10374,7 @@ void MainWindow::applyAppearance()
 
     if (m_messageView) {
         m_messageView->document()->setDefaultStyleSheet(
-            Theme::messageViewCss(config.value(QStringLiteral("appearance/fontSize"), 14).toInt()));
+            Theme::messageViewCss(config.value(QStringLiteral("appearance/fontSize"), 15).toInt()));
         m_messageView->setAnimationsEnabled(
             config.value(QStringLiteral("appearance/playAnimations"), true).toBool());
     }

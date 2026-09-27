@@ -80,7 +80,7 @@ void applyPalette();
 void showThrough(QAbstractScrollArea *area);
 
 // CSS used inside the message view, which is a rich text document.
-QString messageViewCss(int bodyFontSize = 14);
+QString messageViewCss(int bodyFontSize = 15);
 
 // Paints the window's title bar to match the app, so the top edge is one
 // surface instead of two. Windows 11 only; older versions are left alone.

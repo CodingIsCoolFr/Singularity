@@ -329,6 +329,15 @@ struct MessageInfo
     // The application that owns the buttons. A press is sent to this id.
     QString applicationId;
     int flags = 0;
+
+    // A Rich Presence / game invite. Discord sends this as `activity` plus
+    // `application`, with no words and no embeds, which is why it used to
+    // read "(no text)".
+    int activityType = 0;   // 1 join, 2 spectate, 3 listen, 5 join request
+    QString activityPartyId;
+    QString activityApplicationId;
+    QString activityApplicationName;
+    QString activityApplicationIcon;
     QString forwardedFromChannelId;
     QString forwardedFromGuildId;
     QString forwardedFromMessageId;

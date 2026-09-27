@@ -260,6 +260,7 @@ private:
     void showInteractionModal(const QJsonObject &data);
     QString textDisplayHtml(const QString &markdown);
     QString inviteCardsHtml(const MessageInfo &message);
+    QString activityInviteHtml(const MessageInfo &message) const;
     QString reactionsHtml(const MessageInfo &message) const;
     void updateUserPanel();
     void setTypingHint(const QString &text);

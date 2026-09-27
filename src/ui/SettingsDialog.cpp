@@ -1668,7 +1668,7 @@ QWidget *SettingsDialog::buildAppearancePage()
     };
 
     auto *chatSizeValue = sliderHeader(QStringLiteral("Chat text size"));
-    auto *chatSize = makeSlider(12, 24, config.value(QStringLiteral("appearance/fontSize"), 14).toInt(), page);
+    auto *chatSize = makeSlider(12, 24, config.value(QStringLiteral("appearance/fontSize"), 15).toInt(), page);
     layout->addWidget(chatSize);
     layout->addWidget(hint(QStringLiteral("Messages, names and emoji in the conversation. Takes effect when Settings closes."),
                            page));

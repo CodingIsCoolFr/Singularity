@@ -1210,6 +1210,19 @@ MessageInfo MessageStore::parseMessage(const QJsonObject &raw)
 
     message.components = raw.value(QStringLiteral("components")).toArray();
 
+    // A game invite: empty body, an activity, and the application it belongs to.
+    const QJsonObject activity = raw.value(QStringLiteral("activity")).toObject();
+    if (!activity.isEmpty()) {
+        message.activityType = activity.value(QStringLiteral("type")).toInt();
+        message.activityPartyId = activity.value(QStringLiteral("party_id")).toString();
+        const QJsonObject application = raw.value(QStringLiteral("application")).toObject();
+        message.activityApplicationId = application.value(QStringLiteral("id")).toString();
+        if (message.activityApplicationId.isEmpty())
+            message.activityApplicationId = message.applicationId;
+        message.activityApplicationName = application.value(QStringLiteral("name")).toString();
+        message.activityApplicationIcon = application.value(QStringLiteral("icon")).toString();
+    }
+
     // --- forwarded --------------------------------------------------------
     // Type 1 is a forward; 0 (or none) is a reply, which is not this.
     const QJsonObject reference = raw.value(QStringLiteral("message_reference")).toObject();
