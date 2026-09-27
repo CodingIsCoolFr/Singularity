@@ -284,11 +284,19 @@ bool NitroWatchPlugin::checkFirst() const
     return !context() || context()->setting(QStringLiteral("checkFirst"), true).toBool();
 }
 
+bool NitroWatchPlugin::windowsNotify() const
+{
+    return !context() || context()->setting(QStringLiteral("windowsNotify"), true).toBool();
+}
+
 void NitroWatchPlugin::onGatewayEvent(const QString &eventType, const QJsonObject &data)
 {
     if (eventType != QLatin1String("MESSAGE_CREATE") && eventType != QLatin1String("MESSAGE_UPDATE"))
         return;
-    if (!watchEnabled())
+    // Either the in-app Claim panel or a Windows toast is enough reason to
+    // look. Turning the panel off so it does not cover a game must not also
+    // kill the toast that is meant to reach you there.
+    if (!watchEnabled() && !windowsNotify())
         return;
 
     // Native gift cards often have empty content; the link is on the embed.
@@ -440,14 +448,25 @@ void NitroWatchPlugin::offer(const QString &code, const QString &fromUserId,
             where = QStringLiteral(" in #%1").arg(channel.name);
     }
 
-    // A Windows notification as well as the alert, like a message's: the
-    // alert is easy to miss behind a full-screen game, the notification is
-    // not. Clicking it opens the chat the gift was posted in, where the alert
-    // is waiting with its Claim button.
-    if (context())
+    // A Windows notification for a gift Discord says is still claimable. The
+    // in-app panel is easy to miss behind a full-screen game; this is the
+    // same toast a message uses, so it still lands on top of VRChat. Clicking
+    // it opens the chat the gift was posted in.
+    if (windowsNotify() && gift.claimable && context())
         context()->notify(QStringLiteral("Nitro gift: %1").arg(gift.what),
                           QStringLiteral("%1 posted one%2. Open Singularity to claim it.").arg(who, where),
                           channelId);
+
+    // Do not yank them out of a game. A topmost dialog that activates itself
+    // both covers the game and makes Windows hide the toast we just raised.
+    const bool inFront = QGuiApplication::applicationState() == Qt::ApplicationActive;
+
+    // The in-app Claim panel is optional. The toast is not enough on its own:
+    // clicking it opens the chat, but the Claim button lives on this panel, so
+    // when they are in a game the panel is still built, just without taking
+    // focus.
+    if (!watchEnabled() && inFront)
+        return;
 
     // One alert at a time. A newer gift is the one worth looking at.
     if (m_alert)
@@ -461,9 +480,13 @@ void NitroWatchPlugin::offer(const QString &code, const QString &fromUserId,
         }
     }
 
+    Qt::WindowFlags flags = Qt::Dialog | Qt::FramelessWindowHint;
+    if (inFront)
+        flags |= Qt::WindowStaysOnTopHint;
+
     // Dialog + a real owner, not a parentless Qt::Tool window. Those get
     // created on Windows and then never appear.
-    auto *alert = new QWidget(parent, Qt::Dialog | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
+    auto *alert = new QWidget(parent, flags);
     m_alert = alert;
     alert->setAttribute(Qt::WA_DeleteOnClose);
     alert->setAttribute(Qt::WA_StyledBackground, true);
@@ -555,9 +578,16 @@ void NitroWatchPlugin::offer(const QString &code, const QString &fromUserId,
         alert->move(area.right() - alert->width() - 24, area.top() + 24);
     }
 
-    alert->show();
-    alert->raise();
-    alert->activateWindow();
+    if (inFront) {
+        alert->show();
+        alert->raise();
+        alert->activateWindow();
+    } else {
+        alert->setAttribute(Qt::WA_ShowWithoutActivating, true);
+        alert->show();
+        if (parent)
+            QApplication::alert(parent);
+    }
 
     // Gone after a minute if nobody touches it, so a missed gift does not
     // leave a panel sitting there for the rest of the day.
@@ -659,6 +689,10 @@ QWidget *NitroWatchPlugin::createSettingsWidget(QWidget *parent)
     watch->setChecked(watchEnabled());
     layout->addWidget(watch);
 
+    auto *toast = new QCheckBox(QStringLiteral("Windows notification when a gift is still claimable"), page);
+    toast->setChecked(windowsNotify());
+    layout->addWidget(toast);
+
     auto *check = new QCheckBox(QStringLiteral("Check each gift with Discord before alerting me"), page);
     check->setChecked(checkFirst());
     layout->addWidget(check);
@@ -674,7 +708,9 @@ QWidget *NitroWatchPlugin::createSettingsWidget(QWidget *parent)
         "yourself are dropped without a word, so the only thing that ever interrupts you is a gift "
         "that is really still there. The alert then names it and says how many are left.\n\n"
         "This is safe to do automatically because it is the same lookup Discord's own client makes "
-        "to draw a gift card. It reads; it does not claim. Nothing is spent by checking."),
+        "to draw a gift card. It reads; it does not claim. Nothing is spent by checking. A Windows "
+        "notification is raised only for those still-claimable gifts, so one that lands while you "
+        "are in a game is not missed."),
         Theme::TextFaint, 11, false, page));
 
     layout->addWidget(line(QStringLiteral(
@@ -700,6 +736,10 @@ QWidget *NitroWatchPlugin::createSettingsWidget(QWidget *parent)
     QObject::connect(watch, &QCheckBox::toggled, page, [this](bool on) {
         if (context())
             context()->setSetting(QStringLiteral("watch"), on);
+    });
+    QObject::connect(toast, &QCheckBox::toggled, page, [this](bool on) {
+        if (context())
+            context()->setSetting(QStringLiteral("windowsNotify"), on);
     });
     QObject::connect(check, &QCheckBox::toggled, page, [this](bool on) {
         if (context())

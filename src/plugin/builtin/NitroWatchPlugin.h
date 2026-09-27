@@ -45,8 +45,8 @@ public:
     QString description() const override
     {
         return QStringLiteral("Spots gift links the instant they are posted, checks each one with "
-                              "Discord, and offers a Claim button for the real ones. Never claims "
-                              "on its own.");
+                              "Discord, and offers a Claim button for the real ones. A Windows "
+                              "notification is raised for those. Never claims on its own.");
     }
     bool enabledByDefault() const override { return false; }
 
@@ -96,6 +96,7 @@ private:
     bool watchEnabled() const;
     bool warnFakes() const;
     bool checkFirst() const;
+    bool windowsNotify() const;
 
     // Codes already put in front of you. A gift posted in two channels, or
     // edited, must not raise two alerts.
