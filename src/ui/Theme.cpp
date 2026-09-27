@@ -1,5 +1,6 @@
 #include "Theme.h"
 
+#include <QAbstractScrollArea>
 #include <QApplication>
 #include <QColor>
 #include <QEvent>
@@ -147,6 +148,10 @@ QString expand(const QString &sheet)
         // Enough to read a name over wherever the hole happens to be bright,
         // little enough that it still reads as glass rather than a panel.
         {QStringLiteral("@glass150"), rgbaOf(chat, 178)},
+        // The big panels over a picture. The picture is already darkened by
+        // the dim slider, so this veil is lighter than the member list's:
+        // heavy on both and the picture disappears again.
+        {QStringLiteral("@glassPanel"), rgbaOf(chat, 132)},
         {QStringLiteral("@accent22"), rgbaOf(accent, 22)},
         {QStringLiteral("@accent28"), rgbaOf(accent, 28)},
         {QStringLiteral("@accent38"), rgbaOf(accent, 38)},
@@ -411,6 +416,21 @@ void applyPalette()
     QApplication::setPalette(palette);
 }
 
+void showThrough(QAbstractScrollArea *area)
+{
+    if (!area)
+        return;
+    area->setAutoFillBackground(false);
+    QPalette clear = area->palette();
+    clear.setColor(QPalette::Base, Qt::transparent);
+    clear.setColor(QPalette::Window, Qt::transparent);
+    area->setPalette(clear);
+    if (QWidget *view = area->viewport()) {
+        view->setAutoFillBackground(false);
+        view->setPalette(clear);
+    }
+}
+
 void installDarkTitleBars()
 {
     static bool installed = false;
@@ -537,11 +557,22 @@ QDialog { background-color: @chat; }
 }
 #AppMenu::item:selected { background-color: @hover; color: @text; }
 
-/* Opaque islands. Translucent children of QOpenGLWidget paint black on Windows. */
-#GuildRail, #Sidebar, #ChatColumn {
+/* Solid while the black hole is up. A see-through widget above that OpenGL
+   surface paints black on Windows.
+
+   Over a picture the same panels are glass, switched by the glass property
+   on the main window. A picture is painted by an ordinary widget, so the
+   colour here really does let it through. Active Now cards keep the solid
+   fill: they are short blocks of text and a wash behind them turns to mud. */
+#GuildRail, #Sidebar, #ChatColumn, #ActivityCard {
     background-color: @chat;
     border: 1px solid @accent38;
     border-radius: 18px;
+}
+QMainWindow[glass="true"] #GuildRail,
+QMainWindow[glass="true"] #Sidebar,
+QMainWindow[glass="true"] #ChatColumn {
+    background-color: @glassPanel;
 }
 
 /* The member list is glass rather than a panel.

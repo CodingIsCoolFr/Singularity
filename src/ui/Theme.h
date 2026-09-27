@@ -4,6 +4,7 @@
 #include <QString>
 #include <QVector3D>
 
+class QAbstractScrollArea;
 class QWidget;
 
 // Night ink with one seed colour as the decorative note.
@@ -72,6 +73,11 @@ QString applicationStyleSheet();
 // the style sheet does not. Call after applySeed(), and again after each
 // later applySeed().
 void applyPalette();
+
+// A scrolling view paints its own rectangle from the palette, which is a
+// solid colour, and a stylesheet on the view does not reach that rectangle.
+// Cleared, the panel behind it shows through.
+void showThrough(QAbstractScrollArea *area);
 
 // CSS used inside the message view, which is a rich text document.
 QString messageViewCss(int bodyFontSize = 14);

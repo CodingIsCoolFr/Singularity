@@ -203,7 +203,7 @@ FriendsPage::FriendsPage(MessageStore *store, RestClient *rest, QWidget *parent)
     m_list->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_list->setSelectionMode(QAbstractItemView::NoSelection);
     m_list->setStyleSheet(QStringLiteral("QListWidget { background: transparent; border: none; }"));
-    m_list->viewport()->setAutoFillBackground(false);
+    Theme::showThrough(m_list);
     // Rows are drawn, not built, so a few hundred friends stay smooth.
     m_list->setUniformItemSizes(true);
 
@@ -245,6 +245,7 @@ FriendsPage::FriendsPage(MessageStore *store, RestClient *rest, QWidget *parent)
     m_activityScroll->setFrameShape(QFrame::NoFrame);
     m_activityScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_activityScroll->setStyleSheet(QStringLiteral("QScrollArea { background: transparent; border: none; }"));
+    Theme::showThrough(m_activityScroll);
     auto *host = new QWidget(m_activityScroll);
     host->setMinimumWidth(0);
     host->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
@@ -807,7 +808,9 @@ void FriendsPage::rebuildActivity()
 
     for (const Card &card : cards) {
         auto *frame = new QFrame(m_activityLayout->parentWidget());
-        frame->setObjectName(QStringLiteral("ChatColumn"));
+        frame->setObjectName(QStringLiteral("ActivityCard"));
+        frame->setAttribute(Qt::WA_StyledBackground, true);
+        frame->setAutoFillBackground(false);
         frame->setCursor(Qt::PointingHandCursor);
         frame->setMinimumWidth(0);
         frame->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);

@@ -1089,7 +1089,7 @@ void MainWindow::buildUi()
     auto *chatCard = new QFrame(m_backdrop);
     chatCard->setObjectName(QStringLiteral("ChatColumn"));
     chatCard->setAttribute(Qt::WA_StyledBackground, true);
-    chatCard->setAutoFillBackground(true);
+    chatCard->setAutoFillBackground(false);
     auto *chatLayout = new QVBoxLayout(chatCard);
     chatLayout->setContentsMargins(0, 0, 0, 0);
     chatLayout->setSpacing(0);
@@ -1097,6 +1097,7 @@ void MainWindow::buildUi()
     m_chatSplitter = new QSplitter(Qt::Vertical, chatCard);
     m_chatSplitter->setChildrenCollapsible(true);
     m_chatSplitter->setHandleWidth(8);
+    m_chatSplitter->setAutoFillBackground(false);
 
     m_callView = new CallView(m_store, m_chatSplitter);
     {
@@ -1137,6 +1138,7 @@ void MainWindow::buildUi()
     });
 
     m_chatStack = new QStackedWidget(m_chatSplitter);
+    m_chatStack->setAutoFillBackground(false);
     m_chatPage = buildChatColumn(m_chatStack);
     m_chatStack->addWidget(m_chatPage);
 
@@ -1204,7 +1206,7 @@ QWidget *MainWindow::buildGuildRail(QWidget *parent)
     auto *rail = new QWidget(parent);
     rail->setObjectName(QStringLiteral("GuildRail"));
     rail->setAttribute(Qt::WA_StyledBackground, true);
-    rail->setAutoFillBackground(true);
+    rail->setAutoFillBackground(false);
     rail->setFixedWidth(RailWidth);
 
     auto *layout = new QVBoxLayout(rail);
@@ -1260,7 +1262,7 @@ QWidget *MainWindow::buildGuildRail(QWidget *parent)
     m_guildRail->setIconSize(QSize(GuildIconPixels, GuildIconPixels));
     m_guildRail->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_guildRail->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_guildRail->viewport()->setAutoFillBackground(false);
+    Theme::showThrough(m_guildRail);
     m_guildRail->setUniformItemSizes(true);
     // The delegate draws the rows itself, so the stylesheet must not.
     m_guildRail->setItemDelegate(new GuildRailDelegate(m_guildRail, m_guildRail));
@@ -1322,7 +1324,7 @@ QWidget *MainWindow::buildSidebar(QWidget *parent)
     auto *sidebar = new QWidget(parent);
     sidebar->setObjectName(QStringLiteral("Sidebar"));
     sidebar->setAttribute(Qt::WA_StyledBackground, true);
-    sidebar->setAutoFillBackground(true);
+    sidebar->setAutoFillBackground(false);
     sidebar->setFixedWidth(SidebarWidth);
 
     auto *layout = new QVBoxLayout(sidebar);
@@ -1336,7 +1338,7 @@ QWidget *MainWindow::buildSidebar(QWidget *parent)
 
     m_channelList = new QListWidget(sidebar);
     m_channelList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_channelList->viewport()->setAutoFillBackground(false);
+    Theme::showThrough(m_channelList);
 
     m_channelDelegate = new ChannelDelegate(m_channelList, m_channelList);
     m_channelList->setItemDelegate(m_channelDelegate);
@@ -7594,6 +7596,14 @@ void MainWindow::applyBackgroundSettings()
     m_backdrop->setBackground(usable ? path : QString(), dim);
     m_paceHole = !usable;
     updateFramePace();
+
+    // The stylesheet switches the panels to glass only while this is set.
+    // A property change is invisible to a stylesheet that is already applied,
+    // so the sheet is put on again when the flag actually changes.
+    if (property("glass").toBool() != usable) {
+        setProperty("glass", usable);
+        qApp->setStyleSheet(Theme::applicationStyleSheet());
+    }
 }
 
 void MainWindow::updateFramePace()

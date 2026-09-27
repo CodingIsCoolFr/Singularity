@@ -170,14 +170,12 @@ void GuildHeader::paintEvent(QPaintEvent *)
 
         // Dark at the top so the name reads on any picture, and fading into
         // the sidebar at the bottom so the banner has no hard edge.
+        // Dark at the top so the name reads on any picture. The bottom is
+        // clear, so it meets the sidebar whether that sidebar is solid or glass.
         QLinearGradient shade(0, 0, 0, bannerH);
         shade.setColorAt(0.0, QColor(0, 0, 0, 150));
         shade.setColorAt(0.35, QColor(0, 0, 0, 0));
-        QColor sidebar(Theme::SurfaceSidebar);
-        sidebar.setAlpha(0);
-        shade.setColorAt(0.75, sidebar);
-        sidebar.setAlpha(255);
-        shade.setColorAt(1.0, sidebar);
+        shade.setColorAt(1.0, QColor(0, 0, 0, 0));
         p.fillRect(area, shade);
     }
 
