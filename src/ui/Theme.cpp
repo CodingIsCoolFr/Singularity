@@ -665,22 +665,22 @@ QMainWindow[glass="true"] #VoicePanel {
     font-size: 11px;
     font-weight: 600;
     border-radius: 8px;
-    background-color: transparent;
+    background: transparent;
     color: @light;
-    border: 1px solid @accent38;
+    border: none;
 }
 #VoicePanel QPushButton:hover {
-    background-color: @accent28;
+    background-color: @accent22;
     color: @light;
 }
 #VoicePanel QPushButton:checked {
-    background-color: @red;
-    color: @light;
-    border: 1px solid @red;
+    background: transparent;
+    color: @red;
+    border: none;
 }
 #VoicePanel QPushButton:checked:hover {
-    background-color: @red;
-    color: @light;
+    background-color: @accent22;
+    color: @red;
 }
 
 #ChatHeader {
