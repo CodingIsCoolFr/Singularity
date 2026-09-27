@@ -78,6 +78,15 @@ private:
     // for the rest of this run instead of being started again.
     QSet<QString> m_videosGivenUp;
 
+    // A video's still picture rides in its address as "#poster=<address>".
+    // It is shown until the first frame plays, and stays if the video cannot
+    // play at all - too many already playing, animations off, or a failure.
+    // Before this a video that never played was a blank box for good.
+    static QUrl posterFor(const QUrl &video);
+    QHash<QString, QString> m_posterOf;   // poster address -> video address
+    QSet<QString> m_videoPlaying;         // videos that have drawn a real frame
+    QSet<QString> m_saidSkipped;          // videos already logged as not played
+
     // The size each picture settled on, so later frames never change the page
     // height and make the view jump.
     mutable QHash<QString, QSize> m_frameSize;

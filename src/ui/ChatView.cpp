@@ -108,6 +108,19 @@ void ChatView::flushArrivals()
 
     for (const QString &key : std::as_const(m_arrived)) {
         const QUrl url(key);
+
+        // A video's still picture: drawn in the video's place until it plays.
+        const QString video = m_posterOf.value(key);
+        if (!video.isEmpty()) {
+            if (!m_videoPlaying.contains(video)) {
+                const QUrl videoUrl(video);
+                const QPixmap still = scaleForDocument(videoUrl, MediaCache::instance().image(url));
+                if (!still.isNull())
+                    document()->addResource(QTextDocument::ImageResource, videoUrl, still);
+            }
+            continue;
+        }
+
         adoptAnimation(url);
         document()->addResource(QTextDocument::ImageResource, url, prepare(url));
     }
@@ -190,7 +203,17 @@ void ChatView::clearImageCache()
     dropAnimations();
     qDeleteAll(m_videos);
     m_videos.clear();
+    m_posterOf.clear();
+    m_videoPlaying.clear();
     m_animationTimer.stop();
+}
+
+QUrl ChatView::posterFor(const QUrl &video)
+{
+    const QString fragment = video.fragment(QUrl::FullyEncoded);
+    if (!fragment.startsWith(QLatin1String("poster=")))
+        return {};
+    return QUrl(QUrl::fromPercentEncoding(fragment.mid(7).toUtf8()));
 }
 
 QSize ChatView::boxFor(const QUrl &url) const
@@ -287,8 +310,18 @@ void ChatView::adoptVideo(const QUrl &url)
         return;
 
     const QString key = url.toString();
-    if (m_videos.contains(key) || m_videos.size() >= 4 || m_videosGivenUp.contains(key))
+    if (m_videos.contains(key) || m_videosGivenUp.contains(key))
         return;
+    if (m_videos.size() >= 4) {
+        // It keeps its still picture. Said once, so a GIF that does not move
+        // is never a mystery.
+        if (!m_saidSkipped.contains(key)) {
+            m_saidSkipped.insert(key);
+            wlog(QStringLiteral("media"),
+                 QStringLiteral("4 clips already playing; showing the still picture of %1").arg(url.toString(QUrl::RemoveFragment)));
+        }
+        return;
+    }
 
     // Our own player: decoded off the window thread, two helper threads, and
     // every picture already shrunk to the box it is drawn in. See ClipPlayer.h
@@ -329,6 +362,7 @@ void ChatView::showVideoFrame(const QUrl &url, const QImage &frame)
 {
     const QString key = url.toString();
     const bool first = !m_frameSize.contains(key);
+    m_videoPlaying.insert(key);
     const QPixmap pixmap = scaleForDocument(url, frame);
     if (pixmap.isNull())
         return;
@@ -446,12 +480,19 @@ QVariant ChatView::loadResource(int type, const QUrl &name)
     if (looksLikeVideo(name)) {
         adoptVideo(name);
         const QString key = name.toString();
-        const auto locked = m_frameSize.constFind(key);
-        if (locked == m_frameSize.constEnd())
-            return {};
-        const QVariant existing = document()->resource(QTextDocument::ImageResource, name);
-        if (existing.isValid())
-            return existing;
+
+        // A frame already drawn was added to the document, so the document
+        // does not ask here for it. Asking means there is none yet, and the
+        // still picture stands in for it.
+        const QUrl poster = posterFor(name);
+        if (poster.isValid() && MediaCache::isAllowedHost(poster)) {
+            const QString posterKey = poster.toString();
+            m_posterOf.insert(posterKey, key);
+            m_wanted.insert(posterKey);
+            const QImage still = MediaCache::instance().image(poster);
+            if (!still.isNull())
+                return scaleForDocument(name, still);
+        }
         return {};
     }
 

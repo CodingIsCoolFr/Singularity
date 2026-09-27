@@ -242,9 +242,26 @@ struct EmbedInfo
     int colour = 0;
 
     // A card that is only a picture needs no title or border.
+    //
+    // Discord's own rule, from its web client: there is a picture or a video,
+    // and either it is a gifv, or it is not "rich" and has no author and no
+    // title. The old test knew only image and gifv, so a plain video link, or
+    // a site whose preview Discord files under another type, got an empty card.
     bool isPictureOnly() const
     {
-        return (type == QLatin1String("image") || type == QLatin1String("gifv")) && !imageUrl.isEmpty();
+        if (imageUrl.isEmpty() && videoUrl.isEmpty())
+            return false;
+        if (type == QLatin1String("gifv"))
+            return true;
+        return type != QLatin1String("rich") && authorName.isEmpty() && title.isEmpty();
+    }
+
+    // Discord hides the words of a message that is nothing but one link, when
+    // the link's preview is a single picture or gifv. Only these two kinds.
+    bool replacesItsLink() const
+    {
+        return (type == QLatin1String("image") || type == QLatin1String("gifv"))
+               && (!imageUrl.isEmpty() || !videoUrl.isEmpty());
     }
 };
 

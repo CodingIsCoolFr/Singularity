@@ -4219,7 +4219,23 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
     const bool isSelf = !m_selfUserId.isEmpty() && message.authorId == m_selfUserId;
 
     // Body -----------------------------------------------------------------
-    QString body = renderContent(message.content, true);
+
+    // A message that is only one link, whose preview is one picture or GIF,
+    // shows the picture and not the link - Discord's rule (its message
+    // content code checks for exactly one embed, of type image or gifv, and
+    // content that is a single link and nothing else).
+    const auto wordsOf = [this](const MessageInfo &m) {
+        static const QRegularExpression oneLink(QStringLiteral(R"(^https?://\S+$)"));
+        const QString trimmed = m.content.trimmed();
+        // Not a fake-Nitro emoji link: that one is drawn by the words as an
+        // emoji, and its big picture is the part that is dropped.
+        if (m.embeds.size() == 1 && m.embeds.first().replacesItsLink() && oneLink.match(trimmed).hasMatch()
+            && !trimmed.contains(QLatin1String("/emojis/")))
+            return QString();
+        return renderContent(m.content, true);
+    };
+
+    QString body = wordsOf(message);
 
     // Discord writes "(edited)" small and faint straight after the words, not
     // beside the name or the time.
@@ -4253,7 +4269,7 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
     // came from underneath. The outer message is empty, so this is all of it.
     for (const MessageInfo &snapshot : message.snapshots) {
         QString inner = QStringLiteral("<div class=\"fwd-tag\">&#8618; <i>Forwarded</i></div>");
-        const QString words = renderContent(snapshot.content, true);
+        const QString words = wordsOf(snapshot);
         if (!words.isEmpty())
             inner += QStringLiteral("<div>%1</div>").arg(words);
         inner += attachmentsHtml(snapshot.attachments);
@@ -4589,25 +4605,40 @@ QString MainWindow::embedsHtml(const MessageInfo &message)
             continue;
 
         // gifv's image is a poster. The mp4 next to it is what actually plays.
+        //
+        // The poster goes along in the address ("#poster=..."), so the chat
+        // shows it at once and keeps it if the video never plays. A Klipy GIF
+        // pasted into chat was a blank icon because nothing stood in for it.
         QString shown = embed.imageUrl;
-        if ((embed.type == QLatin1String("gifv") || embed.type == QLatin1String("video"))
-            && !embed.videoUrl.isEmpty()) {
+        QString opened = embed.imageUrl;   // what a click opens, without the poster
+        const bool hasVideo = (embed.type == QLatin1String("gifv") || embed.type == QLatin1String("video"))
+                              && !embed.videoUrl.isEmpty();
+        if (hasVideo) {
             const QUrl video(embed.videoUrl);
             const QString path = video.path().toLower();
             if ((path.endsWith(QLatin1String(".mp4")) || path.endsWith(QLatin1String(".webm")))
                 && ChatView::isAllowedImageHost(video)) {
+                opened = embed.videoUrl;
                 shown = embed.videoUrl;
+                if (!embed.imageUrl.isEmpty() && ChatView::isAllowedImageHost(QUrl(embed.imageUrl))) {
+                    shown += QStringLiteral("#poster=")
+                             + QString::fromLatin1(QUrl::toPercentEncoding(embed.imageUrl));
+                }
             }
         }
         const bool pictureReachable = !shown.isEmpty() && ChatView::isAllowedImageHost(QUrl(shown));
 
-        // A Tenor or Giphy link is only a picture, so skip the card frame.
+        // A Tenor, Klipy or Giphy link is only a picture, so skip the card
+        // frame. A gifv with a video and no poster is one too.
         if (embed.isPictureOnly()) {
-            if (!pictureReachable)
+            if (!pictureReachable) {
+                wlog(QStringLiteral("media"), QStringLiteral("a %1 preview has no picture we can load: image %2, video %3")
+                                                  .arg(embed.type, embed.imageUrl.left(160), embed.videoUrl.left(160)));
                 continue;
+            }
             html += QStringLiteral("<div class=\"attach\"><a href=\"singularity-image:%1\">"
-                                   "<img src=\"%1\"></a></div>")
-                        .arg(shown.toHtmlEscaped());
+                                   "<img src=\"%2\"></a></div>")
+                        .arg(opened.toHtmlEscaped(), shown.toHtmlEscaped());
             continue;
         }
 
@@ -4634,8 +4665,8 @@ QString MainWindow::embedsHtml(const MessageInfo &message)
         }
         if (pictureReachable) {
             inner += QStringLiteral("<div class=\"attach\"><a href=\"singularity-image:%1\">"
-                                    "<img src=\"%1\"></a></div>")
-                         .arg(shown.toHtmlEscaped());
+                                    "<img src=\"%2\"></a></div>")
+                         .arg(opened.toHtmlEscaped(), shown.toHtmlEscaped());
         }
 
         if (inner.isEmpty())

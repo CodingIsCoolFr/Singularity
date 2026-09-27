@@ -251,6 +251,8 @@ QImage MediaCache::image(const QUrl &url)
     // them down again and again for nothing.
     if (!looksLikeAPicture(url)) {
         m_failed.insert(key);
+        wlog(QStringLiteral("media"), QStringLiteral("not fetching %1: the name does not end like a picture")
+                                          .arg(key.left(200)));
         return {};
     }
 
