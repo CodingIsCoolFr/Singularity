@@ -294,4 +294,70 @@
                         "Disk MB":  490
                     }
                 ]
+},
+{
+    "Date":  "2026-09-27T12:12:51",
+    "Label":  "0.8.30 both open and idle, window not repainting, run 1",
+    "Seconds":  60,
+    "Machine":  "13th Gen Intel(R) Core(TM) i9-13900K, 32 GB RAM, 32 logical cores",
+    "Windows":  "Microsoft Windows 11 Pro",
+    "Singularity":  "0.8.30",
+    "Discord":  "app-1.0.9259",
+    "Results":  [
+                    {
+                        "App":  "Singularity",
+                        "RAM avg MB":  72,
+                        "RAM peak MB":  73,
+                        "Private MB":  177,
+                        "CPU avg %":  0.12,
+                        "CPU peak %":  0.53,
+                        "Processes":  1,
+                        "Threads":  27,
+                        "Disk MB":  203
+                    },
+                    {
+                        "App":  "Discord",
+                        "RAM avg MB":  1193,
+                        "RAM peak MB":  1212,
+                        "Private MB":  1003,
+                        "CPU avg %":  0.36,
+                        "CPU peak %":  1.61,
+                        "Processes":  6,
+                        "Threads":  262,
+                        "Disk MB":  490
+                    }
+                ]
+},
+{
+    "Date":  "2026-09-27T12:14:13",
+    "Label":  "0.8.30 both open and idle, window not repainting, run 2",
+    "Seconds":  60,
+    "Machine":  "13th Gen Intel(R) Core(TM) i9-13900K, 32 GB RAM, 32 logical cores",
+    "Windows":  "Microsoft Windows 11 Pro",
+    "Singularity":  "0.8.30",
+    "Discord":  "app-1.0.9259",
+    "Results":  [
+                    {
+                        "App":  "Singularity",
+                        "RAM avg MB":  77,
+                        "RAM peak MB":  79,
+                        "Private MB":  179,
+                        "CPU avg %":  0.12,
+                        "CPU peak %":  0.51,
+                        "Processes":  1,
+                        "Threads":  27,
+                        "Disk MB":  203
+                    },
+                    {
+                        "App":  "Discord",
+                        "RAM avg MB":  1211,
+                        "RAM peak MB":  1260,
+                        "Private MB":  1021,
+                        "CPU avg %":  0.28,
+                        "CPU peak %":  2.59,
+                        "Processes":  6,
+                        "Threads":  258,
+                        "Disk MB":  490
+                    }
+                ]
 }]

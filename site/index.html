@@ -48,7 +48,7 @@
         <a class="btn ghost support" href="https://ko-fi.com/codingiscool" target="_blank" rel="noopener">&#9829; Support on Ko-fi</a>
       </div>
 
-      <p class="meta" id="relmeta">Windows x64 · about 54 MB · installs for you only, no administrator prompt</p>
+      <p class="meta" id="relmeta">Windows x64 · about 62 MB · installs for you only, no administrator prompt</p>
 
       <div class="chips">
         <span class="chip">C++20</span>
@@ -66,7 +66,7 @@
 <section id="stats">
   <div class="wrap rise">
     <div class="slab">
-      <div><b>54 MB</b><span>the whole installer</span></div>
+      <div><b>62 MB</b><span>the whole installer</span></div>
       <div><b>0</b><span>browsers bundled</span></div>
       <div><b>0</b><span>plugin files on disk</span></div>
       <div><b>11</b><span>plugins compiled in</span></div>
@@ -85,30 +85,30 @@
 <section id="benchmark">
   <div class="wrap rise">
     <p class="kicker">Measured, not claimed</p>
-    <h2>Under a third of Discord's memory</h2>
-    <p class="lede">Singularity and the official Discord app, open side by side on the same text channel, measured for a minute at a time by a script anyone can run. Singularity was measured the way it is really used, playing an animated background. One process instead of six, a seventh of the threads, and a seventh of the RAM in use.</p>
+    <h2>Under a fifth of Discord's memory</h2>
+    <p class="lede">Discord keeps six processes awake, and 1,012 MB that belong to it alone, just to stay open. Singularity is one process and 178 MB. Nearly six times the memory, about ten times the threads, and more than twice the disk, spent on the same job. This client does not drag a browser along to do it.</p>
 
     <div class="slab" style="margin-bottom:22px">
-      <div><b>330 MB</b><span>private memory, vs 1,065 MB</span></div>
+      <div><b>178 MB</b><span>private memory, vs 1,012 MB</span></div>
       <div><b>1</b><span>process, vs 6</span></div>
-      <div><b>35</b><span>threads, vs 262</span></div>
+      <div><b>27</b><span>threads, vs 260</span></div>
       <div><b>203 MB</b><span>on disk, vs 490 MB</span></div>
     </div>
 
     <div class="bench-wrap">
       <table class="bench">
-        <tr><th></th><th>Singularity 0.8.4</th><th>Discord (app 1.0.9259)</th></tr>
-        <tr><td>Private memory</td><td class="win">330 MB</td><td>1,065 MB</td></tr>
-        <tr><td>RAM in use (working set)</td><td class="win">307 MB</td><td>2,177 MB</td></tr>
-        <tr><td>CPU, average</td><td>0.60%</td><td class="win">0.23%</td></tr>
-        <tr><td>CPU, peak</td><td class="win">1.03%</td><td>1.15%</td></tr>
+        <tr><th></th><th>Singularity 0.8.30</th><th>Discord (app 1.0.9259)</th></tr>
+        <tr><td>Private memory</td><td class="win">178 MB</td><td>1,012 MB</td></tr>
+        <tr><td>RAM in use (working set)</td><td class="win">75 MB</td><td>1,202 MB</td></tr>
+        <tr><td>CPU, average</td><td class="win">0.12%</td><td>0.32%</td></tr>
+        <tr><td>CPU, peak</td><td class="win">0.52%</td><td>2.10%</td></tr>
         <tr><td>Processes</td><td class="win">1</td><td>6</td></tr>
-        <tr><td>Threads</td><td class="win">35</td><td>262</td></tr>
+        <tr><td>Threads</td><td class="win">27</td><td>260</td></tr>
         <tr><td>Size on disk</td><td class="win">203 MB</td><td>490 MB</td></tr>
       </table>
     </div>
 
-    <p class="bench-note">The average of two 60-second runs, sampled every second, on an Intel Core i9-13900K with 32 GB of RAM under Windows 11 Pro, 25 September 2026. Both apps had been started a few minutes before, sat on the same text channel, and neither was in a call during the runs. Singularity was playing an animated GIF as its background; Discord has no animated background, and redrawing that GIF is most of Singularity's CPU here, which is why Discord wins on average CPU. Memory is summed over every process each app runs. Private memory is the fairer figure: the working set counts memory Discord's six processes share once for each of them. An earlier run on Singularity 0.8.0 measured 639 MB and 107 threads; that version had a bug in how chat videos were played, fixed in 0.8.1. Calls and screen share have not been compared yet. The script and the raw results are in <a href="https://github.com/CodingIsCoolFr/singularity-updates/tree/main/benchmark">singularity-updates/benchmark</a>.</p>
+    <p class="bench-note">The average of two 60-second runs, sampled every second, on an Intel Core i9-13900K with 32 GB of RAM under Windows 11 Pro, 27 September 2026. Both apps were already open and neither was in a call. Singularity had an animated background chosen, but its own log recorded zero redraws a second while the samples ran, so the CPU here is the cost of sitting idle, not of playing that picture. With the picture actually moving, the 0.8.4 run was 0.60% against Discord's 0.23%. Memory is summed over every process each app runs. Private memory is the fairer figure: the working set counts memory Discord's six processes share once for each of them, and Windows had trimmed Singularity's working set while its window was not in front. An earlier run on 0.8.0 measured 639 MB and 107 threads; that version had a bug in how chat videos were played, fixed in 0.8.1. Calls and screen share have not been compared yet. The script and the raw results are in <a href="https://github.com/CodingIsCoolFr/singularity-updates/tree/main/benchmark">singularity-updates/benchmark</a>.</p>
   </div>
 </section>
 
