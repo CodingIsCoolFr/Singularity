@@ -270,6 +270,16 @@ void RestClient::addReaction(const QString &channelId, const QString &messageId,
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+void RestClient::removeReaction(const QString &channelId, const QString &messageId, const QString &emoji,
+                                ObjectHandler onOk, ErrorHandler onError)
+{
+    const QString encoded = QString::fromUtf8(QUrl::toPercentEncoding(emoji));
+    const QString path = QStringLiteral("/channels/%1/messages/%2/reactions/%3/@me")
+                             .arg(channelId, messageId, encoded);
+    QNetworkReply *reply = m_network.deleteResource(buildRequest(path));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::ackMessage(const QString &channelId, const QString &messageId)
 {
     if (channelId.isEmpty() || messageId.isEmpty())

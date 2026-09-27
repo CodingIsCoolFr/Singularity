@@ -2909,11 +2909,8 @@ void MainWindow::showRailMenu(const QPoint &where)
     QAction *markRead = menu.addAction(QStringLiteral("Mark As Read"));
     markRead->setEnabled(m_store->guildHasUnread(id));
     QAction *copyId = menu.addAction(QStringLiteral("Copy Server ID"));
-    QAction *leave = nullptr;
-    if (m_store->guild(id).ownerId != m_selfUserId) {
-        menu.addSeparator();
-        leave = menu.addAction(QStringLiteral("Leave Server"));
-    }
+    menu.addSeparator();
+    QAction *leave = menu.addAction(QStringLiteral("Leave Server"));
 
     QAction *chosen = menu.exec(m_guildRail->mapToGlobal(where));
     if (!chosen)
@@ -4574,8 +4571,26 @@ QString MainWindow::componentsHtml(const QJsonArray &components, const QString &
                     QString hint = item.value(QStringLiteral("placeholder")).toString();
                     if (hint.isEmpty())
                         hint = QStringLiteral("Make a selection");
-                    parts << QStringLiteral("<span style=\"background-color:%1; color:%2; padding:4px 12px;\">&#160;%3 &#9662;&#160;</span>")
-                                 .arg(QLatin1String(Theme::SurfaceInput), QLatin1String(Theme::TextMuted), hint.toHtmlEscaped());
+                    const QString look = QStringLiteral("text-decoration:none; background-color:%1; color:%2; padding:4px 12px;")
+                                             .arg(QLatin1String(Theme::SurfaceInput), QLatin1String(Theme::TextMuted));
+                    const QString face = QStringLiteral("&#160;%1 &#9662;&#160;").arg(hint.toHtmlEscaped());
+                    const QString customId = item.value(QStringLiteral("custom_id")).toString();
+                    if (type == 3 && !item.value(QStringLiteral("disabled")).toBool()
+                        && !messageId.isEmpty() && !customId.isEmpty()) {
+                        QUrl press;
+                        press.setScheme(QStringLiteral("singularity-press"));
+                        press.setHost(QStringLiteral("select"));
+                        QUrlQuery query;
+                        query.addQueryItem(QStringLiteral("m"), messageId);
+                        query.addQueryItem(QStringLiteral("a"), applicationId);
+                        query.addQueryItem(QStringLiteral("f"), QString::number(messageFlags));
+                        query.addQueryItem(QStringLiteral("c"), customId);
+                        press.setQuery(query);
+                        parts << QStringLiteral("<a class=\"cmpbtn\" href=\"%1\" style=\"%2\">%3</a>")
+                                    .arg(press.toString(QUrl::FullyEncoded).toHtmlEscaped(), look, face);
+                    } else {
+                        parts << QStringLiteral("<span style=\"%1\">%2</span>").arg(look, face);
+                    }
                 }
             }
             if (!parts.isEmpty())
@@ -4700,9 +4715,23 @@ QString MainWindow::reactionsHtml(const MessageInfo &message) const
         const char *background = reaction.mine ? Theme::SurfaceHover : Theme::SurfaceInput;
         const char *ink = reaction.mine ? Theme::TextPrimary : Theme::TextMuted;
 
-        html += QStringLiteral("<span style=\"background-color: %1; color: %2; "
-                               "border-radius: 8px; padding: 2px 7px;\">%3&#160;%4</span>&#160;")
-                    .arg(QLatin1String(background), QLatin1String(ink), face)
+        // A pill that is not a link cannot be pressed. Carl-bot colour roles
+        // and the rest of reaction-roles are these pills, so they have to be.
+        const QString emoji = reaction.isCustom()
+            ? (reaction.name + QLatin1Char(':') + reaction.id)
+            : reaction.name;
+        QUrl press;
+        press.setScheme(QStringLiteral("singularity-react"));
+        press.setHost(QStringLiteral("toggle"));
+        QUrlQuery query;
+        query.addQueryItem(QStringLiteral("m"), message.id);
+        query.addQueryItem(QStringLiteral("e"), emoji);
+        press.setQuery(query);
+
+        html += QStringLiteral("<a href=\"%1\" style=\"text-decoration:none; background-color: %2; color: %3; "
+                               "border-radius: 8px; padding: 2px 7px;\">%4&#160;%5</a>&#160;")
+                    .arg(press.toString(QUrl::FullyEncoded).toHtmlEscaped(),
+                         QLatin1String(background), QLatin1String(ink), face)
                     .arg(reaction.count);
     }
 
@@ -5596,10 +5625,24 @@ void MainWindow::handleAnchor(const QUrl &url)
     // custom id, so the press can be sent to the bot that owns it.
     if (url.scheme() == QLatin1String("singularity-press")) {
         const QUrlQuery query(url);
-        pressMessageButton(query.queryItemValue(QStringLiteral("m")),
-                           query.queryItemValue(QStringLiteral("a")),
-                           query.queryItemValue(QStringLiteral("f")).toInt(),
-                           query.queryItemValue(QStringLiteral("c"), QUrl::FullyDecoded));
+        if (url.host() == QLatin1String("select")) {
+            pressMessageSelect(query.queryItemValue(QStringLiteral("m")),
+                               query.queryItemValue(QStringLiteral("a")),
+                               query.queryItemValue(QStringLiteral("f")).toInt(),
+                               query.queryItemValue(QStringLiteral("c"), QUrl::FullyDecoded));
+        } else {
+            pressMessageButton(query.queryItemValue(QStringLiteral("m")),
+                               query.queryItemValue(QStringLiteral("a")),
+                               query.queryItemValue(QStringLiteral("f")).toInt(),
+                               query.queryItemValue(QStringLiteral("c"), QUrl::FullyDecoded));
+        }
+        return;
+    }
+
+    if (url.scheme() == QLatin1String("singularity-react")) {
+        const QUrlQuery query(url);
+        toggleReaction(query.queryItemValue(QStringLiteral("m")),
+                       query.queryItemValue(QStringLiteral("e"), QUrl::FullyDecoded));
         return;
     }
 
@@ -5721,6 +5764,143 @@ void MainWindow::pressMessageButton(const QString &messageId, const QString &app
                                                         : error.message;
             flashStatus(why, 5000);
         });
+}
+
+static QJsonObject findMessageComponent(const QJsonArray &components, const QString &customId)
+{
+    for (const QJsonValue &value : components) {
+        const QJsonObject item = value.toObject();
+        if (item.value(QStringLiteral("custom_id")).toString() == customId)
+            return item;
+        const QJsonObject nested = findMessageComponent(item.value(QStringLiteral("components")).toArray(), customId);
+        if (!nested.isEmpty())
+            return nested;
+        const QJsonObject accessory = item.value(QStringLiteral("accessory")).toObject();
+        if (accessory.value(QStringLiteral("custom_id")).toString() == customId)
+            return accessory;
+    }
+    return {};
+}
+
+void MainWindow::pressMessageSelect(const QString &messageId, const QString &applicationId,
+                                    int messageFlags, const QString &customId)
+{
+    if (messageId.isEmpty() || customId.isEmpty())
+        return;
+    if (applicationId.isEmpty()) {
+        flashStatus(QStringLiteral("That menu has no bot to send the choice to."), 4000);
+        return;
+    }
+
+    QJsonArray components;
+    for (const MessageInfo &message : m_store->messages(m_currentChannelId)) {
+        if (message.id == messageId) {
+            components = message.components;
+            break;
+        }
+    }
+    const QJsonObject select = findMessageComponent(components, customId);
+    const QJsonArray options = select.value(QStringLiteral("options")).toArray();
+    if (options.isEmpty()) {
+        flashStatus(QStringLiteral("That menu has no choices."), 3000);
+        return;
+    }
+
+    QMenu menu(this);
+    for (const QJsonValue &value : options) {
+        const QJsonObject option = value.toObject();
+        const QString label = option.value(QStringLiteral("label")).toString();
+        const QString optionValue = option.value(QStringLiteral("value")).toString();
+        if (label.isEmpty() || optionValue.isEmpty())
+            continue;
+        QAction *action = menu.addAction(label);
+        action->setData(optionValue);
+        if (option.value(QStringLiteral("default")).toBool()) {
+            action->setCheckable(true);
+            action->setChecked(true);
+        }
+    }
+    QAction *chosen = menu.exec(QCursor::pos());
+    if (!chosen)
+        return;
+    if (!m_gateway || m_gateway->sessionId().isEmpty()) {
+        flashStatus(QStringLiteral("Not connected yet."), 3000);
+        return;
+    }
+
+    m_buttonChannelId = m_currentChannelId;
+    m_buttonGuildId = m_currentGuildId;
+    m_buttonMessageId = messageId;
+    m_buttonApplicationId = applicationId;
+    m_buttonMessageFlags = messageFlags;
+
+    QJsonObject body{
+        {QStringLiteral("type"), 3},
+        {QStringLiteral("application_id"), applicationId},
+        {QStringLiteral("channel_id"), m_currentChannelId},
+        {QStringLiteral("message_id"), messageId},
+        {QStringLiteral("message_flags"), messageFlags},
+        {QStringLiteral("session_id"), m_gateway->sessionId()},
+        {QStringLiteral("data"), QJsonObject{
+            {QStringLiteral("component_type"), 3},
+            {QStringLiteral("custom_id"), customId},
+            {QStringLiteral("values"), QJsonArray{chosen->data().toString()}},
+        }},
+    };
+    bool guildIsNumber = !m_currentGuildId.isEmpty();
+    for (const QChar c : m_currentGuildId) {
+        if (!c.isDigit())
+            guildIsNumber = false;
+    }
+    if (guildIsNumber)
+        body.insert(QStringLiteral("guild_id"), m_currentGuildId);
+
+    flashStatus(QStringLiteral("Sending..."), 3000);
+    m_rest->createInteraction(
+        body,
+        [this](const QJsonObject &) { flashStatus(QStringLiteral("Sent."), 2000); },
+        [this](const RestClient::Error &error) {
+            const QString why = error.message.isEmpty() ? QStringLiteral("Discord refused that menu.")
+                                                        : error.message;
+            flashStatus(why, 5000);
+        });
+}
+
+void MainWindow::toggleReaction(const QString &messageId, const QString &emoji)
+{
+    if (messageId.isEmpty() || emoji.isEmpty() || m_currentChannelId.isEmpty())
+        return;
+
+    bool mine = false;
+    bool found = false;
+    for (const MessageInfo &message : m_store->messages(m_currentChannelId)) {
+        if (message.id != messageId)
+            continue;
+        for (const ReactionInfo &reaction : message.reactions) {
+            const QString key = reaction.isCustom()
+                ? (reaction.name + QLatin1Char(':') + reaction.id)
+                : reaction.name;
+            if (key != emoji)
+                continue;
+            mine = reaction.mine;
+            found = true;
+            break;
+        }
+        break;
+    }
+    if (!found)
+        return;
+
+    auto onOk = [](const QJsonObject &) {};
+    auto onError = [this](const RestClient::Error &error) {
+        const QString why = error.message.isEmpty() ? QStringLiteral("Discord refused that reaction.")
+                                                    : error.message;
+        flashStatus(why, 4000);
+    };
+    if (mine)
+        m_rest->removeReaction(m_currentChannelId, messageId, emoji, onOk, onError);
+    else
+        m_rest->addReaction(m_currentChannelId, messageId, emoji, onOk, onError);
 }
 
 void MainWindow::showInteractionModal(const QJsonObject &data)
@@ -7536,11 +7716,8 @@ void MainWindow::showGuildMenu(const QPoint &globalPos)
     QAction *markRead = menu.addAction(QStringLiteral("Mark As Read"));
     markRead->setEnabled(m_store->guildHasUnread(guildId));
     QAction *copyId = menu.addAction(QStringLiteral("Copy Server ID"));
-    QAction *leave = nullptr;
-    if (guild.ownerId != m_selfUserId) {
-        menu.addSeparator();
-        leave = menu.addAction(QStringLiteral("Leave Server"));
-    }
+    menu.addSeparator();
+    QAction *leave = menu.addAction(QStringLiteral("Leave Server"));
 
     QAction *chosen = menu.exec(globalPos);
     if (!chosen)

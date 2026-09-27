@@ -254,6 +254,9 @@ private:
                            const QString &applicationId, int messageFlags, int depth = 0);
     void pressMessageButton(const QString &messageId, const QString &applicationId, int messageFlags,
                             const QString &customId);
+    void pressMessageSelect(const QString &messageId, const QString &applicationId, int messageFlags,
+                            const QString &customId);
+    void toggleReaction(const QString &messageId, const QString &emoji);
     void showInteractionModal(const QJsonObject &data);
     QString textDisplayHtml(const QString &markdown);
     QString inviteCardsHtml(const MessageInfo &message);

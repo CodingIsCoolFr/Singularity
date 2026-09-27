@@ -101,9 +101,11 @@ public:
                        ErrorHandler onError);
 
     // PUT .../reactions/{emoji}/@me. `emoji` is a character, or "name:id" for
-    // a custom one.
+    // a custom one. DELETE the same path takes yours off.
     void addReaction(const QString &channelId, const QString &messageId, const QString &emoji,
                      ObjectHandler onOk, ErrorHandler onError);
+    void removeReaction(const QString &channelId, const QString &messageId, const QString &emoji,
+                        ObjectHandler onOk, ErrorHandler onError);
 
     // Tells Discord you have seen up to this message, which is what clears the
     // unread mark on every other client too.
