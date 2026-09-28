@@ -8670,11 +8670,14 @@ void MainWindow::applyBackgroundSettings()
     m_paceHole = !usable;
     updateFramePace();
 
-    // The stylesheet switches the panels to glass only while this is set.
-    // A property change is invisible to a stylesheet that is already applied,
-    // so the sheet is put on again when the flag actually changes.
-    if (property("glass").toBool() != usable) {
-        setProperty("glass", usable);
+    // Clear over a picture and over the hole. The hole used to turn this off,
+    // which made the panels solid — a see-through widget above that OpenGL
+    // surface painted black, because Qt had made every sibling its own window.
+    // That promotion is off (see main.cpp), so the hole shows through the same
+    // panels a picture does. Flipping the flag also restyles every widget, which
+    // is the stall on the way out of Settings; it is set once and left on.
+    if (!property("glass").toBool()) {
+        setProperty("glass", true);
         qApp->setStyleSheet(Theme::applicationStyleSheet());
     }
 }
@@ -11110,6 +11113,7 @@ void MainWindow::applyAppearance()
                                    QLatin1String(Theme::DefaultSeed)).toString());
     Theme::applySeed(seed.isValid() ? seed : QColor(QLatin1String(Theme::DefaultSeed)));
     Theme::applyPalette();
+    wlog(QStringLiteral("ui"), QStringLiteral("applying appearance"));
     qApp->setStyleSheet(Theme::applicationStyleSheet());
 
     if (m_messageView) {

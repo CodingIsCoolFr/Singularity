@@ -216,6 +216,39 @@ QByteArray videoExtensionPreamble()
     return preamble;
 }
 
+// What rides in front of a sound packet. Discord's own client puts both of
+// these on every one, and a phone will not play a stream's sound without them.
+// The picture already carries its own marks, which is why a phone can see the
+// share and hear nothing.
+//
+//   1  how loud, and whether this packet has sound in it. The high bit is
+//      that. The low 7 bits are how quiet, in -dB, 0 being the loudest.
+//      Silence is 127 with the high bit clear. A phone's server only forwards
+//      a packet that says it has sound.
+//   9  what kind of sound. 0x04 is the stream's sound, 0x02 is a voice. The
+//      websocket speaking flag is not what a phone reads. A packet with this
+//      missing is treated as a voice, and a phone watching the stream ignores
+//      it.
+//
+// Four bytes, one word. The preamble stays in the clear; these bytes are
+// sealed with the sound, the same as a picture's marks.
+QByteArray audioExtensionBody(bool streamSound, bool speaking, bool audible)
+{
+    QByteArray body;
+    body.reserve(4);
+
+    body.append(static_cast<char>(0x10));   // id 1, one byte
+    body.append(static_cast<char>(audible ? (0x80 | 20) : 127));
+
+    // speaking 2 (a stream) or 1 (a voice), shifted the way Discord's
+    // extension wants: ((flags & 3) << 1). Quiet is 0.
+    const int flags = speaking ? (streamSound ? 2 : 1) : 0;
+    body.append(static_cast<char>(0x90));   // id 9, one byte
+    body.append(static_cast<char>((flags & 0x03) << 1));
+
+    return body;
+}
+
 // One sealed picture comes back as Annex B: a start code, a piece, a start
 // code, a piece, and the group seal hanging off the end of the last piece
 // with no start code of its own. RTP wants each piece without its start code,
@@ -1516,6 +1549,10 @@ void VoiceConnection::sendSelectProtocol(const QString &address, quint16 port)
         {QStringLiteral("type"), QStringLiteral("audio")},
         {QStringLiteral("priority"), 1000},
         {QStringLiteral("payload_type"), 120},
+        // Same lesson as the picture: without encode the server does not
+        // build a path for what we send, and a phone never receives it.
+        {QStringLiteral("encode"), true},
+        {QStringLiteral("decode"), true},
     });
     codecs.append(QJsonObject{
         {QStringLiteral("name"), QStringLiteral("H264")},
@@ -2689,7 +2726,8 @@ void VoiceConnection::sendSharedSound()
 
         if (!m_saidSharedSound) {
             m_saidSharedSound = true;
-            wlog(QStringLiteral("share"), QStringLiteral("first piece of screen sound sent"));
+            wlog(QStringLiteral("share"),
+                 QStringLiteral("first piece of screen sound sent, marked as the stream's sound"));
         }
     }
 }
@@ -3515,7 +3553,22 @@ bool VoiceConnection::sendOpusPacket(QByteArray opus, quint32 timestamp)
     }
 
     const quint16 sequence = static_cast<quint16>(m_rtpSequence + 1);
-    const QByteArray packet = encryptFrame(buildRtpHeader(sequence, timestamp, m_ssrc), opus);
+    QByteArray header = buildRtpHeader(sequence, timestamp, m_ssrc);
+    header[0] = static_cast<char>(0x90);   // extension present
+
+    // The four-byte preamble stays in the clear. The two marks are sealed
+    // with the sound, which is how Discord's client sends them and how a
+    // phone expects to find them.
+    QByteArray clear = header;
+    clear.append(static_cast<char>(0xBE));
+    clear.append(static_cast<char>(0xDE));
+    clear.append(static_cast<char>(0));
+    clear.append(static_cast<char>(1));   // one word
+
+    QByteArray body = audioExtensionBody(m_viewerOnly, m_speaking, !silence);
+    body.append(opus);
+
+    const QByteArray packet = encryptFrame(clear, body);
     if (packet.isEmpty())
         return false;
 

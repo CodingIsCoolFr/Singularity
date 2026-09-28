@@ -557,11 +557,14 @@ QDialog { background-color: @chat; }
     width: 0px;
 }
 
-/* Solid while the black hole is up. A see-through widget above that OpenGL
-   surface paints black on Windows. Active Now cards stay solid either way:
-   they are short blocks of text and a wash behind them turns to mud.
+/* Clear while the window's glass flag is on, which is both a picture and the
+   black hole. The hole used to force these solid: a see-through widget above
+   that OpenGL surface painted black, because every sibling had been made its
+   own window. That is also what froze the program when the hole was turned on
+   or off. Do not put the solid fill back.
 
-   Over a picture the same panels are clear. The dim slider is the only
+   Active Now cards stay solid either way: they are short blocks of text and a
+   wash behind them turns to mud. Over a picture the dim slider is the only
    darkening, so a second veil would put the boxes back. */
 #GuildRail, #Sidebar, #ChatColumn, #ActivityCard {
     background-color: @chat;

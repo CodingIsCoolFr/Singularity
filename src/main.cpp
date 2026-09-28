@@ -73,6 +73,16 @@ int main(int argc, char *argv[])
             qputenv("QT_SCALE_FACTOR", QByteArray::number(zoom / 100.0));
     }
 
+    // Before the application exists, or it is ignored.
+    //
+    // The black hole is an OpenGL widget. Without this, Qt turns every widget
+    // beside it into its own window the moment the hole is created, and tears
+    // those windows down when the hole is removed. That is the minute-long
+    // freeze (Windows re-reads the display for each one) and why a see-through
+    // panel over the hole painted black. With it, the hole is just another
+    // layer and the panels stay clear, the same as over a picture.
+    QApplication::setAttribute(Qt::AA_DontCreateNativeWidgetSiblings);
+
     // Times the window thread's work; see ui/UiTime.h.
     SingularityApplication app(argc, argv);
 

@@ -3,6 +3,7 @@
 #include "core/Logger.h"
 #include "ui/AuroraWidget.h"
 
+#include <QElapsedTimer>
 #include <QFileInfo>
 #include <QMovie>
 #include <QPaintEvent>
@@ -56,9 +57,13 @@ void Backdrop::setBackground(const QString &picturePath, int dimPercent)
         m_picturePath.clear();
 
         if (!m_hole) {
+            wlog(QStringLiteral("theme"), QStringLiteral("creating the black hole"));
+            QElapsedTimer clock;
+            clock.start();
             m_hole = new AuroraWidget(this);
             m_hole->setAttribute(Qt::WA_OpaquePaintEvent, true);
             m_hole->setAttribute(Qt::WA_NoSystemBackground, true);
+            // Clicks belong to the panels on top. This widget only draws.
             m_hole->setAttribute(Qt::WA_TransparentForMouseEvents, true);
             m_hole->setAutoFillBackground(false);
             m_hole->setGeometry(rect());
@@ -68,7 +73,9 @@ void Backdrop::setBackground(const QString &picturePath, int dimPercent)
             m_hole->setRunning(m_running);
             m_hole->setBackgroundMode(AuroraWidget::Background::Hole);
             m_hole->show();
-            wlog(QStringLiteral("theme"), QStringLiteral("background: the black hole (drawn by the graphics card)"));
+            wlog(QStringLiteral("theme"),
+                 QStringLiteral("background: the black hole (drawn by the graphics card, %1 ms)")
+                     .arg(clock.elapsed()));
         }
         setAttribute(Qt::WA_OpaquePaintEvent, false);
         update();
@@ -78,16 +85,27 @@ void Backdrop::setBackground(const QString &picturePath, int dimPercent)
     if (m_hole) {
         // The window stays composed by the graphics card until it is next
         // opened: Qt does not switch a window back once an OpenGL widget has
-        // been in it.
+        // been in it. Taking the widget down is still the slow step if the
+        // driver has to be asked, so the time is logged before anything else
+        // on this path can hide it.
+        wlog(QStringLiteral("theme"), QStringLiteral("taking the black hole down"));
+        QElapsedTimer clock;
+        clock.start();
         delete m_hole;
         wlog(QStringLiteral("theme"),
-             QStringLiteral("background changed from the black hole to a picture; the full saving arrives after a restart"));
+             QStringLiteral("black hole is down (%1 ms); the full saving arrives after a restart")
+                 .arg(clock.elapsed()));
     }
     setAttribute(Qt::WA_OpaquePaintEvent, true);
 
     if (picturePath != m_picturePath) {
         m_picturePath = picturePath;
+        wlog(QStringLiteral("theme"), QStringLiteral("loading the background picture"));
+        QElapsedTimer clock;
+        clock.start();
         loadPicture();
+        wlog(QStringLiteral("theme"),
+             QStringLiteral("background picture loaded (%1 ms)").arg(clock.elapsed()));
     }
     rebuildShading();
     update();

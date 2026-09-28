@@ -482,6 +482,11 @@ void AuroraWidget::armNextFrame()
 
 AuroraWidget::~AuroraWidget()
 {
+    // makeCurrent() asks the driver for this window. Calling it when the
+    // context was never created is the stall on the way back to a picture,
+    // with nothing to free.
+    if (!context())
+        return;
     makeCurrent();
     destroyGl();
     doneCurrent();
