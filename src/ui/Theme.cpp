@@ -520,8 +520,7 @@ QDialog { background-color: @chat; }
 #CaptionMin, #CaptionMax, #CaptionClose {
     background: transparent;
     color: @muted;
-    border: 2px solid #000000;
-    border-radius: 7px;
+    border: none;
     padding: 0;
     min-width: 34px;
     max-width: 34px;
@@ -531,28 +530,27 @@ QDialog { background-color: @chat; }
 }
 #CaptionMin:hover, #CaptionMax:hover {
     background: transparent;
-    border: 2px solid #000000;
+    border: none;
     color: @text;
 }
 #CaptionClose:hover {
     background: transparent;
-    border: 2px solid #e81123;
+    border: none;
     color: #ffffff;
 }
 
 #AppMenu {
     background: transparent;
     color: @text;
-    padding: 0 10px;
-    border: 2px solid #000000;
-    border-radius: 8px;
+    padding: 0 4px;
+    border: none;
     min-height: 28px;
     max-height: 28px;
     font-size: 13px;
 }
 #AppMenu:hover, #AppMenu:pressed {
     background: transparent;
-    border: 2px solid #000000;
+    border: none;
     color: @text;
 }
 #AppMenu::menu-indicator {
