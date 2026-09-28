@@ -1884,7 +1884,7 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
     auto *cancelContext = new QPushButton(QStringLiteral("Cancel"), m_composerContext);
     cancelContext->setObjectName(QStringLiteral("ComposerTool"));
     cancelContext->setFixedHeight(28);
-    connect(cancelContext, &QPushButton::clicked, this, &MainWindow::clearComposerContext);
+    connect(cancelContext, &QPushButton::clicked, this, &MainWindow::stopEditing);
     contextLayout->addWidget(m_composerContextText, 1);
     contextLayout->addWidget(cancelContext);
     m_composerContext->hide();
@@ -1967,6 +1967,14 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
     // The buttons stay beside the first line as the box grows, as in Discord.
     row->addWidget(attach, 0, Qt::AlignTop);
     row->addWidget(m_composer, 1);
+    m_stopEdit = new QPushButton(QStringLiteral("Stop"), composerBox);
+    m_stopEdit->setObjectName(QStringLiteral("ComposerTool"));
+    m_stopEdit->setFixedHeight(28);
+    m_stopEdit->setCursor(Qt::PointingHandCursor);
+    m_stopEdit->setToolTip(QStringLiteral("Stop editing this message"));
+    m_stopEdit->hide();
+    connect(m_stopEdit, &QPushButton::clicked, this, &MainWindow::stopEditing);
+    row->addWidget(m_stopEdit, 0, Qt::AlignTop);
     row->addWidget(emoji, 0, Qt::AlignTop);
     boxLayout->addLayout(row);
 
@@ -6689,6 +6697,9 @@ void MainWindow::refreshComposerContext()
         m_composerContext->hide();
     }
 
+    if (m_stopEdit)
+        m_stopEdit->setVisible(!m_editingMessageId.isEmpty());
+
     QStringList parts;
     if (!m_pendingFiles.isEmpty()) {
         QStringList names;
@@ -6711,6 +6722,23 @@ void MainWindow::refreshComposerContext()
         // An upload already on its way is not that.
         m_removeAttachment->setVisible(!m_pendingFiles.isEmpty());
     }
+}
+
+void MainWindow::stopEditing()
+{
+    const bool editing = !m_editingMessageId.isEmpty();
+    if (m_editingMessageId.isEmpty() && m_replyMessageId.isEmpty())
+        return;
+
+    m_editingMessageId.clear();
+    m_replyMessageId.clear();
+    // The words in the box are the message being edited. Leaving them would
+    // send that message again, as a new one, the next time Enter is pressed.
+    if (editing) {
+        m_pendingFiles.clear();
+        m_composer->clear();
+    }
+    refreshComposerContext();
 }
 
 void MainWindow::clearComposerContext()
@@ -8561,6 +8589,11 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
                 insertPickedMention();
                 return true;
             }
+        }
+        if (keyEvent->key() == Qt::Key_Escape
+            && (!m_editingMessageId.isEmpty() || !m_replyMessageId.isEmpty())) {
+            stopEditing();
+            return true;
         }
         const bool isEnter = keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter;
         if (isEnter && !(keyEvent->modifiers() & Qt::ShiftModifier)) {

@@ -82,6 +82,7 @@ private slots:
     void forwardMessage(const QString &messageId);
     void beginEdit(const QString &messageId);
     void clearComposerContext();
+    void stopEditing();
     void chooseAttachment();
 
     // Every way a file gets attached - the picker, a drop, a paste - ends here.
@@ -321,6 +322,7 @@ private:
     QLabel *m_composerContextText = nullptr;
     QLabel *m_attachmentLabel = nullptr;
     QPushButton *m_removeAttachment = nullptr;
+    QPushButton *m_stopEdit = nullptr;
     QString m_replyMessageId;
     QString m_editingMessageId;
     QStringList m_pendingFiles;
