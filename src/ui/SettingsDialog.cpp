@@ -1,6 +1,7 @@
 #include "ui/SettingsDialog.h"
 
 #include "core/AppConfig.h"
+#include "core/GameActivity.h"
 #include "core/Logger.h"
 #include "core/MessageStore.h"
 #include "core/RestClient.h"
@@ -170,6 +171,7 @@ SettingsDialog::SettingsDialog(MessageStore *store, RestClient *rest, PluginHost
     m_profilesRow = m_sections->count();
     addSection(QStringLiteral("Profiles"), [this]() { return buildProfilesPage(); });
     addSection(QStringLiteral("Voice & Video"), [this]() { return buildVoicePage(); });
+    addSection(QStringLiteral("Activity"), [this]() { return buildActivityPage(); });
     addSection(QStringLiteral("Notifications"), [this]() { return buildNotificationsPage(); });
     addSection(QStringLiteral("Appearance"), [this]() { return buildAppearancePage(); });
     addSection(QStringLiteral("Plugins"), [this]() { return buildPluginsPage(); });

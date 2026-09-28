@@ -2,6 +2,7 @@
 
 #include "core/DiscordIdentity.h"
 #include "core/DiscordIpcServer.h"
+#include "core/GameActivity.h"
 #include "core/Logger.h"
 
 #include <QCoreApplication>
@@ -147,6 +148,17 @@ GatewayClient::GatewayClient(QObject *parent)
             return;
         sendHeartbeat();
         m_heartbeatTimer.start(m_heartbeatInterval);
+    });
+}
+
+void GatewayClient::setGames(GameActivity *games)
+{
+    m_games = games;
+    if (!games)
+        return;
+    connect(games, &GameActivity::changed, this, [this]() {
+        publishPresence();
+        emit gameActivityChanged();
     });
 }
 
@@ -659,7 +671,7 @@ void GatewayClient::subscribeToGuild(const QString &guildId, const QString &chan
 
 QJsonArray GatewayClient::clientActivities() const
 {
-    if (!m_activityShared || m_presenceStatus == QLatin1String("invisible"))
+    if (m_presenceStatus == QLatin1String("invisible"))
         return {};
 
     // A Playing card, the same shape as a game: the logo, a line, a clock,
@@ -723,13 +735,31 @@ QJsonArray GatewayClient::clientActivities() const
                     QJsonObject{{QStringLiteral("button_urls"), buttonUrls}});
 
     QJsonArray activities;
-    activities.append(activity);
-    // A game that talked to us gets its own card beside this one. Discord
-    // draws them stacked. The official client does the same with the pipe.
+    if (m_activityShared)
+        activities.append(activity);
+    // A game that talked to us, or one Settings is watching, gets its own
+    // card beside this one. Discord draws them stacked. The same game is
+    // not sent twice.
+    QSet<QString> seen;
+    const auto appendGame = [&](const QJsonObject &game) {
+        const QString id = game.value(QStringLiteral("application_id")).toString();
+        const QString name = game.value(QStringLiteral("name")).toString().toLower();
+        if (name.isEmpty() && id.isEmpty())
+            return;
+        if ((!id.isEmpty() && seen.contains(id)) || seen.contains(name))
+            return;
+        if (!id.isEmpty())
+            seen.insert(id);
+        seen.insert(name);
+        activities.append(game);
+    };
     if (m_gameActivity) {
-        const QJsonArray games = m_gameActivity->activities();
-        for (const QJsonValue &game : games)
-            activities.append(game);
+        for (const QJsonValue &game : m_gameActivity->activities())
+            appendGame(game.toObject());
+    }
+    if (m_games) {
+        for (const QJsonValue &game : m_games->activities())
+            appendGame(game.toObject());
     }
     return activities;
 }

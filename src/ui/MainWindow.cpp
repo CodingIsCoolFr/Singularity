@@ -1,6 +1,7 @@
 #include "ui/MainWindow.h"
 
 #include "core/AppConfig.h"
+#include "core/GameActivity.h"
 #include "core/Logger.h"
 #include "core/RestClient.h"
 #include "core/TokenStore.h"
@@ -403,6 +404,7 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     connect(&m_typingClearTimer, &QTimer::timeout, this, [this]() { setTypingHint(QString()); });
 
     connect(m_gateway, &GatewayClient::ready, this, &MainWindow::onGatewayReady);
+    m_gateway->setGames(new GameActivity(this));
     connect(m_gateway, &GatewayClient::dispatch, this, &MainWindow::onGatewayDispatch);
     connect(m_gateway, &GatewayClient::stateChanged, this, &MainWindow::onGatewayState);
     connect(m_gateway, &GatewayClient::logLine, this, [this](const QString &line) {
@@ -1676,7 +1678,7 @@ QWidget *MainWindow::buildUserPanel(QWidget *parent)
 
     const bool share = AppConfig::instance().value(QStringLiteral("presence/shareActivity"), true).toBool();
     m_gateway->setActivityShared(share);
-    m_panelActivity = iconButton(0xE7FC, QStringLiteral("Activity"));
+    m_panelActivity = iconButton(0xE7FC, QStringLiteral("Activity — games are in Settings"));
     m_panelActivity->setCheckable(true);
     m_panelActivity->setChecked(!share);
     connect(m_panelActivity, &QPushButton::toggled, this, [this](bool hidden) { setActivityShared(!hidden); });
@@ -2108,6 +2110,8 @@ void MainWindow::onGatewayReady(const QJsonObject &payload)
 {
     const QJsonObject user = payload.value(QStringLiteral("user")).toObject();
     m_selfUserId = user.value(QStringLiteral("id")).toString();
+    if (m_gateway->games())
+        m_gateway->games()->start(m_rest);
     m_selfPremiumType = user.value(QStringLiteral("premium_type")).toInt();
     m_selfAvatarHash = user.value(QStringLiteral("avatar")).toString();
     m_selfDisplayName = user.value(QStringLiteral("global_name")).toString();
@@ -11113,6 +11117,8 @@ void MainWindow::openSettings()
     // widget (Qt6Widgets, same fault offset across dumps).
     if (!m_settingsDialog) {
         m_settingsDialog = new SettingsDialog(m_store, m_rest, m_plugins, m_selfUserId, this);
+        m_settingsDialog->setGames(m_gateway->games());
+        connect(m_settingsDialog, &SettingsDialog::activityShareChanged, this, &MainWindow::setActivityShared);
         connect(m_settingsDialog, &SettingsDialog::logOutRequested, this, &MainWindow::logOut);
         connect(m_settingsDialog, &SettingsDialog::restartRequested, this, [this]() { restartInto({}); });
         connect(m_settingsDialog, &SettingsDialog::testNotificationRequested, this, [this]() {

@@ -11,6 +11,7 @@
 #include <QWebSocket>
 
 class DiscordIpcServer;
+class GameActivity;
 
 // Live connection to the Discord gateway.
 //
@@ -88,6 +89,10 @@ public:
     void setClientActivityArt(const QString &applicationId, const QString &imageKey);
     void setActivityShared(bool on) { m_activityShared = on; }
     bool activityShared() const { return m_activityShared; }
+
+    // Games Settings is watching. Their cards are sent with the Singularity one.
+    void setGames(GameActivity *games);
+    GameActivity *games() const { return m_games; }
 
     // Sends the status we are holding, even when it has not changed. Needed
     // after sign-in: Discord does not take the status inside the first
@@ -236,4 +241,5 @@ private:
 
     // Games that want a second card talk to this. Null until start().
     DiscordIpcServer *m_gameActivity = nullptr;
+    GameActivity *m_games = nullptr;
 };

@@ -586,6 +586,44 @@ void RestClient::fetchCollectibles(ArrayHandler onOk, ErrorHandler onError)
     dispatch(reply, nullptr, std::move(onOk), std::move(onError));
 }
 
+void RestClient::fetchDetectableApplications(ArrayHandler onOk, ErrorHandler onError)
+{
+    QNetworkReply *reply = m_network.get(buildRequest(QStringLiteral("/applications/detectable")));
+    connect(reply, &QNetworkReply::finished, this, [reply, onOk = std::move(onOk), onError = std::move(onError)]() {
+        reply->deleteLater();
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+        if (status >= 200 && status < 300) {
+            if (doc.isArray() && onOk)
+                onOk(doc.array());
+            else if (doc.isObject() && onOk) {
+                const QJsonObject object = doc.object();
+                for (const QString &key : {QStringLiteral("applications"), QStringLiteral("detectable")}) {
+                    if (object.value(key).isArray()) {
+                        onOk(object.value(key).toArray());
+                        return;
+                    }
+                }
+                Error error;
+                error.httpStatus = status;
+                error.body = object;
+                error.message = QStringLiteral("game list was not a list");
+                if (onError)
+                    onError(error);
+            }
+            return;
+        }
+        Error error;
+        error.httpStatus = status;
+        error.body = doc.isObject() ? doc.object() : QJsonObject{};
+        error.message = error.body.value(QStringLiteral("message")).toString();
+        if (error.message.isEmpty())
+            error.message = reply->errorString();
+        if (onError)
+            onError(error);
+    });
+}
+
 void RestClient::finishMfa(const QString &ticket, const QString &type, const QString &data, ObjectHandler onOk,
                            ErrorHandler onError)
 {

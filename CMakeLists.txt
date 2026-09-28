@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(Singularity VERSION 0.8.44 LANGUAGES CXX)
+project(Singularity VERSION 0.8.45 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -36,6 +36,8 @@ qt_add_executable(Singularity WIN32
     src/core/GatewayClient.cpp
     src/core/DiscordIpcServer.h
     src/core/DiscordIpcServer.cpp
+    src/core/GameActivity.h
+    src/core/GameActivity.cpp
     src/core/VoiceConnection.h
     src/core/VoiceConnection.cpp
     src/core/JitterBuffer.cpp
@@ -141,6 +143,7 @@ qt_add_executable(Singularity WIN32
     src/ui/AudioMeter.cpp
     src/ui/SettingsDialog.h
     src/ui/SettingsDialog.cpp
+    src/ui/ActivityPage.cpp
     src/ui/FlowLayout.h
     src/ui/FlowLayout.cpp
     src/ui/ImageViewer.h

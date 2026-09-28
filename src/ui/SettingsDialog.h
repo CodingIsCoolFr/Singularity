@@ -17,6 +17,7 @@ class QFrame;
 class LevelBar;
 class MessageStore;
 class PluginHost;
+class GameActivity;
 
 class QComboBox;
 class QLabel;
@@ -41,6 +42,8 @@ public:
                    const QString &selfUserId, QWidget *parent = nullptr);
     ~SettingsDialog() override;
 
+    void setGames(GameActivity *games) { m_games = games; }
+
 signals:
     // Raised when a change needs the message list redrawn.
     void appearanceChanged();
@@ -63,6 +66,10 @@ signals:
     // "Restart now" under App zoom. The zoom is read once, before the first
     // window exists, so it only takes effect in a new copy.
     void restartRequested();
+
+    // The Singularity card switch on the Activity page. The voice-panel
+    // button uses the same path.
+    void activityShareChanged(bool on);
 
 protected:
     void showEvent(QShowEvent *event) override;
@@ -105,6 +112,7 @@ private:
 
     QWidget *buildAccountPage();
     QWidget *buildVoicePage();
+    QWidget *buildActivityPage();
     QWidget *buildNotificationsPage();
     QWidget *buildAppearancePage();
     QWidget *buildPluginsPage();
@@ -201,4 +209,5 @@ private:
     LevelBar *m_levelBar = nullptr;
     QLabel *m_micHint = nullptr;
     AudioMeter *m_meter = nullptr;
+    GameActivity *m_games = nullptr;
 };

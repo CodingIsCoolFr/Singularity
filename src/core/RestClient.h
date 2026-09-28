@@ -190,6 +190,9 @@ public:
     // GET /users/@me/collectibles-purchases - what you own from the shop.
     // type 0 = avatar decoration, 1 = profile effect, 2 = nameplate.
     void fetchCollectibles(ArrayHandler onOk, ErrorHandler onError);
+
+    // GET /applications/detectable — the programs Discord treats as games.
+    void fetchDetectableApplications(ArrayHandler onOk, ErrorHandler onError);
     // POST /mfa/finish {ticket, mfa_type, data} -> {token}. The answer to a
     // 401 with code 60003 ("Two factor is required for this operation"): the
     // token goes back in X-Discord-MFA-Authorization on the same request.
