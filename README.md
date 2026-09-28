@@ -35,6 +35,10 @@ the way Discord now requires. Cameras and shared screens are received and
 decoded as well, and the grid of faces above the conversation is where they
 appear.
 
+How it was built is written down in
+[docs/how-we-built-it.md](docs/how-we-built-it.md), and on the site at
+[singularitycord.pages.dev/how](https://singularitycord.pages.dev/how).
+
 ## Warning, read this first
 
 Discord does not permit third party clients on a normal user account. Running

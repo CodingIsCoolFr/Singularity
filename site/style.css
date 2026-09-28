@@ -112,6 +112,18 @@ code {
 
 section { padding: 92px 0; }
 
+/* The how page is one article, not a landing page, so the sections sit closer. */
+.how section { padding: 28px 0; }
+.how .page-top { padding: 118px 0 8px; }
+.doc { max-width: 74ch; }
+.doc h2 { font-size: 28px; font-weight: 450; letter-spacing: -0.03em; margin: 0 0 14px; }
+.doc h3 { font-size: 17px; font-weight: 500; margin: 22px 0 8px; }
+.doc p { color: var(--dim); margin: 0 0 14px; }
+.doc strong { color: var(--text); font-weight: 500; }
+.doc ul { color: var(--dim); margin: 0 0 16px; padding-left: 1.15em; }
+.doc li { margin: 0.35em 0; }
+.doc .bench { margin: 8px 0 18px; }
+
 h2 {
     font-size: clamp(27px, 3.8vw, 37px);
     font-weight: 250;

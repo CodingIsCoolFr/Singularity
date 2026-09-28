@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How Singularity was built</title>
+<meta name="description" content="How a Discord client was written from scratch in C++ and Qt 6: voice, video, screen share, and the black hole behind the window.">
+<meta name="theme-color" content="#05070b">
+<link rel="icon" href="mark.png" type="image/png">
+<meta property="og:type" content="article">
+<meta property="og:title" content="How Singularity was built">
+<meta property="og:description" content="A Discord client in C++ and Qt 6, written down: the call, the pictures, the share, and the hole.">
+<meta property="og:image" content="banner.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="how">
+
+<canvas id="hole" aria-hidden="true"></canvas>
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="index.html"><img src="mark.png" alt="">Singularity</a>
+    <div class="links">
+      <a href="index.html">Home</a>
+      <a href="how.html" class="here">How</a>
+      <a href="https://github.com/CodingIsCoolFr/Singularity" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/CodingIsCoolFr/singularity-updates/releases/latest" class="get">Download</a>
+    </div>
+  </div>
+</nav>
+
+<main class="veil">
+  <header class="page-top">
+    <div class="wrap doc">
+      <p class="kicker">Written down</p>
+      <h1 style="font-size:clamp(40px,6vw,64px);margin-bottom:18px">How it was built</h1>
+      <p>A Discord client written from scratch in C++20 and Qt 6, for Windows. Not a patch on Discord's app, and not Electron with their page inside it. One process. The plugins are compiled into the binary, so there is no folder on disk for anything else to swap out.</p>
+      <p>The source is <a href="https://github.com/CodingIsCoolFr/Singularity">MIT, on GitHub</a>. The installers live in a <a href="https://github.com/CodingIsCoolFr/singularity-updates">separate repository</a>, because the updater wants a setup program, not the source tree. The same words are in the <a href="https://github.com/CodingIsCoolFr/Singularity/blob/main/docs/how-we-built-it.md">source</a> and on the <a href="https://github.com/CodingIsCoolFr/singularity-updates/blob/main/docs/how-we-built-it.md">download repository</a>.</p>
+      <p>Discord does not permit third party clients on a normal user account. Running this can get the account banned. That risk is taken on purpose.</p>
+    </div>
+  </header>
+
+  <section>
+    <div class="wrap doc">
+      <h2>Why it is not a browser</h2>
+      <p>Electron would have been the short way. It is also six processes and about a gigabyte of memory to sit idle, which is what Discord's own app costs on the same machine. Singularity is one process and, sitting idle, 178 MB.</p>
+      <p>The window is Qt widgets. Messages are drawn by Qt, not by a page. The one web view is the captcha window: Discord's check is a page they serve, so that one window is WebView2 and nothing else is.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap doc">
+      <h2>The shape</h2>
+      <p>Four pieces, and they do not share a thread when the work is heavy.</p>
+      <div class="bench-wrap">
+        <table class="bench">
+          <tr><td><code>GatewayClient</code></td><td>The live socket. Events arrive here.</td></tr>
+          <tr><td><code>RestClient</code></td><td>Anything that is a request: send, edit, a member patch, an upload.</td></tr>
+          <tr><td><code>MessageStore</code></td><td>What the window draws from. The window does not parse JSON on its own.</td></tr>
+          <tr><td><code>VoiceConnection</code></td><td>One for the call, one for a stream being watched, one for a share of our own.</td></tr>
+        </table>
+      </div>
+      <p>The window thread paints. Capture, encoding, and the voice sockets do not run on it. A 4K frame is thirty three megabytes. Passing one between threads sixty times a second costs more than the encoding, so capture and encode share one thread, and that thread is not the one drawing the window.</p>
+      <p>A hang watcher times the window thread. If it stalls, the log names what it was doing. A stall with no name above it is noise, so the next time a path can block, it gets a line first.</p>
+      <p>Plugins are C++ classes linked in. A hook that returns false cancels the thing the client was about to do. The first no wins. There is no plugin folder.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap doc">
+      <h2>Talking to Discord</h2>
+      <p>The gateway is the live stream of events. REST is everything you ask for. Voice is a different socket, on a machine the gateway names when you join. A shared screen is a third socket. The call underneath has to stay up, or you have left the channel.</p>
+      <p>The voice address arrives as <code>host:port</code>. Dropping the port reaches a different machine. That machine answers, then closes with <code>4006</code>. It looks like progress. It is not.</p>
+      <p>Since 1 March 2026 Discord accepts only end to end encrypted calls. That is <a href="https://github.com/discord/libdave">libdave</a>, MLS, on top of the transport encryption. The recognised-user list has to include your own id, because you are in the group too. Leaving yourself out is refused with “Welcome message lists unrecognized user ID”, and only when the channel already has somebody in it. An empty channel seems fine, which is how that one hid.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap doc">
+      <h2>A call, and the ways it goes silent</h2>
+      <p>Every one of these presents as plain silence.</p>
+      <h3>The extension body is encrypted</h3>
+      <p>In the <code>rtpsize</code> modes, only the fixed RTP header, the CSRCs, and the four byte extension preamble are in the clear. The extension elements ride with the sound and are sealed with it. Counting them as header makes every packet fail to open, and Discord sets that bit on nearly all of them.</p>
+      <h3>Qt does not mix</h3>
+      <p>Two streams written to one <code>QAudioSink</code> are queued, not blended. That is heard as chopped, rushed speech. Each person gets a jitter buffer that measures their line and picks its own cushion. A 20 ms tick sums the frames that are due into one, and Opus fills in a packet that never arrived.</p>
+      <h3>A phone only plays sound that is marked</h3>
+      <p>Discord's own client puts two marks on every sound packet, in the one-byte RTP extension form (<code>0xBEDE</code>). The preamble stays in the clear. The marks are sealed with the sound, the same as a picture's marks.</p>
+      <div class="bench-wrap">
+        <table class="bench">
+          <tr><th>ID</th><th>What it is</th></tr>
+          <tr><td>1</td><td>How loud, and whether this packet has sound in it. The high bit is that. The low 7 bits are how quiet, in −dB, 0 being the loudest. Silence is 127 with the high bit clear. A phone's server only forwards a packet that says it has sound.</td></tr>
+          <tr><td>9</td><td>What kind of sound. <code>0x04</code> is the stream's sound. <code>0x02</code> is a voice. The websocket speaking flag is not what a phone reads. A packet with this missing is treated as a voice, and a phone watching the stream ignores it.</td></tr>
+        </table>
+      </div>
+      <p>The speaking flags Discord documents are 1 for a voice and 2 for a stream's sound. The byte in the packet is that value shifted: <code>((flags &amp; 3) &lt;&lt; 1)</code>. A stream is 2, so the byte is 4. Opus is offered with encode and decode both true. Without encode, the server does not build a path for what you send, and a phone never receives it.</p>
+      <p>The picture already carried its own marks, which is why a phone could see a share and hear nothing. The sound was leaving unmarked.</p>
+      <p>The log prints a tally every five seconds: sent, played, and a named reason for every frame thrown away. That line exists because reading it found in one run what guessing could not.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap doc">
+      <h2>Pictures</h2>
+      <p>A camera rides the voice connection. Sound and pictures share the socket and are told apart by the payload type. Discord sends none of it unless you ask. Identify carries <code>video: true</code>, meaning this connection understands pictures. It defaults to false, and false is a promise never to be sent one.</p>
+      <p>The layers you offer are the layers you will send. We used to offer a half-size layer, rid <code>50</code>, and never send it. The server believed it existed and handed it to anyone who asked for a small picture — a camera in a grid, a phone — and they got nothing. A viewer who asked for full size saw it fine. Offer rid <code>100</code> only, and send that.</p>
+      <p>A shared screen does not ride the call. It has its own server, its own websocket, and its own packets. Asking to watch one is opcode 20 on the gateway, with a key <code>guild:&lt;guild&gt;:&lt;channel&gt;:&lt;user&gt;</code>. Opening your own is opcode 18. Closing it is 19. The answer comes back as two events, the same shape as joining voice.</p>
+      <p>A frame is too big for one packet. H.264 is chopped on the way out: a whole piece, several bundled, or one piece split across many. The last packet of a picture is flagged. That is the only way the far end knows the picture is finished. Each sender needs their own decoder, because a decoder holds the earlier frames that later ones are described as changes from.</p>
+      <p>Loss is the part that decides whether it works. A decoder that misses a frame cannot draw until a keyframe arrives, and the sender will not send one unless asked. A loss report goes back when a frame cannot be rebuilt. Without that the tile stays black, and the log cannot say why. The log counts packets, finished pictures, and frames spent waiting on a keyframe, per sender.</p>
+      <p>The small tiles used to ask for a 180p copy. That copy draws as stripes. Clicking the tile asked for the full picture, which is why it looked fine once it was large. Both sizes now ask for the full layer.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap doc">
+      <h2>Sharing a screen</h2>
+      <p>Share screen in the call panel. It asks which screen, then goes live on a connection of its own.</p>
+      <h3>Captured through Desktop Duplication</h3>
+      <p>That is the API the Windows compositor already feeds. A Qt screenshot copies the desktop through the CPU every frame. <code>BitBlt</code> misses hardware overlays, so video players and many games come out black. Duplication also reports when nothing moved, so a still screen costs nothing.</p>
+      <h3>Encoded by whatever this machine has</h3>
+      <p>NVIDIA, AMD, Intel, or Windows' own, in that order, then OpenH264. Hardware first is not about frame rate. Software 1080p costs a core, on the same machine already running whatever is being shared. The FFmpeg here is the LGPL build, so there is no x264. That is GPL, and linking it would put the GPL on all of this.</p>
+      <h3>Shaped for a conversation</h3>
+      <p>No B-frames, no look-ahead, one reference. A B-frame is described partly by a picture that has not been sent yet, so the encoder holds frames back. Free in a file. Delay in a call.</p>
+      <h3>Keyframes on request</h3>
+      <p>A viewer who joins mid-stream has only been sent descriptions of changes from pictures they never saw. They say so over RTCP and get a fresh one. Several viewers arriving together are answered once.</p>
+      <h3>The sound is the program's, not the speakers'</h3>
+      <p>Windows process loopback asks for the sound of one program and the processes it started, or for everything except one program. The second is how a whole-screen share can carry the game without also carrying the call back to the people who are already hearing it. It needs Windows 10 build 20348 or later. Older than that, the picture still goes out and the sound does not, and the log says so.</p>
+      <p>That sound is 48 kHz, stereo, 16 bit, which is what the Opus encoder on the stream connection takes. It is encoded as audio, not as speech — speech mode would thin music and games out. It leaves on the stream connection, marked as the stream's sound, which is the mark a phone is waiting for.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap doc">
+      <h2>The hole</h2>
+      <p>The background is an OpenGL widget, drawn by the graphics card. A picture, including a GIF, is the other path, drawn with the ordinary painter, and that path stays. The two are not mixed into one renderer.</p>
+      <p>Creating or deleting that OpenGL widget used to freeze the program for the better part of a minute. Qt, by default, turns every widget beside an OpenGL widget into its own window the moment the hole is created, and tears those windows down when the hole is removed. Windows re-reads the display for each one. That is the freeze. A see-through panel over that surface also painted black, which is why the hole used to sit behind solid panels and could not be seen.</p>
+      <p><code>Qt::AA_DontCreateNativeWidgetSiblings</code> is set before the application exists. With it, the hole is another layer and the panels stay clear, the same panels a picture shows through. Do not set a translucent background on those panels. Do not make them solid again. The glass flag stays on. Flipping it restyles every widget, which is its own stall.</p>
+      <p>One seed colour retints the whole application at runtime: surfaces, accents, the stylesheet, and the hole's disk. The status dots are the one thing the seed never touches. Green, yellow, and red have to keep meaning whatever else changes.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap doc">
+      <h2>What a message can click</h2>
+      <p>In the chat view, only a link is clickable. A styled span is not. Reactions, selects, and the Wave button are links with their own schemes, not buttons drawn in HTML. A mention in the composer is a chip. On the way out it becomes Discord's <code>&lt;@id&gt;</code>, not the name that was on screen.</p>
+      <p>A file waiting to be sent has its own Remove. The Cancel on a reply is a different control, and it is hidden unless a reply or an edit is open. An edit has Stop on the same row as the text, and Escape does the same. Leaving an edit clears the box. Leaving the words there would send that message again, as a new one, the next time Enter is pressed.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap doc">
+      <h2>What ships</h2>
+      <p>Two repositories, and they have to agree.</p>
+      <div class="bench-wrap">
+        <table class="bench">
+          <tr><td><a href="https://github.com/CodingIsCoolFr/Singularity">Singularity</a></td><td>The source. Public, MIT.</td></tr>
+          <tr><td><a href="https://github.com/CodingIsCoolFr/singularity-updates">singularity-updates</a></td><td>The installers. This is what the running program reads.</td></tr>
+        </table>
+      </div>
+      <p>The updater wants an installer, not the source tree. Publishing to one and not the other is how a releases page once said Latest about a build that was not. The channel is published first, because it is the one the program reads. The site's download button is that same latest installer. It does not have a version of its own.</p>
+      <p>The version is one number in three files. They are checked against each other before anything is tagged. A tag that already exists is refused. A dirty tree is refused. The tag points at what shipped.</p>
+      <p>The install is per user and never asks for administrator. There is no service and no driver. Closing the program for an update is not the same as killing it: Qt writes settings on the way out.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap doc">
+      <h2>What is not in here</h2>
+      <p>Search. Threads and forum channels. Avatar decorations, which are fetched and not drawn. Sending your own camera — sharing a screen is built, and a webcam is the same pipeline pointed at a different source, and it is not built. A single window rather than a whole screen.</p>
+      <p>Windows only.</p>
+      <p class="meta"><a href="index.html">Back to the site</a> · <a href="https://github.com/CodingIsCoolFr/singularity-updates/releases/latest">Download</a></p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Singularity · a Discord client in C++ and Qt 6</span>
+    <span class="push"><a href="https://github.com/CodingIsCoolFr/Singularity">GitHub</a></span>
+    <span><a href="https://ko-fi.com/codingiscool" target="_blank" rel="noopener">Support on Ko-fi</a></span>
+    <span>Not affiliated with Discord.</span>
+  </div>
+</footer>
+
+<script type="module">
+import { startHole } from './hole.js';
+const canvas = document.getElementById('hole');
+const hole = startHole(canvas);
+if (!hole) {
+    canvas.style.display = 'none';
+    document.body.style.background =
+        'linear-gradient(180deg, rgba(5,7,11,0.55) 0%, rgba(5,7,11,0.92) 40%), url(banner.png) center top / cover no-repeat fixed #05070b';
+}
+</script>
+</body>
+</html>
