@@ -364,8 +364,7 @@ protected:
     }
 };
 
-// Discord's update control. A thing, so a squircle, the same size as a server
-// icon, with a download mark. A circle reads as a person.
+// Discord's update control is a green arrow. No circle, no box.
 class UpdateButton : public QPushButton
 {
 public:
@@ -373,7 +372,7 @@ public:
         : QPushButton(parent)
     {
         setObjectName(QStringLiteral("RailUpdate"));
-        setFixedSize(48, 48);
+        setFixedSize(36, 36);
         setCursor(Qt::PointingHandCursor);
         setFocusPolicy(Qt::NoFocus);
         setFlat(true);
@@ -397,35 +396,22 @@ protected:
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing, true);
 
-        const QRectF box = QRectF(rect()).adjusted(2, 2, -2, -2);
         const bool hot = isEnabled() && (underMouse() || isDown());
-        const QColor ink = isEnabled() ? QColor(Theme::Green) : QColor(Theme::TextFaint);
+        QColor ink = isEnabled() ? QColor(Theme::Green) : QColor(Theme::TextFaint);
+        if (hot)
+            ink = ink.lighter(120);
 
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(hot ? ink : Qt::transparent);
-        painter.drawRoundedRect(box, 16, 16);
-        if (!hot) {
-            QPen edge(ink);
-            edge.setWidthF(2.0);
-            painter.setPen(edge);
-            painter.setBrush(Qt::NoBrush);
-            painter.drawRoundedRect(box.adjusted(1, 1, -1, -1), 15, 15);
-        }
-
-        QPen pen(hot ? QColor(Theme::Dark) : ink);
-        pen.setWidthF(2.2);
+        QPen pen(ink);
+        pen.setWidthF(2.6);
         pen.setCapStyle(Qt::RoundCap);
         pen.setJoinStyle(Qt::RoundJoin);
         painter.setPen(pen);
-        const QPointF c = box.center();
-        const qreal s = box.width() * 0.15;
-        painter.drawLine(QPointF(c.x(), c.y() - s * 1.2), QPointF(c.x(), c.y() + s * 0.05));
-        painter.drawLine(QPointF(c.x() - s * 0.7, c.y() - s * 0.4), QPointF(c.x(), c.y() + s * 0.3));
-        painter.drawLine(QPointF(c.x() + s * 0.7, c.y() - s * 0.4), QPointF(c.x(), c.y() + s * 0.3));
-        const qreal tray = c.y() + s * 0.85;
-        painter.drawLine(QPointF(c.x() - s, tray), QPointF(c.x() + s, tray));
-        painter.drawLine(QPointF(c.x() - s, tray - s * 0.42), QPointF(c.x() - s, tray));
-        painter.drawLine(QPointF(c.x() + s, tray - s * 0.42), QPointF(c.x() + s, tray));
+
+        const QPointF c = QRectF(rect()).center();
+        const qreal s = 7.0;
+        painter.drawLine(QPointF(c.x(), c.y() - s), QPointF(c.x(), c.y() + s * 0.35));
+        painter.drawLine(QPointF(c.x() - s * 0.72, c.y() - s * 0.15), QPointF(c.x(), c.y() + s * 0.55));
+        painter.drawLine(QPointF(c.x() + s * 0.72, c.y() - s * 0.15), QPointF(c.x(), c.y() + s * 0.55));
     }
 };
 
@@ -1483,8 +1469,7 @@ QWidget *MainWindow::buildGuildRail(QWidget *parent)
                                      .arg(QLatin1String(Theme::TextMuted), QLatin1String(Theme::TextPrimary)));
     connect(readAllButton, &QPushButton::clicked, this, &MainWindow::readAll);
 
-    // Discord's update control: a squircle with a download mark, not a circle.
-    // Dimmed while the update comes down, a button once it is ready.
+    // Discord's update control: a green arrow, nothing around it.
     m_updateButton = new UpdateButton(rail);
     m_updateButton->setToolTip(QStringLiteral("Update ready. Click to restart into it"));
     m_updateButton->hide();
