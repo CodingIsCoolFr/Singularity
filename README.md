@@ -10,7 +10,7 @@
 ![Windows](https://img.shields.io/badge/platform-Windows-8892a6?style=flat-square&labelColor=07090e)
 ![Voice](https://img.shields.io/badge/voice-end--to--end%20encrypted-a9c6e0?style=flat-square&labelColor=07090e)
 ![Plugins](https://img.shields.io/badge/plugins-compiled%20in-8892a6?style=flat-square&labelColor=07090e)
-[![License: MIT](https://img.shields.io/badge/license-MIT-8892a6?style=flat-square&labelColor=07090e)](LICENSE)
+[![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial-8892a6?style=flat-square&labelColor=07090e)](LICENSE)
 
 <br>
 
@@ -563,4 +563,4 @@ Roughly in the order they are worth doing.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+PolyForm Noncommercial 1.0.0. You can read it, change it, and share it. You cannot sell it, or use it to make money. See [LICENSE](LICENSE).

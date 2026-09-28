@@ -2,7 +2,7 @@
 
 A Discord client written from scratch in C++20 and Qt 6, for Windows. Not a patch on Discord's app, and not Electron with their page inside it. One process. The plugins are compiled into the binary, so there is no folder on disk for anything else to swap out.
 
-The source is public, under MIT, at [CodingIsCoolFr/Singularity](https://github.com/CodingIsCoolFr/Singularity). The installers live in a [separate repository](https://github.com/CodingIsCoolFr/singularity-updates), because the updater wants a setup program, not this tree. This note is also on the site.
+The source is public, under the PolyForm Noncommercial license, at [CodingIsCoolFr/Singularity](https://github.com/CodingIsCoolFr/Singularity). You can read it, change it, and share it. You cannot sell it, or use it to make money. The installers live in a [separate repository](https://github.com/CodingIsCoolFr/singularity-updates), because the updater wants a setup program, not this tree. This note is also on the site.
 
 Discord does not permit third party clients on a normal user account. Running this can get the account banned. That risk is taken on purpose.
 
@@ -110,7 +110,7 @@ Two repositories, and they have to agree.
 
 | | |
 | --- | --- |
-| Source | [CodingIsCoolFr/Singularity](https://github.com/CodingIsCoolFr/Singularity), MIT. |
+| Source | [CodingIsCoolFr/Singularity](https://github.com/CodingIsCoolFr/Singularity). PolyForm Noncommercial. Not for sale, and not for making money. |
 | [singularity-updates](https://github.com/CodingIsCoolFr/singularity-updates) | The installers. This is what the running program reads. |
 
 The updater wants an installer, not the source tree. Publishing to one and not the other is how a releases page once said Latest about a build that was not. The channel is published first, because it is the one the program reads. The site's download button is that same latest installer. It does not have a version of its own.
