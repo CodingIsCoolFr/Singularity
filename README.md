@@ -5,6 +5,7 @@
 <br>
 
 [![Website](https://img.shields.io/badge/website-singularitycord.pages.dev-eef4fb?style=flat-square&labelColor=07090e)](https://singularitycord.pages.dev)
+[![Ko-fi](https://img.shields.io/badge/support-Ko--fi-ff5e5b?style=flat-square&labelColor=07090e&logo=kofi&logoColor=white)](https://ko-fi.com/codingiscool)
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-cdd6e6?style=flat-square&labelColor=07090e)
 ![Qt 6.10](https://img.shields.io/badge/Qt-6.10-cdd6e6?style=flat-square&labelColor=07090e)
 ![Windows](https://img.shields.io/badge/platform-Windows-8892a6?style=flat-square&labelColor=07090e)
@@ -19,6 +20,8 @@
 Windows x64 · 54 MB · installs for you only, no administrator prompt
 
 **Website — [singularitycord.pages.dev](https://singularitycord.pages.dev)**
+
+**Support — [a coffee, a meal, or more on Ko-fi](https://ko-fi.com/codingiscool).** It keeps this client going, and the projects that come after it.
 
 The same download, the whole story, and the black hole drawn live in your browser.
 
@@ -36,9 +39,8 @@ decoded as well, and the grid of faces above the conversation is where they
 appear.
 
 How it was built is written down in
-[docs/how-we-built-it.md](docs/how-we-built-it.md). The source repository
-is private. The same note is public on the site and on the installers
-repository.
+[docs/how-we-built-it.md](docs/how-we-built-it.md). The same note is on the
+site and on the installers repository.
 
 ## Warning, read this first
 
@@ -560,6 +562,12 @@ Roughly in the order they are worth doing.
 14. Sharing a single **window** rather than a whole screen, and sharing the
     sound coming out of it
 14. Lottie stickers, which are vector animations with no Qt reader
+
+## Support
+
+Singularity is free, and made by one person. A coffee keeps an evening of work going. A meal, or more than that, is what turns a weekend into a real stretch of it. The money goes to this client, and to the projects that come after it. Nothing in the program is held back if you don't.
+
+**[Buy me a coffee on Ko-fi](https://ko-fi.com/codingiscool)** — or use the Sponsor button at the top of this page.
 
 ## License
 
