@@ -7369,6 +7369,58 @@ private:
     }
 };
 
+// Every face the reaction picker and the composer picker share: a short stock
+// row, then every custom emoji from every server you are in.
+QList<EmojiBoard::Cell> allEmojiCells(const MessageStore *store)
+{
+    QList<EmojiBoard::Cell> cells;
+    const struct {
+        const char *face;
+        const char *name;
+    } stock[] = {
+        {"👍", "thumb yes"}, {"❤️", "heart love"}, {"😂", "joy laugh"}, {"😮", "wow"},
+        {"😢", "sad cry"},   {"🔥", "fire"},       {"😀", "grin smile"}, {"👎", "thumb no"},
+        {"🎉", "party"},     {"😭", "cry sob"},    {"😡", "angry"},      {"👀", "eyes"},
+        {"💯", "hundred"},   {"✅", "check yes"},  {"🙏", "pray"},       {"💀", "skull"},
+        {"🤔", "think"},     {"😎", "cool"},       {"🥳", "party"},      {"🤝", "handshake"},
+    };
+    for (const auto &item : stock) {
+        EmojiBoard::Cell cell;
+        cell.insert = QString::fromUtf8(item.face);
+        cell.face = cell.insert;
+        cell.filter = cell.insert + QLatin1Char(' ') + QString::fromUtf8(item.name);
+        cells.append(cell);
+    }
+    if (!store)
+        return cells;
+    for (const GuildInfo &server : store->guilds()) {
+        for (const EmojiInfo &emoji : server.emojis) {
+            if (emoji.id.isEmpty() || emoji.name.isEmpty())
+                continue;
+            EmojiBoard::Cell cell;
+            cell.insert = emoji.animated ? QStringLiteral("<a:%1:%2>").arg(emoji.name, emoji.id)
+                                         : QStringLiteral("<:%1:%2>").arg(emoji.name, emoji.id);
+            cell.filter = server.name + QLatin1Char(' ') + emoji.name;
+            cell.animated = emoji.animated;
+            const QString ext = emoji.animated ? QStringLiteral("gif") : QStringLiteral("png");
+            cell.icon = QUrl(QStringLiteral("https://cdn.discordapp.com/emojis/%1.%2?size=64")
+                                 .arg(emoji.id, ext));
+            cells.append(cell);
+        }
+    }
+    return cells;
+}
+
+// A reaction is name:id, not the <:name:id> the composer inserts.
+QString reactionToken(const QString &insert)
+{
+    static const QRegularExpression custom(QStringLiteral("^<a?:([^:]+):([0-9]+)>$"));
+    const QRegularExpressionMatch match = custom.match(insert);
+    if (match.hasMatch())
+        return match.captured(1) + QLatin1Char(':') + match.captured(2);
+    return insert;
+}
+
 // The GIF page: two columns of tiles, each as tall as its picture wants, the
 // way Discord lays them out. Painted, like the emoji page, so only the tiles
 // on screen fetch anything. Tiles are still until the pointer is on one;
@@ -7626,43 +7678,7 @@ void MainWindow::showEmojiMenu()
     pageLayout->addWidget(gifBoard);
     pageLayout->addStretch(1);
 
-    QList<EmojiBoard::Cell> cells;
-
-    const struct {
-        const char *face;
-        const char *name;
-    } stock[] = {
-        {"😀", "grin smile"}, {"😂", "joy laugh"}, {"❤️", "heart love"}, {"👍", "thumb yes"},
-        {"👎", "thumb no"},  {"🔥", "fire"},       {"🎉", "party"},       {"😭", "cry sob"},
-        {"😮", "wow"},       {"😡", "angry"},      {"👀", "eyes"},        {"💯", "hundred"},
-        {"✅", "check yes"}, {"🙏", "pray"},       {"💀", "skull"},       {"🤔", "think"},
-        {"😎", "cool"},      {"🥳", "party"},      {"😢", "sad"},         {"🤝", "handshake"},
-    };
-    for (const auto &item : stock) {
-        EmojiBoard::Cell cell;
-        cell.insert = QString::fromUtf8(item.face);
-        cell.face = cell.insert;
-        cell.filter = cell.insert + QLatin1Char(' ') + QString::fromUtf8(item.name);
-        cells.append(cell);
-    }
-
-    // Nitro emoji come from every server you are in, not only the one open.
-    // A direct message has no current server, which is why the picker used to
-    // stop after the twenty faces.
-    const QList<GuildInfo> guilds = m_store->guilds();
-    for (const GuildInfo &server : guilds) {
-        for (const EmojiInfo &emoji : server.emojis) {
-            EmojiBoard::Cell cell;
-            cell.insert = emoji.animated ? QStringLiteral("<a:%1:%2>").arg(emoji.name, emoji.id)
-                                         : QStringLiteral("<:%1:%2>").arg(emoji.name, emoji.id);
-            cell.filter = server.name + QLatin1Char(' ') + emoji.name;
-            cell.animated = emoji.animated;
-            const QString ext = emoji.animated ? QStringLiteral("gif") : QStringLiteral("png");
-            cell.icon = QUrl(QStringLiteral("https://cdn.discordapp.com/emojis/%1.%2?size=64")
-                                 .arg(emoji.id, ext));
-            cells.append(cell);
-        }
-    }
+    QList<EmojiBoard::Cell> cells = allEmojiCells(m_store);
 
     // Stickers are pictures, not letters: four across at 96, near the size
     // Discord's own sticker page shows them.
@@ -7983,6 +7999,78 @@ void MainWindow::showEmojiMenu()
     search->setFocus();
 }
 
+void MainWindow::showReactionPicker(const QString &messageId, const QPoint &globalPos)
+{
+    if (messageId.isEmpty() || m_currentChannelId.isEmpty() || !m_rest)
+        return;
+
+    auto *popup = new QFrame(nullptr, Qt::Popup | Qt::FramelessWindowHint);
+    popup->setAttribute(Qt::WA_DeleteOnClose);
+    popup->setObjectName(QStringLiteral("EmojiPicker"));
+    popup->setFixedWidth(432);
+    popup->setStyleSheet(QStringLiteral(
+        "QFrame#EmojiPicker { background-color: %1; border: 1px solid %2; border-radius: 12px; }"
+        "QLineEdit { background: %3; color: %4; border: none; border-radius: 8px; padding: 6px 8px; "
+        "font-family: \"Segoe UI\"; font-size: 13px; }"
+        "QScrollArea { background: transparent; border: none; }"
+        "QLabel { color: %5; background: transparent; font-size: 11px; }")
+                              .arg(QLatin1String(Theme::SurfaceSidebar), QLatin1String(Theme::Border),
+                                   QLatin1String(Theme::SurfaceInput), QLatin1String(Theme::TextPrimary),
+                                   QLatin1String(Theme::TextMuted)));
+
+    auto *outer = new QVBoxLayout(popup);
+    outer->setContentsMargins(10, 10, 10, 10);
+    outer->setSpacing(8);
+
+    auto *search = new QLineEdit(popup);
+    search->setPlaceholderText(QStringLiteral("Find an emoji"));
+    search->setClearButtonEnabled(true);
+    outer->addWidget(search);
+
+    auto *scroll = new QScrollArea(popup);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setFixedHeight(380);
+    outer->addWidget(scroll);
+
+    auto *page = new QWidget;
+    auto *pageLayout = new QVBoxLayout(page);
+    pageLayout->setContentsMargins(0, 0, 0, 0);
+    scroll->setWidget(page);
+
+    auto *board = new EmojiBoard(page);
+    board->cells = allEmojiCells(m_store);
+    board->onPick = [this, popup, messageId](const QString &token) {
+        const QString emoji = reactionToken(token);
+        popup->close();
+        if (emoji.isEmpty() || m_currentChannelId.isEmpty())
+            return;
+        m_rest->addReaction(m_currentChannelId, messageId, emoji, [](const QJsonObject &) {},
+                            [this](const RestClient::Error &error) {
+                                flashStatus(QStringLiteral("Could not react (%1).").arg(error.message.left(120)),
+                                            4000);
+                            });
+    };
+    board->setQuery(QString());
+    pageLayout->addWidget(board);
+    connect(search, &QLineEdit::textChanged, board, [board](const QString &text) { board->setQuery(text); });
+    connect(&MediaCache::instance(), &MediaCache::ready, board, [board](const QUrl &) { board->update(); });
+
+    popup->adjustSize();
+    QPoint topLeft = globalPos;
+    if (QScreen *screen = QGuiApplication::screenAt(globalPos)) {
+        const QRect area = screen->availableGeometry();
+        if (topLeft.x() + popup->width() > area.right())
+            topLeft.setX(qMax(area.left(), area.right() - popup->width() - 8));
+        if (topLeft.y() + popup->height() > area.bottom())
+            topLeft.setY(qMax(area.top(), globalPos.y() - popup->height() - 8));
+    }
+    popup->move(topLeft);
+    popup->show();
+    search->setFocus();
+}
+
 void MainWindow::showMessageMenu(const QPoint &pos)
 {
     const QString messageId = messageIdAt(pos);
@@ -8105,6 +8193,11 @@ void MainWindow::showMessageMenu(const QPoint &pos)
                                 });
         });
     }
+    connect(react->addAction(QStringLiteral("All emoji…")), &QAction::triggered, this,
+            [this, messageId, pos]() {
+                const QPoint at = m_messageView->viewport()->mapToGlobal(pos);
+                QTimer::singleShot(0, this, [this, messageId, at]() { showReactionPicker(messageId, at); });
+            });
 
     menu.exec(m_messageView->viewport()->mapToGlobal(pos));
 }

@@ -92,6 +92,7 @@ private slots:
     qint64 uploadLimitBytes() const;
     bool handleFileDrop(QEvent *event);
     void showEmojiMenu();
+    void showReactionPicker(const QString &messageId, const QPoint &globalPos);
     void refreshComposerContext();
     QString messageIdAt(const QPoint &viewportPos) const;
 
