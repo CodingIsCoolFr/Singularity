@@ -73,6 +73,7 @@ void VideoDecoder::close()
 
     m_scalerWidth = 0;
     m_scalerHeight = 0;
+    m_scalerFormat = -1;
     m_hungry = 0;
 }
 
@@ -146,15 +147,17 @@ bool VideoDecoder::toImage(QImage &out)
 
     // The scaler is built for one size and kept. Rebuilding it per frame is
     // expensive, and a stream rarely changes size mid-call.
-    if (!m_scaler || m_scalerWidth != width || m_scalerHeight != height) {
+    const int format = m_frame->format;
+    if (!m_scaler || m_scalerWidth != width || m_scalerHeight != height || m_scalerFormat != format) {
         if (m_scaler)
             sws_freeContext(m_scaler);
 
-        m_scaler = sws_getContext(width, height, static_cast<AVPixelFormat>(m_frame->format),
-                                  width, height, AV_PIX_FMT_RGB32, SWS_FAST_BILINEAR, nullptr, nullptr,
+        m_scaler = sws_getContext(width, height, static_cast<AVPixelFormat>(format),
+                                  width, height, AV_PIX_FMT_BGR0, SWS_FAST_BILINEAR, nullptr, nullptr,
                                   nullptr);
         m_scalerWidth = width;
         m_scalerHeight = height;
+        m_scalerFormat = format;
 
         if (!m_scaler)
             return false;

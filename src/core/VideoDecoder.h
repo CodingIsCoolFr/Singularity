@@ -54,6 +54,7 @@ private:
 
     int m_scalerWidth = 0;
     int m_scalerHeight = 0;
+    int m_scalerFormat = -1;
     int m_hungry = 0;
 };
 

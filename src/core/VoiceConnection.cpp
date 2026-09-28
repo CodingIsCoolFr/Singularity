@@ -3264,14 +3264,7 @@ void VoiceConnection::setVideoViews(const QHash<QString, int> &pixelsByUser)
         refreshVideoWants();
 }
 
-// Which of a person's layers to take.
-//
-// A camera is usually sent two or three times at once - full size, half and
-// sometimes quarter - and the server forwards whichever one each viewer asks
-// for. Discord's own client asks for the big one only for the tile on the
-// stage, the small one for the row underneath, and nothing at all for tiles
-// scrolled out of view. A call of forty cameras is then a handful of small
-// streams rather than forty full ones.
+// Discord's "Turn Off Video" on a person: stop downloading their camera.
 void VoiceConnection::setVideoOff(const QSet<QString> &userIds)
 {
     if (postToOwnThread([this, userIds]() { setVideoOff(userIds); }))
@@ -3294,24 +3287,13 @@ quint32 VoiceConnection::chosenVideoSsrc(const QString &userId) const
     if (!m_videoViewsKnown || m_viewerOnly || best == 0)
         return best;
 
+    // On screen: the full picture. The half-size layer is what the strip
+    // used to take, and it draws as stripes; clicking the tile (which
+    // switches to this ssrc) makes it normal.
     const int pixels = m_videoViews.value(userId, 0);
     if (pixels <= 0)
         return 0;
-    if (pixels >= 640 * 360)
-        return best;
-
-    quint32 smallest = best;
-    int smallestRid = m_videoRid.value(best, 100);
-    for (auto it = m_videoSsrcToUser.constBegin(); it != m_videoSsrcToUser.constEnd(); ++it) {
-        if (it.value() != userId)
-            continue;
-        const int rid = m_videoRid.value(it.key(), 100);
-        if (rid < smallestRid) {
-            smallestRid = rid;
-            smallest = it.key();
-        }
-    }
-    return smallest;
+    return best;
 }
 
 void VoiceConnection::refreshVideoWants()

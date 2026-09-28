@@ -59,9 +59,8 @@ public:
     QSize minimumSizeHint() const override;
 
 signals:
-    // Which cameras are on screen, and how big. The voice connection asks
-    // Discord only for those, and for a small copy when the tile is small.
-    // A camera missing from the list is not downloaded at all.
+    // Which cameras are on screen. The voice connection asks Discord only
+    // for those. Off-screen cameras are not downloaded at all.
     void videoViewsChanged(const QHash<QString, int> &pixelsByUser);
 
     void profileRequested(const QString &userId);

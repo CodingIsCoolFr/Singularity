@@ -30,10 +30,11 @@ constexpr int ArrowSize = 34;
 // not something anyone is looking for.
 constexpr int BigCall = 12;
 
-// What a tile asks the server for. A strip tile is about 300 by 170, so the
-// small copy Discord sends alongside the full one is plenty; only the stage
-// gets full quality.
-constexpr int SmallViewPixels = 320 * 180;
+// What a tile asks the server for. The strip used to take Discord's 180p
+// copy (rid 50). That layer arrives as stripes, and the same camera is
+// fine the moment it is clicked onto the stage, which asks for the full
+// picture. Both sizes now ask for that.
+constexpr int SmallViewPixels = 1280 * 720;
 constexpr int LargeViewPixels = 1280 * 720;
 
 QColor withAlpha(const char *hex, int alpha)
