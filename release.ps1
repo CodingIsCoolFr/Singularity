@@ -1,11 +1,10 @@
 <#
     Builds a release and publishes it to both repositories.
 
-    There are two, and they have to agree. The private one here is where the
-    source and the tags live; the public singularity-updates is what the
-    program itself reads, because a private repository answers 404 to anyone
-    without a token and an updater pointed at it would need a token shipped
-    inside the binary.
+    There are two, and they have to agree. This one is the source. The public
+    singularity-updates repository is what the program itself reads, because
+    that is where the installers are. An updater wants an installer, not the
+    source tree.
 
     Publishing to both by hand is how they drifted the first time: 0.1.3 went
     to the channel, the source repository stopped at 0.1.2, and its releases

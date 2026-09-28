@@ -10,6 +10,7 @@
 ![Windows](https://img.shields.io/badge/platform-Windows-8892a6?style=flat-square&labelColor=07090e)
 ![Voice](https://img.shields.io/badge/voice-end--to--end%20encrypted-a9c6e0?style=flat-square&labelColor=07090e)
 ![Plugins](https://img.shields.io/badge/plugins-compiled%20in-8892a6?style=flat-square&labelColor=07090e)
+[![License: MIT](https://img.shields.io/badge/license-MIT-8892a6?style=flat-square&labelColor=07090e)](LICENSE)
 
 <br>
 
@@ -286,12 +287,9 @@ program that disappears for several seconds with nothing on screen looks like
 it crashed.
 
 It reads **[singularity-updates](https://github.com/CodingIsCoolFr/singularity-updates)**,
-a public repository carrying the installers and no source, rather than this
-one. This repository is private, and a private repository answers `404` to
-anyone without a token, so an updater pointed at it would need a token shipped
-inside the program. Anything shipped inside a program can be taken back out of
-it, and that token would grant read access to all of this. A public channel
-carrying only the installers costs nothing and gives nothing away.
+the public repository that carries the installers. The updater wants an
+installer, not this source tree. The source itself is public, in this
+repository, under the MIT license.
 
 ### Publishing a release
 
@@ -558,3 +556,7 @@ Roughly in the order they are worth doing.
 14. Sharing a single **window** rather than a whole screen, and sharing the
     sound coming out of it
 14. Lottie stickers, which are vector animations with no Qt reader
+
+## License
+
+[MIT](LICENSE). Use it, change it, ship it. Keep the copyright notice.
