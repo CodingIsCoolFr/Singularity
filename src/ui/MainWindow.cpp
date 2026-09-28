@@ -250,7 +250,7 @@ public:
                                          : QStringLiteral("CaptionClose"));
         setFlat(true);
         setFocusPolicy(Qt::NoFocus);
-        setFixedSize(46, 32);
+        setFixedSize(34, 28);
         setCursor(Qt::ArrowCursor);
     }
 
@@ -322,6 +322,45 @@ private:
 
     Kind m_kind;
     bool m_restore = false;
+};
+
+// The join-a-server mark. A font plus sits on the baseline, so it never lands
+// in the middle of the circle. This one is drawn from the centre.
+class JoinServerButton : public QToolButton
+{
+public:
+    explicit JoinServerButton(int size, QWidget *parent)
+        : QToolButton(parent)
+    {
+        setObjectName(QStringLiteral("RailJoinButton"));
+        setToolTip(QStringLiteral("Join a server"));
+        setCursor(Qt::PointingHandCursor);
+        setFixedSize(size, size);
+        setFocusPolicy(Qt::NoFocus);
+        setAutoRaise(true);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+
+        const QRectF box = QRectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5);
+        const bool hot = underMouse() || isDown();
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(hot ? QColor(Theme::Green) : QColor(Theme::SurfaceInput));
+        painter.drawEllipse(box);
+
+        QPen pen(hot ? QColor(255, 255, 255) : QColor(Theme::Green));
+        pen.setWidthF(2.6);
+        pen.setCapStyle(Qt::RoundCap);
+        painter.setPen(pen);
+        const QPointF c = box.center();
+        const qreal arm = box.width() * 0.16;
+        painter.drawLine(QPointF(c.x() - arm, c.y()), QPointF(c.x() + arm, c.y()));
+        painter.drawLine(QPointF(c.x(), c.y() - arm), QPointF(c.x(), c.y() + arm));
+    }
 };
 
 bool containsGlobal(const QWidget *widget, const QPoint &global)
@@ -1169,7 +1208,7 @@ void MainWindow::buildUi()
     m_appMenu->setText(QStringLiteral("Singularity"));
     m_appMenu->setPopupMode(QToolButton::InstantPopup);
     m_appMenu->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    m_appMenu->setFixedHeight(32);
+    m_appMenu->setFixedHeight(28);
     m_appMenu->setFocusPolicy(Qt::NoFocus);
     m_appMenu->setCursor(Qt::ArrowCursor);
     m_appMenu->setAutoRaise(false);
@@ -1395,20 +1434,7 @@ QWidget *MainWindow::buildGuildRail(QWidget *parent)
     layout->addWidget(m_guildRail, 1);
 
     // Under the servers, where Discord keeps its own: join one by invite.
-    auto *joinServer = new QToolButton(rail);
-    joinServer->setObjectName(QStringLiteral("RailJoinButton"));
-    joinServer->setText(QStringLiteral("+"));
-    joinServer->setToolTip(QStringLiteral("Join a server"));
-    joinServer->setCursor(Qt::PointingHandCursor);
-    joinServer->setFixedSize(GuildIconPixels, GuildIconPixels);
-    joinServer->setStyleSheet(QStringLiteral(
-        "QToolButton#RailJoinButton { background-color: %1; color: %2; border: none; "
-        "border-radius: %3px; font-size: 22px; }"
-        "QToolButton#RailJoinButton:hover { background-color: %2; color: %4; border-radius: %5px; }")
-                                  .arg(QLatin1String(Theme::SurfaceInput), QLatin1String(Theme::Green))
-                                  .arg(GuildIconPixels / 2)
-                                  .arg(QStringLiteral("#ffffff"))
-                                  .arg(GuildIconPixels / 3));
+    auto *joinServer = new JoinServerButton(GuildIconPixels, rail);
     layout->addSpacing(6);
     layout->addWidget(joinServer, 0, Qt::AlignHCenter);
     connect(joinServer, &QToolButton::clicked, this, [this]() { showJoinServerDialog(); });
@@ -8536,7 +8562,7 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
             m_voiceDragUser.clear();
         } else if (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove
                    || event->type() == QEvent::Drop || event->type() == QEvent::DragLeave) {
-            if (handleVoiceMemberDrag(event))
+            if (handleVoiceMemberDrag(event, watched))
                 return true;
         }
     }
@@ -9844,7 +9870,12 @@ QString MainWindow::voiceGuildOf(const QString &userId) const
     const VoiceStateInfo state = m_store->voiceState(userId);
     if (!state.guildId.isEmpty())
         return state.guildId;
-    return m_store->channel(state.channelId).guildId;
+    const QString fromChannel = m_store->channel(state.channelId).guildId;
+    if (!fromChannel.isEmpty())
+        return fromChannel;
+    // A voice state sometimes arrives without a guild. The server on screen
+    // is the one the move is for.
+    return m_currentGuildId;
 }
 
 bool MainWindow::canMoveVoiceMember(const QString &userId) const
@@ -9865,11 +9896,34 @@ void MainWindow::patchVoiceMember(const QString &userId, const QJsonObject &fiel
     if (!m_rest || userId.isEmpty())
         return;
     const QString guildId = voiceGuildOf(userId);
-    if (guildId.isEmpty())
+    if (guildId.isEmpty()) {
+        wlog(QStringLiteral("voice"), QStringLiteral("voice moderation had no server for %1").arg(userId));
+        flashStatus(failed, 5000);
         return;
+    }
+
+    wlog(QStringLiteral("voice"),
+         QStringLiteral("asking Discord to change %1 in %2: %3")
+             .arg(userId, guildId, QString::fromUtf8(QJsonDocument(fields).toJson(QJsonDocument::Compact))));
 
     m_rest->modifyGuildMember(
-        guildId, userId, fields, [](const QJsonObject &) {},
+        guildId, userId, fields,
+        [this, userId, guildId, fields](const QJsonObject &) {
+            if (!fields.contains(QStringLiteral("channel_id")) || !m_store)
+                return;
+            const VoiceStateInfo previous = m_store->voiceState(userId);
+            QJsonObject state{{QStringLiteral("user_id"), userId},
+                              {QStringLiteral("guild_id"), guildId},
+                              {QStringLiteral("channel_id"), fields.value(QStringLiteral("channel_id"))},
+                              {QStringLiteral("self_mute"), previous.muted && !previous.serverMuted},
+                              {QStringLiteral("self_deaf"), previous.deafened && !previous.serverDeafened},
+                              {QStringLiteral("mute"), previous.serverMuted},
+                              {QStringLiteral("deaf"), previous.serverDeafened},
+                              {QStringLiteral("self_stream"), previous.streaming},
+                              {QStringLiteral("self_video"), previous.video}};
+            m_store->setVoiceState(state);
+            wlog(QStringLiteral("voice"), QStringLiteral("Discord accepted the move for %1").arg(userId));
+        },
         [this, failed](const RestClient::Error &error) {
             wlog(QStringLiteral("ui"),
                  QStringLiteral("voice moderation failed: HTTP %1 %2")
@@ -9911,17 +9965,34 @@ QString MainWindow::voiceChannelAt(const QPoint &viewportPos) const
 {
     if (!m_channelList)
         return {};
-    QListWidgetItem *item = m_channelList->itemAt(viewportPos);
-    if (!item)
-        return {};
 
-    for (int i = m_channelList->row(item); i >= 0; --i) {
-        QListWidgetItem *it = m_channelList->item(i);
-        const QString kind = it->data(KindRole).toString();
-        if (kind == QLatin1String("voice"))
-            return it->data(IdRole).toString();
-        if (kind != QLatin1String("voicemember"))
+    const auto fromItem = [this](QListWidgetItem *item) -> QString {
+        if (!item)
             return {};
+        for (int i = m_channelList->row(item); i >= 0; --i) {
+            QListWidgetItem *it = m_channelList->item(i);
+            const QString kind = it->data(KindRole).toString();
+            if (kind == QLatin1String("voice"))
+                return it->data(IdRole).toString();
+            if (kind != QLatin1String("voicemember"))
+                return {};
+        }
+        return {};
+    };
+
+    if (QListWidgetItem *exact = m_channelList->itemAt(viewportPos))
+        return fromItem(exact);
+
+    // A drop a few pixels off the row used to miss, and the move never left
+    // the machine. Only a voice row counts; a text channel stays a miss.
+    const QPoint shifts[] = {QPoint(0, -8), QPoint(0, 8), QPoint(0, -16), QPoint(0, 16)};
+    for (const QPoint &shift : shifts) {
+        QListWidgetItem *item = m_channelList->itemAt(viewportPos + shift);
+        if (!item)
+            continue;
+        const QString kind = item->data(KindRole).toString();
+        if (kind == QLatin1String("voice") || kind == QLatin1String("voicemember"))
+            return fromItem(item);
     }
     return {};
 }
@@ -9954,7 +10025,7 @@ void MainWindow::startVoiceMemberDrag(const QString &userId)
         m_channelDelegate->setDropTarget({});
 }
 
-bool MainWindow::handleVoiceMemberDrag(QEvent *event)
+bool MainWindow::handleVoiceMemberDrag(QEvent *event, QObject *watched)
 {
     if (!m_channelList || !m_channelDelegate)
         return false;
@@ -9969,7 +10040,12 @@ bool MainWindow::handleVoiceMemberDrag(QEvent *event)
         return false;
 
     const QString userId = QString::fromUtf8(drop->mimeData()->data("application/x-singularity-voicemember"));
-    const QString channelId = voiceChannelAt(drop->position().toPoint());
+    QPoint viewportPos = drop->position().toPoint();
+    if (auto *widget = qobject_cast<QWidget *>(watched)) {
+        if (widget != m_channelList->viewport())
+            viewportPos = m_channelList->viewport()->mapFrom(widget, viewportPos);
+    }
+    const QString channelId = voiceChannelAt(viewportPos);
     const bool same = m_store && m_store->voiceState(userId).channelId == channelId;
     const bool ok = !channelId.isEmpty() && !same;
 
@@ -9992,6 +10068,9 @@ bool MainWindow::handleVoiceMemberDrag(QEvent *event)
     drop->accept();
     if (ok)
         QTimer::singleShot(0, this, [this, userId, channelId]() { moveVoiceMember(userId, channelId); });
+    else
+        wlog(QStringLiteral("voice"),
+             QStringLiteral("a drop of %1 did not land on another call").arg(userId));
     return true;
 }
 

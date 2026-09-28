@@ -577,7 +577,7 @@ private:
     bool canMoveVoiceMember(const QString &userId) const;
     QString voiceChannelAt(const QPoint &viewportPos) const;
     void startVoiceMemberDrag(const QString &userId);
-    bool handleVoiceMemberDrag(QEvent *event);
+    bool handleVoiceMemberDrag(QEvent *event, QObject *watched);
     // "Turn Off Video" / "Turn On Video" on a person in the call.
     void setVideoHidden(const QString &userId, bool hidden);
     void setStreamVideoHidden(const QString &userId, bool hidden);

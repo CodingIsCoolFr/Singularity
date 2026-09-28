@@ -518,38 +518,41 @@ QDialog { background-color: @chat; }
 }
 
 #CaptionMin, #CaptionMax, #CaptionClose {
-    background-color: @chat;
+    background: transparent;
     color: @muted;
-    border: none;
-    border-radius: 8px;
+    border: 2px solid #000000;
+    border-radius: 7px;
     padding: 0;
-    min-width: 46px;
-    max-width: 46px;
+    min-width: 34px;
+    max-width: 34px;
     min-height: 28px;
-    font-size: 11px;
-    margin: 0 2px;
+    max-height: 28px;
+    margin: 0 3px;
 }
 #CaptionMin:hover, #CaptionMax:hover {
-    background: @hover;
+    background: transparent;
+    border: 2px solid #000000;
     color: @text;
 }
 #CaptionClose:hover {
-    background-color: #e81123;
+    background: transparent;
+    border: 2px solid #e81123;
     color: #ffffff;
 }
 
 #AppMenu {
-    background-color: @chat;
-    color: @muted;
-    padding: 0 12px;
-    border: 1px solid @accent22;
+    background: transparent;
+    color: @text;
+    padding: 0 10px;
+    border: 2px solid #000000;
     border-radius: 8px;
-    min-height: 32px;
-    max-height: 32px;
+    min-height: 28px;
+    max-height: 28px;
     font-size: 13px;
 }
 #AppMenu:hover, #AppMenu:pressed {
-    background-color: @hover;
+    background: transparent;
+    border: 2px solid #000000;
     color: @text;
 }
 #AppMenu::menu-indicator {
