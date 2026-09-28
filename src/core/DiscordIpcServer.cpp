@@ -214,11 +214,20 @@ void DiscordIpcServer::onReadyRead(QLocalSocket *socket)
         const QByteArray payload = client.buffer.mid(8, static_cast<int>(size));
         client.buffer.remove(0, 8 + static_cast<int>(size));
         handleFrame(socket, opcode, payload);
+        // A write in that frame can close the pipe. The client is gone then,
+        // and this loop must not keep reading it.
+        if (!m_clients.contains(socket))
+            return;
     }
 }
 
 void DiscordIpcServer::onDisconnected(QLocalSocket *socket)
 {
+    if (!m_clients.contains(socket))
+        return;
+    // The socket is about to die. Drop the slot first, so its destructor
+    // cannot call back into a client we already removed.
+    disconnect(socket, nullptr, this, nullptr);
     const bool had = !m_clients.value(socket).activity.isEmpty();
     m_clients.remove(socket);
     socket->deleteLater();
@@ -292,16 +301,20 @@ void DiscordIpcServer::handleFrame(QLocalSocket *socket, quint32 opcode, const Q
         }
 
         QJsonObject echoed = it->activity;
-        if (!it->applicationId.isEmpty())
-            echoed.insert(QStringLiteral("application_id"), it->applicationId);
+        const QString applicationId = it->applicationId;
+        if (!applicationId.isEmpty())
+            echoed.insert(QStringLiteral("application_id"), applicationId);
         sendFrame(socket, OpcodeFrame, QJsonObject{
             {QStringLiteral("cmd"), QStringLiteral("SET_ACTIVITY")},
             {QStringLiteral("evt"), QJsonValue::Null},
             {QStringLiteral("nonce"), nonce},
             {QStringLiteral("data"), echoed.isEmpty() ? QJsonObject{} : echoed},
         });
-        noteExe(socket);
-        requestProxy(it->applicationId, it->activity);
+        // The write can close the pipe, and that removes the client. Do not
+        // touch the iterator after this. The copies above are the ones to use.
+        if (m_clients.contains(socket))
+            noteExe(socket);
+        requestProxy(applicationId, echoed);
         publish();
         return;
     }
