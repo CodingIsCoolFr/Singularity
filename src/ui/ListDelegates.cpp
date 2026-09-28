@@ -768,6 +768,15 @@ void ChannelDelegate::setJoinedVoiceChannel(const QString &channelId)
         m_view->viewport()->update();
 }
 
+void ChannelDelegate::setDropTarget(const QString &channelId)
+{
+    if (m_dropChannelId == channelId)
+        return;
+    m_dropChannelId = channelId;
+    if (m_view)
+        m_view->viewport()->update();
+}
+
 void ChannelDelegate::setSpeakingUsers(const QSet<QString> &userIds)
 {
     if (m_speaking == userIds)
@@ -1106,6 +1115,12 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
 
     // --- hover buttons on a voice row -------------------------------------
     const bool isVoice = kind == QLatin1String("voice");
+    if (isVoice && !m_dropChannelId.isEmpty()
+        && index.data(SingularityRoles::Id).toString() == m_dropChannelId) {
+        painter->setPen(QPen(QColor(Theme::Accent), 1.6));
+        painter->setBrush(withAlpha(Theme::Accent, 0.16));
+        painter->drawRoundedRect(panel, 7, 7);
+    }
     const bool showButtons = isVoice && hoverAmount > 0.25;
 
     // Everything on the right of the row is laid out from the right edge

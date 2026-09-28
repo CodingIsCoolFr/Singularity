@@ -175,6 +175,9 @@ public:
     // Which channel is currently joined, so its row can show "Leave".
     void setJoinedVoiceChannel(const QString &channelId);
 
+    // The voice channel a dragged person is hovering, so that row lights up.
+    void setDropTarget(const QString &channelId);
+
     // Whoever is talking right now gets a green ring round their picture.
     void setSpeakingUsers(const QSet<QString> &userIds);
 
@@ -201,5 +204,6 @@ private:
     mutable QHash<int, qreal> m_hover;
     mutable QHash<int, qreal> m_select;
     QString m_joinedChannelId;
+    QString m_dropChannelId;
     QSet<QString> m_speaking;
 };

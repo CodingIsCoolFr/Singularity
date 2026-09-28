@@ -182,6 +182,11 @@ public:
     // banner and bio.
     void editGuildMember(const QString &guildId, const QJsonObject &fields, ObjectHandler onOk,
                          ErrorHandler onError, const CaptchaProof &captcha = {});
+    // PATCH /guilds/{guild}/members/{user}: server mute, server deafen, or
+    // move them. `channel_id` null disconnects them from voice. Needs Mute
+    // Members, Deafen Members, or Move Members.
+    void modifyGuildMember(const QString &guildId, const QString &userId, const QJsonObject &fields,
+                           ObjectHandler onOk, ErrorHandler onError);
     // GET /users/@me/collectibles-purchases - what you own from the shop.
     // type 0 = avatar decoration, 1 = profile effect, 2 = nameplate.
     void fetchCollectibles(ArrayHandler onOk, ErrorHandler onError);

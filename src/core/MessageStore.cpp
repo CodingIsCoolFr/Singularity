@@ -293,6 +293,8 @@ QString MessageStore::applyVoiceState(const QJsonObject &rawState)
             || rawState.value(QStringLiteral("mute")).toBool();
         state.deafened = rawState.value(QStringLiteral("self_deaf")).toBool()
             || rawState.value(QStringLiteral("deaf")).toBool();
+        state.serverMuted = rawState.value(QStringLiteral("mute")).toBool();
+        state.serverDeafened = rawState.value(QStringLiteral("deaf")).toBool();
 
         // Muting yourself sends a fresh voice state for the same channel.
         // Taking the clock from that would restart the timer every time
@@ -343,6 +345,8 @@ void MessageStore::replaceGuildVoiceStates(const QString &guildId, const QJsonAr
             || state.value(QStringLiteral("mute")).toBool();
         info.deafened = state.value(QStringLiteral("self_deaf")).toBool()
             || state.value(QStringLiteral("deaf")).toBool();
+        info.serverMuted = state.value(QStringLiteral("mute")).toBool();
+        info.serverDeafened = state.value(QStringLiteral("deaf")).toBool();
         info.since = QDateTime::currentDateTimeUtc();
         m_voiceStates.insert(userId, info);
     }
@@ -1454,6 +1458,24 @@ RolePower MessageStore::rolePower(const QString &guildId) const
     }
     power.canManage = power.owner || (permissions & (Administrator | ManageRoles)) != 0;
     return power;
+}
+
+quint64 MessageStore::selfPermissions(const QString &guildId) const
+{
+    constexpr quint64 Administrator = 1ull << 3;
+
+    const GuildInfo guild = m_guilds.value(guildId);
+    if (guild.id.isEmpty())
+        return 0;
+    if (!m_selfUserId.isEmpty() && guild.ownerId == m_selfUserId)
+        return ~0ull;
+
+    quint64 permissions = guild.roles.value(guildId).permissions;   // @everyone
+    for (const QString &roleId : m_selfRoles.value(guildId))
+        permissions |= guild.roles.value(roleId).permissions;
+    if (permissions & Administrator)
+        return ~0ull;
+    return permissions;
 }
 
 QList<QPair<QString, QString>> MessageStore::unreadChannels() const

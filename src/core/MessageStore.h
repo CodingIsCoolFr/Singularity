@@ -77,8 +77,10 @@ struct VoiceStateInfo
 
     bool streaming = false;   // sharing a screen, which Discord shows as LIVE
     bool video = false;       // camera on
-    bool muted = false;       // muted themselves
+    bool muted = false;       // muted themselves, or a moderator muted them
     bool deafened = false;    // cannot hear anyone
+    bool serverMuted = false; // a moderator muted them (Discord's `mute`)
+    bool serverDeafened = false;
 
     // When this person was first seen in this channel.
     //
@@ -387,6 +389,9 @@ public:
     // GUILD_MEMBER_UPDATE), and what they let you do with roles.
     void setSelfRoles(const QString &guildId, const QStringList &roleIds);
     RolePower rolePower(const QString &guildId) const;
+    // Owner and Administrator count as every bit. Otherwise @everyone plus
+    // the roles you hold, which is what Mute / Deafen / Move Members read.
+    quint64 selfPermissions(const QString &guildId) const;
     ChannelInfo channel(const QString &channelId) const;
     QList<ChannelInfo> channelsOfGuild(const QString &guildId) const;
     QList<ChannelGroup> groupedChannels(const QString &guildId) const;

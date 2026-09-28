@@ -41,6 +41,7 @@
 #include <QBuffer>
 #include <QCheckBox>
 #include <QClipboard>
+#include <QDrag>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
@@ -1456,6 +1457,10 @@ QWidget *MainWindow::buildSidebar(QWidget *parent)
     // already here, and opening looks instant because no waiting happened
     // while anybody was looking.
     m_channelList->setMouseTracking(true);
+    m_channelList->setAcceptDrops(true);
+    m_channelList->viewport()->setAcceptDrops(true);
+    m_channelList->installEventFilter(this);
+    m_channelList->viewport()->installEventFilter(this);
     connect(m_channelList, &QListWidget::itemEntered, this, [this](QListWidgetItem *item) {
         if (!item || item->data(KindRole).toString() != QLatin1String("channel"))
             return;
@@ -1525,6 +1530,10 @@ QWidget *MainWindow::buildSidebar(QWidget *parent)
     // People under a voice channel are not selectable, so they need their own
     // click handler to open a profile.
     connect(m_channelList, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
+        if (m_voiceDragMoved) {
+            m_voiceDragMoved = false;
+            return;
+        }
         if (!item || item->data(KindRole).toString() != QLatin1String("voicemember"))
             return;
 
@@ -3380,8 +3389,12 @@ void MainWindow::populateChannelList(bool autoSelectFirst)
                 marks << QStringLiteral("sharing a screen");
             if (state.video)
                 marks << QStringLiteral("camera on");
-            if (state.deafened)
+            if (state.serverDeafened)
+                marks << QStringLiteral("server deafened");
+            else if (state.deafened)
                 marks << QStringLiteral("cannot hear anyone");
+            else if (state.serverMuted)
+                marks << QStringLiteral("server muted");
             else if (state.muted)
                 marks << QStringLiteral("muted");
             if (state.since.isValid()) {
@@ -8431,6 +8444,39 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         }
     }
 
+    // A person under a voice channel can be dragged onto another call.
+    if (m_channelList && (watched == m_channelList->viewport() || watched == m_channelList)) {
+        const bool onViewport = watched == m_channelList->viewport();
+        if (onViewport && event->type() == QEvent::MouseButtonPress) {
+            auto *mouse = static_cast<QMouseEvent *>(event);
+            if (mouse->button() == Qt::LeftButton) {
+                QListWidgetItem *item = m_channelList->itemAt(mouse->position().toPoint());
+                if (item && item->data(KindRole).toString() == QLatin1String("voicemember")) {
+                    m_voiceDragUser = item->data(IdRole).toString();
+                    m_voiceDragOrigin = mouse->position().toPoint();
+                } else {
+                    m_voiceDragUser.clear();
+                }
+            }
+        } else if (onViewport && event->type() == QEvent::MouseMove && !m_voiceDragUser.isEmpty()) {
+            auto *mouse = static_cast<QMouseEvent *>(event);
+            if ((mouse->buttons() & Qt::LeftButton)
+                && (mouse->position().toPoint() - m_voiceDragOrigin).manhattanLength()
+                       >= QApplication::startDragDistance()) {
+                const QString userId = m_voiceDragUser;
+                m_voiceDragUser.clear();
+                startVoiceMemberDrag(userId);
+                return true;
+            }
+        } else if (onViewport && event->type() == QEvent::MouseButtonRelease) {
+            m_voiceDragUser.clear();
+        } else if (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove
+                   || event->type() == QEvent::Drop || event->type() == QEvent::DragLeave) {
+            if (handleVoiceMemberDrag(event))
+                return true;
+        }
+    }
+
     // A server dragged onto the middle of another tile makes or fills a
     // folder. Anything else is an ordinary reorder, left to the list.
     if (m_guildRail && watched == m_guildRail->viewport()
@@ -9719,6 +9765,164 @@ void MainWindow::setStreamVideoHidden(const QString &userId, bool hidden)
                                                                                      : QStringLiteral("turned on"), userId));
 }
 
+QString MainWindow::voiceGuildOf(const QString &userId) const
+{
+    if (!m_store || userId.isEmpty())
+        return {};
+    const VoiceStateInfo state = m_store->voiceState(userId);
+    if (!state.guildId.isEmpty())
+        return state.guildId;
+    return m_store->channel(state.channelId).guildId;
+}
+
+bool MainWindow::canMoveVoiceMember(const QString &userId) const
+{
+    if (userId.isEmpty())
+        return false;
+    if (userId == m_selfUserId)
+        return true;
+    constexpr quint64 MoveMembers = 1ull << 24;
+    const QString guildId = voiceGuildOf(userId);
+    if (guildId.isEmpty() || !m_store)
+        return false;
+    return (m_store->selfPermissions(guildId) & MoveMembers) != 0;
+}
+
+void MainWindow::patchVoiceMember(const QString &userId, const QJsonObject &fields, const QString &failed)
+{
+    if (!m_rest || userId.isEmpty())
+        return;
+    const QString guildId = voiceGuildOf(userId);
+    if (guildId.isEmpty())
+        return;
+
+    m_rest->modifyGuildMember(
+        guildId, userId, fields, [](const QJsonObject &) {},
+        [this, failed](const RestClient::Error &error) {
+            wlog(QStringLiteral("ui"),
+                 QStringLiteral("voice moderation failed: HTTP %1 %2")
+                     .arg(error.httpStatus)
+                     .arg(error.message));
+            flashStatus(error.httpStatus == 403
+                            ? QStringLiteral("Discord refused that. Their role may be above yours.")
+                            : failed,
+                        5000);
+        });
+}
+
+void MainWindow::moveVoiceMember(const QString &userId, const QString &channelId)
+{
+    if (userId.isEmpty() || !m_store)
+        return;
+    if (m_store->voiceState(userId).channelId == channelId)
+        return;
+
+    if (userId == m_selfUserId) {
+        if (channelId.isEmpty())
+            leaveVoice();
+        else
+            joinVoice(channelId);
+        return;
+    }
+
+    QJsonObject fields;
+    if (channelId.isEmpty())
+        fields.insert(QStringLiteral("channel_id"), QJsonValue());
+    else
+        fields.insert(QStringLiteral("channel_id"), channelId);
+    patchVoiceMember(userId, fields,
+                     channelId.isEmpty() ? QStringLiteral("Could not disconnect them.")
+                                         : QStringLiteral("Could not move them."));
+}
+
+QString MainWindow::voiceChannelAt(const QPoint &viewportPos) const
+{
+    if (!m_channelList)
+        return {};
+    QListWidgetItem *item = m_channelList->itemAt(viewportPos);
+    if (!item)
+        return {};
+
+    for (int i = m_channelList->row(item); i >= 0; --i) {
+        QListWidgetItem *it = m_channelList->item(i);
+        const QString kind = it->data(KindRole).toString();
+        if (kind == QLatin1String("voice"))
+            return it->data(IdRole).toString();
+        if (kind != QLatin1String("voicemember"))
+            return {};
+    }
+    return {};
+}
+
+void MainWindow::startVoiceMemberDrag(const QString &userId)
+{
+    if (!m_channelList || !canMoveVoiceMember(userId))
+        return;
+
+    m_voiceDragMoved = true;
+    auto *mime = new QMimeData;
+    mime->setData("application/x-singularity-voicemember", userId.toUtf8());
+
+    QDrag drag(m_channelList);
+    drag.setMimeData(mime);
+    for (int i = 0; i < m_channelList->count(); ++i) {
+        QListWidgetItem *item = m_channelList->item(i);
+        if (item->data(KindRole).toString() == QLatin1String("voicemember")
+            && item->data(IdRole).toString() == userId) {
+            const QPixmap face = item->icon().pixmap(18, 18);
+            if (!face.isNull()) {
+                drag.setPixmap(face);
+                drag.setHotSpot(QPoint(9, 9));
+            }
+            break;
+        }
+    }
+    drag.exec(Qt::MoveAction);
+    if (m_channelDelegate)
+        m_channelDelegate->setDropTarget({});
+}
+
+bool MainWindow::handleVoiceMemberDrag(QEvent *event)
+{
+    if (!m_channelList || !m_channelDelegate)
+        return false;
+
+    if (event->type() == QEvent::DragLeave) {
+        m_channelDelegate->setDropTarget({});
+        return false;
+    }
+
+    auto *drop = static_cast<QDropEvent *>(event);
+    if (!drop->mimeData() || !drop->mimeData()->hasFormat("application/x-singularity-voicemember"))
+        return false;
+
+    const QString userId = QString::fromUtf8(drop->mimeData()->data("application/x-singularity-voicemember"));
+    const QString channelId = voiceChannelAt(drop->position().toPoint());
+    const bool same = m_store && m_store->voiceState(userId).channelId == channelId;
+    const bool ok = !channelId.isEmpty() && !same;
+
+    if (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove) {
+        m_channelDelegate->setDropTarget(ok ? channelId : QString());
+        if (!ok) {
+            drop->ignore();
+            return true;
+        }
+        drop->setDropAction(Qt::MoveAction);
+        drop->accept();
+        return true;
+    }
+
+    if (event->type() != QEvent::Drop)
+        return false;
+
+    m_channelDelegate->setDropTarget({});
+    drop->setDropAction(Qt::IgnoreAction);
+    drop->accept();
+    if (ok)
+        QTimer::singleShot(0, this, [this, userId, channelId]() { moveVoiceMember(userId, channelId); });
+    return true;
+}
+
 void MainWindow::showPersonMenu(const QString &userId, const QPoint &globalPos)
 {
     showPersonMenuAt(userId, globalPos, QString());
@@ -9783,6 +9987,68 @@ void MainWindow::showPersonMenuAt(const QString &userId, const QPoint &globalPos
     }
 
     if (!userId.isEmpty()) {
+        const QString guildId = voiceGuildOf(userId);
+        const VoiceStateInfo voice = m_store->voiceState(userId);
+        if (!guildId.isEmpty() && !voice.channelId.isEmpty()) {
+            constexpr quint64 MuteMembers = 1ull << 22;
+            constexpr quint64 DeafenMembers = 1ull << 23;
+            constexpr quint64 MoveMembers = 1ull << 24;
+            const quint64 bits = m_store->selfPermissions(guildId);
+            const bool canMute = (bits & MuteMembers) != 0;
+            const bool canDeaf = (bits & DeafenMembers) != 0;
+            const bool canMove = self || (bits & MoveMembers) != 0;
+            if (canMute || canDeaf || canMove)
+                menu.addSeparator();
+            if (canMute) {
+                const bool on = voice.serverMuted || voice.serverDeafened;
+                menu.addAction(on ? QStringLiteral("Server Unmute") : QStringLiteral("Server Mute"), this,
+                               [this, userId, on, canDeaf]() {
+                                   QJsonObject fields{{QStringLiteral("mute"), !on}};
+                                   if (on && canDeaf)
+                                       fields.insert(QStringLiteral("deaf"), false);
+                                   patchVoiceMember(userId, fields, QStringLiteral("Could not change their mute."));
+                               });
+            }
+            if (canDeaf) {
+                const bool on = voice.serverDeafened;
+                menu.addAction(on ? QStringLiteral("Server Undeafen") : QStringLiteral("Server Deafen"), this,
+                               [this, userId, on, canMute]() {
+                                   QJsonObject fields{{QStringLiteral("deaf"), !on}};
+                                   if (canMute)
+                                       fields.insert(QStringLiteral("mute"), !on ? false : true);
+                                   patchVoiceMember(userId, fields,
+                                                    QStringLiteral("Could not change their deafen."));
+                               });
+            }
+            if (canMove) {
+                auto *moveTo = menu.addMenu(QStringLiteral("Move to"));
+                int added = 0;
+                for (const ChannelGroup &group : m_store->groupedChannels(guildId)) {
+                    QList<ChannelInfo> voices;
+                    for (const ChannelInfo &channel : group.channels) {
+                        if (channel.isVoice() && channel.id != voice.channelId)
+                            voices.append(channel);
+                    }
+                    if (voices.isEmpty())
+                        continue;
+                    if (!group.name.isEmpty()) {
+                        QAction *header = moveTo->addAction(group.name);
+                        header->setEnabled(false);
+                    }
+                    for (const ChannelInfo &channel : voices) {
+                        moveTo->addAction(channel.name, this, [this, userId, id = channel.id]() {
+                            moveVoiceMember(userId, id);
+                        });
+                        ++added;
+                    }
+                }
+                if (added == 0)
+                    moveTo->setEnabled(false);
+                menu.addAction(QStringLiteral("Disconnect"), this,
+                               [this, userId]() { moveVoiceMember(userId, QString()); });
+            }
+        }
+
         menu.addAction(QStringLiteral("Copy User ID"), this, [userId]() {
             QApplication::clipboard()->setText(userId);
         });

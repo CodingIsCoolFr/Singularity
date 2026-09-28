@@ -306,6 +306,9 @@ private:
 
     QListWidget *m_guildRail = nullptr;
     QListWidget *m_channelList = nullptr;
+    QString m_voiceDragUser;
+    QPoint m_voiceDragOrigin;
+    bool m_voiceDragMoved = false;
     class GuildHeader *m_sidebarHeader = nullptr;   // name, banner, boost goal
     class QSystemTrayIcon *m_tray = nullptr;        // made on the first notification
     ChatView *m_messageView = nullptr;
@@ -565,6 +568,13 @@ private:
     void showUserVolumeMenu(const QString &userId, const QPoint &globalPos);
     void showPersonMenu(const QString &userId, const QPoint &globalPos);
     void showPersonMenuAt(const QString &userId, const QPoint &globalPos, const QString &closeChannelId);
+    void patchVoiceMember(const QString &userId, const QJsonObject &fields, const QString &failed);
+    void moveVoiceMember(const QString &userId, const QString &channelId);
+    QString voiceGuildOf(const QString &userId) const;
+    bool canMoveVoiceMember(const QString &userId) const;
+    QString voiceChannelAt(const QPoint &viewportPos) const;
+    void startVoiceMemberDrag(const QString &userId);
+    bool handleVoiceMemberDrag(QEvent *event);
     // "Turn Off Video" / "Turn On Video" on a person in the call.
     void setVideoHidden(const QString &userId, bool hidden);
     void setStreamVideoHidden(const QString &userId, bool hidden);

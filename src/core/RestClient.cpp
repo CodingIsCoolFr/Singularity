@@ -569,6 +569,17 @@ void RestClient::editGuildMember(const QString &guildId, const QJsonObject &fiel
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+void RestClient::modifyGuildMember(const QString &guildId, const QString &userId, const QJsonObject &fields,
+                                   ObjectHandler onOk, ErrorHandler onError)
+{
+    if (guildId.isEmpty() || userId.isEmpty() || fields.isEmpty())
+        return;
+    QNetworkRequest request = buildRequest(QStringLiteral("/guilds/%1/members/%2").arg(guildId, userId));
+    QNetworkReply *reply = m_network.sendCustomRequest(request, QByteArrayLiteral("PATCH"),
+                                                       QJsonDocument(fields).toJson(QJsonDocument::Compact));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::fetchCollectibles(ArrayHandler onOk, ErrorHandler onError)
 {
     QNetworkReply *reply = m_network.get(buildRequest(QStringLiteral("/users/@me/collectibles-purchases")));
