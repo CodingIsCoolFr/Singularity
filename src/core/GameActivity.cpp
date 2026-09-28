@@ -240,7 +240,9 @@ void GameActivity::loadSaved()
     const int before = m_saved.size();
     m_saved.erase(std::remove_if(m_saved.begin(), m_saved.end(),
                                  [&](const Saved &game) {
-                                     return browser(game.exe) && game.name.contains(QLatin1Char('-'));
+                                     return browser(game.exe)
+                                         && (game.name.contains(QLatin1Char('-'))
+                                             || game.name.contains(QStringLiteral("—")));
                                  }),
                   m_saved.end());
     if (m_saved.size() != before)
@@ -401,9 +403,18 @@ void GameActivity::scan()
         push(game.name, game.details, game.exe, known.id);
     }
 
+    QSet<QString> visible;
+    for (const Running &row : windows)
+        visible.insert(exeBase(row.exe));
+
     if (m_detect) {
         for (const QString &exe : running) {
             if (skipped(exe))
+                continue;
+            // A process with no window is not a game you are playing. Roblox
+            // left RobloxPlayerBeta running with no window, and that was enough
+            // to put ROBLOX on the profile.
+            if (!visible.contains(exe))
                 continue;
             const Known known = m_catalog.value(exe);
             if (known.name.isEmpty())
