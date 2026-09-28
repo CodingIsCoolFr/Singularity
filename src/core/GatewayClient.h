@@ -12,6 +12,7 @@
 
 class DiscordIpcServer;
 class GameActivity;
+class RestClient;
 
 // Live connection to the Discord gateway.
 //
@@ -92,6 +93,7 @@ public:
 
     // Games Settings is watching. Their cards are sent with the Singularity one.
     void setGames(GameActivity *games);
+    void setGameRest(RestClient *rest);
     GameActivity *games() const { return m_games; }
 
     // Sends the status we are holding, even when it has not changed. Needed

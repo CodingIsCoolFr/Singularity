@@ -56,7 +56,13 @@ public:
     // What is on the presence right now, as a short line each.
     QStringList showing() const;
 
-    // Gateway activities. Empty when the switch is off.
+    // True when this program should get a card: the switch is on, and they
+    // added it, or automatic detection is on and Discord already knows it.
+    bool wantsExe(const QString &exe) const;
+
+    // Gateway activities. Empty when the switch is off. `_exe` is the program
+    // file name, for the caller to match against a game's own activity and
+    // then remove before sending.
     QJsonArray activities() const { return m_activities; }
 
 signals:
@@ -77,8 +83,8 @@ private:
         QString id;
     };
 
-    bool m_shown = true;
-    bool m_detect = true;
+    bool m_shown = false;
+    bool m_detect = false;
     QList<Saved> m_saved;
     QList<Running> m_running;
     QJsonArray m_activities;

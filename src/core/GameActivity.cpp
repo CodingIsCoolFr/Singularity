@@ -12,6 +12,8 @@
 #include <QSet>
 #include <QStandardPaths>
 
+#include <algorithm>
+
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <tlhelp32.h>
@@ -32,7 +34,8 @@ QString catalogPath()
 const char *const kSkip[] = {
     "explorer.exe", "searchhost.exe", "startmenuexperiencehost.exe", "textinputhost.exe",
     "applicationframehost.exe", "systemsettings.exe", "shellexperiencehost.exe",
-    "singularity.exe", "discord.exe", "dwm.exe", "csrss.exe", "svchost.exe",
+    "singularity.exe", "discord.exe", "firefox.exe", "chrome.exe", "msedge.exe",
+    "opera.exe", "brave.exe", "dwm.exe", "csrss.exe", "svchost.exe",
     "runtimebroker.exe", "sihost.exe", "taskhostw.exe", "ctfmon.exe",
 };
 
@@ -114,8 +117,8 @@ GameActivity::GameActivity(QObject *parent)
     : QObject(parent)
 {
     AppConfig &config = AppConfig::instance();
-    m_shown = config.value(QStringLiteral("presence/showGames"), true).toBool();
-    m_detect = config.value(QStringLiteral("presence/detectGames"), true).toBool();
+    m_shown = config.value(QStringLiteral("presence/showGames"), false).toBool();
+    m_detect = config.value(QStringLiteral("presence/detectGames"), false).toBool();
     loadSaved();
     loadCatalog();
 
@@ -135,6 +138,20 @@ void GameActivity::start(RestClient *rest)
 void GameActivity::refresh()
 {
     scan();
+}
+
+bool GameActivity::wantsExe(const QString &exe) const
+{
+    if (!m_shown || exe.trimmed().isEmpty())
+        return false;
+    const QString base = exeBase(exe);
+    if (skipped(base))
+        return false;
+    for (const Saved &game : m_saved) {
+        if (game.enabled && exeBase(game.exe) == base)
+            return true;
+    }
+    return m_detect && m_catalog.contains(base);
 }
 
 void GameActivity::setShown(bool on)
@@ -212,6 +229,22 @@ void GameActivity::loadSaved()
         if (!game.name.isEmpty())
             m_saved.append(game);
     }
+
+    // A browser window title is not a game. One got saved that way.
+    const auto browser = [](const QString &exe) {
+        const QString base = exeBase(exe);
+        return base == QLatin1String("firefox.exe") || base == QLatin1String("chrome.exe")
+            || base == QLatin1String("msedge.exe") || base == QLatin1String("opera.exe")
+            || base == QLatin1String("brave.exe");
+    };
+    const int before = m_saved.size();
+    m_saved.erase(std::remove_if(m_saved.begin(), m_saved.end(),
+                                 [&](const Saved &game) {
+                                     return browser(game.exe) && game.name.contains(QLatin1Char('-'));
+                                 }),
+                  m_saved.end());
+    if (m_saved.size() != before)
+        storeSaved();
 }
 
 void GameActivity::storeSaved()
@@ -352,6 +385,8 @@ void GameActivity::scan()
             activity.insert(QStringLiteral("details"), details);
         if (!applicationId.isEmpty())
             activity.insert(QStringLiteral("application_id"), applicationId);
+        if (!exe.isEmpty())
+            activity.insert(QStringLiteral("_exe"), exeBase(exe));
         next.append(activity);
     };
 
@@ -368,6 +403,8 @@ void GameActivity::scan()
 
     if (m_detect) {
         for (const QString &exe : running) {
+            if (skipped(exe))
+                continue;
             const Known known = m_catalog.value(exe);
             if (known.name.isEmpty())
                 continue;

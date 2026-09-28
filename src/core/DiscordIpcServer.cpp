@@ -1,11 +1,16 @@
 #include "core/DiscordIpcServer.h"
 
 #include "core/Logger.h"
+#include "core/RestClient.h"
 
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QLocalSocket>
 #include <QSet>
 #include <QtEndian>
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 
 namespace {
 
@@ -31,11 +36,14 @@ qint64 gatewayTimestamp(const QJsonValue &value)
     return stamp;
 }
 
-QJsonObject gatewayActivity(const QString &applicationId, const QJsonObject &rpc)
+QJsonObject gatewayActivity(const QString &applicationId, const QString &exe, const QJsonObject &rpc,
+                            const QHash<QString, QString> &proxied)
 {
     QJsonObject out;
     out.insert(QStringLiteral("type"), rpc.value(QStringLiteral("type")).toInt());
     out.insert(QStringLiteral("application_id"), applicationId);
+    if (!exe.isEmpty())
+        out.insert(QStringLiteral("_exe"), exe);
 
     QString name = rpc.value(QStringLiteral("name")).toString().trimmed();
     if (name.isEmpty())
@@ -51,9 +59,24 @@ QJsonObject gatewayActivity(const QString &applicationId, const QJsonObject &rpc
     if (!state.isEmpty())
         out.insert(QStringLiteral("state"), state);
 
-    const QJsonObject assets = rpc.value(QStringLiteral("assets")).toObject();
-    if (!assets.isEmpty())
-        out.insert(QStringLiteral("assets"), assets);
+    const QJsonObject rawAssets = rpc.value(QStringLiteral("assets")).toObject();
+    if (!rawAssets.isEmpty()) {
+        QJsonObject assets = rawAssets;
+        const auto rewrite = [&](const char *field) {
+            const QString value = assets.value(QLatin1String(field)).toString();
+            if (!value.startsWith(QLatin1String("http://")) && !value.startsWith(QLatin1String("https://")))
+                return;
+            const QString key = proxied.value(value);
+            if (key.isEmpty())
+                assets.remove(QLatin1String(field));
+            else
+                assets.insert(QLatin1String(field), key);
+        };
+        rewrite("large_image");
+        rewrite("small_image");
+        if (!assets.isEmpty())
+            out.insert(QStringLiteral("assets"), assets);
+    }
 
     const QJsonObject timestamps = rpc.value(QStringLiteral("timestamps")).toObject();
     if (!timestamps.isEmpty()) {
@@ -152,7 +175,7 @@ QJsonArray DiscordIpcServer::activities() const
         if (seen.contains(client.applicationId))
             continue;
         seen.insert(client.applicationId);
-        out.append(gatewayActivity(client.applicationId, client.activity));
+        out.append(gatewayActivity(client.applicationId, client.exe, client.activity, m_proxied));
         if (out.size() >= 3)
             break;
     }
@@ -243,6 +266,7 @@ void DiscordIpcServer::handleFrame(QLocalSocket *socket, quint32 opcode, const Q
         });
         wlog(QStringLiteral("presence"),
              QStringLiteral("a game connected (%1)").arg(it->applicationId));
+        noteExe(socket);
         return;
     }
 
@@ -276,6 +300,8 @@ void DiscordIpcServer::handleFrame(QLocalSocket *socket, quint32 opcode, const Q
             {QStringLiteral("nonce"), nonce},
             {QStringLiteral("data"), echoed.isEmpty() ? QJsonObject{} : echoed},
         });
+        noteExe(socket);
+        requestProxy(it->applicationId, it->activity);
         publish();
         return;
     }
@@ -292,6 +318,67 @@ void DiscordIpcServer::handleFrame(QLocalSocket *socket, quint32 opcode, const Q
              {QStringLiteral("message"), QStringLiteral("not supported")},
          }},
     });
+}
+
+void DiscordIpcServer::noteExe(QLocalSocket *socket)
+{
+    auto it = m_clients.find(socket);
+    if (it == m_clients.end() || !it->exe.isEmpty() || !socket)
+        return;
+
+    DWORD pid = 0;
+    if (!GetNamedPipeClientProcessId(reinterpret_cast<HANDLE>(socket->socketDescriptor()), &pid) || pid == 0)
+        return;
+    const HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!process)
+        return;
+    wchar_t path[MAX_PATH];
+    DWORD size = MAX_PATH;
+    const BOOL ok = QueryFullProcessImageNameW(process, 0, path, &size);
+    CloseHandle(process);
+    if (!ok)
+        return;
+    it->exe = QFileInfo(QString::fromWCharArray(path)).fileName().toLower();
+}
+
+void DiscordIpcServer::requestProxy(const QString &applicationId, const QJsonObject &activity)
+{
+    if (!m_rest || applicationId.isEmpty())
+        return;
+    const QJsonObject assets = activity.value(QStringLiteral("assets")).toObject();
+    for (const char *field : {"large_image", "small_image"}) {
+        const QString url = assets.value(QLatin1String(field)).toString();
+        if (!url.startsWith(QLatin1String("https://")) && !url.startsWith(QLatin1String("http://")))
+            continue;
+        if (m_proxied.contains(url) || m_proxyPending.contains(url))
+            continue;
+        m_proxyPending.insert(url);
+        wlog(QStringLiteral("presence"), QStringLiteral("asking Discord to host a game picture"));
+        m_rest->proxyApplicationAsset(
+            applicationId, url,
+            [this, url](const QJsonArray &proxied) {
+                m_proxyPending.remove(url);
+                QString key;
+                if (!proxied.isEmpty()) {
+                    const QString path =
+                        proxied.first().toObject().value(QStringLiteral("external_asset_path")).toString();
+                    if (!path.isEmpty())
+                        key = QStringLiteral("mp:") + path;
+                }
+                if (!key.isEmpty())
+                    m_proxied.insert(url, key);
+                else
+                    wlog(QStringLiteral("presence"), QStringLiteral("Discord did not host that picture"));
+                publish();
+            },
+            [this, url](const RestClient::Error &error) {
+                m_proxyPending.remove(url);
+                wlog(QStringLiteral("presence"),
+                     QStringLiteral("could not host a game picture: HTTP %1 %2")
+                         .arg(error.httpStatus)
+                         .arg(error.message));
+            });
+    }
 }
 
 void DiscordIpcServer::sendFrame(QLocalSocket *socket, quint32 opcode, const QJsonObject &payload)

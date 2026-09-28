@@ -162,6 +162,12 @@ void GatewayClient::setGames(GameActivity *games)
     });
 }
 
+void GatewayClient::setGameRest(RestClient *rest)
+{
+    if (m_gameActivity)
+        m_gameActivity->setRest(rest);
+}
+
 void GatewayClient::start(const QString &token)
 {
     // The token itself never goes in the log. Its shape is enough to tell a
@@ -753,13 +759,27 @@ QJsonArray GatewayClient::clientActivities() const
         seen.insert(name);
         activities.append(game);
     };
-    if (m_gameActivity) {
-        for (const QJsonValue &game : m_gameActivity->activities())
-            appendGame(game.toObject());
-    }
-    if (m_games) {
-        for (const QJsonValue &game : m_games->activities())
-            appendGame(game.toObject());
+    if (m_games && m_games->shown() && m_gameActivity) {
+        QSet<QString> covered;
+        for (const QJsonValue &game : m_gameActivity->activities()) {
+            QJsonObject object = game.toObject();
+            const QString exe = object.value(QStringLiteral("_exe")).toString();
+            object.remove(QStringLiteral("_exe"));
+            if (!exe.isEmpty() && !m_games->wantsExe(exe))
+                continue;
+            if (exe.isEmpty() && !m_games->detect())
+                continue;
+            covered.insert(exe);
+            appendGame(object);
+        }
+        for (const QJsonValue &game : m_games->activities()) {
+            QJsonObject object = game.toObject();
+            const QString exe = object.value(QStringLiteral("_exe")).toString();
+            object.remove(QStringLiteral("_exe"));
+            if (covered.contains(exe))
+                continue;
+            appendGame(object);
+        }
     }
     return activities;
 }

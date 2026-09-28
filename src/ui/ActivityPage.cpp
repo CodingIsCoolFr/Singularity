@@ -53,9 +53,9 @@ QWidget *SettingsDialog::buildActivityPage()
 
     layout->addWidget(pageTitle(QStringLiteral("Activity"), page));
     layout->addWidget(hint(QStringLiteral(
-                               "Choose what other people see you playing. A game Discord already knows is "
-                               "picked up on its own and keeps its picture. Add one it does not know, or "
-                               "leave the program blank to show a line of your own."),
+                               "Off until you turn it on. Add a program, and if that program already "
+                               "talks to Discord, its own card is used, picture included. Automatic "
+                               "detection stays off unless you turn that on too."),
                            page));
 
     auto *share = new QCheckBox(QStringLiteral("Show the Singularity card"), page);
@@ -224,11 +224,7 @@ QWidget *SettingsDialog::buildActivityPage()
         if (!m_games || !running->currentItem())
             return;
         const QString path = running->currentItem()->data(Qt::UserRole).toString();
-        QString title = running->currentItem()->data(Qt::UserRole + 1).toString().trimmed();
-        if (title.size() > 80)
-            title.truncate(80);
-        if (title.isEmpty())
-            title = QFileInfo(path).completeBaseName();
+        QString title = QFileInfo(path).completeBaseName();
         m_games->addSaved(GameActivity::Saved{title, path, {}, true});
     });
 

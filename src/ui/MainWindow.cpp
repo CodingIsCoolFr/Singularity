@@ -405,6 +405,7 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
 
     connect(m_gateway, &GatewayClient::ready, this, &MainWindow::onGatewayReady);
     m_gateway->setGames(new GameActivity(this));
+    m_gateway->setGameRest(m_rest);
     connect(m_gateway, &GatewayClient::dispatch, this, &MainWindow::onGatewayDispatch);
     connect(m_gateway, &GatewayClient::stateChanged, this, &MainWindow::onGatewayState);
     connect(m_gateway, &GatewayClient::logLine, this, [this](const QString &line) {
