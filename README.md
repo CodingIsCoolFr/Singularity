@@ -563,4 +563,4 @@ Roughly in the order they are worth doing.
 
 ## License
 
-The source is private. The MIT file in this tree is not an invitation to copy it.
+MIT. See [LICENSE](LICENSE).
