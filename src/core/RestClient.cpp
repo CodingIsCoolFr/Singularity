@@ -459,7 +459,19 @@ void RestClient::blockUser(const QString &userId, ObjectHandler onOk, ErrorHandl
 void RestClient::fetchUser(const QString &userId, ObjectHandler onOk, ErrorHandler onError)
 {
     QNetworkReply *reply = m_network.get(buildRequest(QStringLiteral("/users/%1").arg(userId)));
-    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+    dispatch(reply, onOk, {}, onError);
+}
+
+void RestClient::searchGuildMembers(const QString &guildId, const QString &query, ArrayHandler onOk,
+                                    ErrorHandler onError)
+{
+    if (guildId.isEmpty() || query.isEmpty())
+        return;
+    const QString path = QStringLiteral("/guilds/%1/members/search?query=%2&limit=10")
+                             .arg(guildId, QString::fromUtf8(QUrl::toPercentEncoding(query)));
+    wlog(QStringLiteral("rest"), QStringLiteral("searching %1 for \"%2\"").arg(guildId, query));
+    QNetworkReply *reply = m_network.get(buildRequest(path));
+    dispatch(reply, {}, onOk, onError);
 }
 
 void RestClient::fetchChannel(const QString &channelId, ObjectHandler onOk, ErrorHandler onError)

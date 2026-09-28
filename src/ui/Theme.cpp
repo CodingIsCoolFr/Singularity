@@ -950,6 +950,19 @@ body {
 
 /* One message block. The left cell holds the avatar. */
 table.row { margin: 0 0 2px 0; }
+table.reply { margin: 0; }
+.reply-name {
+    color: @lightGray;
+    font-family: "Poppins", "Segoe UI", sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+    text-decoration: none;
+}
+.reply-text {
+    color: @faint;
+    font-family: "Poppins", "Segoe UI", sans-serif;
+    font-size: 13px;
+}
 td.ava { padding-top: 2px; }
 
 .hdr { margin-bottom: 1px; }

@@ -135,6 +135,12 @@ public:
     // PUT /users/@me/relationships/{id} with type 2 - blocks someone.
     void blockUser(const QString &userId, ObjectHandler onOk, ErrorHandler onError);
 
+    // GET /guilds/{id}/members/search — the call the mention box uses. It
+    // matches a username or a nickname across the whole server, not only the
+    // people already on screen.
+    void searchGuildMembers(const QString &guildId, const QString &query, ArrayHandler onOk,
+                            ErrorHandler onError);
+
     // GET /users/{id} - just enough to put a name to an id.
     void fetchUser(const QString &userId, ObjectHandler onOk, ErrorHandler onError);
 

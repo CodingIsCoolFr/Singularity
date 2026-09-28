@@ -353,6 +353,18 @@ struct MessageInfo
     QString forwardedFromChannelId;
     QString forwardedFromGuildId;
     QString forwardedFromMessageId;
+
+    // A reply (message type 19). The line above the message names who was
+    // answered and a short bit of what they said. referenced_message is null
+    // when that message is gone.
+    QString replyToId;
+    QString replyAuthorId;
+    QString replyAuthorName;
+    QString replyAuthorAvatar;
+    QString replyContent;
+    bool replyEdited = false;
+    bool replyMissing = false;
+    bool replyHasAttachment = false;
 };
 
 // In-memory mirror of everything the UI needs to draw. The store is

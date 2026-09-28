@@ -513,9 +513,41 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     connect(&m_mentionSearchTimer, &QTimer::timeout, this, [this]() {
         QString query;
         int atPos = -1;
-        if (!mentionQuery(&atPos, &query) || query.isEmpty() || m_currentGuildId.isEmpty() || !m_gateway)
+        if (!mentionQuery(&atPos, &query) || query.isEmpty() || m_currentGuildId.isEmpty() || !m_rest)
             return;
-        m_gateway->searchGuildMembers(m_currentGuildId, query);
+        const int serial = ++m_mentionSearchSerial;
+        m_mentionSearchedFor = query;
+        m_rest->searchGuildMembers(
+            m_currentGuildId, query,
+            [this, serial, query](const QJsonArray &members) {
+                if (serial != m_mentionSearchSerial)
+                    return;
+                QString still;
+                int at = -1;
+                if (!mentionQuery(&at, &still) || still != query)
+                    return;
+                m_mentionSearchHits.clear();
+                for (const QJsonValue &value : members) {
+                    const QJsonObject member = value.toObject();
+                    const QJsonObject user = member.value(QStringLiteral("user")).toObject();
+                    m_store->rememberUser(user);
+                    const QString id = user.value(QStringLiteral("id")).toString();
+                    QString label = member.value(QStringLiteral("nick")).toString();
+                    if (label.isEmpty())
+                        label = user.value(QStringLiteral("global_name")).toString();
+                    if (label.isEmpty())
+                        label = user.value(QStringLiteral("username")).toString();
+                    if (!id.isEmpty() && !label.isEmpty())
+                        m_mentionSearchHits.append({id, label});
+                }
+                wlog(QStringLiteral("rest"),
+                     QStringLiteral("mention search \"%1\" found %2").arg(query).arg(m_mentionSearchHits.size()));
+                updateMentionPopup();
+            },
+            [this, query](const RestClient::Error &error) {
+                wlog(QStringLiteral("rest"),
+                     QStringLiteral("mention search \"%1\" failed: %2").arg(query, error.message.left(120)));
+            });
     });
 
     connect(m_plugins, &PluginHost::repaintRequested, this, [this]() { scheduleRender(); });
@@ -3715,6 +3747,10 @@ bool MainWindow::shouldGroup(const MessageInfo &previous, const MessageInfo &cur
 {
     if (previous.authorId.isEmpty() || previous.authorId != current.authorId)
         return false;
+    // A reply always stands on its own. Grouping it hides the line that says
+    // who it answered.
+    if (current.type == 19 || !current.replyToId.isEmpty())
+        return false;
     if (!previous.timestamp.isValid() || !current.timestamp.isValid())
         return false;
 
@@ -4547,11 +4583,71 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
 
     const QString bodyClass = message.deleted ? QStringLiteral("body deleted") : QStringLiteral("body");
 
+    // A reply sits on its own line above the message: a small hook, their
+    // picture, their name, and a short bit of what they said. That is how
+    // Discord draws it. The hook is a picture, because rich text cannot draw
+    // that curve.
+    QString replyHtml;
+    if (message.type == 19 || !message.replyToId.isEmpty() || message.replyMissing) {
+        QString authorId = message.replyAuthorId;
+        QString authorName = message.replyAuthorName;
+        QString authorAvatar = message.replyAuthorAvatar;
+        QString snippet = message.replyContent;
+        bool edited = message.replyEdited;
+        bool attachment = message.replyHasAttachment;
+        if (authorName.isEmpty() && !message.replyToId.isEmpty() && !message.replyMissing) {
+            const QList<MessageInfo> known = m_store->messages(message.channelId);
+            for (const MessageInfo &other : known) {
+                if (other.id != message.replyToId)
+                    continue;
+                authorId = other.authorId;
+                authorName = other.authorName;
+                authorAvatar = other.authorAvatar;
+                snippet = other.content;
+                edited = other.edited;
+                attachment = !other.attachments.isEmpty() || !other.embeds.isEmpty() || !other.stickers.isEmpty();
+                break;
+            }
+        }
+        snippet = snippet.simplified();
+        if (snippet.size() > 80)
+            snippet = snippet.left(77) + QStringLiteral("...");
+        QString preview;
+        if (message.replyMissing)
+            preview = QStringLiteral("<i class=\"reply-text\">Original message was deleted</i>");
+        else if (snippet.isEmpty() && attachment)
+            preview = QStringLiteral("<span class=\"reply-text\">Click to see attachment</span>");
+        else
+            preview = QStringLiteral("<span class=\"reply-text\">%1</span>").arg(snippet.toHtmlEscaped());
+        if (edited && !message.replyMissing)
+            preview += QStringLiteral(" <span class=\"tag-edited\">(edited)</span>");
+
+        QString face;
+        if (!authorId.isEmpty()) {
+            QUrl avatar = MediaCache::avatarUrl(authorId, authorAvatar, 32);
+            if (!avatar.isEmpty()) {
+                avatar.setFragment(QStringLiteral("a16"));
+                face = QStringLiteral("<a href=\"singularity-user:%1\"><img src=\"%2\" width=\"16\" height=\"16\"></a> ")
+                           .arg(authorId, avatar.toString().toHtmlEscaped());
+            }
+        }
+        const QString name = authorName.isEmpty()
+                                 ? QString()
+                                 : QStringLiteral("<a class=\"reply-name\" href=\"singularity-user:%1\">%2</a> ")
+                                       .arg(authorId, authorName.toHtmlEscaped());
+        replyHtml = QStringLiteral(
+                        "<table class=\"reply\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\"><tr>"
+                        "<td width=\"56\" align=\"right\" valign=\"middle\">"
+                        "<img src=\"singularity-spine:hook\" width=\"22\" height=\"12\"></td>"
+                        "<td valign=\"middle\">%1%2%3</td></tr></table>")
+                        .arg(face, name, preview);
+    }
+
     // A grouped message has no avatar and no name, only the text, lined up
     // under the block it belongs to. The narrow strip on the left carries the
     // clock time, the way the real client shows it on hover.
     if (grouped) {
-        return QStringLiteral(
+        return replyHtml + QStringLiteral(
                    "<table class=\"row\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\">"
                    "<tr><td width=\"56\" valign=\"top\" nowrap class=\"gut\">%1</td>"
                    "<td valign=\"top\"><div class=\"%2\">%3</div></td></tr></table>")
@@ -4575,7 +4671,7 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
         }
     }
 
-    return QStringLiteral(
+    return replyHtml + QStringLiteral(
                "<table class=\"row\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\">"
                "<tr>"
                "<td width=\"56\" valign=\"top\" class=\"ava\">%1</td>"
@@ -6612,7 +6708,16 @@ void MainWindow::updateMentionPopup()
         }
 
         for (const auto &hit : m_mentionSearchHits) {
-            consider(hit.first, QStringLiteral("user"), hit.second, hit.second);
+            const UserInfo info = m_store->user(hit.first);
+            consider(hit.first, QStringLiteral("user"), hit.second,
+                     hit.second + QLatin1Char(' ') + info.username + QLatin1Char(' ') + info.globalName);
+        }
+
+        const GuildInfo server = m_store->guild(channel.guildId);
+        for (auto it = server.roles.constBegin(); it != server.roles.constEnd(); ++it) {
+            if (it.key() == server.id || it->name.isEmpty())
+                continue;
+            consider(it.key(), QStringLiteral("role"), it->name, it->name);
         }
     } else {
         for (const QString &userId : channel.recipientIds) {
@@ -6644,7 +6749,7 @@ void MainWindow::updateMentionPopup()
 
     if (hits.isEmpty()) {
         hideMentionPopup();
-        if (!query.isEmpty() && inGuild)
+        if (!query.isEmpty() && inGuild && query != m_mentionSearchedFor)
             m_mentionSearchTimer.start();
         return;
     }
@@ -6676,6 +6781,11 @@ void MainWindow::updateMentionPopup()
     for (int i = 0; i < hits.size(); ++i) {
         const Hit &hit = hits.at(i);
         auto *item = new QListWidgetItem(QLatin1Char('@') + hit.label, m_mentionPopup);
+        if (hit.kind == QLatin1String("user")) {
+            const UserInfo info = m_store->user(hit.id);
+            if (!info.username.isEmpty() && info.username.compare(hit.label, Qt::CaseInsensitive) != 0)
+                item->setText(QStringLiteral("@%1   %2").arg(hit.label, info.username));
+        }
         item->setData(Qt::UserRole, hit.id);
         item->setData(Qt::UserRole + 1, hit.kind);
         item->setData(Qt::UserRole + 2, hit.label);
@@ -6694,7 +6804,7 @@ void MainWindow::updateMentionPopup()
     m_mentionPopup->raise();
     m_mentionPopup->show();
 
-    if (!query.isEmpty() && inGuild)
+    if (!query.isEmpty() && inGuild && query != m_mentionSearchedFor)
         m_mentionSearchTimer.start();
 }
 

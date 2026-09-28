@@ -318,6 +318,8 @@ private:
     QListWidget *m_mentionPopup = nullptr;
     int m_mentionAtPos = -1;
     QTimer m_mentionSearchTimer;
+    int m_mentionSearchSerial = 0;
+    QString m_mentionSearchedFor;
     QList<QPair<QString, QString>> m_mentionSearchHits;
     QWidget *m_composerContext = nullptr;
     QLabel *m_composerContextText = nullptr;

@@ -5,7 +5,11 @@
 #include "ui/MediaCache.h"
 #include "core/Logger.h"
 
+#include "ui/Theme.h"
+
 #include <QElapsedTimer>
+#include <QPainter>
+#include <QPainterPath>
 #include <QtMath>
 #include <QPalette>
 #include <QScrollBar>
@@ -218,8 +222,12 @@ QUrl ChatView::posterFor(const QUrl &video)
 
 QSize ChatView::boxFor(const QUrl &url) const
 {
-    if (looksLikeAvatar(url))
-        return QSize(AvatarPixels, AvatarPixels);
+    if (looksLikeAvatar(url)) {
+        int pixels = AvatarPixels;
+        if (url.fragment().startsWith(QLatin1Char('a')))
+            pixels = qBound(12, url.fragment().mid(1).toInt(), 80);
+        return QSize(pixels, pixels);
+    }
     if (looksLikeEmoji(url)) {
         // The size follows the chat text size, and rides in the address as
         // "#e31" so each size is its own picture. The fragment never leaves
@@ -241,8 +249,12 @@ QPixmap ChatView::scaleForDocument(const QUrl &url, const QImage &source) const
         return {};
 
     // Avatars become circles, like the real client.
-    if (looksLikeAvatar(url))
-        return MediaCache::circular(source, AvatarPixels);
+    if (looksLikeAvatar(url)) {
+        int pixels = AvatarPixels;
+        if (url.fragment().startsWith(QLatin1Char('a')))
+            pixels = qBound(12, url.fragment().mid(1).toInt(), 80);
+        return MediaCache::circular(source, pixels);
+    }
 
     const QString key = url.toString();
 
@@ -471,6 +483,27 @@ QVariant ChatView::loadResource(int type, const QUrl &name)
 {
     if (type != QTextDocument::ImageResource)
         return QTextBrowser::loadResource(type, name);
+
+    // The reply hook. Rich text cannot draw that curve, so it is a picture.
+    if (name.scheme() == QLatin1String("singularity-spine")) {
+        QImage hook(44, 24, QImage::Format_ARGB32_Premultiplied);
+        hook.fill(Qt::transparent);
+        QPainter painter(&hook);
+        painter.setRenderHint(QPainter::Antialiasing);
+        const QColor ink{QLatin1String(Theme::TextFaint)};
+        QPen pen{ink};
+        pen.setWidth(3);
+        pen.setCapStyle(Qt::RoundCap);
+        pen.setJoinStyle(Qt::RoundJoin);
+        painter.setPen(pen);
+        QPainterPath path;
+        path.moveTo(40, 8);
+        path.lineTo(14, 8);
+        path.quadTo(6, 8, 6, 16);
+        path.lineTo(6, 22);
+        painter.drawPath(path);
+        return QPixmap::fromImage(hook);
+    }
 
     if (!MediaCache::isAllowedHost(name))
         return {};

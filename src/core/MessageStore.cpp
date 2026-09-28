@@ -1299,13 +1299,36 @@ MessageInfo MessageStore::parseMessage(const QJsonObject &raw)
         message.activityApplicationIcon = application.value(QStringLiteral("icon")).toString();
     }
 
-    // --- forwarded --------------------------------------------------------
-    // Type 1 is a forward; 0 (or none) is a reply, which is not this.
+    // --- forwarded / reply ------------------------------------------------
+    // Type 1 is a forward. Type 0, or none, on a reply is the message being
+    // answered. Discord sends that message beside it as referenced_message.
     const QJsonObject reference = raw.value(QStringLiteral("message_reference")).toObject();
     if (reference.value(QStringLiteral("type")).toInt() == 1) {
         message.forwardedFromChannelId = reference.value(QStringLiteral("channel_id")).toString();
         message.forwardedFromGuildId = reference.value(QStringLiteral("guild_id")).toString();
         message.forwardedFromMessageId = reference.value(QStringLiteral("message_id")).toString();
+    } else if (message.type == 19 || !reference.value(QStringLiteral("message_id")).toString().isEmpty()) {
+        message.replyToId = reference.value(QStringLiteral("message_id")).toString();
+        if (raw.contains(QStringLiteral("referenced_message"))
+            && raw.value(QStringLiteral("referenced_message")).isNull()) {
+            message.replyMissing = true;
+        } else {
+            const QJsonObject referenced = raw.value(QStringLiteral("referenced_message")).toObject();
+            if (!referenced.isEmpty()) {
+                const QJsonObject repliedAuthor = referenced.value(QStringLiteral("author")).toObject();
+                message.replyAuthorId = repliedAuthor.value(QStringLiteral("id")).toString();
+                message.replyAuthorName = repliedAuthor.value(QStringLiteral("global_name")).toString();
+                if (message.replyAuthorName.isEmpty())
+                    message.replyAuthorName = repliedAuthor.value(QStringLiteral("username")).toString();
+                message.replyAuthorAvatar = repliedAuthor.value(QStringLiteral("avatar")).toString();
+                message.replyContent = referenced.value(QStringLiteral("content")).toString();
+                message.replyEdited = referenced.contains(QStringLiteral("edited_timestamp"))
+                    && !referenced.value(QStringLiteral("edited_timestamp")).isNull();
+                message.replyHasAttachment = !referenced.value(QStringLiteral("attachments")).toArray().isEmpty()
+                    || !referenced.value(QStringLiteral("embeds")).toArray().isEmpty()
+                    || !referenced.value(QStringLiteral("sticker_items")).toArray().isEmpty();
+            }
+        }
     }
     const QJsonArray snapshots = raw.value(QStringLiteral("message_snapshots")).toArray();
     for (const QJsonValue &value : snapshots) {
