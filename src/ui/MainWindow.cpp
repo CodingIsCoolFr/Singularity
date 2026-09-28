@@ -1890,10 +1890,24 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
     m_composerContext->hide();
     composerLayout->addWidget(m_composerContext);
 
-    m_attachmentLabel = new QLabel(composerWrap);
+    auto *attachmentRow = new QWidget(composerWrap);
+    auto *attachmentLayout = new QHBoxLayout(attachmentRow);
+    attachmentLayout->setContentsMargins(4, 0, 4, 0);
+    m_attachmentLabel = new QLabel(attachmentRow);
     m_attachmentLabel->setStyleSheet(QStringLiteral("color: %1;").arg(QLatin1String(Theme::TextMuted)));
-    m_attachmentLabel->hide();
-    composerLayout->addWidget(m_attachmentLabel);
+    m_removeAttachment = new QPushButton(QStringLiteral("Remove"), attachmentRow);
+    m_removeAttachment->setObjectName(QStringLiteral("ComposerTool"));
+    m_removeAttachment->setFixedHeight(28);
+    m_removeAttachment->setCursor(Qt::PointingHandCursor);
+    m_removeAttachment->setToolTip(QStringLiteral("Take the file off this message"));
+    connect(m_removeAttachment, &QPushButton::clicked, this, [this]() {
+        m_pendingFiles.clear();
+        refreshComposerContext();
+    });
+    attachmentLayout->addWidget(m_attachmentLabel, 1);
+    attachmentLayout->addWidget(m_removeAttachment);
+    attachmentRow->hide();
+    composerLayout->addWidget(attachmentRow);
 
     auto *composerBox = new QFrame(composerWrap);
     composerBox->setObjectName(QStringLiteral("ComposerBox"));
@@ -6689,10 +6703,13 @@ void MainWindow::refreshComposerContext()
     }
 
     if (parts.isEmpty()) {
-        m_attachmentLabel->hide();
+        m_attachmentLabel->parentWidget()->hide();
     } else {
         m_attachmentLabel->setText(parts.join(QStringLiteral("   ·   ")));
-        m_attachmentLabel->show();
+        m_attachmentLabel->parentWidget()->show();
+        // Only a file waiting to go with the message can be taken off.
+        // An upload already on its way is not that.
+        m_removeAttachment->setVisible(!m_pendingFiles.isEmpty());
     }
 }
 

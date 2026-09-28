@@ -320,6 +320,7 @@ private:
     QWidget *m_composerContext = nullptr;
     QLabel *m_composerContextText = nullptr;
     QLabel *m_attachmentLabel = nullptr;
+    QPushButton *m_removeAttachment = nullptr;
     QString m_replyMessageId;
     QString m_editingMessageId;
     QStringList m_pendingFiles;
