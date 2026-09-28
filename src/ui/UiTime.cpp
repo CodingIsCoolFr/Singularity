@@ -1,12 +1,18 @@
 #include "ui/UiTime.h"
 
+#include <QAbstractScrollArea>
+#include <QAbstractSpinBox>
+#include <QComboBox>
+#include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QEvent>
 #include <QHash>
 #include <QList>
 #include <QMetaObject>
+#include <QSlider>
 #include <QThread>
 #include <QTimer>
+#include <QWheelEvent>
 #include <QWidget>
 
 #include <algorithm>
@@ -123,6 +129,46 @@ QString eventName(int type)
     }
 }
 
+// A number box, a slider, or a dropdown changes its value when the wheel
+// passes over it. That is how a scroll through Settings quietly edits a
+// setting. The wheel only edits one that was clicked. Otherwise it is handed
+// to the page, so the page still moves.
+QWidget *valueControl(QWidget *widget)
+{
+    for (QWidget *cursor = widget; cursor; cursor = cursor->parentWidget()) {
+        if (qobject_cast<QAbstractSpinBox *>(cursor) || qobject_cast<QComboBox *>(cursor)
+            || qobject_cast<QSlider *>(cursor))
+            return cursor;
+        if (qobject_cast<QAbstractScrollArea *>(cursor))
+            return nullptr;
+    }
+    return nullptr;
+}
+
+bool controlFocused(QWidget *control)
+{
+    if (control->hasFocus())
+        return true;
+    for (QWidget *focus = QApplication::focusWidget(); focus; focus = focus->parentWidget()) {
+        if (focus == control)
+            return true;
+    }
+    return false;
+}
+
+void passWheelToPage(QWidget *from, QWheelEvent *wheel)
+{
+    for (QWidget *cursor = from->parentWidget(); cursor; cursor = cursor->parentWidget()) {
+        auto *area = qobject_cast<QAbstractScrollArea *>(cursor);
+        if (!area || !area->viewport())
+            continue;
+        QWheelEvent copy(wheel->position(), wheel->globalPosition(), wheel->pixelDelta(), wheel->angleDelta(),
+                         wheel->buttons(), wheel->modifiers(), wheel->phase(), wheel->inverted(), wheel->source());
+        QCoreApplication::sendEvent(area->viewport(), &copy);
+        return;
+    }
+}
+
 } // namespace
 
 SingularityApplication::SingularityApplication(int &argc, char **argv)
@@ -143,6 +189,15 @@ bool SingularityApplication::notify(QObject *receiver, QEvent *event)
     // A deletion is not timed at all: the receiver is gone when it returns.
     if (event->type() == QEvent::DeferredDelete)
         return QApplication::notify(receiver, event);
+
+    if (event->type() == QEvent::Wheel && receiver->isWidgetType()) {
+        if (QWidget *control = valueControl(static_cast<QWidget *>(receiver))) {
+            if (!controlFocused(control)) {
+                passWheelToPage(control, static_cast<QWheelEvent *>(event));
+                return true;
+            }
+        }
+    }
 
     const qint64 nowMs = uiClock().elapsed();
     if (isInput(event->type()))
