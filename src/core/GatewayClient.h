@@ -10,6 +10,8 @@
 #include <QTimer>
 #include <QWebSocket>
 
+class DiscordIpcServer;
+
 // Live connection to the Discord gateway.
 //
 // Handles the parts that must be right or the socket dies: the HELLO/heartbeat
@@ -142,6 +144,8 @@ signals:
     void dispatch(const QString &eventType, const QJsonObject &data);
     void logLine(const QString &line);
     void fatalAuthError();
+    // A game set or cleared its card. The presence has already been sent.
+    void gameActivityChanged();
 
 private slots:
     void onConnected();
@@ -229,4 +233,7 @@ private:
     QString m_activityApplicationId;
     QString m_activityImageKey;
     bool m_activityShared = true;
+
+    // Games that want a second card talk to this. Null until start().
+    DiscordIpcServer *m_gameActivity = nullptr;
 };

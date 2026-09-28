@@ -1,6 +1,7 @@
 #include "core/GatewayClient.h"
 
 #include "core/DiscordIdentity.h"
+#include "core/DiscordIpcServer.h"
 #include "core/Logger.h"
 
 #include <QCoreApplication>
@@ -114,6 +115,13 @@ GatewayClient::GatewayClient(QObject *parent)
     connect(&m_reconnectTimer, &QTimer::timeout, this, &GatewayClient::openSocket);
 
     m_clientActivityStart = QDateTime::currentMSecsSinceEpoch();
+
+    m_gameActivity = new DiscordIpcServer(this);
+    connect(m_gameActivity, &DiscordIpcServer::activityChanged, this, [this]() {
+        publishPresence();
+        emit gameActivityChanged();
+    });
+    m_gameActivity->start();
 
     // Every three minutes, about as often as a Spotify card changes song, so
     // it is an ordinary rate for a presence to move and nowhere near the
@@ -639,21 +647,8 @@ void GatewayClient::subscribeToGuild(const QString &guildId, const QString &chan
         {QStringLiteral("thread_member_lists"), QJsonArray{}},
     };
 
-    sendJson(QJsonObject{
-        {QStringLiteral("op"), OpGuildSubscribe},
-        {QStringLiteral("d"),
-         QJsonObject{
-             {QStringLiteral("guild_id"), guildId},
-             {QStringLiteral("typing"), true},
-             {QStringLiteral("threads"), true},
-             {QStringLiteral("activities"), true},
-             {QStringLiteral("voice_states"), true},
-             {QStringLiteral("members"), QJsonArray{}},
-             {QStringLiteral("channels"), channels},
-             {QStringLiteral("thread_member_lists"), QJsonArray{}},
-         }},
-    });
-
+    // One subscription. Sending the older opcode as well made Discord keep
+    // two member lists, and both were drawn, so every person appeared twice.
     QJsonObject subscriptions;
     subscriptions.insert(guildId, subscription);
     sendJson(QJsonObject{
@@ -729,6 +724,13 @@ QJsonArray GatewayClient::clientActivities() const
 
     QJsonArray activities;
     activities.append(activity);
+    // A game that talked to us gets its own card beside this one. Discord
+    // draws them stacked. The official client does the same with the pipe.
+    if (m_gameActivity) {
+        const QJsonArray games = m_gameActivity->activities();
+        for (const QJsonValue &game : games)
+            activities.append(game);
+    }
     return activities;
 }
 
@@ -1011,6 +1013,8 @@ void GatewayClient::handleDispatch(const QString &type, const QJsonObject &data,
         m_sessionId = data.value(QStringLiteral("session_id")).toString();
         m_resumeGatewayUrl = data.value(QStringLiteral("resume_gateway_url")).toString();
         m_currentUser = data.value(QStringLiteral("user")).toObject();
+        if (m_gameActivity)
+            m_gameActivity->setUser(m_currentUser);
         m_reconnectAttempts = 0;
         m_identifiesWithoutReady = 0;
         m_canResume = true;

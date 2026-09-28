@@ -28,6 +28,7 @@ QString doingNow(const MessageStore &store, const QString &userId)
     const PresenceInfo presence = store.presence(userId);
 
     QString custom;
+    QStringList games;
     for (const ActivityInfo &activity : presence.activities) {
         if (activity.isCustomStatus()) {
             custom = activity.emoji.isEmpty()
@@ -35,11 +36,16 @@ QString doingNow(const MessageStore &store, const QString &userId)
                 : QStringLiteral("%1 %2").arg(activity.emoji, activity.state).trimmed();
             continue;
         }
-        if (activity.type == 2 && !activity.details.isEmpty())
-            return activity.details;
-        if (!activity.name.isEmpty())
-            return activity.name;
+        const QString line = (activity.type == 2 && !activity.details.isEmpty())
+            ? activity.details
+            : activity.name;
+        if (line.isEmpty() || games.size() >= 2)
+            continue;
+        games.append(line);
     }
+
+    if (!games.isEmpty())
+        return games.join(QStringLiteral(", "));
 
     return custom;
 }

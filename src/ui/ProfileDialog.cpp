@@ -1182,7 +1182,8 @@ void ProfileDialog::rebuildActivity()
     int shown = 0;
 
     const auto addCard = [this](const QString &heading, const QString &title, const QStringList &lines,
-                                const QUrl &artwork, const QString &buttonLabel, const QString &buttonUrl) {
+                                const QUrl &artwork, const QStringList &buttonLabels,
+                                const QStringList &buttonUrls, const QString &elapsed) {
         auto *card = new QFrame;
         card->setObjectName(QStringLiteral("Card"));
         auto *cardLayout = new QVBoxLayout(card);
@@ -1233,18 +1234,33 @@ void ProfileDialog::rebuildActivity()
         row->addLayout(text, 1);
         cardLayout->addLayout(row);
 
-        if (!buttonLabel.isEmpty()) {
-            auto *button = new QPushButton(buttonLabel, card);
-            button->setCursor(Qt::PointingHandCursor);
-            QString url = buttonUrl;
-            if (url.isEmpty() && buttonLabel == QLatin1String("Get Singularity"))
-                url = QStringLiteral("https://singularitycord.pages.dev");
-            if (!url.isEmpty()) {
-                connect(button, &QPushButton::clicked, card, [url]() {
-                    QDesktopServices::openUrl(QUrl(url));
-                });
+        if (!elapsed.isEmpty()) {
+            auto *clock = new QLabel(elapsed, card);
+            clock->setStyleSheet(QStringLiteral("color: %1; font-size: 12px; font-weight: 600;")
+                                     .arg(QLatin1String(Theme::Green)));
+            cardLayout->addWidget(clock);
+        }
+
+        if (!buttonLabels.isEmpty()) {
+            auto *buttons = new QHBoxLayout;
+            buttons->setSpacing(8);
+            for (int i = 0; i < buttonLabels.size(); ++i) {
+                const QString label = buttonLabels.at(i);
+                if (label.isEmpty())
+                    continue;
+                auto *button = new QPushButton(label, card);
+                button->setCursor(Qt::PointingHandCursor);
+                QString url = i < buttonUrls.size() ? buttonUrls.at(i) : QString();
+                if (url.isEmpty() && label == QLatin1String("Get Singularity"))
+                    url = QStringLiteral("https://singularitycord.pages.dev");
+                if (!url.isEmpty()) {
+                    connect(button, &QPushButton::clicked, card, [url]() {
+                        QDesktopServices::openUrl(QUrl(url));
+                    });
+                }
+                buttons->addWidget(button, 1);
             }
-            cardLayout->addWidget(button);
+            cardLayout->addLayout(buttons);
         }
 
         m_activityLayout->insertWidget(m_activityLayout->count() - 1, card);
@@ -1256,7 +1272,7 @@ void ProfileDialog::rebuildActivity()
                 ? activity.state
                 : QStringLiteral("%1  %2").arg(activity.emoji, activity.state);
             if (!text.trimmed().isEmpty()) {
-                addCard(QStringLiteral("CUSTOM STATUS"), text, {}, {}, {}, {});
+                addCard(QStringLiteral("CUSTOM STATUS"), text, {}, {}, {}, {}, {});
                 ++shown;
             }
             continue;
@@ -1272,9 +1288,15 @@ void ProfileDialog::rebuildActivity()
         else if (activity.type == 5)
             heading = QStringLiteral("COMPETING IN");
 
-        addCard(heading, activity.name, {activity.details, activity.state, relativeSince(activity.startMs)},
+        addCard(heading, activity.name, {activity.details, activity.state},
                 MediaCache::activityAssetUrl(activity.applicationId, activity.largeImage),
-                activity.buttonLabel, activity.buttonUrl);
+                activity.buttonLabels.isEmpty() && !activity.buttonLabel.isEmpty()
+                    ? QStringList{activity.buttonLabel}
+                    : activity.buttonLabels,
+                activity.buttonUrls.isEmpty() && !activity.buttonUrl.isEmpty()
+                    ? QStringList{activity.buttonUrl}
+                    : activity.buttonUrls,
+                relativeSince(activity.startMs));
         ++shown;
     }
 
@@ -1286,7 +1308,7 @@ void ProfileDialog::rebuildActivity()
         addCard(QStringLiteral("IN VOICE"),
                 channel.name.isEmpty() ? QStringLiteral("Voice channel") : channel.name,
                 {guild.name.isEmpty() ? QString() : QStringLiteral("in %1").arg(guild.name)},
-                MediaCache::guildIconUrl(voice.guildId, guild.iconHash, 96), {}, {});
+                MediaCache::guildIconUrl(voice.guildId, guild.iconHash, 96), {}, {}, {});
         ++shown;
     }
 

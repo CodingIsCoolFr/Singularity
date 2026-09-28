@@ -156,7 +156,7 @@ constexpr qint64 GroupWindowSeconds = 7 * 60;
 QString describePresence(const PresenceInfo &presence, const QString &hint = QString())
 {
     QString custom;
-    QString primary;
+    QStringList games;
     int extras = 0;
 
     for (const ActivityInfo &activity : presence.activities) {
@@ -167,19 +167,23 @@ QString describePresence(const PresenceInfo &presence, const QString &hint = QSt
             continue;
         }
 
-        if (primary.isEmpty()) {
-            // A song reads better as the track than as "Spotify".
-            if (activity.type == 2 && !activity.details.isEmpty())
-                primary = activity.details;
-            else
-                primary = activity.name;
-        } else {
+        const QString line = (activity.type == 2 && !activity.details.isEmpty())
+            ? activity.details
+            : activity.name;
+        if (line.isEmpty())
+            continue;
+        if (games.size() < 2)
+            games.append(line);
+        else
             ++extras;
-        }
     }
 
-    if (!primary.isEmpty())
-        return extras > 0 ? QStringLiteral("%1  +%2").arg(primary).arg(extras) : primary;
+    if (!games.isEmpty()) {
+        QString text = games.join(QStringLiteral(", "));
+        if (extras > 0)
+            text += QStringLiteral("  +%1").arg(extras);
+        return text;
+    }
 
     if (!custom.isEmpty())
         return custom;
@@ -403,6 +407,15 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     connect(m_gateway, &GatewayClient::stateChanged, this, &MainWindow::onGatewayState);
     connect(m_gateway, &GatewayClient::logLine, this, [this](const QString &line) {
         flashStatus(line, 6000);
+    });
+    connect(m_gateway, &GatewayClient::gameActivityChanged, this, [this]() {
+        if (m_selfUserId.isEmpty())
+            return;
+        m_store->setPresence(m_selfUserId,
+                             QJsonObject{
+                                 {QStringLiteral("status"), m_gateway->presenceStatus()},
+                                 {QStringLiteral("activities"), m_gateway->clientActivities()},
+                             });
     });
     connect(m_gateway, &GatewayClient::fatalAuthError, this, [this]() {
         flashStatus(QStringLiteral("Discord refused this session. Log out and sign in again."), 0);
@@ -3493,6 +3506,7 @@ void MainWindow::watchGuildChannel(const QString &guildId, const QString &channe
     // is how the panel got stuck on "0 online".
     if (m_listGuild != guildId)
         m_store->clearMemberList(guildId);
+    m_store->noteMemberListRequest(guildId);
     m_listGuild = guildId;
     m_listChannel = channelId;
     m_gateway->subscribeToGuild(guildId, channelId);

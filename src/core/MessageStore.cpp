@@ -146,14 +146,24 @@ ActivityInfo MessageStore::parseActivity(const QJsonObject &raw)
     activity.largeText = assets.value(QStringLiteral("large_text")).toString();
 
     const QJsonArray buttons = raw.value(QStringLiteral("buttons")).toArray();
-    if (!buttons.isEmpty()) {
-        const QJsonValue first = buttons.first();
-        if (first.isObject()) {
-            activity.buttonLabel = first.toObject().value(QStringLiteral("label")).toString();
-            activity.buttonUrl = first.toObject().value(QStringLiteral("url")).toString();
-        } else {
-            activity.buttonLabel = first.toString();
+    const QJsonArray urls = raw.value(QStringLiteral("metadata")).toObject()
+                                 .value(QStringLiteral("button_urls")).toArray();
+    for (int i = 0; i < buttons.size() && activity.buttonLabels.size() < 2; ++i) {
+        const QJsonValue value = buttons.at(i);
+        if (value.isObject()) {
+            const QString label = value.toObject().value(QStringLiteral("label")).toString();
+            if (label.isEmpty())
+                continue;
+            activity.buttonLabels.append(label);
+            activity.buttonUrls.append(value.toObject().value(QStringLiteral("url")).toString());
+        } else if (!value.toString().isEmpty()) {
+            activity.buttonLabels.append(value.toString());
+            activity.buttonUrls.append(i < urls.size() ? urls.at(i).toString() : QString());
         }
+    }
+    if (!activity.buttonLabels.isEmpty()) {
+        activity.buttonLabel = activity.buttonLabels.first();
+        activity.buttonUrl = activity.buttonUrls.value(0);
     }
 
     const QJsonObject emoji = raw.value(QStringLiteral("emoji")).toObject();
@@ -352,6 +362,12 @@ void MessageStore::replaceGuildVoiceStates(const QString &guildId, const QJsonAr
     }
 
     emit voiceStatesChanged();
+}
+
+void MessageStore::noteMemberListRequest(const QString &guildId)
+{
+    if (!guildId.isEmpty())
+        m_memberListFresh.insert(guildId);
 }
 
 void MessageStore::clearMemberList(const QString &guildId)
@@ -593,8 +609,18 @@ void MessageStore::ingestMemberListUpdate(const QJsonObject &payload)
     if (guildId.isEmpty())
         return;
 
-    int learned = 0;
+    const QString listId = payload.value(QStringLiteral("id")).toString();
     MemberList &list = m_memberLists[guildId];
+
+    // Two subscriptions answer with two list ids. Writing both into one
+    // list is how the same person was drawn twice. A channel we just opened
+    // may legitimately be a new list; anything else for a different id is
+    // the spare copy and is dropped.
+    const bool fresh = m_memberListFresh.remove(guildId);
+    if (!fresh && !list.listId.isEmpty() && !listId.isEmpty() && listId != list.listId)
+        return;
+
+    int learned = 0;
 
     // These two are the server's own totals and are not the number of rows:
     // only the first hundred rows are ever asked for, so a large server sends
@@ -675,17 +701,30 @@ void MessageStore::ingestMemberListUpdate(const QJsonObject &payload)
         const QString kind = op.value(QStringLiteral("op")).toString();
 
         if (kind == QLatin1String("SYNC")) {
-            // A whole range at once. Only one range is ever asked for, so
-            // this is the list.
+            // A whole range at once. An empty one is a repeat of a range we
+            // already have, not a cleared list — replacing with it blanked
+            // the panel.
             const QJsonArray items = op.value(QStringLiteral("items")).toArray();
+            if (items.isEmpty())
+                continue;
+
             QList<MemberRow> rows;
+            QSet<QString> seen;
             rows.reserve(items.size());
             for (const QJsonValue &item : items) {
                 const MemberRow row = readItem(item);
-                if (row.heading || !row.userId.isEmpty())
+                if (row.heading) {
                     rows.append(row);
+                    continue;
+                }
+                if (row.userId.isEmpty() || seen.contains(row.userId))
+                    continue;
+                seen.insert(row.userId);
+                rows.append(row);
             }
             list.rows = rows;
+            if (!listId.isEmpty())
+                list.listId = listId;
             continue;
         }
 
@@ -705,13 +744,45 @@ void MessageStore::ingestMemberListUpdate(const QJsonObject &payload)
             if (!row.heading && row.userId.isEmpty())
                 continue;
 
-            if (kind == QLatin1String("UPDATE") && index >= 0 && index < list.rows.size())
+            if (kind == QLatin1String("UPDATE") && index >= 0 && index < list.rows.size()) {
                 list.rows[index] = row;
-            else if (index >= 0 && index <= list.rows.size())
+            } else if (!row.heading && !row.userId.isEmpty()) {
+                // Already on the list. A second insert of the same person is
+                // what the panel was drawing as two profiles.
+                int existing = -1;
+                for (int i = 0; i < list.rows.size(); ++i) {
+                    if (!list.rows.at(i).heading && list.rows.at(i).userId == row.userId) {
+                        existing = i;
+                        break;
+                    }
+                }
+                if (existing >= 0)
+                    list.rows[existing] = row;
+                else if (index >= 0 && index <= list.rows.size())
+                    list.rows.insert(index, row);
+                else
+                    list.rows.append(row);
+            } else if (index >= 0 && index <= list.rows.size()) {
                 list.rows.insert(index, row);
-            else
+            } else {
                 list.rows.append(row);
+            }
         }
+    }
+
+    {
+        QList<MemberRow> unique;
+        QSet<QString> seen;
+        unique.reserve(list.rows.size());
+        for (const MemberRow &row : list.rows) {
+            if (!row.heading && !row.userId.isEmpty()) {
+                if (seen.contains(row.userId))
+                    continue;
+                seen.insert(row.userId);
+            }
+            unique.append(row);
+        }
+        list.rows = unique;
     }
 
     if (learned > 0) {

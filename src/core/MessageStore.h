@@ -6,6 +6,7 @@
 #include <QJsonObject>
 #include <QList>
 #include <QObject>
+#include <QSet>
 #include <QString>
 
 // A role inside one server. Colour is a plain RGB number, so this header stays
@@ -54,6 +55,8 @@ struct ActivityInfo
     QString largeText;
     QString buttonLabel;
     QString buttonUrl;
+    QStringList buttonLabels;
+    QStringList buttonUrls;
     QString emoji;
     qint64 startMs = 0;
     qint64 endMs = 0;
@@ -173,6 +176,10 @@ struct MemberList
     // only the first hundred rows are ever asked for.
     int onlineCount = 0;
     int memberCount = 0;
+
+    // Which member list this is. A second subscription used to write into
+    // the same rows, and every person showed up twice.
+    QString listId;
 };
 
 struct EmojiInfo
@@ -373,6 +380,10 @@ public:
     // without it everyone in a server looks offline.
     void ingestMemberListUpdate(const QJsonObject &payload);
 
+    // The next member-list answer may belong to a channel we just opened.
+    // Until it arrives, an update for a different list is ignored.
+    void noteMemberListRequest(const QString &guildId);
+
     // The member list itself, in Discord's own order.
     //
     // Kept as one flat list with the headings in it rather than as a map of
@@ -545,6 +556,7 @@ private:
     void bumpDirectChannel(const QString &channelId);
 
     QHash<QString, MemberList> m_memberLists;
+    QSet<QString> m_memberListFresh;
     QHash<QString, GuildInfo> m_guilds;
     QHash<QString, QStringList> m_selfRoles;   // guild id -> your role ids
     QString m_selfUserId;
