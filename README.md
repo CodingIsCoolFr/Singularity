@@ -36,8 +36,9 @@ decoded as well, and the grid of faces above the conversation is where they
 appear.
 
 How it was built is written down in
-[docs/how-we-built-it.md](docs/how-we-built-it.md), and on the site at
-[singularitycord.pages.dev/how](https://singularitycord.pages.dev/how).
+[docs/how-we-built-it.md](docs/how-we-built-it.md). The source repository
+is private. The same note is public on the site and on the installers
+repository.
 
 ## Warning, read this first
 
@@ -292,8 +293,7 @@ it crashed.
 
 It reads **[singularity-updates](https://github.com/CodingIsCoolFr/singularity-updates)**,
 the public repository that carries the installers. The updater wants an
-installer, not this source tree. The source itself is public, in this
-repository, under the MIT license.
+installer, not this source tree. This repository stays private.
 
 ### Publishing a release
 
@@ -563,4 +563,4 @@ Roughly in the order they are worth doing.
 
 ## License
 
-[MIT](LICENSE). Use it, change it, ship it. Keep the copyright notice.
+The source is private. The MIT file in this tree is not an invitation to copy it.
