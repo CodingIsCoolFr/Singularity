@@ -491,6 +491,14 @@ private:
     int m_resumeAttempts = 0;
     void sendResume();
 
+    // Books the next try at picking the call back up, on Discord's own
+    // schedule (its voice socket: 1 s, doubling, at most 5 s). False once
+    // the tries are used up. One try is booked at a time: a socket that is
+    // aborted can still report closing afterwards, and that late report must
+    // not book a second one.
+    bool scheduleResume();
+    bool m_resumeQueued = false;
+
     // Outgoing packet counters.
     quint16 m_rtpSequence = 0;
     quint32 m_rtpTimestamp = 0;

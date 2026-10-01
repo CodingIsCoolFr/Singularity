@@ -938,6 +938,23 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         if (m_voiceRetryTimer.isActive())
             return;
 
+        // The whole connection is down, not just the call - the internet
+        // dropped. A leave or a join sent now goes nowhere, and each one used
+        // up a retry (1 October, 02:07). Wait for the gateway, then rejoin.
+        if (m_gateway->state() != GatewayClient::State::Ready
+            && !reason.contains(QStringLiteral("[final]"))) {
+            wlog(QStringLiteral("voice"),
+                 QStringLiteral("call dropped while Discord's connection is down (%1); rejoining when it is back")
+                     .arg(reason));
+            m_pendingVoiceToken.clear();
+            m_pendingVoiceEndpoint.clear();
+            m_voiceSessionId.clear();
+            m_rejoinVoiceAfterGateway = true;
+            if (m_voiceState)
+                m_voiceState->setText(QStringLiteral("Reconnecting..."));
+            return;
+        }
+
         // 4014 is Discord tearing down this voice socket. That happens when a
         // mod kicks you, and also — far more often — when the gateway
         // reconnects. Leaving would turn a blip into a real kick.
@@ -990,7 +1007,7 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
             return;
         }
 
-        if (m_voiceRetries >= 2) {
+        if (m_voiceRetries >= 4) {
             wlog(QStringLiteral("voice"), QStringLiteral("giving up after %1 tries: %2")
                                               .arg(m_voiceRetries).arg(reason));
             if (m_voiceState)
@@ -1143,8 +1160,10 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         if (missing.isEmpty())
             return;
 
-        // A rejoin that got no answer is given one more go.
-        if (m_voiceRetries == 1) {
+        // A rejoin that got no answer is tried again, a little later each
+        // time, up to four in all. It used to get one more go and then sit
+        // there for good.
+        if (m_voiceRetries >= 1 && m_voiceRetries < 4) {
             ++m_voiceRetries;
             wlog(QStringLiteral("voice"),
                  QStringLiteral("rejoin got no answer (missing %1); leaving and rejoining once more")
@@ -1156,7 +1175,7 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
             m_pendingVoiceEndpoint.clear();
             m_voiceSessionId.clear();
             m_gateway->leaveVoice(m_voiceGuildId);
-            m_voiceRetryTimer.start(1200);
+            m_voiceRetryTimer.start(1200 * m_voiceRetries);
             return;
         }
 
@@ -2327,8 +2346,13 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
     }
 
     if (eventType == QLatin1String("RESUMED")) {
+        // Only a call that has stopped trying. One still picking itself back
+        // up from the same voice server is left to finish: that is how
+        // Discord gets through a short drop without leaving the channel.
         if (!m_voiceChannelId.isEmpty()
-            && m_voice->state() != VoiceConnection::State::Connected)
+            && (m_voice->state() == VoiceConnection::State::Failed
+                || m_voice->state() == VoiceConnection::State::Idle)
+            && !m_voiceRetryTimer.isActive() && !m_voiceWatchdog.isActive())
             m_rejoinVoiceAfterGateway = true;
         rejoinVoiceIfNeeded();
         return;
@@ -9822,10 +9846,27 @@ void MainWindow::rejoinVoiceIfNeeded()
     if (m_gateway->state() != GatewayClient::State::Ready)
         return;
 
+    // Leave first, then join, the same way a retry does. Asking for the
+    // channel we are still in gets our own voice state back and no voice
+    // server - the comment on the retry above says so, and on 1 October the
+    // call stayed down for half an hour because of it: the internet came
+    // back at 02:07:55, this asked for the same channel, Discord sent no
+    // server, and nothing tried again until the person rejoined by hand.
     const QString channelId = m_voiceChannelId;
     wlog(QStringLiteral("voice"),
-         QStringLiteral("gateway is back, rejoining %1").arg(channelId));
-    joinVoice(channelId);
+         QStringLiteral("gateway is back, leaving and rejoining %1").arg(channelId));
+    m_rejoinVoiceAfterGateway = false;
+    stopWatchingStream();
+    m_voice->disconnectFromVoice();
+    m_pendingVoiceToken.clear();
+    m_pendingVoiceEndpoint.clear();
+    m_voiceSessionId.clear();
+    // Counted as a retry, so a join Discord does not answer is tried again.
+    m_voiceRetries = qMax(m_voiceRetries, 1);
+    if (m_voiceState)
+        m_voiceState->setText(QStringLiteral("Reconnecting..."));
+    m_gateway->leaveVoice(m_voiceGuildId.isEmpty() ? m_store->channel(channelId).guildId : m_voiceGuildId);
+    m_voiceRetryTimer.start(1200);
 }
 
 void MainWindow::tryStartVoice()

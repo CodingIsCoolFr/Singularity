@@ -499,6 +499,19 @@ VoiceConnection::VoiceConnection(QObject *parent)
     connect(&m_handshakeWatchdog, &QTimer::timeout, this, [this]() {
         if (m_state == State::Connected || m_state == State::Idle)
             return;
+
+        // A try at resuming that never got through - the socket neither
+        // opened nor failed - is dropped and the next one booked, rather
+        // than ending the call. On 1 October this one try hung for twelve
+        // seconds and then the window left and rejoined the channel.
+        if (m_resuming) {
+            wlog(QStringLiteral("voice"),
+                 QStringLiteral("resume try %1 got no answer; dropping it").arg(m_resumeAttempts));
+            m_resumeQueued = false;
+            m_socket.abort();
+            if (scheduleResume())
+                return;
+        }
         wlog(QStringLiteral("voice"), QStringLiteral("gave up waiting, stuck after: %1").arg(m_stage));
         emit failed(QStringLiteral("stuck after %1").arg(m_stage));
         setState(State::Failed);
@@ -582,6 +595,7 @@ void VoiceConnection::connectToVoice(const QString &guildId, const QString &chan
     // call is rejected as a bad payload.
     m_lastSequence = -1;
     m_resuming = false;
+    m_resumeQueued = false;
     m_resumeAttempts = 0;
     m_offeredModes.clear();
     m_secretKey.clear();
@@ -628,6 +642,7 @@ void VoiceConnection::disconnectFromVoice()
 void VoiceConnection::teardown()
 {
     m_resuming = false;
+    m_resumeQueued = false;
     m_heartbeatTimer.stop();
     m_handshakeWatchdog.stop();
     stopAudio();
@@ -742,34 +757,13 @@ void VoiceConnection::onSocketDisconnected()
     const bool sessionOver = code == 4004 || code == 4006 || code == 4009 || code == 4011
                              || code == 4012 || code == 4014 || code == 4016 || code == 4017
                              || code == 4020 || code == 4021 || code == 4022;
-    if (callWasLive && !sessionOver && m_resumeAttempts < 3) {
-        ++m_resumeAttempts;
-        m_resuming = true;
-        m_stage = QStringLiteral("resuming the voice connection");
-        setState(State::Connecting);
-
-        // A quarter of a second, then a half, then one: quick enough to be a
-        // hiccup rather than a drop, spaced enough not to hammer a server
-        // that is restarting.
-        const int delay = 250 << (m_resumeAttempts - 1);
-        wlog(QStringLiteral("voice"),
-             QStringLiteral("resuming the call (try %1 of 3) in %2 ms, without leaving the channel")
-                 .arg(m_resumeAttempts)
-                 .arg(delay));
-
-        // If the resume never completes, this gives up and hands the problem
-        // to the window, which leaves and rejoins.
-        m_handshakeWatchdog.start(12000);
-
-        QTimer::singleShot(delay, this, [this]() {
-            if (!m_resuming)
-                return;
-            QString host = m_endpoint;
-            host.remove(QStringLiteral("wss://"));
-            m_socket.open(QUrl(QStringLiteral("wss://%1/?v=8").arg(host)));
-        });
+    // A close while a try is already booked is the try before it reporting
+    // late. The booked one stands.
+    if (m_resumeQueued)
         return;
-    }
+
+    if (callWasLive && !sessionOver && scheduleResume())
+        return;
     m_resuming = false;
 
     setState(State::Failed);
@@ -862,6 +856,49 @@ void VoiceConnection::sendIdentify()
              {QStringLiteral("max_dave_protocol_version"), maxDaveProtocolVersion()},
          }},
     });
+}
+
+// Discord's voice socket retries a dropped connection on a backoff of one
+// second, doubling to at most five, and its call layer keeps reconnecting to
+// the same server after that; it never leaves the channel by itself. This
+// used three tries a quarter, a half and one second apart, which an internet
+// drop of half a minute (1 October, 02:07: "Host not found" on every try)
+// used up before the network was back. Then the window left and rejoined,
+// and the call stayed down.
+//
+// Now: 1, 2, 4, 5, 5 ... seconds, ten tries, about 45 seconds in all, each
+// watched on its own. After that the window leaves and rejoins.
+bool VoiceConnection::scheduleResume()
+{
+    constexpr int MaxTries = 10;
+    if (m_resumeAttempts >= MaxTries)
+        return false;
+
+    ++m_resumeAttempts;
+    m_resuming = true;
+    m_resumeQueued = true;
+    m_stage = QStringLiteral("resuming the voice connection");
+    setState(State::Connecting);
+
+    const int delay = qMin(5000, 1000 << qMin(m_resumeAttempts - 1, 3));
+    wlog(QStringLiteral("voice"),
+         QStringLiteral("resuming the call (try %1 of %2) in %3 ms, without leaving the channel")
+             .arg(m_resumeAttempts)
+             .arg(MaxTries)
+             .arg(delay));
+
+    // Each try gets the wait before it plus ten seconds to get through.
+    m_handshakeWatchdog.start(delay + 10000);
+
+    QTimer::singleShot(delay, this, [this]() {
+        if (!m_resuming)
+            return;
+        m_resumeQueued = false;
+        QString host = m_endpoint;
+        host.remove(QStringLiteral("wss://"));
+        m_socket.open(QUrl(QStringLiteral("wss://%1/?v=8").arg(host)));
+    });
+    return true;
 }
 
 void VoiceConnection::sendResume()
