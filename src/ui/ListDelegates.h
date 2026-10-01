@@ -102,10 +102,20 @@ public:
     // folder is about to be made. -1 for none.
     void setMergeRow(int row) { m_mergeRow = row; }
 
+    // Where a dragged server would land between tiles: a line along the top
+    // of `row`, or along its bottom when `bottom` is set. -1 for none.
+    void setInsertLine(int row, bool bottom)
+    {
+        m_insertRow = row;
+        m_insertBottom = bottom;
+    }
+
 private:
     mutable QHash<int, qreal> m_hover;
     mutable QHash<int, qreal> m_select;
     int m_mergeRow = -1;
+    int m_insertRow = -1;
+    bool m_insertBottom = false;
 };
 
 // One row of the friends list: picture, name, what they are doing, and two

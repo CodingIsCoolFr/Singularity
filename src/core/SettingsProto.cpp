@@ -1,5 +1,8 @@
 #include "core/SettingsProto.h"
 
+#include <QJsonArray>
+#include <QJsonObject>
+
 #include <QStringList>
 #include <QtNumeric>
 
@@ -358,3 +361,74 @@ bool audioContextFromProto(const QByteArray &bytes, QHash<QString, UserAudioLeve
     }
     return true;
 }
+
+namespace {
+
+void putVarint(QByteArray &out, quint64 value)
+{
+    while (value >= 0x80) {
+        out.append(char((value & 0x7F) | 0x80));
+        value >>= 7;
+    }
+    out.append(char(value));
+}
+
+void putLengthDelimited(QByteArray &out, int field, const QByteArray &body)
+{
+    putVarint(out, (quint64(field) << 3) | 2);
+    putVarint(out, quint64(body.size()));
+    out.append(body);
+}
+
+void putFixed64(QByteArray &out, int field, quint64 value)
+{
+    putVarint(out, (quint64(field) << 3) | 1);
+    for (int i = 0; i < 8; ++i)
+        out.append(char((value >> (8 * i)) & 0xFF));
+}
+
+// google.protobuf.Int64Value / UInt64Value: { value = 1 (varint) }
+QByteArray wrappedVarint(quint64 value)
+{
+    QByteArray inner;
+    putVarint(inner, (1u << 3) | 0);
+    putVarint(inner, value);
+    return inner;
+}
+
+} // namespace
+
+QByteArray guildFoldersToProto(const QJsonArray &folders)
+{
+    QByteArray guildFolders;
+    for (const QJsonValue &value : folders) {
+        const QJsonObject folder = value.toObject();
+        QByteArray one;
+        for (const QJsonValue &guildId : folder.value(QStringLiteral("guild_ids")).toArray()) {
+            bool ok = false;
+            const quint64 id = guildId.toString().toULongLong(&ok);
+            if (ok)
+                putFixed64(one, 1, id);
+        }
+        if (one.isEmpty())
+            continue;
+        const QJsonValue id = folder.value(QStringLiteral("id"));
+        if (!id.isNull() && !id.isUndefined())
+            putLengthDelimited(one, 2, wrappedVarint(quint64(qint64(id.toDouble()))));
+        const QString name = folder.value(QStringLiteral("name")).toString();
+        if (!name.isEmpty()) {
+            QByteArray text;
+            putLengthDelimited(text, 1, name.toUtf8());   // StringValue { value = 1 }
+            putLengthDelimited(one, 3, text);
+        }
+        const QJsonValue color = folder.value(QStringLiteral("color"));
+        if (!color.isNull() && !color.isUndefined())
+            putLengthDelimited(one, 4, wrappedVarint(quint64(color.toDouble())));
+        putLengthDelimited(guildFolders, 1, one);
+    }
+
+    QByteArray settings;
+    putLengthDelimited(settings, 14, guildFolders);
+    return settings;
+}
+

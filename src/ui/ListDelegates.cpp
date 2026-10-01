@@ -481,6 +481,16 @@ void GuildRailDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
         }
     }
 
+    // Where a dragged server will land between two tiles.
+    if (row == m_insertRow) {
+        const qreal y = m_insertBottom ? cell.bottom() - 1.0 : cell.top() + 1.0;
+        QPen line{QColor(Theme::Accent)};
+        line.setWidthF(3.0);
+        line.setCapStyle(Qt::RoundCap);
+        painter->setPen(line);
+        painter->drawLine(QPointF(iconRect.left() + 4.0, y), QPointF(iconRect.right() - 4.0, y));
+    }
+
     painter->restore();
 }
 

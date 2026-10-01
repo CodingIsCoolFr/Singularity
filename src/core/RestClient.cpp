@@ -754,6 +754,16 @@ void RestClient::updateStatus(const QString &status, ObjectHandler onOk, ErrorHa
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+void RestClient::updateSettingsProto(int type, const QByteArray &proto, ObjectHandler onOk,
+                                     ErrorHandler onError)
+{
+    const QJsonObject body{{QStringLiteral("settings"), QString::fromLatin1(proto.toBase64())}};
+    QNetworkReply *reply = m_network.sendCustomRequest(
+        buildRequest(QStringLiteral("/users/@me/settings-proto/%1").arg(type)), QByteArrayLiteral("PATCH"),
+        QJsonDocument(body).toJson(QJsonDocument::Compact));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::updateGuildFolders(const QJsonArray &folders, ObjectHandler onOk, ErrorHandler onError)
 {
     // The same endpoint the status goes through. Discord keeps it in step with

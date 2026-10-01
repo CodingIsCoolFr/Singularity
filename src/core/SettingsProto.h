@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QJsonArray>
 #include <QHash>
 #include <QList>
 #include <QString>
@@ -52,3 +53,10 @@ struct DiscordFolder
 // `present` is false when the blob does not carry field 14, which on a partial
 // update means the folders did not change.
 bool guildFoldersFromProto(const QByteArray &bytes, QList<DiscordFolder> *folders, bool *present);
+
+// The other way: a settings blob carrying only field 14, built from the rail
+// in the legacy JSON shape (guild_ids, id, name, color; null for none). This
+// is what Discord's own client sends when folders change - updateAsync on
+// "guildFolders", PATCH /users/@me/settings-proto/1 {"settings": base64} -
+// with an id, colour and name only where the folder has one.
+QByteArray guildFoldersToProto(const QJsonArray &folders);

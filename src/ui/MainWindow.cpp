@@ -3181,6 +3181,9 @@ bool MainWindow::handleRailDrag(QEvent *event)
 
     if (event->type() == QEvent::DragLeave) {
         setTarget(-1);
+        if (auto *delegate = qobject_cast<GuildRailDelegate *>(m_guildRail->itemDelegate()))
+            delegate->setInsertLine(-1, false);
+        m_guildRail->viewport()->update();
         return false;
     }
 
@@ -3206,9 +3209,51 @@ bool MainWindow::handleRailDrag(QEvent *event)
             mergeRow = m_guildRail->row(target);
     }
 
+    // Anywhere else over the rail: between two tiles. Qt's own list refused
+    // these whenever the pointer was a little off the gap - its "onto this
+    // tile" zone is wider than the middle half used above, and its tiles do
+    // not take drops - so the server stayed put with a "not allowed" cursor,
+    // nothing was saved and nothing reached Discord (1 October: no "[rail]"
+    // line in any log, ever). Every drop on the rail is handled here now.
+    int insertRow = -1;
+    bool below = false;
+    if (sourceIsServer && mergeRow < 0) {
+        // Never above the direct messages tile or the unread chats under it.
+        int first = 0;
+        while (first < m_guildRail->count()) {
+            const QString kind = m_guildRail->item(first)->data(KindRole).toString();
+            const QString id = m_guildRail->item(first)->data(IdRole).toString();
+            if (!id.isEmpty() && kind != QLatin1String("unreadDm"))
+                break;
+            ++first;
+        }
+        if (target) {
+            const QRect box = m_guildRail->visualItemRect(target);
+            below = pos.y() > box.center().y();
+            insertRow = m_guildRail->row(target) + (below ? 1 : 0);
+        } else {
+            insertRow = m_guildRail->count();
+        }
+        insertRow = qMax(insertRow, first);
+    }
+    const auto setLine = [this](int row) {
+        auto *delegate = qobject_cast<GuildRailDelegate *>(m_guildRail->itemDelegate());
+        if (!delegate)
+            return;
+        const int count = m_guildRail->count();
+        if (row < 0)
+            delegate->setInsertLine(-1, false);
+        else if (row >= count)
+            delegate->setInsertLine(count - 1, true);
+        else
+            delegate->setInsertLine(row, false);
+        m_guildRail->viewport()->update();
+    };
+
     if (event->type() == QEvent::DragMove) {
         setTarget(mergeRow);
-        if (mergeRow < 0)
+        setLine(mergeRow < 0 ? insertRow : -1);
+        if (mergeRow < 0 && insertRow < 0)
             return false;
         drop->acceptProposedAction();
         return true;
@@ -3216,18 +3261,42 @@ bool MainWindow::handleRailDrag(QEvent *event)
 
     // The drop itself.
     setTarget(-1);
-    if (mergeRow < 0)
+    setLine(-1);
+    if (mergeRow < 0 && insertRow < 0)
         return false;
 
     const QString draggedId = source->data(IdRole).toString();
-    const QString targetId = target->data(IdRole).toString();
-    const bool ontoFolder = target->data(KindRole).toString() == QLatin1String("folder");
 
     // Refused as far as Qt's own drag is concerned. Accepting it as a move
     // would have the list delete the dragged row once the drag ended - after
     // the rail had already been rebuilt below, taking a tile with it.
     drop->setDropAction(Qt::IgnoreAction);
     drop->accept();
+
+    if (mergeRow < 0) {
+        const int from = m_guildRail->row(source);
+        if (insertRow == from || insertRow == from + 1)
+            return true;   // dropped where it already was
+        // Moved once the drag is over. The list reports the move, and the
+        // rowsMoved handler reads the rail back, saves it and sends it.
+        QTimer::singleShot(0, this, [this, draggedId, insertRow]() {
+            int now = -1;
+            for (int row = 0; row < m_guildRail->count(); ++row) {
+                if (m_guildRail->item(row)->data(IdRole).toString() == draggedId
+                    && m_guildRail->item(row)->data(KindRole).toString() == QLatin1String("guild")) {
+                    now = row;
+                    break;
+                }
+            }
+            if (now < 0)
+                return;
+            m_guildRail->model()->moveRow(QModelIndex(), now, QModelIndex(), insertRow);
+        });
+        return true;
+    }
+
+    const QString targetId = target->data(IdRole).toString();
+    const bool ontoFolder = target->data(KindRole).toString() == QLatin1String("folder");
 
     // Changed once the drag is fully over, not in the middle of it.
     QTimer::singleShot(0, this, [this, draggedId, targetId, ontoFolder]() {
@@ -3245,6 +3314,8 @@ bool MainWindow::handleRailDrag(QEvent *event)
 
 void MainWindow::railChangedByUser()
 {
+    if (!m_railPushTimer.isActive())
+        wlog(QStringLiteral("rail"), QStringLiteral("you changed the server rail; sending it to Discord"));
     m_railPushTimer.start();
 }
 
@@ -3269,11 +3340,21 @@ void MainWindow::pushRailToDiscord()
             ++realFolders;
     }
 
+    // Saved the way Discord's own client saves it: only the folders field of
+    // the settings blob, through settings-proto (its updateAsync on
+    // "guildFolders"). This used the old /users/@me/settings endpoint, which
+    // the current client no longer writes folders through.
     m_railPushInFlight = true;
-    m_rest->updateGuildFolders(
-        folders,
-        [this, realFolders, count = folders.size()](const QJsonObject &) {
+    m_rest->updateSettingsProto(
+        1, guildFoldersToProto(folders),
+        [this, realFolders, count = folders.size()](const QJsonObject &reply) {
             m_railPushInFlight = false;
+            if (reply.value(QStringLiteral("out_of_date")).toBool()) {
+                wlog(QStringLiteral("rail"),
+                     QStringLiteral("Discord called the server rail out of date and kept its own"));
+                flashStatus(QStringLiteral("Discord kept its own folder order; try the move again."), 6000);
+                return;
+            }
             wlog(QStringLiteral("rail"),
                  QStringLiteral("Discord stored the server rail: %1 tiles, %2 folders")
                      .arg(count)

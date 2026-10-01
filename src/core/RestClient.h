@@ -269,6 +269,12 @@ public:
 
     // The whole server rail, in order: every loose server as a folder of one
     // with no id, every real folder with its id, name and colour.
+    // PATCH /users/@me/settings-proto/{type} {"settings": base64} - how
+    // Discord's own client saves settings, folders included. `type` 1 is the
+    // preloaded settings. The answer carries the whole new blob and
+    // out_of_date when the change was refused as stale.
+    void updateSettingsProto(int type, const QByteArray &proto, ObjectHandler onOk, ErrorHandler onError);
+
     void updateGuildFolders(const QJsonArray &folders, ObjectHandler onOk, ErrorHandler onError);
 
     // PATCH /users/@me/audio-settings/user/{id} — how loud this one person is.
