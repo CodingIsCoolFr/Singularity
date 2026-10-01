@@ -29,6 +29,11 @@ public:
 
     // `window` is an HWND. Must be called on the thread that will grab.
     bool start(quintptr window);
+
+    // A whole monitor (`monitor` is an HMONITOR), through the same API. Used
+    // for a rotated screen: Desktop Duplication hands those over in the
+    // panel's own sideways shape, while this one turns them the right way up.
+    bool startMonitor(quintptr monitor);
     void stop();
     bool isRunning() const;
 
@@ -39,6 +44,7 @@ public:
     Result grab(const uchar **data, int *stride);
 
 private:
+    bool startItem(quintptr handle, bool monitor);
     struct Impl;
     std::unique_ptr<Impl> d;
 };

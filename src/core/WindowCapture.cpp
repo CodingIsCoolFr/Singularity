@@ -119,14 +119,24 @@ int WindowCapture::height() const
 
 bool WindowCapture::start(quintptr window)
 {
+    return startItem(window, false);
+}
+
+bool WindowCapture::startMonitor(quintptr monitor)
+{
+    return startItem(monitor, true);
+}
+
+bool WindowCapture::startItem(quintptr handle, bool monitor)
+{
     stop();
 
     // The capture thread may already be in a COM apartment, which is fine;
     // it only has to be in one.
     RoInitialize(RO_INIT_MULTITHREADED);
 
-    auto hwnd = reinterpret_cast<HWND>(window);
-    if (!IsWindow(hwnd)) {
+    auto hwnd = monitor ? HWND(nullptr) : reinterpret_cast<HWND>(handle);
+    if (!monitor && !IsWindow(hwnd)) {
         wlog(QStringLiteral("share"), QStringLiteral("that window is gone"));
         return false;
     }
@@ -162,8 +172,11 @@ bool WindowCapture::start(quintptr window)
 
         const auto interop = winrt::get_activation_factory<wgc::GraphicsCaptureItem,
                                                            IGraphicsCaptureItemInterop>();
-        hr = interop->CreateForWindow(hwnd, winrt::guid_of<wgc::GraphicsCaptureItem>(),
-                                      winrt::put_abi(impl->item));
+        hr = monitor ? interop->CreateForMonitor(reinterpret_cast<HMONITOR>(handle),
+                                                 winrt::guid_of<wgc::GraphicsCaptureItem>(),
+                                                 winrt::put_abi(impl->item))
+                     : interop->CreateForWindow(hwnd, winrt::guid_of<wgc::GraphicsCaptureItem>(),
+                                                winrt::put_abi(impl->item));
         if (FAILED(hr) || !impl->item) {
             wlog(QStringLiteral("share"), QStringLiteral("Windows would not capture that window (%1)")
                                               .arg(hresultText(hr)));
@@ -202,6 +215,12 @@ bool WindowCapture::start(quintptr window)
         impl->session.StartCapture();
         d = std::move(impl);
 
+        if (monitor) {
+            wlog(QStringLiteral("share"), QStringLiteral("capturing the monitor through Windows.Graphics.Capture, %1 x %2")
+                                              .arg(d->width)
+                                              .arg(d->height));
+            return true;
+        }
         wchar_t title[256] = {};
         GetWindowTextW(hwnd, title, int(std::size(title)));
         wlog(QStringLiteral("share"), QStringLiteral("capturing window \"%1\", %2 x %3")

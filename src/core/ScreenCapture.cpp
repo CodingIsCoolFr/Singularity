@@ -174,6 +174,38 @@ bool ScreenCapture::build(const QString &monitorId)
     releaseCom(adapter);
     releaseCom(factory);
 
+    // A rotated monitor - a portrait screen, say. Desktop Duplication gives
+    // its picture in the panel's own sideways shape (2560 x 1440 for a
+    // 1440 x 2560 desktop), so copying it into a buffer the desktop's shape
+    // silently did nothing: CopyResource needs the two sizes equal. The
+    // stream went out black (1 October: every picture from screen 0:1 the
+    // same 10,435 bytes). Windows.Graphics.Capture hands a rotated monitor
+    // over the right way up, so a rotated one goes through that instead.
+    if (SUCCEEDED(hr) && m_duplication) {
+        DXGI_OUTDUPL_DESC dupl{};
+        m_duplication->GetDesc(&dupl);
+        if (dupl.Rotation != DXGI_MODE_ROTATION_IDENTITY && dupl.Rotation != DXGI_MODE_ROTATION_UNSPECIFIED) {
+            wlog(QStringLiteral("share"),
+                 QStringLiteral("screen %1 is rotated (%2 x %3 on the panel, %4 x %5 on the desktop)")
+                     .arg(monitorId)
+                     .arg(dupl.ModeDesc.Width)
+                     .arg(dupl.ModeDesc.Height)
+                     .arg(m_width)
+                     .arg(m_height));
+            release();
+            m_window = new WindowCapture;
+            if (!m_window->startMonitor(reinterpret_cast<quintptr>(desc.Monitor))) {
+                delete m_window;
+                m_window = nullptr;
+                return false;
+            }
+            m_width = m_window->width();
+            m_height = m_window->height();
+            m_monitorId = monitorId;
+            return true;
+        }
+    }
+
     if (FAILED(hr)) {
         // The usual cause is that something else already holds the
         // duplication, and only one program at a time may.
