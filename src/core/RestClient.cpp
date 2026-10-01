@@ -404,9 +404,11 @@ void RestClient::fetchStickerPacks(ObjectHandler onOk, ErrorHandler onError)
 }
 
 void RestClient::addFriend(const QString &userId, ObjectHandler onOk, ErrorHandler onError,
-                           const CaptchaProof &captcha)
+                           const CaptchaProof &captcha, bool confirmStranger)
 {
-    // An empty object means "ordinary friend request".
+    // An empty object means "ordinary friend request". Discord's client sends
+    // {type, from_friend_suggestion, confirm_stranger_request}, leaving out
+    // the ones it has no value for.
     const QString path = QStringLiteral("/users/@me/relationships/%1").arg(userId);
     QNetworkRequest request = buildRequest(path);
     if (!captcha.key.isEmpty()) {
@@ -416,7 +418,10 @@ void RestClient::addFriend(const QString &userId, ObjectHandler onOk, ErrorHandl
         if (!captcha.sessionId.isEmpty())
             request.setRawHeader("X-Captcha-Session-Id", captcha.sessionId.toUtf8());
     }
-    QNetworkReply *reply = m_network.put(request, QByteArray("{}"));
+    QJsonObject body;
+    if (confirmStranger)
+        body.insert(QStringLiteral("confirm_stranger_request"), true);
+    QNetworkReply *reply = m_network.put(request, QJsonDocument(body).toJson(QJsonDocument::Compact));
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 

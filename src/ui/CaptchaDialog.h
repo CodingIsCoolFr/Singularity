@@ -39,3 +39,8 @@ private:
     struct Browser;
     Browser *m_browser = nullptr;
 };
+
+// The other thing Discord asks a person before adding a friend: accepting a
+// request from someone you share no friends with needs a yes (Discord's
+// maybeConfirmFriendRequestAccept). True means they said yes.
+bool confirmStrangerRequest(QWidget *parent, const QString &name);

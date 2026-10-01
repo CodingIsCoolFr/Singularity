@@ -5,6 +5,8 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
+#include <QMessageBox>
+#include <QPushButton>
 #include <QResizeEvent>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -261,4 +263,22 @@ void CaptchaDialog::inject()
 
     m_browser->view->ExecuteScript(reinterpret_cast<LPCWSTR>(script.utf16()), nullptr);
 #endif
+}
+
+bool confirmStrangerRequest(QWidget *parent, const QString &name)
+{
+    const QString who = name.isEmpty() ? QStringLiteral("this person") : name;
+    QMessageBox box(QMessageBox::Question, QStringLiteral("Accept friend request?"),
+                    QStringLiteral("You and %1 don't share any friends. Discord asks you to confirm "
+                                   "before you add them.\n\nAccept the friend request?")
+                        .arg(who),
+                    QMessageBox::NoButton, parent);
+    QPushButton *accept = box.addButton(QStringLiteral("Accept"), QMessageBox::AcceptRole);
+    box.addButton(QStringLiteral("Cancel"), QMessageBox::RejectRole);
+    box.setDefaultButton(accept);
+    box.exec();
+    const bool yes = box.clickedButton() == accept;
+    wlog(QStringLiteral("friends"), QStringLiteral("friend request from %1 needs a confirmation: %2")
+                                        .arg(who, yes ? QStringLiteral("accepted") : QStringLiteral("cancelled")));
+    return yes;
 }

@@ -1452,6 +1452,32 @@ void ProfileDialog::toggleFriend()
     const auto reenable = [this]() { m_friendButton->setEnabled(true); };
 
     const auto onError = [this, userId, info, onOk, reenable](const RestClient::Error &error) {
+        // Someone you share no friends with: Discord wants a yes first, then
+        // the same call again with confirm_stranger_request.
+        if (RestClient::needsStrangerConfirm(error) && info.relationship == 3) {
+            if (!confirmStrangerRequest(this, info.displayName())) {
+                reenable();
+                return;
+            }
+            m_rest->addFriend(userId,
+                              [onOk, reenable](const QJsonObject &o) {
+                                  onOk(1)(o);
+                                  reenable();
+                              },
+                              [this, reenable](const RestClient::Error &again) {
+                                  wlog(QStringLiteral("profile"),
+                                       QStringLiteral("relationship change failed: HTTP %1 %2")
+                                           .arg(again.httpStatus)
+                                           .arg(again.message));
+                                  setNote(again.message.isEmpty() ? QStringLiteral("That did not work.")
+                                                                  : again.message.left(180),
+                                          true);
+                                  reenable();
+                              },
+                              {}, true);
+            return;
+        }
+
         const bool needsCheck = CaptchaDialog::isDemand(error.body);
         if (needsCheck && !info.isFriend() && info.relationship != 4 && !info.isBlocked()) {
             const QString token = CaptchaDialog::solve(

@@ -118,9 +118,21 @@ public:
     // someone and returns the channel.
     void openDirectMessage(const QString &userId, ObjectHandler onOk, ErrorHandler onError);
 
-    // PUT /users/@me/relationships/{id} - sends a friend request.
+    // PUT /users/@me/relationships/{id} - sends or accepts a friend request.
+    //
+    // `confirmStranger` is Discord's confirm_stranger_request. Accepting a
+    // request from someone you share no friends with is refused with code
+    // 80013 (RELATIONSHIP_INVALID_NO_CONFIRMATION, "You must confirm the
+    // friend request to add this user") until the person says yes; Discord's
+    // own client then asks and sends the same call again with this set.
     void addFriend(const QString &userId, ObjectHandler onOk, ErrorHandler onError,
-                   const CaptchaProof &captcha = {});
+                   const CaptchaProof &captcha = {}, bool confirmStranger = false);
+
+    // True for that refusal: the request needs the person to confirm it.
+    static bool needsStrangerConfirm(const Error &error)
+    {
+        return error.body.value(QStringLiteral("code")).toInt() == 80013;
+    }
 
     // DELETE /users/@me/relationships/{id} - removes a friend, cancels a
     // request, or unblocks.

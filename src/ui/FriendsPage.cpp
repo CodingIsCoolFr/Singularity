@@ -971,6 +971,15 @@ void FriendsPage::acceptRequest(const QString &userId)
     // asks for a check first; the person solves it, exactly as in its own
     // client, and the same call goes again with the answer.
     m_rest->addFriend(userId, accepted, [this, userId, accepted, failed](const RestClient::Error &error) {
+        // Someone you share no friends with: Discord wants a yes first.
+        if (RestClient::needsStrangerConfirm(error)) {
+            if (!confirmStrangerRequest(this, m_store->user(userId).displayName())) {
+                m_busy.remove(userId);
+                return;
+            }
+            m_rest->addFriend(userId, accepted, failed, {}, true);
+            return;
+        }
         if (!CaptchaDialog::isDemand(error.body)) {
             failed(error);
             return;
