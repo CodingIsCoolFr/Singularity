@@ -4793,12 +4793,24 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
     // A grouped message has no avatar and no name, only the text, lined up
     // under the block it belongs to. The narrow strip on the left carries the
     // clock time, the way the real client shows it on hover.
+    // A reply and its message are one table, not two. Every part of the view
+    // that finds a message by position - right-click, keeping the reading
+    // place, redrawing one message, trimming old ones - counts one top-level
+    // table per message, and the separate reply table (0.8.52) put them all
+    // out by one. Right-click then found nothing in any chat with a reply.
+    const auto oneFrame = [&replyHtml](const QString &row) {
+        if (replyHtml.isEmpty())
+            return row;
+        return QStringLiteral("<table width=\"100%\" cellspacing=\"0\" cellpadding=\"0\"><tr><td>")
+               + replyHtml + row + QStringLiteral("</td></tr></table>");
+    };
+
     if (grouped) {
-        return replyHtml + QStringLiteral(
+        return oneFrame(QStringLiteral(
                    "<table class=\"row\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\">"
                    "<tr><td width=\"56\" valign=\"top\" nowrap class=\"gut\">%1</td>"
                    "<td valign=\"top\"><div class=\"%2\">%3</div></td></tr></table>")
-            .arg(m_plugins->runDecorateGutter(message), bodyClass, body);
+            .arg(m_plugins->runDecorateGutter(message), bodyClass, body));
     }
 
     // Header ---------------------------------------------------------------
@@ -4818,7 +4830,7 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
         }
     }
 
-    return replyHtml + QStringLiteral(
+    return oneFrame(QStringLiteral(
                "<table class=\"row\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\">"
                "<tr>"
                "<td width=\"56\" valign=\"top\" class=\"ava\">%1</td>"
@@ -4826,7 +4838,7 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
                "<a class=\"namelink\" href=\"%2\"><span class=\"%3\">%4</span></a>%5</div>"
                "<div class=\"%6\">%7</div></td>"
                "</tr></table>")
-        .arg(avatarCell, profileLink, authorClass, displayName, decorations, bodyClass, body);
+        .arg(avatarCell, profileLink, authorClass, displayName, decorations, bodyClass, body));
 }
 
 // A Components V2 text block is markdown with a little more than a message
@@ -6963,8 +6975,15 @@ QString MainWindow::messageIdAt(const QPoint &viewportPos) const
     const QTextCursor cursor = m_messageView->cursorForPosition(viewportPos);
     const int position = cursor.position();
     const QList<QTextFrame *> frames = m_messageView->document()->rootFrame()->childFrames();
-    if (frames.size() != m_renderedIds.size())
+    if (frames.size() != m_renderedIds.size()) {
+        // Said, not swallowed: a reply drawn as its own table once made this
+        // fail in every chat that had one, and nothing in the log said why.
+        wlog(QStringLiteral("ui"), QStringLiteral("cannot tell which message is under the pointer: "
+                                                  "%1 tables for %2 messages")
+                                       .arg(frames.size())
+                                       .arg(m_renderedIds.size()));
         return {};
+    }
 
     for (int i = 0; i < frames.size(); ++i) {
         if (position >= frames.at(i)->firstPosition() && position <= frames.at(i)->lastPosition())
