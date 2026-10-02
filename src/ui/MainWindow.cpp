@@ -4637,6 +4637,13 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
     const QString decorations = m_plugins->runDecorateHeader(message);
     const bool isSelf = !m_selfUserId.isEmpty() && message.authorId == m_selfUserId;
 
+    // The message's own id, carried invisibly at its start (a zero-width
+    // space under a named anchor). Right-click reads it back from under the
+    // pointer, the way Discord's client finds a message from its element's
+    // id, instead of counting tables - which broke the moment a message was
+    // drawn as more than one.
+    const QString idTag = QStringLiteral("<a name=\"msg-%1\">&#8203;</a>").arg(message.id);
+
     // Body -----------------------------------------------------------------
 
     // A message that is only one link, whose preview is one picture or GIF,
@@ -4784,10 +4791,10 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
                                        .arg(authorId, authorName.toHtmlEscaped());
         replyHtml = QStringLiteral(
                         "<table class=\"reply\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\"><tr>"
-                        "<td width=\"56\" align=\"right\" valign=\"middle\">"
+                        "<td width=\"56\" align=\"right\" valign=\"middle\">%4"
                         "<img src=\"singularity-spine:hook\" width=\"22\" height=\"12\"></td>"
                         "<td valign=\"middle\">%1%2%3</td></tr></table>")
-                        .arg(face, name, preview);
+                        .arg(face, name, preview, idTag);
     }
 
     // A grouped message has no avatar and no name, only the text, lined up
@@ -4810,7 +4817,7 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
                    "<table class=\"row\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\">"
                    "<tr><td width=\"56\" valign=\"top\" nowrap class=\"gut\">%1</td>"
                    "<td valign=\"top\"><div class=\"%2\">%3</div></td></tr></table>")
-            .arg(m_plugins->runDecorateGutter(message), bodyClass, body));
+            .arg(idTag + m_plugins->runDecorateGutter(message), bodyClass, body));
     }
 
     // Header ---------------------------------------------------------------
@@ -4838,7 +4845,7 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
                "<a class=\"namelink\" href=\"%2\"><span class=\"%3\">%4</span></a>%5</div>"
                "<div class=\"%6\">%7</div></td>"
                "</tr></table>")
-        .arg(avatarCell, profileLink, authorClass, displayName, decorations, bodyClass, body));
+        .arg(idTag + avatarCell, profileLink, authorClass, displayName, decorations, bodyClass, body));
 }
 
 // A Components V2 text block is markdown with a little more than a message
@@ -6974,7 +6981,29 @@ QString MainWindow::messageIdAt(const QPoint &viewportPos) const
 
     const QTextCursor cursor = m_messageView->cursorForPosition(viewportPos);
     const int position = cursor.position();
-    const QList<QTextFrame *> frames = m_messageView->document()->rootFrame()->childFrames();
+
+    // First the message's own tag: the nearest "msg-<id>" anchor at or
+    // before the pointer. Every message starts with one, so that is the
+    // message the pointer is on, however many tables it is drawn with.
+    QTextDocument *document = m_messageView->document();
+    for (QTextBlock block = document->findBlock(position); block.isValid(); block = block.previous()) {
+        QString found;
+        for (auto it = block.begin(); !it.atEnd(); ++it) {
+            const QTextFragment fragment = it.fragment();
+            if (!fragment.isValid() || fragment.position() > position)
+                break;
+            const QStringList names = fragment.charFormat().anchorNames();
+            for (const QString &name : names) {
+                if (name.startsWith(QLatin1String("msg-")))
+                    found = name.mid(4);
+            }
+        }
+        if (!found.isEmpty())
+            return found;
+    }
+
+    // Then the old way, for anything drawn before the tags existed.
+    const QList<QTextFrame *> frames = document->rootFrame()->childFrames();
     if (frames.size() != m_renderedIds.size()) {
         // Said, not swallowed: a reply drawn as its own table once made this
         // fail in every chat that had one, and nothing in the log said why.
@@ -8350,8 +8379,12 @@ void MainWindow::showReactionPicker(const QString &messageId, const QPoint &glob
 void MainWindow::showMessageMenu(const QPoint &pos)
 {
     const QString messageId = messageIdAt(pos);
-    if (messageId.isEmpty() || m_currentChannelId.isEmpty())
+    if (messageId.isEmpty() || m_currentChannelId.isEmpty()) {
+        wlog(QStringLiteral("ui"), QStringLiteral("right-click found no message under the pointer%1")
+                                       .arg(m_currentChannelId.isEmpty() ? QStringLiteral(" (no channel open)")
+                                                                         : QString()));
         return;
+    }
 
     MessageInfo message;
     const QList<MessageInfo> messages = m_store->messages(m_currentChannelId);
@@ -8361,8 +8394,10 @@ void MainWindow::showMessageMenu(const QPoint &pos)
             break;
         }
     }
-    if (message.id.isEmpty())
+    if (message.id.isEmpty()) {
+        wlog(QStringLiteral("ui"), QStringLiteral("right-click: message %1 is not in this channel's store").arg(messageId));
         return;
+    }
 
     const bool mine = message.authorId == m_selfUserId;
     const ChannelInfo channel = m_store->channel(m_currentChannelId);
