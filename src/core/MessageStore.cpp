@@ -1177,6 +1177,24 @@ MessageInfo MessageStore::parseMessage(const QJsonObject &raw)
     message.applicationId = raw.value(QStringLiteral("application_id")).toString();
     message.flags = raw.value(QStringLiteral("flags")).toInt();
 
+    const QJsonObject call = raw.value(QStringLiteral("call")).toObject();
+    if (raw.contains(QStringLiteral("call")) && !raw.value(QStringLiteral("call")).isNull()) {
+        message.callPresent = true;
+        for (const QJsonValue &id : call.value(QStringLiteral("participants")).toArray()) {
+            const QString userId = id.toString();
+            if (!userId.isEmpty())
+                message.callParticipants.append(userId);
+        }
+        const QJsonValue ended = call.value(QStringLiteral("ended_timestamp"));
+        if (ended.isString() && !ended.toString().isEmpty()) {
+            message.callEnded = QDateTime::fromString(ended.toString(), Qt::ISODateWithMs);
+            if (!message.callEnded.isValid())
+                message.callEnded = QDateTime::fromString(ended.toString(), Qt::ISODate);
+            if (message.callEnded.isValid())
+                message.callEnded = message.callEnded.toLocalTime();
+        }
+    }
+
     const QJsonArray attachments = raw.value(QStringLiteral("attachments")).toArray();
     for (const QJsonValue &value : attachments) {
         const QJsonObject raw = value.toObject();
@@ -1744,9 +1762,30 @@ void MessageStore::updateMessage(const QJsonObject &rawMessage)
             item.applicationId = rawMessage.value(QStringLiteral("application_id")).toString();
         if (rawMessage.contains(QStringLiteral("flags")))
             item.flags = rawMessage.value(QStringLiteral("flags")).toInt();
+        if (rawMessage.contains(QStringLiteral("call")) && !rawMessage.value(QStringLiteral("call")).isNull()) {
+            const MessageInfo parsed = parseMessage(rawMessage);
+            item.callPresent = parsed.callPresent;
+            item.callParticipants = parsed.callParticipants;
+            item.callEnded = parsed.callEnded;
+        }
         item.edited = true;
         emit messageChanged(channelId, messageId);
         return;
+    }
+}
+
+void MessageStore::endCall(const QString &channelId)
+{
+    if (!m_messages.contains(channelId))
+        return;
+    QList<MessageInfo> &list = m_messages[channelId];
+    const QDateTime now = QDateTime::currentDateTime();
+    for (MessageInfo &item : list) {
+        if (item.type != 3 || item.callEnded.isValid())
+            continue;
+        item.callPresent = true;
+        item.callEnded = now;
+        emit messageChanged(channelId, item.id);
     }
 }
 

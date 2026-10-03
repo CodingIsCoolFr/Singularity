@@ -118,6 +118,14 @@ public:
     // someone and returns the channel.
     void openDirectMessage(const QString &userId, ObjectHandler onOk, ErrorHandler onError);
 
+    // A direct or group call. Ring starts one and rings those people; an empty
+    // list rings whoever else is in the channel. Stop ringing is decline, and
+    // also what accepting sends so the ring does not keep going.
+    void ringCall(const QString &channelId, const QJsonArray &recipients, ObjectHandler onOk,
+                  ErrorHandler onError);
+    void stopRinging(const QString &channelId, const QString &userId, ObjectHandler onOk,
+                     ErrorHandler onError);
+
     // PUT /users/@me/relationships/{id} - sends or accepts a friend request.
     //
     // `confirmStranger` is Discord's confirm_stranger_request. Accepting a

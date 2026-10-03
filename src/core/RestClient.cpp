@@ -111,6 +111,30 @@ void RestClient::leaveGuild(const QString &guildId, ObjectHandler onOk, ErrorHan
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+void RestClient::ringCall(const QString &channelId, const QJsonArray &recipients, ObjectHandler onOk,
+                          ErrorHandler onError)
+{
+    QJsonObject body;
+    if (!recipients.isEmpty())
+        body.insert(QStringLiteral("recipients"), recipients);
+    QNetworkReply *reply = m_network.post(
+        buildRequest(QStringLiteral("/channels/%1/call/ring").arg(channelId)),
+        QJsonDocument(body).toJson(QJsonDocument::Compact));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
+void RestClient::stopRinging(const QString &channelId, const QString &userId, ObjectHandler onOk,
+                             ErrorHandler onError)
+{
+    QJsonObject body;
+    if (!userId.isEmpty())
+        body.insert(QStringLiteral("recipients"), QJsonArray{userId});
+    QNetworkReply *reply = m_network.post(
+        buildRequest(QStringLiteral("/channels/%1/call/stop-ringing").arg(channelId)),
+        QJsonDocument(body).toJson(QJsonDocument::Compact));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::uploadStreamPreview(const QString &streamKey, const QByteArray &jpeg, ObjectHandler onOk,
                                      ErrorHandler onError)
 {

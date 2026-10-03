@@ -365,6 +365,13 @@ struct MessageInfo
     bool replyEdited = false;
     bool replyMissing = false;
     bool replyHasAttachment = false;
+
+    // A private call (message type 3). ended is invalid while the call is
+    // still going. participants is who actually joined, which is how a missed
+    // call is told apart from one you were in.
+    bool callPresent = false;
+    QStringList callParticipants;
+    QDateTime callEnded;
 };
 
 // In-memory mirror of everything the UI needs to draw. The store is
@@ -482,6 +489,9 @@ public:
     // the channel under its cap, or -1 when this message was already stored.
     int appendMessage(const QJsonObject &rawMessage);
     void updateMessage(const QJsonObject &rawMessage);
+    // A private call ended. Marks the still-open call messages in that channel
+    // so the chat stops offering Join.
+    void endCall(const QString &channelId);
     void markDeleted(const QString &channelId, const QString &messageId);
     void removeMessage(const QString &channelId, const QString &messageId);
 

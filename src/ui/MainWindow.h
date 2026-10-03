@@ -122,6 +122,18 @@ private:
     void joinVoice(const QString &channelId);
     void goToConnectedVoice();
     void joinVoiceAt(const QString &guildId, const QString &channelId);
+    // A direct or group call. guild_id is null; the voice server id arrives
+    // later as the channel id.
+    void joinPrivateCall(const QString &channelId);
+    void acceptCall(const QString &channelId);
+    void declineCall(const QString &channelId);
+    void startCall();
+    void refreshCallBanner();
+    void updateCallButton();
+    void notePrivateCall(const QJsonObject &data, bool ended);
+    void noteCallMessage(const MessageInfo &message);
+    QString callPeerName(const QString &channelId) const;
+    QString callMessageHtml(const MessageInfo &message) const;
     bool voiceChannelFull(const QString &channelId) const;
     void leaveVoice();
     void updateVoicePanel();
@@ -388,6 +400,10 @@ private:
 
     QString m_voiceChannelId;
     QString m_voiceGuildId;
+    // What the voice gateway wants as server_id. A server channel uses the
+    // guild. A private call uses the channel id, which arrives on
+    // VOICE_SERVER_UPDATE and is not the guild_id we sent (that one is null).
+    QString m_pendingVoiceServerId;
     // Set when Discord drops the voice socket (often because the gateway is
     // reconnecting). We stay in the channel locally and join again once the
     // gateway is Ready. Cleared on a real leave or a confirmed kick.
@@ -548,6 +564,20 @@ private:
     QPushButton *m_stopWatchButton = nullptr;
     QLabel *m_voiceState = nullptr;
     CallView *m_callView = nullptr;
+    QWidget *m_callBanner = nullptr;
+    QLabel *m_callBannerText = nullptr;
+    QPushButton *m_callAccept = nullptr;
+    QPushButton *m_callDecline = nullptr;
+    QPushButton *m_callButton = nullptr;
+    QString m_bannerChannelId;
+    QString m_announcedRing;
+    // channel -> user ids Discord is still ringing. Active is a call that has
+    // not ended, whether or not we are the one being rung.
+    QHash<QString, QStringList> m_ringing;
+    QSet<QString> m_activeCalls;
+    QSet<QString> m_callEvents;
+    QTimer m_ringTimer;
+    int m_ringBeeps = 0;
     Backdrop *m_backdrop = nullptr;
 
     // The frame pacer's beat (SingularityApplication::setFramePace): thirty

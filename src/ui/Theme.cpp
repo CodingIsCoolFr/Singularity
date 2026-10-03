@@ -747,6 +747,26 @@ QPushButton#ComposerTool:hover {
     color: @text;
     border: none;
 }
+QPushButton#CallButton, QPushButton#CallAccept, QPushButton#CallDecline {
+    background: transparent;
+    border: none;
+    font-weight: 600;
+    padding: 0 10px;
+    min-height: 28px;
+    max-height: 28px;
+}
+QPushButton#CallButton, QPushButton#CallAccept { color: @green; }
+QPushButton#CallDecline { color: @red; }
+QPushButton#CallButton:hover, QPushButton#CallAccept:hover, QPushButton#CallDecline:hover {
+    color: @text;
+    background: transparent;
+    border: none;
+}
+#IncomingCall, #IncomingCallText {
+    background: transparent;
+    border: none;
+    color: @text;
+}
 
 #TypingLabel {
     color: @faint;

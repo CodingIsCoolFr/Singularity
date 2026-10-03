@@ -34,7 +34,8 @@ view, no plugin folder. The plugins are part of the binary, so there is nothing
 on disk for anything else to swap out.
 
 Calls work: you can talk, you can hear, and the audio is end to end encrypted
-the way Discord now requires. Cameras and shared screens are received and
+the way Discord now requires. A direct call shows up here, and you can accept it.
+Cameras and shared screens are received and
 decoded as well, and the grid of faces above the conversation is where they
 appear.
 
@@ -64,8 +65,9 @@ What Singularity does with your credentials:
 **Talking**
 
 Voice channels you can actually join, with sound both ways, encrypted end to
-end. Mute, deafen, device and volume control, a speaking threshold, and a
-working microphone test with a live level bar.
+end. A direct call rings here, and you can accept it. Mute, deafen, device and
+volume control, a speaking threshold, and a working microphone test with a live
+level bar.
 
 </td><td width="33%" valign="top">
 

@@ -494,6 +494,16 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     m_typingClearTimer.setSingleShot(true);
     connect(&m_typingClearTimer, &QTimer::timeout, this, [this]() { setTypingHint(QString()); });
 
+    m_ringTimer.setInterval(2500);
+    connect(&m_ringTimer, &QTimer::timeout, this, [this]() {
+        if (++m_ringBeeps > 12) {
+            m_ringTimer.stop();
+            return;
+        }
+        if (AppConfig::instance().value(QStringLiteral("notifications/desktop"), true).toBool())
+            QApplication::beep();
+    });
+
     connect(m_gateway, &GatewayClient::ready, this, &MainWindow::onGatewayReady);
     m_gateway->setGames(new GameActivity(this));
     m_gateway->setGameRest(m_rest);
@@ -1421,6 +1431,37 @@ void MainWindow::buildUi()
     m_chatSplitter->addWidget(m_chatStack);
     m_chatSplitter->setStretchFactor(0, 3);
     m_chatSplitter->setStretchFactor(1, 2);
+
+    m_callBanner = new QWidget(chatCard);
+    m_callBanner->setObjectName(QStringLiteral("IncomingCall"));
+    m_callBanner->setFixedHeight(44);
+    auto *bannerLayout = new QHBoxLayout(m_callBanner);
+    bannerLayout->setContentsMargins(18, 0, 12, 0);
+    bannerLayout->setSpacing(8);
+    m_callBannerText = new QLabel(m_callBanner);
+    m_callBannerText->setObjectName(QStringLiteral("IncomingCallText"));
+    m_callBannerText->setTextFormat(Qt::RichText);
+    m_callDecline = new QPushButton(QStringLiteral("Decline"), m_callBanner);
+    m_callDecline->setObjectName(QStringLiteral("CallDecline"));
+    m_callAccept = new QPushButton(QStringLiteral("Accept"), m_callBanner);
+    m_callAccept->setObjectName(QStringLiteral("CallAccept"));
+    m_callDecline->setCursor(Qt::PointingHandCursor);
+    m_callAccept->setCursor(Qt::PointingHandCursor);
+    m_callDecline->setFocusPolicy(Qt::NoFocus);
+    m_callAccept->setFocusPolicy(Qt::NoFocus);
+    bannerLayout->addWidget(m_callBannerText, 1);
+    bannerLayout->addWidget(m_callDecline);
+    bannerLayout->addWidget(m_callAccept);
+    m_callBanner->hide();
+    connect(m_callAccept, &QPushButton::clicked, this, [this]() {
+        if (!m_bannerChannelId.isEmpty())
+            acceptCall(m_bannerChannelId);
+    });
+    connect(m_callDecline, &QPushButton::clicked, this, [this]() {
+        if (!m_bannerChannelId.isEmpty())
+            declineCall(m_bannerChannelId);
+    });
+    chatLayout->addWidget(m_callBanner);
     chatLayout->addWidget(m_chatSplitter);
 
     rootLayout->addWidget(chatCard, 1);
@@ -1979,7 +2020,19 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
 
     m_channelTitle = new QLabel(QStringLiteral("Pick a channel"), header);
     m_channelTitle->setObjectName(QStringLiteral("ChannelTitle"));
-    headerLayout->addWidget(m_channelTitle);
+    auto *titleRow = new QHBoxLayout;
+    titleRow->setContentsMargins(0, 0, 0, 0);
+    titleRow->setSpacing(8);
+    titleRow->addWidget(m_channelTitle, 1);
+    m_callButton = new QPushButton(QStringLiteral("Call"), header);
+    m_callButton->setObjectName(QStringLiteral("CallButton"));
+    m_callButton->setCursor(Qt::PointingHandCursor);
+    m_callButton->setFocusPolicy(Qt::NoFocus);
+    m_callButton->setToolTip(QStringLiteral("Start a call"));
+    m_callButton->hide();
+    connect(m_callButton, &QPushButton::clicked, this, &MainWindow::startCall);
+    titleRow->addWidget(m_callButton);
+    headerLayout->addLayout(titleRow);
 
     m_channelTopic = new QLabel(QString(), header);
     m_channelTopic->setObjectName(QStringLiteral("ChannelTopic"));
@@ -2402,6 +2455,8 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
                 m_rest->ackMessage(channelId, message.id);
             if (!mine)
                 maybeNotify(data, message);
+            if (message.type == 3)
+                noteCallMessage(message);
 
             if (channelId == m_currentChannelId && m_store->hasHistory(channelId)) {
                 const bool grouped = m_hasLastRendered && shouldGroup(m_lastRendered, message);
@@ -2786,10 +2841,25 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
 
     if (eventType == QLatin1String("VOICE_SERVER_UPDATE")) {
         // The other half: which server to talk to, and the password for it.
+        // A private call sends guild_id null and gets this channel id back as
+        // the server id the voice gateway will accept.
         m_pendingVoiceToken = data.value(QStringLiteral("token")).toString();
         m_pendingVoiceEndpoint = data.value(QStringLiteral("endpoint")).toString();
-        wlog(QStringLiteral("voice"), QStringLiteral("server update: %1").arg(m_pendingVoiceEndpoint));
+        m_pendingVoiceServerId = data.value(QStringLiteral("guild_id")).toString();
+        if (m_pendingVoiceServerId.isEmpty())
+            m_pendingVoiceServerId = data.value(QStringLiteral("channel_id")).toString();
+        wlog(QStringLiteral("voice"), QStringLiteral("server update: %1 (server id %2)")
+                                          .arg(m_pendingVoiceEndpoint, m_pendingVoiceServerId));
         tryStartVoice();
+        return;
+    }
+
+    if (eventType == QLatin1String("CALL_CREATE") || eventType == QLatin1String("CALL_UPDATE")) {
+        notePrivateCall(data, false);
+        return;
+    }
+    if (eventType == QLatin1String("CALL_DELETE")) {
+        notePrivateCall(data, true);
         return;
     }
 
@@ -3811,6 +3881,8 @@ void MainWindow::openChannel(const QString &channelId)
         m_channelTopic->setVisible(false);
         m_messageView->clear();
         m_composer->setEnabled(false);
+        updateCallButton();
+        refreshCallBanner();
         return;
     }
 
@@ -3818,6 +3890,8 @@ void MainWindow::openChannel(const QString &channelId)
     m_channelTitle->setText(channel.isDirect() ? channel.name : QStringLiteral("# ") + channel.name);
     m_channelTopic->setText(channel.topic);
     m_channelTopic->setVisible(!channel.topic.isEmpty());
+    updateCallButton();
+    refreshCallBanner();
     if (m_members)
         m_members->setFocusChannel(channelId, channel.isVoice());
     if (!channel.guildId.isEmpty())
@@ -3868,8 +3942,10 @@ void MainWindow::openChannel(const QString &channelId)
                      .arg(started->elapsed())
                      .arg(messages.size()));
             m_store->setHistory(channelId, messages);
-            if (channelId == m_currentChannelId)
+            if (channelId == m_currentChannelId) {
+                refreshCallBanner();
                 acknowledgeChannel(channelId);
+            }
         },
         [this, channelId](const RestClient::Error &error) {
             wlog(QStringLiteral("rest"), QStringLiteral("history failed for %1: HTTP %2 %3")
@@ -3893,6 +3969,9 @@ void MainWindow::openChannel(const QString &channelId)
 bool MainWindow::shouldGroup(const MessageInfo &previous, const MessageInfo &current)
 {
     if (previous.authorId.isEmpty() || previous.authorId != current.authorId)
+        return false;
+    // A call line stands on its own, the way Discord draws the phone.
+    if (current.type == 3 || previous.type == 3)
         return false;
     // A reply always stands on its own. Grouping it hides the line that says
     // who it answered.
@@ -4634,6 +4713,8 @@ void MainWindow::appendMessageToView(const MessageInfo &message, bool grouped)
 
 QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
 {
+    if (message.type == 3)
+        return callMessageHtml(message);
     const QString decorations = m_plugins->runDecorateHeader(message);
     const bool isSelf = !m_selfUserId.isEmpty() && message.authorId == m_selfUserId;
 
@@ -6227,6 +6308,17 @@ void MainWindow::handleAnchor(const QUrl &url)
 
     if (url.scheme() == QLatin1String("singularity-wave")) {
         sendWave();
+        return;
+    }
+
+    if (url.scheme() == QLatin1String("singularity-call")) {
+        QString channelId = url.path();
+        if (channelId.startsWith(QLatin1Char('/')))
+            channelId.remove(0, 1);
+        if (channelId.isEmpty())
+            channelId = whole.mid(QStringLiteral("singularity-call:").size());
+        if (!channelId.isEmpty())
+            acceptCall(channelId);
         return;
     }
 
@@ -8399,6 +8491,24 @@ void MainWindow::showMessageMenu(const QPoint &pos)
         return;
     }
 
+    if (message.type == 3) {
+        QMenu menu(this);
+        const bool ongoing = message.callPresent && !message.callEnded.isValid()
+            && m_voiceChannelId != message.channelId;
+        if (ongoing) {
+            connect(menu.addAction(QStringLiteral("Join Call")), &QAction::triggered, this, [this, message]() {
+                acceptCall(message.channelId);
+            });
+        }
+        const QString link = QStringLiteral("https://discord.com/channels/@me/%1/%2")
+                                 .arg(message.channelId, message.id);
+        connect(menu.addAction(QStringLiteral("Copy Message Link")), &QAction::triggered, this, [link]() {
+            QApplication::clipboard()->setText(link);
+        });
+        menu.exec(m_messageView->viewport()->mapToGlobal(pos));
+        return;
+    }
+
     const bool mine = message.authorId == m_selfUserId;
     const ChannelInfo channel = m_store->channel(m_currentChannelId);
 
@@ -9820,6 +9930,7 @@ void MainWindow::joinVoiceAt(const QString &guildId, const QString &channelId)
     m_voice->disconnectFromVoice();
     m_pendingVoiceToken.clear();
     m_pendingVoiceEndpoint.clear();
+    m_pendingVoiceServerId.clear();
     m_voiceSessionId.clear();
     m_speakingUsers.clear();
 
@@ -9840,6 +9951,334 @@ void MainWindow::joinVoiceAt(const QString &guildId, const QString &channelId)
         selectChannelEverywhere(channelId);
     else if (m_callView)
         m_callView->setStageSuppressed(false);
+}
+
+void MainWindow::joinPrivateCall(const QString &channelId)
+{
+    if (channelId.isEmpty())
+        return;
+
+    AppConfig &config = AppConfig::instance();
+    const bool muted = config.value(QStringLiteral("voice/joinMuted"), false).toBool();
+    const bool deafened = config.value(QStringLiteral("voice/joinDeafened"), false).toBool();
+
+    stopWatchingStream();
+    m_voice->disconnectFromVoice();
+    m_pendingVoiceToken.clear();
+    m_pendingVoiceEndpoint.clear();
+    m_pendingVoiceServerId.clear();
+    m_voiceSessionId.clear();
+    m_speakingUsers.clear();
+
+    m_voiceRetries = 0;
+    m_voiceRetryTimer.stop();
+
+    // guild_id stays empty. Discord treats a private call as no server, and a
+    // guild id here is a different machine that answers and then closes.
+    m_voiceChannelId = channelId;
+    m_voiceGuildId.clear();
+    m_rejoinVoiceAfterGateway = false;
+    m_gateway->joinVoice(QString(), channelId, muted, deafened, true);
+    updateVoicePanel();
+
+    m_voiceWatchdog.start(10000);
+    const ChannelInfo known = m_store->channel(channelId);
+    const QString name = known.name.isEmpty() ? callPeerName(channelId) : known.name;
+    flashStatus(QStringLiteral("Joining %1...").arg(name), 4000);
+    selectChannelEverywhere(channelId);
+    if (m_callView)
+        m_callView->setStageSuppressed(false);
+}
+
+void MainWindow::acceptCall(const QString &channelId)
+{
+    if (channelId.isEmpty())
+        return;
+    wlog(QStringLiteral("call"), QStringLiteral("accepting %1").arg(channelId));
+    m_ringing.remove(channelId);
+    refreshCallBanner();
+    if (m_rest && !m_selfUserId.isEmpty()) {
+        m_rest->stopRinging(channelId, m_selfUserId, [](const QJsonObject &) {},
+                            [](const RestClient::Error &error) {
+                                wlog(QStringLiteral("call"),
+                                     QStringLiteral("stop ringing failed: HTTP %1").arg(error.httpStatus));
+                            });
+    }
+    if (m_voiceChannelId == channelId
+        && m_voice && m_voice->state() == VoiceConnection::State::Connected)
+        return;
+    joinPrivateCall(channelId);
+}
+
+void MainWindow::declineCall(const QString &channelId)
+{
+    if (channelId.isEmpty())
+        return;
+    wlog(QStringLiteral("call"), QStringLiteral("declining %1").arg(channelId));
+    m_ringing.remove(channelId);
+    refreshCallBanner();
+    if (!m_rest || m_selfUserId.isEmpty())
+        return;
+    m_rest->stopRinging(channelId, m_selfUserId, [](const QJsonObject &) {},
+                        [channelId](const RestClient::Error &error) {
+                            wlog(QStringLiteral("call"),
+                                 QStringLiteral("stop ringing %1 failed: HTTP %2")
+                                     .arg(channelId)
+                                     .arg(error.httpStatus));
+                        });
+}
+
+void MainWindow::startCall()
+{
+    if (m_currentChannelId.isEmpty() || !m_store || !m_rest)
+        return;
+    const ChannelInfo channel = m_store->channel(m_currentChannelId);
+    if (!channel.isDirect())
+        return;
+    if (m_voiceChannelId == channel.id
+        && m_voice && m_voice->state() == VoiceConnection::State::Connected) {
+        flashStatus(QStringLiteral("Already in this call."), 3000);
+        return;
+    }
+
+    QJsonArray recipients;
+    for (const QString &id : channel.recipientIds) {
+        if (id != m_selfUserId)
+            recipients.append(id);
+    }
+    const QString channelId = channel.id;
+    wlog(QStringLiteral("call"), QStringLiteral("starting a call in %1, ringing %2")
+                                     .arg(channelId)
+                                     .arg(recipients.size()));
+    m_rest->ringCall(channelId, recipients, [](const QJsonObject &) {},
+                     [this](const RestClient::Error &error) {
+                         wlog(QStringLiteral("call"),
+                              QStringLiteral("ring failed: HTTP %1").arg(error.httpStatus));
+                         flashStatus(QStringLiteral("Could not start the call."), 5000);
+                     });
+    joinPrivateCall(channelId);
+}
+
+QString MainWindow::callPeerName(const QString &channelId) const
+{
+    if (!m_store)
+        return QStringLiteral("Someone");
+    const ChannelInfo channel = m_store->channel(channelId);
+    if (channel.recipientIds.size() == 1) {
+        const QString who = m_store->user(channel.recipientIds.first()).displayName();
+        if (!who.isEmpty())
+            return who;
+    }
+    if (!channel.name.isEmpty())
+        return channel.name;
+    return QStringLiteral("Someone");
+}
+
+void MainWindow::notePrivateCall(const QJsonObject &data, bool ended)
+{
+    const QString channelId = data.value(QStringLiteral("channel_id")).toString();
+    if (channelId.isEmpty())
+        return;
+    if (ended) {
+        wlog(QStringLiteral("call"), QStringLiteral("call ended in %1").arg(channelId));
+        m_activeCalls.remove(channelId);
+        m_ringing.remove(channelId);
+        m_callEvents.remove(channelId);
+        if (m_store)
+            m_store->endCall(channelId);
+        refreshCallBanner();
+        return;
+    }
+
+    m_callEvents.insert(channelId);
+    m_activeCalls.insert(channelId);
+    QStringList ringing;
+    for (const QJsonValue &id : data.value(QStringLiteral("ringing")).toArray()) {
+        const QString userId = id.toString();
+        if (!userId.isEmpty())
+            ringing.append(userId);
+    }
+    m_ringing.insert(channelId, ringing);
+    if (m_store && data.contains(QStringLiteral("voice_states")))
+        m_store->setVoiceStates(data.value(QStringLiteral("voice_states")).toArray());
+    wlog(QStringLiteral("call"), QStringLiteral("call in %1, ringing %2")
+                                     .arg(channelId, ringing.isEmpty() ? QStringLiteral("nobody")
+                                                                       : ringing.join(QStringLiteral(", "))));
+    refreshCallBanner();
+}
+
+void MainWindow::noteCallMessage(const MessageInfo &message)
+{
+    if (message.channelId.isEmpty())
+        return;
+    if (message.callEnded.isValid()) {
+        m_activeCalls.remove(message.channelId);
+        m_ringing.remove(message.channelId);
+        refreshCallBanner();
+        return;
+    }
+    if (!message.callPresent && message.type != 3)
+        return;
+    m_activeCalls.insert(message.channelId);
+    // CALL_CREATE is the list of who is actually ringing. Until it arrives, a
+    // call message from someone else is the ring.
+    if (!m_callEvents.contains(message.channelId) && message.authorId != m_selfUserId)
+        m_ringing.insert(message.channelId, QStringList{m_selfUserId});
+    refreshCallBanner();
+}
+
+void MainWindow::updateCallButton()
+{
+    if (!m_callButton || !m_store)
+        return;
+    const ChannelInfo channel = m_store->channel(m_currentChannelId);
+    const bool inThisCall = m_voiceChannelId == m_currentChannelId && !m_voiceChannelId.isEmpty();
+    m_callButton->setVisible(channel.isDirect() && !inThisCall);
+}
+
+void MainWindow::refreshCallBanner()
+{
+    if (!m_callBanner)
+        return;
+
+    QString ringChannel;
+    for (auto it = m_ringing.constBegin(); it != m_ringing.constEnd(); ++it) {
+        if (it.value().contains(m_selfUserId) && it.key() != m_voiceChannelId)
+            ringChannel = it.key();
+    }
+
+    QString joinChannel;
+    if (ringChannel.isEmpty() && m_currentChannelId != m_voiceChannelId && m_store) {
+        if (m_activeCalls.contains(m_currentChannelId)) {
+            const ChannelInfo channel = m_store->channel(m_currentChannelId);
+            if (channel.isDirect())
+                joinChannel = m_currentChannelId;
+        }
+        if (joinChannel.isEmpty()) {
+            const QList<MessageInfo> messages = m_store->messages(m_currentChannelId);
+            for (int i = messages.size() - 1; i >= 0; --i) {
+                if (messages.at(i).type != 3)
+                    continue;
+                if (messages.at(i).callPresent && !messages.at(i).callEnded.isValid()) {
+                    const ChannelInfo channel = m_store->channel(m_currentChannelId);
+                    if (channel.isDirect())
+                        joinChannel = m_currentChannelId;
+                }
+                break;
+            }
+        }
+    }
+
+    if (!m_ringing.contains(m_announcedRing)
+        || !m_ringing.value(m_announcedRing).contains(m_selfUserId))
+        m_announcedRing.clear();
+
+    const QString channelId = !ringChannel.isEmpty() ? ringChannel : joinChannel;
+    if (channelId.isEmpty()) {
+        m_bannerChannelId.clear();
+        m_callBanner->hide();
+        m_ringTimer.stop();
+        return;
+    }
+
+    const bool ringing = !ringChannel.isEmpty();
+    const QString name = callPeerName(channelId).toHtmlEscaped();
+    m_bannerChannelId = channelId;
+    m_callBannerText->setText(
+        QStringLiteral("<span style='color:%1'>&#9742;</span> %2")
+            .arg(QLatin1String(Theme::Green),
+                 ringing ? QStringLiteral("Incoming call from %1").arg(name)
+                         : QStringLiteral("%1 started a call").arg(name)));
+    m_callAccept->setText(ringing ? QStringLiteral("Accept") : QStringLiteral("Join"));
+    m_callDecline->setVisible(ringing);
+    m_callBanner->show();
+
+    if (!ringing) {
+        m_ringTimer.stop();
+        return;
+    }
+    if (m_announcedRing != channelId) {
+        m_announcedRing = channelId;
+        m_ringBeeps = 0;
+        wlog(QStringLiteral("call"), QStringLiteral("ringing from %1 in %2").arg(callPeerName(channelId), channelId));
+        if (QApplication::activeWindow() == nullptr)
+            showDesktopNotification(QStringLiteral("Incoming call"), callPeerName(channelId), channelId);
+        if (AppConfig::instance().value(QStringLiteral("notifications/desktop"), true).toBool())
+            QApplication::beep();
+    }
+    if (!m_ringTimer.isActive())
+        m_ringTimer.start();
+}
+
+namespace {
+
+QString callLasted(const QDateTime &start, const QDateTime &end)
+{
+    if (!start.isValid() || !end.isValid())
+        return {};
+    const qint64 secs = qMax(qint64(0), start.secsTo(end));
+    if (secs < 60)
+        return QStringLiteral("a few seconds");
+    const qint64 mins = secs / 60;
+    if (mins < 60)
+        return mins == 1 ? QStringLiteral("a minute") : QStringLiteral("%1 minutes").arg(mins);
+    const qint64 hours = mins / 60;
+    if (hours < 24)
+        return hours == 1 ? QStringLiteral("an hour") : QStringLiteral("%1 hours").arg(hours);
+    const qint64 days = hours / 24;
+    return days == 1 ? QStringLiteral("a day") : QStringLiteral("%1 days").arg(days);
+}
+
+} // namespace
+
+QString MainWindow::callMessageHtml(const MessageInfo &message) const
+{
+    const QString idTag = QStringLiteral("<a name=\"msg-%1\">&#8203;</a>").arg(message.id);
+    const QString name = message.authorName.isEmpty() ? QStringLiteral("Someone")
+                                                       : message.authorName.toHtmlEscaped();
+    const bool mine = !m_selfUserId.isEmpty() && message.authorId == m_selfUserId;
+    const bool participated = mine || message.callParticipants.contains(m_selfUserId);
+    const bool ended = message.callEnded.isValid();
+    const bool ongoing = message.callPresent && !ended;
+
+    QString words;
+    if (ended && !participated) {
+        words = QStringLiteral("You missed a call from <b>%1</b>").arg(name);
+        const QString lasted = callLasted(message.timestamp, message.callEnded);
+        if (!lasted.isEmpty())
+            words += QStringLiteral(" that lasted %1").arg(lasted.toHtmlEscaped());
+        words += QStringLiteral(".");
+    } else {
+        words = QStringLiteral("<b>%1</b> started a call").arg(name);
+        if (ended) {
+            const QString lasted = callLasted(message.timestamp, message.callEnded);
+            if (!lasted.isEmpty())
+                words += QStringLiteral(" that lasted %1").arg(lasted.toHtmlEscaped());
+        }
+        words += QStringLiteral(".");
+    }
+
+    QString when;
+    if (message.timestamp.isValid()) {
+        const bool today = message.timestamp.date() == QDate::currentDate();
+        when = QLocale().toString(message.timestamp, today ? QStringLiteral("h:mm AP")
+                                                           : QStringLiteral("M/d/yy, h:mm AP"));
+    }
+
+    QString join;
+    if (ongoing && m_voiceChannelId != message.channelId && !message.channelId.isEmpty()) {
+        join = QStringLiteral(" <a href=\"singularity-call:%1\" style=\"color:%2; text-decoration:none;\">Join</a>")
+                   .arg(message.channelId, QLatin1String(Theme::Green));
+    }
+
+    return QStringLiteral(
+               "<table class=\"row\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\"><tr>"
+               "<td width=\"56\" align=\"center\" valign=\"middle\">%1"
+               "<span style=\"color:%2; font-size:16px;\">&#9742;</span></td>"
+               "<td valign=\"middle\"><span style=\"color:%3;\">%4</span>"
+               "<span style=\"color:%5;\"> %6</span>%7</td></tr></table>")
+        .arg(idTag, QString(QLatin1String(Theme::Green)), QString(QLatin1String(Theme::TextPrimary)), words,
+             QString(QLatin1String(Theme::TextMuted)), when.toHtmlEscaped(), join);
 }
 
 void MainWindow::toggleCamera()
@@ -10036,14 +10475,26 @@ void MainWindow::tryStartVoice()
 
     applyVoiceSettings();
 
-    m_voice->connectToVoice(m_voiceGuildId.isEmpty() ? m_store->channel(m_voiceChannelId).guildId
-                                                     : m_voiceGuildId,
+    // A server channel already knows its guild. A private call does not: Discord
+    // answers with the channel id in the server update, and that is what the
+    // voice gateway wants as server_id. An empty one is refused.
+    QString serverId = m_voiceGuildId;
+    if (serverId.isEmpty())
+        serverId = m_pendingVoiceServerId;
+    if (serverId.isEmpty())
+        serverId = m_store->channel(m_voiceChannelId).guildId;
+    if (serverId.isEmpty())
+        serverId = m_voiceChannelId;
+    wlog(QStringLiteral("voice"), QStringLiteral("connecting, server id %1").arg(serverId));
+
+    m_voice->connectToVoice(serverId,
                             m_voiceChannelId, m_selfUserId, sessionId, m_pendingVoiceToken,
                             m_pendingVoiceEndpoint);
 
     // Used once, so a later reconnect waits for a fresh pair.
     m_pendingVoiceToken.clear();
     m_pendingVoiceEndpoint.clear();
+    m_pendingVoiceServerId.clear();
 }
 
 void MainWindow::loadUserAudio()
@@ -11022,13 +11473,17 @@ void MainWindow::updateVoicePanel()
 
     const ChannelInfo channel = m_store->channel(m_voiceChannelId);
     const GuildInfo guild = m_store->guild(channel.guildId);
-    const QString full = guild.name.isEmpty() ? channel.name
-                                              : QStringLiteral("%1 / %2").arg(guild.name, channel.name);
+    QString full = channel.name;
+    if (channel.isDirect() && full.isEmpty())
+        full = callPeerName(m_voiceChannelId);
+    if (!guild.name.isEmpty())
+        full = QStringLiteral("%1 / %2").arg(guild.name, channel.name);
 
     // Cut it to fit rather than letting it push the Leave button out of view.
     const QFontMetrics metrics(m_voiceChannelLabel->font());
     m_voiceChannelLabel->setText(metrics.elidedText(full, Qt::ElideRight, 150));
     m_voiceChannelLabel->setToolTip(full);
+    updateCallButton();
 }
 
 void MainWindow::createInvite(const QString &channelId)
@@ -11089,6 +11544,9 @@ void MainWindow::showDesktopNotification(const QString &title, const QString &te
 
 void MainWindow::maybeNotify(const QJsonObject &data, const MessageInfo &message)
 {
+    // A call has its own banner and ring. An empty toast on top of that is noise.
+    if (message.type == 3)
+        return;
     AppConfig &config = AppConfig::instance();
     if (!config.value(QStringLiteral("notifications/desktop"), true).toBool())
         return;
