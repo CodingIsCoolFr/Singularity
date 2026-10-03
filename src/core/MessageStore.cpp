@@ -1768,7 +1768,18 @@ void MessageStore::updateMessage(const QJsonObject &rawMessage)
             item.callParticipants = parsed.callParticipants;
             item.callEnded = parsed.callEnded;
         }
-        item.edited = true;
+        // A link preview arrives here, after the message, once Discord has
+        // fetched the page. That update is not an edit. Treating it as one
+        // drew "(edited)" and dropped the card, so a YouTube link stayed a
+        // bare address.
+        if (rawMessage.contains(QStringLiteral("embeds"))) {
+            const MessageInfo parsed = parseMessage(rawMessage);
+            item.embeds = parsed.embeds;
+            wlog(QStringLiteral("ui"),
+                 QStringLiteral("link preview on %1: %2").arg(messageId).arg(item.embeds.size()));
+        }
+        if (rawMessage.contains(QStringLiteral("edited_timestamp")))
+            item.edited = !rawMessage.value(QStringLiteral("edited_timestamp")).isNull();
         emit messageChanged(channelId, messageId);
         return;
     }
