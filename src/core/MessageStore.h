@@ -342,6 +342,15 @@ struct MessageInfo
     QString applicationId;
     int flags = 0;
 
+    // A slash command's answer (type 20, or 23 for one run from a menu). The
+    // line above it says who ran which command, the way Discord draws it.
+    // From interaction_metadata, or the older `interaction` when that is all
+    // there is.
+    QString interactionUserId;
+    QString interactionUserName;
+    QString interactionUserAvatar;
+    QString interactionName;
+
     // A Rich Presence / game invite. Discord sends this as `activity` plus
     // `application`, with no words and no embeds, which is why it used to
     // read "(no text)".
@@ -422,6 +431,7 @@ public:
     // Owner and Administrator count as every bit. Otherwise @everyone plus
     // the roles you hold, which is what Mute / Deafen / Move Members read.
     quint64 selfPermissions(const QString &guildId) const;
+    QStringList selfRoles(const QString &guildId) const { return m_selfRoles.value(guildId); }
     ChannelInfo channel(const QString &channelId) const;
     QList<ChannelInfo> channelsOfGuild(const QString &guildId) const;
     QList<ChannelGroup> groupedChannels(const QString &guildId) const;

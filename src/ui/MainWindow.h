@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/AppCommands.h"
 #include "core/GatewayClient.h"
 #include "core/MessageStore.h"
 #include "core/NotificationRules.h"
@@ -19,6 +20,7 @@
 class PluginHost;
 
 class Backdrop;
+class CommandPicker;
 class QDragEnterEvent;
 class QDragMoveEvent;
 class QDropEvent;
@@ -76,6 +78,21 @@ private slots:
     void hideMentionPopup();
     void insertPickedMention();
     bool mentionQuery(int *atPos, QString *query) const;
+
+    // Slash commands: the "/" list, filling in a command's options, and
+    // running it (POST /interactions, type 2) the way Discord's client does.
+    void updateCommandPopup();
+    void hideCommandPopup();
+    void pickCommandRow(const QString &key);
+    bool runActiveCommand();
+    void insertNextOptionLabel();
+    void loadCommandIndex(const QString &guildId, const QString &channelId, int attempt = 0);
+    void loadCommandFrecency();
+    void requestAutocomplete();
+    QList<AppCommands::Command> commandsHere(QList<AppCommands::App> *apps = nullptr) const;
+    AppCommands::App commandApp(const QString &applicationId) const;
+    void runMessageCommand(const AppCommands::Command &command, const QString &messageId);
+    QString commandHintHtml() const;
     void showMessageMenu(const QPoint &pos);
     void beginReply(const QString &messageId);
     // "Forward" on a message: pick up to five places, optionally add a line.
@@ -333,6 +350,29 @@ private:
     int m_mentionSearchSerial = 0;
     QString m_mentionSearchedFor;
     QList<QPair<QString, QString>> m_mentionSearchHits;
+
+    // Slash commands. Indexes are kept per place ("guild:<id>", "channel:<id>",
+    // and "user" for apps you added yourself) for ten minutes, as Discord's
+    // client does not refetch on every keystroke either.
+    CommandPicker *m_commandPicker = nullptr;
+    QLabel *m_commandHint = nullptr;
+    QHash<QString, AppCommands::Index> m_commandIndex;
+    QHash<QString, qint64> m_commandIndexAt;
+    QSet<QString> m_commandIndexLoading;
+    QHash<QString, int> m_commandFrecency;     // Discord's Frequently Used, by frecencyKey
+    bool m_commandFrecencyAsked = false;
+    AppCommands::Command m_activeCommand;      // rootId empty: no command chosen
+    QString m_activeCommandChannel;
+    // What the picker is showing: "command", "option", "choice" or "auto".
+    QString m_commandPickerMode;
+    int m_commandOptionIndex = -1;             // the option the choices belong to
+    QHash<QString, QHash<QString, QJsonValue>> m_autocompletePicked;   // option -> shown name -> value
+    QJsonArray m_autocompleteChoices;
+    QString m_autocompleteNonce;
+    QString m_autocompleteFor;                 // "option\nquery" that was asked
+    QString m_autocompleteAnswer;              // ...and the one the choices answer
+    QString m_commandPickerDismissed;          // Escape: stay shut until the text changes
+    QTimer m_autocompleteTimer;
     QWidget *m_composerContext = nullptr;
     QLabel *m_composerContextText = nullptr;
     QLabel *m_attachmentLabel = nullptr;

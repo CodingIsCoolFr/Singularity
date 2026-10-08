@@ -303,6 +303,17 @@ public:
     // Discord accepted it; the bot's answer arrives on the gateway.
     void createInteraction(const QJsonObject &body, ObjectHandler onOk, ErrorHandler onError);
 
+    // The slash commands you can use: a server's when guildId is set, a DM's
+    // when only channelId is, and the apps you added to yourself when
+    // neither is. A body without "application_commands" (Discord answers 202)
+    // means the list is still being built; ask again in five seconds.
+    void fetchCommandIndex(const QString &guildId, const QString &channelId, ObjectHandler onOk,
+                           ErrorHandler onError);
+
+    // GET /users/@me/settings-proto/{type}: {"settings": base64}. Type 2 holds
+    // favourites and Frequently Used.
+    void fetchSettingsProto(int type, ObjectHandler onOk, ErrorHandler onError);
+
     // Private notes you keep about someone. Only you can read them.
     void fetchNote(const QString &userId, ObjectHandler onOk, ErrorHandler onError);
     void saveNote(const QString &userId, const QString &note, ObjectHandler onOk, ErrorHandler onError);

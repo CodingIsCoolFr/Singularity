@@ -1177,6 +1177,22 @@ MessageInfo MessageStore::parseMessage(const QJsonObject &raw)
     message.applicationId = raw.value(QStringLiteral("application_id")).toString();
     message.flags = raw.value(QStringLiteral("flags")).toInt();
 
+    const QJsonObject metadata = raw.value(QStringLiteral("interaction_metadata")).toObject();
+    const QJsonObject legacy = raw.value(QStringLiteral("interaction")).toObject();
+    if (!metadata.isEmpty() || !legacy.isEmpty()) {
+        QJsonObject who = metadata.value(QStringLiteral("user")).toObject();
+        if (who.isEmpty())
+            who = legacy.value(QStringLiteral("user")).toObject();
+        message.interactionUserId = who.value(QStringLiteral("id")).toString();
+        message.interactionUserName = who.value(QStringLiteral("global_name")).toString();
+        if (message.interactionUserName.isEmpty())
+            message.interactionUserName = who.value(QStringLiteral("username")).toString();
+        message.interactionUserAvatar = who.value(QStringLiteral("avatar")).toString();
+        message.interactionName = metadata.value(QStringLiteral("name")).toString();
+        if (message.interactionName.isEmpty())
+            message.interactionName = legacy.value(QStringLiteral("name")).toString();
+    }
+
     const QJsonObject call = raw.value(QStringLiteral("call")).toObject();
     if (raw.contains(QStringLiteral("call")) && !raw.value(QStringLiteral("call")).isNull()) {
         message.callPresent = true;

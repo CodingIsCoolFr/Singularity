@@ -60,3 +60,14 @@ bool guildFoldersFromProto(const QByteArray &bytes, QList<DiscordFolder> *folder
 // "guildFolders", PATCH /users/@me/settings-proto/1 {"settings": base64} -
 // with an id, colour and name only where the folder has one.
 QByteArray guildFoldersToProto(const QJsonArray &folders);
+
+// Discord's "Frequently Used" commands, from the second settings blob
+// (GET /users/@me/settings-proto/2, FrecencyUserSettings). Field 7,
+// ApplicationCommandFrecency, maps a command key to a FrecencyItem
+// { total_uses = 1; recent_uses = 2; frecency = 3; score = 4 }. Numbers
+// checked against the protobuf descriptors in Discord's web bundle.
+//
+// The key is the command id ("\0" and a sub command name per level), plus
+// ":<server id>" for a command made for one server. The value is how high it
+// ranks: the stored score, or failing that the frecency, or the use count.
+QHash<QString, int> commandFrecencyFromProto(const QByteArray &bytes);

@@ -6,6 +6,7 @@
 #include <QStringList>
 #include <QtNumeric>
 
+#include <climits>
 #include <cstring>
 
 namespace {
@@ -360,6 +361,96 @@ bool audioContextFromProto(const QByteArray &bytes, QHash<QString, UserAudioLeve
         }
     }
     return true;
+}
+
+QHash<QString, int> commandFrecencyFromProto(const QByteArray &bytes)
+{
+    QHash<QString, int> out;
+    const auto *data = reinterpret_cast<const uchar *>(bytes.constData());
+    const uchar *frecency = nullptr;
+    int frecencySize = 0;
+    if (bytes.isEmpty() || !findMessage(data, bytes.size(), 7, &frecency, &frecencySize))
+        return out;
+
+    // ApplicationCommandFrecency { map<string, FrecencyItem> application_commands = 1; }
+    int index = 0;
+    while (index < frecencySize) {
+        quint64 tag = 0;
+        if (!readVarint(frecency, frecencySize, index, tag))
+            return out;
+        const int wire = int(tag & 7);
+        if ((tag >> 3) != 1 || wire != 2) {
+            if (!skipField(frecency, frecencySize, index, wire))
+                return out;
+            continue;
+        }
+        quint64 length = 0;
+        if (!readVarint(frecency, frecencySize, index, length) || length > quint64(frecencySize - index))
+            return out;
+        const uchar *entry = frecency + index;
+        const int entrySize = int(length);
+        index += entrySize;
+
+        QString key;
+        quint64 totalUses = 0;
+        qint64 score = 0;
+        qint64 recency = 0;
+        int at = 0;
+        while (at < entrySize) {
+            quint64 entryTag = 0;
+            if (!readVarint(entry, entrySize, at, entryTag))
+                break;
+            const int field = int(entryTag >> 3);
+            const int entryWire = int(entryTag & 7);
+            if (field == 1 && entryWire == 2) {
+                quint64 keyLength = 0;
+                if (!readVarint(entry, entrySize, at, keyLength) || keyLength > quint64(entrySize - at))
+                    break;
+                key = QString::fromUtf8(reinterpret_cast<const char *>(entry + at), int(keyLength));
+                at += int(keyLength);
+            } else if (field == 2 && entryWire == 2) {
+                // FrecencyItem { uint32 total_uses = 1; repeated uint64 recent_uses = 2;
+                //                int32 frecency = 3; int32 score = 4; }
+                quint64 itemLength = 0;
+                if (!readVarint(entry, entrySize, at, itemLength) || itemLength > quint64(entrySize - at))
+                    break;
+                const uchar *item = entry + at;
+                const int itemSize = int(itemLength);
+                at += itemSize;
+                int pos = 0;
+                while (pos < itemSize) {
+                    quint64 itemTag = 0;
+                    if (!readVarint(item, itemSize, pos, itemTag))
+                        break;
+                    const int itemField = int(itemTag >> 3);
+                    const int itemWire = int(itemTag & 7);
+                    quint64 value = 0;
+                    if (itemWire == 0 && readVarint(item, itemSize, pos, value)) {
+                        if (itemField == 1)
+                            totalUses = value;
+                        else if (itemField == 3)
+                            recency = qint64(qint32(quint32(value)));
+                        else if (itemField == 4)
+                            score = qint64(qint32(quint32(value)));
+                    } else if (itemWire != 0 && !skipField(item, itemSize, pos, itemWire)) {
+                        break;
+                    }
+                }
+            } else if (!skipField(entry, entrySize, at, entryWire)) {
+                break;
+            }
+        }
+        if (key.isEmpty())
+            continue;
+        int rank = int(qBound(qint64(0), score, qint64(INT_MAX)));
+        if (rank == 0)
+            rank = int(qBound(qint64(0), recency, qint64(INT_MAX)));
+        if (rank == 0)
+            rank = int(qMin<quint64>(totalUses, INT_MAX));
+        if (rank > 0)
+            out.insert(key, rank);
+    }
+    return out;
 }
 
 namespace {

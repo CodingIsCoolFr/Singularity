@@ -788,6 +788,24 @@ void RestClient::updateSettingsProto(int type, const QByteArray &proto, ObjectHa
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+void RestClient::fetchSettingsProto(int type, ObjectHandler onOk, ErrorHandler onError)
+{
+    QNetworkReply *reply = m_network.get(buildRequest(QStringLiteral("/users/@me/settings-proto/%1").arg(type)));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
+void RestClient::fetchCommandIndex(const QString &guildId, const QString &channelId, ObjectHandler onOk,
+                                   ErrorHandler onError)
+{
+    QString path = QStringLiteral("/users/@me/application-command-index");
+    if (!guildId.isEmpty())
+        path = QStringLiteral("/guilds/%1/application-command-index").arg(guildId);
+    else if (!channelId.isEmpty())
+        path = QStringLiteral("/channels/%1/application-command-index").arg(channelId);
+    QNetworkReply *reply = m_network.get(buildRequest(path));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::updateGuildFolders(const QJsonArray &folders, ObjectHandler onOk, ErrorHandler onError)
 {
     // The same endpoint the status goes through. Discord keeps it in step with

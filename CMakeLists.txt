@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(Singularity VERSION 0.8.63 LANGUAGES CXX)
+project(Singularity VERSION 0.8.64 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -57,6 +57,8 @@ qt_add_executable(Singularity WIN32
     src/core/MessageStore.cpp
     src/core/SettingsProto.h
     src/core/SettingsProto.cpp
+    src/core/AppCommands.h
+    src/core/AppCommands.cpp
 
     src/plugin/Plugin.h
     src/plugin/PluginHost.h
@@ -137,6 +139,8 @@ qt_add_executable(Singularity WIN32
     src/ui/MediaCache.cpp
     src/ui/ListDelegates.h
     src/ui/ListDelegates.cpp
+    src/ui/CommandPicker.h
+    src/ui/CommandPicker.cpp
     src/ui/AnimatedImage.h
     src/ui/AnimatedImage.cpp
     src/ui/AudioMeter.h

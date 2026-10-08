@@ -11,6 +11,7 @@
 #include "ui/ImageViewer.h"
 #include "ui/Backdrop.h"
 #include "ui/CaptchaDialog.h"
+#include "ui/CommandPicker.h"
 #include "core/CameraShare.h"
 #include "core/ScreenShare.h"
 #include "core/ShareAudio.h"
@@ -2097,6 +2098,16 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
     attachmentRow->hide();
     composerLayout->addWidget(attachmentRow);
 
+    // What a slash command takes, while one is being filled in: its options,
+    // the one the cursor is in, and what that one is for.
+    m_commandHint = new QLabel(composerWrap);
+    m_commandHint->setTextFormat(Qt::RichText);
+    m_commandHint->setWordWrap(true);
+    m_commandHint->setContentsMargins(6, 0, 6, 4);
+    m_commandHint->setStyleSheet(QStringLiteral("font-size: 12px;"));
+    m_commandHint->hide();
+    composerLayout->addWidget(m_commandHint);
+
     auto *composerBox = new QFrame(composerWrap);
     composerBox->setObjectName(QStringLiteral("ComposerBox"));
     auto *boxLayout = new QVBoxLayout(composerBox);
@@ -2170,6 +2181,15 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
     layout->addWidget(composerWrap);
 
     connect(m_composer, &QTextEdit::textChanged, this, &MainWindow::onComposerChanged);
+    // Moving through a command with the arrows or the mouse changes which
+    // option the list is for.
+    connect(m_composer, &QTextEdit::cursorPositionChanged, this, [this]() {
+        if (!m_activeCommand.rootId.isEmpty() || (m_commandPicker && m_commandPicker->isVisible()))
+            updateCommandPopup();
+    });
+    m_autocompleteTimer.setSingleShot(true);
+    m_autocompleteTimer.setInterval(250);
+    connect(&m_autocompleteTimer, &QTimer::timeout, this, &MainWindow::requestAutocomplete);
     return chat;
 }
 
@@ -2422,10 +2442,38 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
     }
 
     if (eventType == QLatin1String("INTERACTION_FAILURE")) {
+        // Suggestions that did not come are not worth a message: the list
+        // just says there are none.
+        if (!m_autocompleteNonce.isEmpty() && data.value(QStringLiteral("nonce")).toString() == m_autocompleteNonce) {
+            m_autocompleteChoices = {};
+            m_autocompleteAnswer = m_autocompleteFor;
+            updateCommandPopup();
+            return;
+        }
         const int reason = data.value(QStringLiteral("reason_code")).toInt();
-        flashStatus(reason == 2 ? QStringLiteral("The bot did not answer in time.")
-                                 : QStringLiteral("That button did not go through."),
+        flashStatus(reason == 2 ? QStringLiteral("The app did not answer in time.")
+                                 : QStringLiteral("The app did not take that."),
                     5000);
+        return;
+    }
+
+    // The app's suggestions for the option being typed, matched to the
+    // request by its nonce. An older answer than the last question is dropped.
+    if (eventType == QLatin1String("APPLICATION_COMMAND_AUTOCOMPLETE_RESPONSE")) {
+        if (m_autocompleteNonce.isEmpty() || data.value(QStringLiteral("nonce")).toString() != m_autocompleteNonce)
+            return;
+        m_autocompleteChoices = data.value(QStringLiteral("choices")).toArray();
+        m_autocompleteAnswer = m_autocompleteFor;
+        updateCommandPopup();
+        return;
+    }
+
+    // A server's apps or their commands changed: read the list again next time.
+    if (eventType == QLatin1String("GUILD_APPLICATION_COMMAND_INDEX_UPDATE")
+        || eventType == QLatin1String("APPLICATION_COMMAND_PERMISSIONS_UPDATE")) {
+        const QString guildId = data.value(QStringLiteral("guild_id")).toString();
+        if (!guildId.isEmpty())
+            m_commandIndexAt.remove(QStringLiteral("guild:") + guildId);
         return;
     }
 
@@ -3904,6 +3952,12 @@ void MainWindow::openChannel(const QString &channelId)
 
     clearComposerContext();
 
+    // The commands you can use here, read ahead so "/" and a message's Apps
+    // menu have them at once. Each list is kept ten minutes.
+    loadCommandIndex(channel.guildId, channel.guildId.isEmpty() ? channelId : QString());
+    loadCommandIndex({}, {});
+    updateCommandPopup();
+
     if (m_store->hasHistory(channelId)) {
         renderChannel();
         acknowledgeChannel(channelId);
@@ -3976,6 +4030,9 @@ bool MainWindow::shouldGroup(const MessageInfo &previous, const MessageInfo &cur
     // A reply always stands on its own. Grouping it hides the line that says
     // who it answered.
     if (current.type == 19 || !current.replyToId.isEmpty())
+        return false;
+    // So does a command's answer, for its "used /command" line.
+    if (current.type == 20 || current.type == 23)
         return false;
     if (!previous.timestamp.isValid() || !current.timestamp.isValid())
         return false;
@@ -4813,8 +4870,21 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
     body += activityInviteHtml(message);
     body += reactionsHtml(message);
 
+    // An app still working on a command: Discord's "is thinking..." line
+    // (flag 128, LOADING), replaced by the answer when it comes.
+    if ((message.flags & 128) && message.content.isEmpty() && message.embeds.isEmpty()
+        && message.components.isEmpty()) {
+        body = QStringLiteral("<span class=\"system\"><i>%1 is thinking...</i></span>")
+                   .arg((message.authorName.isEmpty() ? QStringLiteral("The app") : message.authorName).toHtmlEscaped());
+    }
+
     if (body.isEmpty())
         body = QStringLiteral("<span class=\"system\">(no text)</span>");
+
+    // Flag 64, EPHEMERAL: an answer only you get, which goes away when you
+    // leave. Discord says so under it.
+    if (message.flags & 64)
+        body += QStringLiteral("<div class=\"system\" style=\"font-size:11px;\">Only you can see this</div>");
 
     const QString bodyClass = message.deleted ? QStringLiteral("body deleted") : QStringLiteral("body");
 
@@ -4876,6 +4946,30 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
                         "<img src=\"singularity-spine:hook\" width=\"22\" height=\"12\"></td>"
                         "<td valign=\"middle\">%1%2%3</td></tr></table>")
                         .arg(face, name, preview, idTag);
+    } else if ((message.type == 20 || message.type == 23) && !message.interactionName.isEmpty()) {
+        // A command's answer: the same hook, then who ran it and which one -
+        // "Mitya used /play" - the way Discord heads it.
+        QString face;
+        if (!message.interactionUserId.isEmpty()) {
+            QUrl avatar = MediaCache::avatarUrl(message.interactionUserId, message.interactionUserAvatar, 32);
+            if (!avatar.isEmpty()) {
+                avatar.setFragment(QStringLiteral("a16"));
+                face = QStringLiteral("<a href=\"singularity-user:%1\"><img src=\"%2\" width=\"16\" height=\"16\"></a> ")
+                           .arg(message.interactionUserId, avatar.toString().toHtmlEscaped());
+            }
+        }
+        const QString who = message.interactionUserName.isEmpty()
+                                ? QString()
+                                : QStringLiteral("<a class=\"reply-name\" href=\"singularity-user:%1\">%2</a> ")
+                                      .arg(message.interactionUserId, message.interactionUserName.toHtmlEscaped());
+        const QString what = (message.type == 20 ? QStringLiteral("/") : QString()) + message.interactionName;
+        replyHtml = QStringLiteral(
+                        "<table class=\"reply\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\"><tr>"
+                        "<td width=\"56\" align=\"right\" valign=\"middle\">%4"
+                        "<img src=\"singularity-spine:hook\" width=\"22\" height=\"12\"></td>"
+                        "<td valign=\"middle\">%1%2<span class=\"reply-text\">used </span>"
+                        "<span style=\"color:%3;\">%5</span></td></tr></table>")
+                        .arg(face, who, QLatin1String(Theme::Accent), idTag, what.toHtmlEscaped());
     }
 
     // A grouped message has no avatar and no name, only the text, lined up
@@ -6801,6 +6895,7 @@ void MainWindow::selectChannelEverywhere(const QString &channelId)
 void MainWindow::onComposerChanged()
 {
     updateMentionPopup();
+    updateCommandPopup();
 
     if (m_currentChannelId.isEmpty() || m_composer->toPlainText().trimmed().isEmpty())
         return;
@@ -6816,6 +6911,8 @@ void MainWindow::onComposerChanged()
 namespace {
 constexpr int kMentionId = QTextFormat::UserProperty + 50;
 constexpr int kMentionKind = QTextFormat::UserProperty + 51;
+// A channel picked for a command's channel option: its id, sent as <#id>.
+constexpr int kChannelMention = QTextFormat::UserProperty + 52;
 }
 
 bool MainWindow::mentionQuery(int *atPos, QString *query) const
@@ -6870,6 +6967,8 @@ QString MainWindow::composerPayload() const
                 out += QStringLiteral("<@%1>").arg(id);
             else if (kind == QLatin1String("role") && !id.isEmpty())
                 out += QStringLiteral("<@&%1>").arg(id);
+            else if (!frag.charFormat().property(kChannelMention).toString().isEmpty())
+                out += QStringLiteral("<#%1>").arg(frag.charFormat().property(kChannelMention).toString());
             else
                 out += frag.text();
         }
@@ -7064,6 +7163,995 @@ void MainWindow::updateMentionPopup()
 
     if (!query.isEmpty() && inGuild && query != m_mentionSearchedFor)
         m_mentionSearchTimer.start();
+}
+
+// ---------------------------------------------------------------------------
+// Slash commands
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr qint64 CommandIndexMaxAgeMs = 10 * 60 * 1000;
+
+QString commandIndexKey(const QString &guildId, const QString &channelId)
+{
+    if (!guildId.isEmpty())
+        return QStringLiteral("guild:") + guildId;
+    if (!channelId.isEmpty())
+        return QStringLiteral("channel:") + channelId;
+    return QStringLiteral("user");
+}
+
+QUrl appIconUrl(const AppCommands::App &app)
+{
+    if (app.id.isEmpty() || app.icon.isEmpty())
+        return {};
+    return QUrl(QStringLiteral("https://cdn.discordapp.com/app-icons/%1/%2.png?size=64").arg(app.id, app.icon));
+}
+
+bool isSnowflake(const QString &id)
+{
+    if (id.isEmpty())
+        return false;
+    for (const QChar c : id) {
+        if (!c.isDigit())
+            return false;
+    }
+    return true;
+}
+
+// Where the cursor is in a command being filled in. Positions are in the
+// message box's text.
+struct CommandCursor
+{
+    int base = 0;              // where the options start: after "/name"
+    QList<AppCommands::Span> spans;
+    int looseEnd = 0;
+    int current = -1;          // the option whose value the cursor is in
+    int valueStart = 0;        // that value, in box positions
+    int valueEnd = 0;
+    QString value;             // trimmed
+    QString trailingWord;      // the word being typed, for option names
+    int trailingStart = 0;
+    QHash<int, QString> values;
+    QString loose;
+};
+
+CommandCursor readCommandCursor(const QString &text, int cursor, const AppCommands::Command &command)
+{
+    CommandCursor out;
+    out.base = 1 + int(command.name.size());
+    const QString rest = text.mid(out.base);
+    out.spans = AppCommands::findSpans(rest, command.options, &out.looseEnd);
+    out.loose = rest.left(out.looseEnd).trimmed();
+    for (const AppCommands::Span &span : out.spans)
+        out.values.insert(span.option, rest.mid(span.valueStart, span.valueEnd - span.valueStart).trimmed());
+
+    const int at = cursor - out.base;
+    for (const AppCommands::Span &span : out.spans) {
+        if (at >= span.valueStart && at <= span.valueEnd) {
+            out.current = span.option;
+            out.valueStart = out.base + span.valueStart;
+            out.valueEnd = out.base + span.valueEnd;
+            out.value = out.values.value(span.option);
+        }
+    }
+
+    // The word just before the cursor, for picking an option by name.
+    int start = qBound(0, cursor, int(text.size()));
+    while (start > out.base && !text.at(start - 1).isSpace())
+        --start;
+    out.trailingStart = start;
+    out.trailingWord = text.mid(start, cursor - start);
+    return out;
+}
+
+} // namespace
+
+AppCommands::App MainWindow::commandApp(const QString &applicationId) const
+{
+    for (auto it = m_commandIndex.constBegin(); it != m_commandIndex.constEnd(); ++it) {
+        for (const AppCommands::App &app : it->apps) {
+            if (app.id == applicationId)
+                return app;
+        }
+    }
+    return {};
+}
+
+QList<AppCommands::Command> MainWindow::commandsHere(QList<AppCommands::App> *apps) const
+{
+    QList<AppCommands::Command> out;
+    if (m_currentChannelId.isEmpty())
+        return out;
+
+    const ChannelInfo channel = m_store->channel(m_currentChannelId);
+    AppCommands::Place place;
+    place.guildId = channel.guildId;
+    place.channelId = m_currentChannelId;
+    // A thread's overrides are its channel's.
+    if (channel.type == 10 || channel.type == 11 || channel.type == 12)
+        place.parentId = channel.parentId;
+    place.recipientIds = channel.recipientIds;
+    place.selfId = m_selfUserId;
+    if (!channel.guildId.isEmpty()) {
+        place.roleIds = m_store->selfRoles(channel.guildId);
+        place.permissions = m_store->selfPermissions(channel.guildId);
+        place.owner = !m_selfUserId.isEmpty() && m_store->guild(channel.guildId).ownerId == m_selfUserId;
+    }
+
+    QHash<QString, AppCommands::App> byId;
+    QSet<QString> seen;
+    const QStringList keys{commandIndexKey(channel.guildId, channel.guildId.isEmpty() ? m_currentChannelId : QString()),
+                           QStringLiteral("user")};
+    for (const QString &key : keys) {
+        const AppCommands::Index index = m_commandIndex.value(key);
+        for (const AppCommands::App &app : index.apps) {
+            if (!byId.contains(app.id))
+                byId.insert(app.id, app);
+        }
+        for (const AppCommands::Command &command : index.commands) {
+            if (seen.contains(command.id))
+                continue;
+            const auto app = byId.constFind(command.applicationId);
+            if (!AppCommands::allowed(command, app == byId.constEnd() ? nullptr : &app.value(), place))
+                continue;
+            seen.insert(command.id);
+            out.append(command);
+        }
+    }
+    out += AppCommands::builtIns();
+    if (apps)
+        *apps = byId.values();
+    return out;
+}
+
+void MainWindow::loadCommandIndex(const QString &guildId, const QString &channelId, int attempt)
+{
+    if (!m_rest)
+        return;
+    const QString key = commandIndexKey(guildId, channelId);
+    if (m_commandIndexLoading.contains(key))
+        return;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (attempt == 0 && m_commandIndexAt.contains(key) && now - m_commandIndexAt.value(key) < CommandIndexMaxAgeMs)
+        return;
+
+    m_commandIndexLoading.insert(key);
+    m_rest->fetchCommandIndex(
+        guildId, channelId,
+        [this, key, guildId, channelId, attempt](const QJsonObject &body) {
+            m_commandIndexLoading.remove(key);
+            // A 202: Discord is still putting the list together. Its client
+            // asks again after five seconds, three times at most.
+            if (!body.contains(QStringLiteral("application_commands"))) {
+                if (attempt < 3) {
+                    QTimer::singleShot(5000, this, [this, guildId, channelId, attempt]() {
+                        loadCommandIndex(guildId, channelId, attempt + 1);
+                    });
+                }
+                return;
+            }
+            const AppCommands::Index index = AppCommands::parseIndex(body, key == QLatin1String("user"));
+            m_commandIndex.insert(key, index);
+            m_commandIndexAt.insert(key, QDateTime::currentMSecsSinceEpoch());
+            wlog(QStringLiteral("commands"), QStringLiteral("%1: %2 commands from %3 apps")
+                                                 .arg(key)
+                                                 .arg(index.commands.size())
+                                                 .arg(index.apps.size()));
+            if (m_composer && m_composer->toPlainText().startsWith(QLatin1Char('/')))
+                updateCommandPopup();
+        },
+        [this, key, guildId, channelId, attempt](const RestClient::Error &error) {
+            m_commandIndexLoading.remove(key);
+            wlog(QStringLiteral("commands"),
+                 QStringLiteral("%1: list failed, HTTP %2 %3").arg(key).arg(error.httpStatus).arg(error.message));
+            if (error.isRateLimit() && attempt < 3) {
+                const int wait = qBound(1000, int(error.body.value(QStringLiteral("retry_after")).toDouble() * 1000),
+                                        30000);
+                QTimer::singleShot(wait, this, [this, guildId, channelId, attempt]() {
+                    loadCommandIndex(guildId, channelId, attempt + 1);
+                });
+                return;
+            }
+            // Kept empty for a minute, so typing does not ask again on every key.
+            m_commandIndex.insert(key, {});
+            m_commandIndexAt.insert(key, QDateTime::currentMSecsSinceEpoch() - CommandIndexMaxAgeMs + 60000);
+            if (m_composer && m_composer->toPlainText().startsWith(QLatin1Char('/')))
+                updateCommandPopup();
+        });
+}
+
+void MainWindow::loadCommandFrecency()
+{
+    if (m_commandFrecencyAsked || !m_rest)
+        return;
+    m_commandFrecencyAsked = true;
+    m_rest->fetchSettingsProto(
+        2,
+        [this](const QJsonObject &body) {
+            const QByteArray bytes =
+                QByteArray::fromBase64(body.value(QStringLiteral("settings")).toString().toLatin1());
+            const QHash<QString, int> found = commandFrecencyFromProto(bytes);
+            for (auto it = found.constBegin(); it != found.constEnd(); ++it)
+                m_commandFrecency.insert(it.key(), qMax(m_commandFrecency.value(it.key()), it.value()));
+            wlog(QStringLiteral("commands"), QStringLiteral("Frequently Used: %1 commands").arg(found.size()));
+            if (m_commandPickerMode == QLatin1String("command"))
+                updateCommandPopup();
+        },
+        [this](const RestClient::Error &error) {
+            m_commandFrecencyAsked = false;
+            wlog(QStringLiteral("commands"),
+                 QStringLiteral("Frequently Used did not load: HTTP %1").arg(error.httpStatus));
+        });
+}
+
+void MainWindow::hideCommandPopup()
+{
+    if (m_commandPicker)
+        m_commandPicker->hide();
+    m_commandPickerMode.clear();
+    m_commandOptionIndex = -1;
+}
+
+QString MainWindow::commandHintHtml() const
+{
+    if (m_activeCommand.rootId.isEmpty() || !m_composer)
+        return {};
+    const CommandCursor at =
+        readCommandCursor(m_composer->toPlainText(), m_composer->textCursor().position(), m_activeCommand);
+
+    QStringList parts;
+    int missing = -1;
+    for (int i = 0; i < m_activeCommand.options.size(); ++i) {
+        const AppCommands::Option &option = m_activeCommand.options.at(i);
+        const bool filled = !at.values.value(i).isEmpty();
+        if (option.required && !filled && missing < 0 && !(i == 0 && !at.loose.isEmpty()))
+            missing = i;
+        QString piece = option.displayName.toHtmlEscaped();
+        if (option.required)
+            piece += QStringLiteral("<span style=\"color:%1;\">*</span>").arg(QLatin1String(Theme::Red));
+        const char *colour = i == at.current ? Theme::Accent : filled ? Theme::TextPrimary : Theme::TextFaint;
+        parts << QStringLiteral("<span style=\"color:%1;%2\">%3</span>")
+                     .arg(QLatin1String(colour), i == at.current ? QStringLiteral(" font-weight:600;") : QString(),
+                          piece);
+    }
+
+    QString help;
+    if (at.current >= 0) {
+        const AppCommands::Option &option = m_activeCommand.options.at(at.current);
+        help = option.description.toHtmlEscaped();
+        if (option.type == AppCommands::User || option.type == AppCommands::Role
+            || option.type == AppCommands::Mentionable)
+            help += QStringLiteral(" &#8212; type @ and pick from the list");
+        else if (option.type == AppCommands::Attachment)
+            help = QStringLiteral("This command wants a file. Singularity cannot attach files to commands yet.");
+    } else if (missing >= 0) {
+        help = QStringLiteral("Press Tab to fill in %1.").arg(m_activeCommand.options.at(missing).displayName.toHtmlEscaped());
+    } else {
+        help = QStringLiteral("Press Enter to run it.");
+        for (int i = 0; i < m_activeCommand.options.size(); ++i) {
+            if (at.values.value(i).isEmpty()) {
+                help += QStringLiteral(" Tab adds the next option.");
+                break;
+            }
+        }
+    }
+
+    QString line = QStringLiteral("<b style=\"color:%1;\">/%2</b>")
+                       .arg(QLatin1String(Theme::TextPrimary), m_activeCommand.displayName.toHtmlEscaped());
+    if (!parts.isEmpty())
+        line += QStringLiteral("&#160;&#160;") + parts.join(QStringLiteral("&#160;&#160;"));
+    return line + QStringLiteral("<br><span style=\"color:%1;\">%2</span>").arg(QLatin1String(Theme::TextMuted), help);
+}
+
+void MainWindow::updateCommandPopup()
+{
+    const auto showHint = [this]() {
+        if (!m_commandHint)
+            return;
+        const QString html = commandHintHtml();
+        m_commandHint->setVisible(!html.isEmpty());
+        if (!html.isEmpty())
+            m_commandHint->setText(html);
+    };
+
+    if (!m_composer || m_currentChannelId.isEmpty() || !m_composer->isEnabled()) {
+        hideCommandPopup();
+        showHint();
+        return;
+    }
+
+    const QString text = m_composer->toPlainText();
+    const int cursor = m_composer->textCursor().position();
+
+    // A chosen command lasts while the box still starts with it.
+    if (!m_activeCommand.rootId.isEmpty()) {
+        const QString prefix = QLatin1Char('/') + m_activeCommand.name;
+        const bool still = m_activeCommandChannel == m_currentChannelId
+            && text.startsWith(prefix, Qt::CaseInsensitive)
+            && (text.size() == prefix.size() || text.at(prefix.size()).isSpace());
+        if (!still) {
+            m_activeCommand = {};
+            m_autocompletePicked.clear();
+            m_autocompleteChoices = {};
+            m_autocompleteFor.clear();
+            m_autocompleteAnswer.clear();
+        }
+    }
+
+    // Typed out in full, "/play " is /play, as in Discord. The longest name
+    // wins, so "/counter create " is that sub command and not /counter.
+    if (m_activeCommand.rootId.isEmpty() && text.startsWith(QLatin1Char('/')) && !text.contains(QLatin1Char('\n'))) {
+        const QList<AppCommands::Command> commands = commandsHere();
+        const AppCommands::Command *best = nullptr;
+        for (const AppCommands::Command &command : commands) {
+            if (command.type != 1)
+                continue;
+            const QString prefix = QLatin1Char('/') + command.name;
+            if (text.size() > prefix.size() && text.at(prefix.size()).isSpace()
+                && text.startsWith(prefix, Qt::CaseInsensitive)
+                && (!best || command.name.size() > best->name.size()))
+                best = &command;
+        }
+        if (best) {
+            m_activeCommand = *best;
+            m_activeCommandChannel = m_currentChannelId;
+        }
+    }
+    showHint();
+
+    // The @ list is already open: people and roles inside a command come
+    // from there, as they do in a message.
+    if ((m_mentionPopup && m_mentionPopup->isVisible()) || text == m_commandPickerDismissed) {
+        hideCommandPopup();
+        return;
+    }
+    m_commandPickerDismissed.clear();
+
+    if (!m_commandPicker) {
+        m_commandPicker = new CommandPicker(this);
+        connect(m_commandPicker, &CommandPicker::picked, this, &MainWindow::pickCommandRow);
+    }
+
+    const ChannelInfo channel = m_store->channel(m_currentChannelId);
+    const QString previous = m_commandPicker->currentKey();
+
+    // --- choosing a command ---------------------------------------------
+    if (m_activeCommand.rootId.isEmpty()) {
+        if (!text.startsWith(QLatin1Char('/')) || text.contains(QLatin1Char('\n')) || cursor < 1) {
+            hideCommandPopup();
+            return;
+        }
+        loadCommandIndex(channel.guildId, channel.guildId.isEmpty() ? m_currentChannelId : QString());
+        loadCommandIndex({}, {});
+        loadCommandFrecency();
+
+        // A sub command is matched with its space: "counter cr".
+        const QString query = text.mid(1, cursor - 1).trimmed().toLower();
+        if (text.mid(1, cursor - 1).count(QLatin1Char(' ')) > 2) {
+            hideCommandPopup();
+            return;
+        }
+
+        QList<AppCommands::App> apps;
+        QList<AppCommands::Command> commands = commandsHere(&apps);
+        commands.erase(std::remove_if(commands.begin(), commands.end(),
+                                      [](const AppCommands::Command &c) { return c.type != 1; }),
+                       commands.end());
+        QHash<QString, AppCommands::App> appById;
+        for (const AppCommands::App &app : apps)
+            appById.insert(app.id, app);
+
+        const auto appName = [&appById](const AppCommands::Command &command) {
+            if (command.builtIn)
+                return QStringLiteral("Built-In");
+            const QString name = appById.value(command.applicationId).name;
+            return name.isEmpty() ? QStringLiteral("App") : name;
+        };
+        const auto addCommand = [&](const AppCommands::Command &command, bool showApp) {
+            const AppCommands::App app = appById.value(command.applicationId);
+            m_commandPicker->addRow(QLatin1Char('/') + command.displayName, command.description,
+                                    showApp ? appName(command) : QString(), QStringLiteral("cmd:") + command.id,
+                                    appIconUrl(app), command.builtIn ? QString() : appName(command));
+        };
+        const auto byName = [](const AppCommands::Command &a, const AppCommands::Command &b) {
+            return a.displayName.localeAwareCompare(b.displayName) < 0;
+        };
+
+        m_commandPicker->clearRows();
+        const bool loading = m_commandIndexLoading.contains(
+                                 commandIndexKey(channel.guildId, channel.guildId.isEmpty() ? m_currentChannelId : QString()))
+            || m_commandIndexLoading.contains(QStringLiteral("user"));
+
+        if (query.isEmpty()) {
+            // Frequently Used first, as in Discord, then each app's commands.
+            QList<QPair<int, AppCommands::Command>> ranked;
+            for (const AppCommands::Command &command : commands) {
+                const int score = m_commandFrecency.value(AppCommands::frecencyKey(command));
+                if (score > 0)
+                    ranked.append({score, command});
+            }
+            std::stable_sort(ranked.begin(), ranked.end(),
+                             [](const auto &a, const auto &b) { return a.first > b.first; });
+            if (!ranked.isEmpty()) {
+                m_commandPicker->addHeader(QStringLiteral("Frequently Used"));
+                for (int i = 0; i < ranked.size() && i < 5; ++i)
+                    addCommand(ranked.at(i).second, true);
+            }
+
+            QMap<QString, QList<AppCommands::Command>> sections;   // sorted by app name
+            QList<AppCommands::Command> builtIn;
+            for (const AppCommands::Command &command : commands) {
+                if (command.builtIn)
+                    builtIn.append(command);
+                else
+                    sections[appName(command).toLower() + QChar(0) + command.applicationId].append(command);
+            }
+            for (auto it = sections.begin(); it != sections.end(); ++it) {
+                std::sort(it->begin(), it->end(), byName);
+                m_commandPicker->addHeader(appName(it->first()));
+                for (const AppCommands::Command &command : *it)
+                    addCommand(command, false);
+            }
+            if (loading)
+                m_commandPicker->addNote(QStringLiteral("Loading this place's commands..."));
+            m_commandPicker->addHeader(QStringLiteral("Built-In"));
+            for (const AppCommands::Command &command : builtIn)
+                addCommand(command, false);
+        } else {
+            QList<AppCommands::Command> starts;
+            QList<AppCommands::Command> inside;
+            for (const AppCommands::Command &command : commands) {
+                const QString name = command.displayName.toLower();
+                const QString raw = command.name.toLower();
+                if (name.startsWith(query) || raw.startsWith(query))
+                    starts.append(command);
+                else if (name.contains(query) || raw.contains(query))
+                    inside.append(command);
+            }
+            std::sort(starts.begin(), starts.end(), byName);
+            std::sort(inside.begin(), inside.end(), byName);
+            const QList<AppCommands::Command> hits = starts + inside;
+            for (int i = 0; i < hits.size() && i < 25; ++i)
+                addCommand(hits.at(i), true);
+            if (hits.isEmpty()) {
+                if (loading) {
+                    m_commandPicker->addNote(QStringLiteral("Loading this place's commands..."));
+                } else {
+                    hideCommandPopup();
+                    return;
+                }
+            }
+        }
+
+        m_commandPickerMode = QStringLiteral("command");
+        m_commandPicker->selectKey(previous);
+        m_commandPicker->place(m_composer->parentWidget());
+        return;
+    }
+
+    // --- filling in a command ---------------------------------------------
+    const CommandCursor at = readCommandCursor(text, cursor, m_activeCommand);
+    if (cursor < at.base) {
+        hideCommandPopup();
+        return;
+    }
+    m_commandPicker->clearRows();
+
+    // Outside any value, or a second word typed into one: the options not
+    // used yet, by name. Inside a value, a word that names no option is just
+    // more of the value.
+    const bool outside = at.current < 0;
+    const bool newWord = !outside && !at.trailingWord.isEmpty()
+        && !text.mid(at.valueStart, at.trailingStart - at.valueStart).trimmed().isEmpty();
+    if (outside || newWord) {
+        const QString word = at.trailingWord.toLower();
+        bool any = false;
+        for (int i = 0; i < m_activeCommand.options.size(); ++i) {
+            const AppCommands::Option &option = m_activeCommand.options.at(i);
+            if (at.values.contains(i) || i == at.current)
+                continue;
+            if (!word.isEmpty() && !option.name.toLower().startsWith(word)
+                && !option.displayName.toLower().startsWith(word))
+                continue;
+            if (!any)
+                m_commandPicker->addHeader(QStringLiteral("Options for /%1").arg(m_activeCommand.displayName));
+            any = true;
+            m_commandPicker->addRow(option.displayName + (option.required ? QStringLiteral(" *") : QString()),
+                                    option.description, QString(), QStringLiteral("opt:%1").arg(i));
+        }
+        if (any) {
+            m_commandPickerMode = QStringLiteral("option");
+            m_commandPicker->selectKey(previous);
+            m_commandPicker->place(m_composer->parentWidget());
+            return;
+        }
+        if (outside) {
+            hideCommandPopup();
+            return;
+        }
+    }
+
+    const AppCommands::Option &option = m_activeCommand.options.at(at.current);
+    m_commandOptionIndex = at.current;
+    const QString typed = at.value;
+
+    // Fixed choices, and True / False.
+    QList<AppCommands::Choice> choices = option.choices;
+    if (option.type == AppCommands::Boolean)
+        choices = {{QStringLiteral("True"), true}, {QStringLiteral("False"), false}};
+    if (!choices.isEmpty()) {
+        bool exact = false;
+        for (const AppCommands::Choice &choice : choices) {
+            if (choice.name.compare(typed, Qt::CaseInsensitive) == 0)
+                exact = true;
+        }
+        if (exact) {
+            hideCommandPopup();
+            return;
+        }
+        m_commandPicker->addHeader(option.displayName);
+        for (int i = 0; i < choices.size(); ++i) {
+            if (!typed.isEmpty() && !choices.at(i).name.contains(typed, Qt::CaseInsensitive))
+                continue;
+            m_commandPicker->addRow(choices.at(i).name, QString(), QString(), QStringLiteral("val:%1").arg(i));
+        }
+        if (!m_commandPicker->hasRows()) {
+            hideCommandPopup();
+            return;
+        }
+        m_commandPickerMode = QStringLiteral("choice");
+        m_commandPicker->selectKey(previous);
+        m_commandPicker->place(m_composer->parentWidget());
+        return;
+    }
+
+    // What the app suggests as you type.
+    if (option.autocomplete) {
+        if (m_autocompletePicked.value(option.name).contains(typed)) {
+            hideCommandPopup();
+            return;
+        }
+        const QString asking = option.name + QLatin1Char('\n') + typed;
+        if (asking != m_autocompleteFor)
+            m_autocompleteTimer.start();
+        m_commandPicker->addHeader(option.displayName);
+        if (m_autocompleteAnswer.startsWith(option.name + QLatin1Char('\n'))) {
+            for (int i = 0; i < m_autocompleteChoices.size(); ++i) {
+                const QJsonObject choice = m_autocompleteChoices.at(i).toObject();
+                QString name = choice.value(QStringLiteral("name_localized")).toString();
+                if (name.isEmpty())
+                    name = choice.value(QStringLiteral("name")).toString();
+                m_commandPicker->addRow(name, QString(), QString(), QStringLiteral("auto:%1").arg(i));
+            }
+            if (m_autocompleteChoices.isEmpty() && asking == m_autocompleteAnswer)
+                m_commandPicker->addNote(QStringLiteral("No suggestions. Type your own."));
+        }
+        if (!m_commandPicker->hasRows() && asking != m_autocompleteAnswer)
+            m_commandPicker->addNote(QStringLiteral("Asking the app..."));
+        m_commandPickerMode = QStringLiteral("auto");
+        m_commandPicker->selectKey(previous);
+        m_commandPicker->place(m_composer->parentWidget());
+        return;
+    }
+
+    // A channel: this server's text channels, by name.
+    if (option.type == AppCommands::Channel && !channel.guildId.isEmpty()) {
+        QString wanted = typed;
+        if (wanted.startsWith(QLatin1Char('#')))
+            wanted.remove(0, 1);
+        const GuildInfo guild = m_store->guild(channel.guildId);
+        int shown = 0;
+        bool exact = false;
+        m_commandPicker->addHeader(option.displayName);
+        for (const QString &id : guild.channelIds) {
+            const ChannelInfo candidate = m_store->channel(id);
+            if (candidate.isCategory() || candidate.name.isEmpty())
+                continue;
+            if (candidate.name.compare(wanted, Qt::CaseInsensitive) == 0)
+                exact = true;
+            if (!wanted.isEmpty() && !candidate.name.contains(wanted, Qt::CaseInsensitive))
+                continue;
+            if (shown++ >= 25)
+                break;
+            m_commandPicker->addRow((candidate.isVoice() ? QStringLiteral("\U0001F50A ") : QStringLiteral("# "))
+                                        + candidate.name,
+                                    QString(), QString(), QStringLiteral("chan:") + candidate.id);
+        }
+        if (exact || !m_commandPicker->hasRows()) {
+            hideCommandPopup();
+            return;
+        }
+        m_commandPickerMode = QStringLiteral("channel");
+        m_commandPicker->selectKey(previous);
+        m_commandPicker->place(m_composer->parentWidget());
+        return;
+    }
+
+    hideCommandPopup();
+}
+
+void MainWindow::pickCommandRow(const QString &key)
+{
+    if (key.isEmpty() || !m_composer)
+        return;
+
+    if (key.startsWith(QLatin1String("cmd:"))) {
+        const QString id = key.mid(4);
+        const QList<AppCommands::Command> commands = commandsHere();
+        for (const AppCommands::Command &command : commands) {
+            if (command.id != id)
+                continue;
+            m_activeCommand = command;
+            m_activeCommandChannel = m_currentChannelId;
+            m_autocompletePicked.clear();
+            m_autocompleteChoices = {};
+            m_autocompleteFor.clear();
+            m_autocompleteAnswer.clear();
+            // Discord opens the first required option straight away.
+            QString text = QLatin1Char('/') + command.name + QLatin1Char(' ');
+            for (const AppCommands::Option &option : command.options) {
+                if (option.required) {
+                    text += option.name + QStringLiteral(": ");
+                    break;
+                }
+            }
+            hideCommandPopup();
+            m_composer->setPlainText(text);
+            QTextCursor cursor = m_composer->textCursor();
+            cursor.movePosition(QTextCursor::End);
+            m_composer->setTextCursor(cursor);
+            updateCommandPopup();
+            return;
+        }
+        return;
+    }
+
+    if (m_activeCommand.rootId.isEmpty())
+        return;
+    const QString text = m_composer->toPlainText();
+    const CommandCursor at = readCommandCursor(text, m_composer->textCursor().position(), m_activeCommand);
+
+    if (key.startsWith(QLatin1String("opt:"))) {
+        const int index = key.mid(4).toInt();
+        if (index < 0 || index >= m_activeCommand.options.size())
+            return;
+        QTextCursor cursor = m_composer->textCursor();
+        cursor.setPosition(at.trailingStart);
+        cursor.setPosition(m_composer->textCursor().position(), QTextCursor::KeepAnchor);
+        QString label = m_activeCommand.options.at(index).name + QStringLiteral(": ");
+        if (at.trailingStart > 0 && !text.at(at.trailingStart - 1).isSpace())
+            label.prepend(QLatin1Char(' '));
+        cursor.insertText(label, QTextCharFormat());
+        m_composer->setTextCursor(cursor);
+        return;
+    }
+
+    if (at.current < 0 || at.current != m_commandOptionIndex)
+        return;
+    const AppCommands::Option &option = m_activeCommand.options.at(at.current);
+
+    // The value goes where the old one was, with one space before it. The
+    // space before a following label stays; at the end a space is added, so
+    // the next thing typed starts a new word.
+    const auto replaceValue = [&](const QString &shown, const QTextCharFormat &format) {
+        const bool last = at.valueEnd >= text.size();
+        int end = at.valueEnd;
+        if (!last) {
+            while (end > at.valueStart && text.at(end - 1).isSpace())
+                --end;
+        }
+        QTextCursor cursor = m_composer->textCursor();
+        cursor.setPosition(at.valueStart);
+        cursor.setPosition(end, QTextCursor::KeepAnchor);
+        cursor.insertText(QStringLiteral(" "), QTextCharFormat());
+        cursor.insertText(shown, format);
+        if (last)
+            cursor.insertText(QStringLiteral(" "), QTextCharFormat());
+        m_composer->setTextCursor(cursor);
+    };
+
+    if (key.startsWith(QLatin1String("val:"))) {
+        QList<AppCommands::Choice> choices = option.choices;
+        if (option.type == AppCommands::Boolean)
+            choices = {{QStringLiteral("True"), true}, {QStringLiteral("False"), false}};
+        const int index = key.mid(4).toInt();
+        if (index >= 0 && index < choices.size())
+            replaceValue(choices.at(index).name, QTextCharFormat());
+        return;
+    }
+
+    if (key.startsWith(QLatin1String("auto:"))) {
+        const int index = key.mid(5).toInt();
+        const QJsonObject choice = m_autocompleteChoices.at(index).toObject();
+        QString name = choice.value(QStringLiteral("name_localized")).toString();
+        if (name.isEmpty())
+            name = choice.value(QStringLiteral("name")).toString();
+        if (name.isEmpty())
+            return;
+        m_autocompletePicked[option.name].insert(name, choice.value(QStringLiteral("value")));
+        replaceValue(name, QTextCharFormat());
+        return;
+    }
+
+    if (key.startsWith(QLatin1String("chan:"))) {
+        const ChannelInfo picked = m_store->channel(key.mid(5));
+        QTextCharFormat format;
+        format.setForeground(QColor(QLatin1String(Theme::Accent)));
+        format.setFontWeight(QFont::DemiBold);
+        format.setProperty(kChannelMention, picked.id);
+        replaceValue(QLatin1Char('#') + picked.name, format);
+        return;
+    }
+}
+
+void MainWindow::insertNextOptionLabel()
+{
+    if (m_activeCommand.rootId.isEmpty() || !m_composer)
+        return;
+    const QString text = m_composer->toPlainText();
+    const CommandCursor at = readCommandCursor(text, m_composer->textCursor().position(), m_activeCommand);
+    int next = -1;
+    for (int pass = 0; pass < 2 && next < 0; ++pass) {
+        for (int i = 0; i < m_activeCommand.options.size(); ++i) {
+            if (at.values.contains(i) || (pass == 0 && !m_activeCommand.options.at(i).required))
+                continue;
+            next = i;
+            break;
+        }
+    }
+    QTextCursor cursor = m_composer->textCursor();
+    cursor.movePosition(QTextCursor::End);
+    if (next < 0) {
+        m_composer->setTextCursor(cursor);
+        return;
+    }
+    QString label = m_activeCommand.options.at(next).name + QStringLiteral(": ");
+    if (!text.isEmpty() && !text.at(text.size() - 1).isSpace())
+        label.prepend(QLatin1Char(' '));
+    cursor.insertText(label, QTextCharFormat());
+    m_composer->setTextCursor(cursor);
+}
+
+void MainWindow::requestAutocomplete()
+{
+    if (m_activeCommand.rootId.isEmpty() || m_activeCommand.builtIn || !m_composer || !m_gateway
+        || m_gateway->sessionId().isEmpty())
+        return;
+
+    const QString plain = m_composer->toPlainText();
+    const CommandCursor at = readCommandCursor(plain, m_composer->textCursor().position(), m_activeCommand);
+    if (at.current < 0 || !m_activeCommand.options.at(at.current).autocomplete)
+        return;
+    const AppCommands::Option &focused = m_activeCommand.options.at(at.current);
+    const QString asking = focused.name + QLatin1Char('\n') + at.value;
+    if (asking == m_autocompleteFor)
+        return;
+    m_autocompleteFor = asking;
+
+    // The other options go along as they would be sent, so the app can narrow
+    // its answer. The one being typed goes as typed, marked focused.
+    const ChannelInfo channel = m_store->channel(m_currentChannelId);
+    AppCommands::Resolver resolver;
+    resolver.guildId = channel.guildId;
+    const CommandCursor sent = readCommandCursor(composerPayload(), 0, m_activeCommand);
+    QJsonArray options;
+    for (int i = 0; i < m_activeCommand.options.size(); ++i) {
+        const AppCommands::Option &option = m_activeCommand.options.at(i);
+        if (i == at.current) {
+            options.append(QJsonObject{{QStringLiteral("type"), option.type},
+                                       {QStringLiteral("name"), option.name},
+                                       {QStringLiteral("value"), at.value},
+                                       {QStringLiteral("focused"), true}});
+            continue;
+        }
+        const QString value = sent.values.value(i);
+        if (value.isEmpty())
+            continue;
+        QString error;
+        QJsonValue converted = m_autocompletePicked.value(option.name).value(value);
+        if (converted.isUndefined() || converted.isNull())
+            converted = AppCommands::toValue(option, value, resolver, &error);
+        if (!error.isEmpty())
+            continue;
+        options.append(QJsonObject{{QStringLiteral("type"), option.type},
+                                   {QStringLiteral("name"), option.name},
+                                   {QStringLiteral("value"), converted}});
+    }
+
+    QJsonObject data = AppCommands::buildData(m_activeCommand, options);
+    data.remove(QStringLiteral("attachments"));
+    m_autocompleteNonce = AppCommands::makeNonce();
+    QJsonObject body{
+        {QStringLiteral("type"), 4},
+        {QStringLiteral("application_id"), m_activeCommand.applicationId},
+        {QStringLiteral("channel_id"), m_currentChannelId},
+        {QStringLiteral("session_id"), m_gateway->sessionId()},
+        {QStringLiteral("data"), data},
+        {QStringLiteral("nonce"), m_autocompleteNonce},
+    };
+    if (isSnowflake(channel.guildId))
+        body.insert(QStringLiteral("guild_id"), channel.guildId);
+
+    const QString nonce = m_autocompleteNonce;
+    m_rest->createInteraction(
+        body, [](const QJsonObject &) {},
+        [this, nonce, asking](const RestClient::Error &error) {
+            wlog(QStringLiteral("commands"),
+                 QStringLiteral("suggestions failed: HTTP %1 %2").arg(error.httpStatus).arg(error.message));
+            if (nonce != m_autocompleteNonce)
+                return;
+            m_autocompleteChoices = {};
+            m_autocompleteAnswer = asking;
+            updateCommandPopup();
+        });
+}
+
+bool MainWindow::runActiveCommand()
+{
+    if (m_activeCommand.rootId.isEmpty() || !m_composer || m_activeCommandChannel != m_currentChannelId)
+        return false;
+    const AppCommands::Command command = m_activeCommand;
+
+    const QString payload = composerPayload();
+    const CommandCursor at = readCommandCursor(payload, 0, command);
+    QHash<int, QString> values = at.values;
+    if (!at.loose.isEmpty()) {
+        // Typed without a label: it fills the first option still empty,
+        // required ones first - "/roll 20" works as "/roll sides: 20".
+        int target = -1;
+        for (int pass = 0; pass < 2 && target < 0; ++pass) {
+            for (int i = 0; i < command.options.size(); ++i) {
+                if (values.value(i).isEmpty() && (pass == 1 || command.options.at(i).required)) {
+                    target = i;
+                    break;
+                }
+            }
+        }
+        if (target < 0) {
+            flashStatus(QStringLiteral("/%1 does not take \"%2\". Put it after an option name.")
+                            .arg(command.displayName, at.loose.left(40)),
+                        6000);
+            return true;
+        }
+        values.insert(target, at.loose);
+    }
+
+    if (command.builtIn) {
+        const QString message = AppCommands::runBuiltIn(command, values.value(0));
+        if (message.isEmpty()) {
+            flashStatus(QStringLiteral("/%1 needs a message.").arg(command.name), 4000);
+            return true;
+        }
+        m_activeCommand = {};
+        hideCommandPopup();
+        m_composer->setPlainText(message);
+        sendCurrentMessage();
+        return true;
+    }
+
+    for (int i = 0; i < command.options.size(); ++i) {
+        const AppCommands::Option &option = command.options.at(i);
+        if (option.required && values.value(i).isEmpty()) {
+            flashStatus(QStringLiteral("Fill in %1 first.").arg(option.displayName), 4000);
+            if (!at.values.contains(i))
+                insertNextOptionLabel();
+            return true;
+        }
+    }
+
+    if (!m_gateway || m_gateway->sessionId().isEmpty()) {
+        flashStatus(QStringLiteral("Not connected yet."), 3000);
+        return true;
+    }
+
+    const ChannelInfo channel = m_store->channel(m_currentChannelId);
+    AppCommands::Resolver resolver;
+    resolver.guildId = channel.guildId;
+    resolver.channelByName = [this, guildId = channel.guildId](const QString &name) {
+        for (const QString &id : m_store->guild(guildId).channelIds) {
+            if (m_store->channel(id).name.compare(name, Qt::CaseInsensitive) == 0)
+                return id;
+        }
+        return QString();
+    };
+
+    QJsonArray options;
+    for (int i = 0; i < command.options.size(); ++i) {
+        const QString value = values.value(i);
+        if (value.isEmpty())
+            continue;
+        const AppCommands::Option &option = command.options.at(i);
+        // A suggestion picked from the app's list is sent as the app gave it.
+        QJsonValue converted = m_autocompletePicked.value(option.name).value(value);
+        if (converted.isUndefined() || converted.isNull()) {
+            QString error;
+            converted = AppCommands::toValue(option, value, resolver, &error);
+            if (!error.isEmpty()) {
+                flashStatus(error, 6000);
+                return true;
+            }
+        }
+        options.append(QJsonObject{{QStringLiteral("type"), option.type},
+                                   {QStringLiteral("name"), option.name},
+                                   {QStringLiteral("value"), converted}});
+    }
+
+    QJsonObject body{
+        {QStringLiteral("type"), 2},
+        {QStringLiteral("application_id"), command.applicationId},
+        {QStringLiteral("channel_id"), m_currentChannelId},
+        {QStringLiteral("session_id"), m_gateway->sessionId()},
+        {QStringLiteral("data"), AppCommands::buildData(command, options)},
+        {QStringLiteral("nonce"), AppCommands::makeNonce()},
+        {QStringLiteral("analytics_location"), QStringLiteral("slash_ui")},
+    };
+    if (isSnowflake(channel.guildId))
+        body.insert(QStringLiteral("guild_id"), channel.guildId);
+
+    const QString channelId = m_currentChannelId;
+    const QString indexKey = commandIndexKey(channel.guildId, channel.guildId.isEmpty() ? channelId : QString());
+    wlog(QStringLiteral("commands"), QStringLiteral("running /%1 (%2 options)").arg(command.name).arg(options.size()));
+
+    m_activeCommand = {};
+    hideCommandPopup();
+    m_composer->clear();
+    clearComposerContext();
+    m_commandFrecency[AppCommands::frecencyKey(command)] += 100;
+    flashStatus(QStringLiteral("Sending /%1...").arg(command.displayName), 3000);
+
+    m_rest->createInteraction(
+        body,
+        [this, command](const QJsonObject &) {
+            flashStatus(QStringLiteral("Sent /%1.").arg(command.displayName), 2000);
+        },
+        [this, command, payload, channelId, indexKey](const RestClient::Error &error) {
+            wlog(QStringLiteral("commands"),
+                 QStringLiteral("/%1 refused: HTTP %2 %3").arg(command.name).arg(error.httpStatus).arg(error.message));
+            // The command may have changed since the list was read. Read it
+            // again next time, as Discord's client does on a bad version.
+            m_commandIndexAt.remove(indexKey);
+            m_commandIndexAt.remove(QStringLiteral("user"));
+            if (channelId == m_currentChannelId && m_composer->toPlainText().isEmpty()) {
+                m_activeCommand = command;
+                m_activeCommandChannel = channelId;
+                m_composer->setPlainText(payload);
+                QTextCursor cursor = m_composer->textCursor();
+                cursor.movePosition(QTextCursor::End);
+                m_composer->setTextCursor(cursor);
+            }
+            const QString why = error.isRateLimit() ? QStringLiteral("slow down, Discord is rate limiting")
+                                                    : error.message.left(180);
+            flashStatus(QStringLiteral("/%1 did not go through (%2).").arg(command.displayName, why), 8000);
+        });
+    return true;
+}
+
+void MainWindow::runMessageCommand(const AppCommands::Command &command, const QString &messageId)
+{
+    if (!m_gateway || m_gateway->sessionId().isEmpty()) {
+        flashStatus(QStringLiteral("Not connected yet."), 3000);
+        return;
+    }
+    const ChannelInfo channel = m_store->channel(m_currentChannelId);
+    QJsonObject body{
+        {QStringLiteral("type"), 2},
+        {QStringLiteral("application_id"), command.applicationId},
+        {QStringLiteral("channel_id"), m_currentChannelId},
+        {QStringLiteral("session_id"), m_gateway->sessionId()},
+        {QStringLiteral("data"), AppCommands::buildData(command, QJsonArray(), messageId)},
+        {QStringLiteral("nonce"), AppCommands::makeNonce()},
+    };
+    if (isSnowflake(channel.guildId))
+        body.insert(QStringLiteral("guild_id"), channel.guildId);
+    flashStatus(QStringLiteral("Sending %1...").arg(command.displayName), 3000);
+    m_rest->createInteraction(
+        body, [this, command](const QJsonObject &) { flashStatus(QStringLiteral("Sent %1.").arg(command.displayName), 2000); },
+        [this, command](const RestClient::Error &error) {
+            flashStatus(QStringLiteral("%1 did not go through (%2).").arg(command.displayName, error.message.left(180)),
+                        8000);
+        });
 }
 
 QString MainWindow::messageIdAt(const QPoint &viewportPos) const
@@ -8556,6 +9644,35 @@ void MainWindow::showMessageMenu(const QPoint &pos)
         });
     }
 
+    // Apps: the commands an app hangs on a message (type 3), as in Discord's
+    // own menu. Running one sends this message's id as the target.
+    QList<AppCommands::Command> messageCommands;
+    QList<AppCommands::App> commandApps;
+    for (const AppCommands::Command &command : commandsHere(&commandApps)) {
+        if (command.type == 3)
+            messageCommands.append(command);
+    }
+    if (!messageCommands.isEmpty()) {
+        std::sort(messageCommands.begin(), messageCommands.end(),
+                  [](const AppCommands::Command &a, const AppCommands::Command &b) {
+                      return a.displayName.localeAwareCompare(b.displayName) < 0;
+                  });
+        QMenu *apps = menu.addMenu(QStringLiteral("Apps"));
+        for (const AppCommands::Command &command : messageCommands) {
+            QString owner;
+            for (const AppCommands::App &app : commandApps) {
+                if (app.id == command.applicationId)
+                    owner = app.name;
+            }
+            QAction *action = apps->addAction(command.displayName);
+            if (!owner.isEmpty())
+                action->setToolTip(owner);
+            connect(action, &QAction::triggered, this,
+                    [this, command, messageId]() { runMessageCommand(command, messageId); });
+        }
+        apps->setToolTipsVisible(true);
+    }
+
     connect(menu.addAction(QStringLiteral("Copy text")), &QAction::triggered, this, [message]() {
         QApplication::clipboard()->setText(message.content);
     });
@@ -9127,6 +10244,65 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 
     if (watched == m_composer && event->type() == QEvent::KeyPress) {
         auto *keyEvent = static_cast<QKeyEvent *>(event);
+        const bool enterKey = (keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter)
+            && !(keyEvent->modifiers() & Qt::ShiftModifier);
+        if (m_commandPicker && m_commandPicker->isVisible()) {
+            const int key = keyEvent->key();
+            if (key == Qt::Key_Down) {
+                m_commandPicker->step(1);
+                return true;
+            }
+            if (key == Qt::Key_Up) {
+                m_commandPicker->step(-1);
+                return true;
+            }
+            if (key == Qt::Key_Escape) {
+                m_commandPickerDismissed = m_composer->toPlainText();
+                hideCommandPopup();
+                return true;
+            }
+            if (key == Qt::Key_Tab || enterKey) {
+                // Enter on the option-name list runs the command once nothing
+                // it needs is missing; Tab always takes the highlighted row.
+                bool ready = m_commandPickerMode == QLatin1String("option") && enterKey;
+                if (ready) {
+                    const QString text = m_composer->toPlainText();
+                    int looseEnd = 0;
+                    const QString rest = text.mid(1 + m_activeCommand.name.size());
+                    const QList<AppCommands::Span> spans =
+                        AppCommands::findSpans(rest, m_activeCommand.options, &looseEnd);
+                    QSet<int> filled;
+                    for (const AppCommands::Span &span : spans) {
+                        if (!rest.mid(span.valueStart, span.valueEnd - span.valueStart).trimmed().isEmpty())
+                            filled.insert(span.option);
+                    }
+                    bool looseFree = !rest.left(looseEnd).trimmed().isEmpty();
+                    for (int i = 0; i < m_activeCommand.options.size() && ready; ++i) {
+                        if (!m_activeCommand.options.at(i).required || filled.contains(i))
+                            continue;
+                        if (looseFree)
+                            looseFree = false;
+                        else
+                            ready = false;
+                    }
+                }
+                if (ready) {
+                    runActiveCommand();
+                    return true;
+                }
+                const QString picked = m_commandPicker->currentKey();
+                if (!picked.isEmpty()) {
+                    pickCommandRow(picked);
+                    return true;
+                }
+                if (key == Qt::Key_Tab)
+                    return true;
+            }
+        } else if (!m_activeCommand.rootId.isEmpty() && keyEvent->key() == Qt::Key_Tab
+                   && !(m_mentionPopup && m_mentionPopup->isVisible())) {
+            insertNextOptionLabel();
+            return true;
+        }
         if (m_mentionPopup && m_mentionPopup->isVisible()) {
             const int key = keyEvent->key();
             if (key == Qt::Key_Down) {
@@ -9154,9 +10330,9 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
             stopEditing();
             return true;
         }
-        const bool isEnter = keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter;
-        if (isEnter && !(keyEvent->modifiers() & Qt::ShiftModifier)) {
-            sendCurrentMessage();
+        if (enterKey) {
+            if (!runActiveCommand())
+                sendCurrentMessage();
             return true;
         }
     }
