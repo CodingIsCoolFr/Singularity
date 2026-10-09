@@ -32,6 +32,11 @@ uniform vec3  uDisk;
 uniform vec3  uGrade;
 out vec4 fragColor;
 
+// How fast everything moves: the orbit, the disk and the twinkling stars.
+// Half of what it was at first, when the disk read as spinning rather than
+// drifting (2026-10-09). The grain is not motion and keeps the full clock.
+const float Pace = 0.5;
+
 float hash12(vec2 p)
 {
     vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -59,7 +64,7 @@ vec3 starfield(vec3 rd)
         if (h > 0.905) {
             float d = length(f);
             float br = smoothstep(0.080 + h * 0.035, 0.0, d);
-            float tw = 0.78 + 0.22 * sin(uTime * (0.22 + h * 1.0) + h * 40.0);
+            float tw = 0.78 + 0.22 * sin(uTime * Pace * (0.22 + h * 1.0) + h * 40.0);
             vec3 tc = mix(mix(vec3(0.75, 0.82, 0.95), uAccent, 0.35), vec3(0.95, 0.97, 1.0), fract(h * 9.1));
             if (fract(h * 13.7) > 0.82)
                 tc = mix(vec3(0.55, 0.70, 1.0), uAccent, 0.45);
@@ -78,7 +83,7 @@ void main()
 {
     vec2 uv = (gl_FragCoord.xy - 0.5 * uResolution) / uResolution.y;
 
-    float t = uTime * 0.02;
+    float t = uTime * Pace * 0.02;
     float cs = cos(t);
     float sn = sin(t);
 
@@ -126,7 +131,7 @@ void main()
             if (rho > inner && rho < outer) {
                 float x = (rho - inner) / (outer - inner);
                 float ang = atan(hit.z, hit.x);
-                float spir = 0.5 + 0.5 * sin(2.0 * ang - log(rho + 0.04) * 8.5 - uTime * 0.38);
+                float spir = 0.5 + 0.5 * sin(2.0 * ang - log(rho + 0.04) * 8.5 - uTime * Pace * 0.38);
                 float dens = pow(1.0 - x, 1.05) * (0.62 + 0.38 * spir);
                 dens *= smoothstep(0.0, 0.08, x) * smoothstep(1.0, 0.72, x);
 
@@ -724,6 +729,25 @@ void AuroraWidget::paintGL()
     m_accent += (m_accentTarget - m_accent) * 0.12f;
     m_disk += (m_diskTarget - m_disk) * 0.12f;
     m_grade += (m_gradeTarget - m_grade) * 0.12f;
+
+    // A new colour fades in over a few frames, and paused, nothing else asks
+    // for them: the fade stopped wherever the last frame left it. Settings
+    // lets the hole run for one frame on the way out, so pausing it and
+    // changing the colour in one visit moved it about an eighth of the way
+    // (2026-10-09). Paused, keep asking until it arrives. The clock below
+    // stays still, so only the colour moves.
+    if (!m_running) {
+        const float left = (m_accentTarget - m_accent).lengthSquared()
+                         + (m_diskTarget - m_disk).lengthSquared()
+                         + (m_gradeTarget - m_grade).lengthSquared();
+        if (left < 1e-6f) {
+            m_accent = m_accentTarget;
+            m_disk = m_diskTarget;
+            m_grade = m_gradeTarget;
+        } else if (!m_overlayTimer.isActive()) {
+            m_overlayTimer.start(int(framePeriodMs()));
+        }
+    }
 
     // Wall clock, not a capped step. A late frame used to slow the disk, which
     // is the hitch that reads as the background stuttering.

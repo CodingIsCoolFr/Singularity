@@ -13350,8 +13350,6 @@ void MainWindow::openSettings()
     // A GIF wallpaper is decoded on this thread. Leave it paused while the
     // modal is up so a frame inflate does not land in the same stall as the
     // dialog constructing itself.
-    const bool playBackground =
-        AppConfig::instance().value(QStringLiteral("appearance/animatedBackground"), true).toBool();
     if (m_backdrop)
         m_backdrop->setRunning(false);
 
@@ -13403,8 +13401,11 @@ void MainWindow::openSettings()
     m_settingsDialog->exec();
     disconnect(mark);
 
+    // The switch as it is now, not as it was when Settings opened. Resuming
+    // on the old value let the hole run for a frame after being switched off.
     if (m_backdrop)
-        m_backdrop->setRunning(playBackground);
+        m_backdrop->setRunning(
+            AppConfig::instance().value(QStringLiteral("appearance/animatedBackground"), true).toBool());
 
     if (appearanceTouched) {
         // Chip clicks already wrote the seed. Re-polish after the modal hides:
