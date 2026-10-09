@@ -288,7 +288,12 @@ target_include_directories(Singularity PRIVATE
 target_compile_definitions(Singularity PRIVATE SODIUM_STATIC=1)
 
 if(WIN32)
-    set(WEBVIEW2_ROOT "C:/Users/mitya/vcpkg/packages/webview2_x64-windows")
+    # The cloud build points this at its own copy.
+    if(DEFINED ENV{SINGULARITY_WEBVIEW2})
+        file(TO_CMAKE_PATH "$ENV{SINGULARITY_WEBVIEW2}" WEBVIEW2_ROOT)
+    else()
+        set(WEBVIEW2_ROOT "C:/Users/mitya/vcpkg/packages/webview2_x64-windows")
+    endif()
     if(EXISTS "${WEBVIEW2_ROOT}/lib/WebView2Loader.dll.lib")
         target_include_directories(Singularity PRIVATE "${WEBVIEW2_ROOT}/include")
         target_link_libraries(Singularity PRIVATE "${WEBVIEW2_ROOT}/lib/WebView2Loader.dll.lib" ole32)

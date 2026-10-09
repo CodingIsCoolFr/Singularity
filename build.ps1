@@ -25,9 +25,12 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $root       = $PSScriptRoot
-$qtRoot     = 'C:\Qt\6.10.3\msvc2022_64'
-$vcvars     = 'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat'
-$ninjaDir   = 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja'
+# The SINGULARITY_* variables are for the cloud build (.github/workflows),
+# whose machine keeps Qt and Visual Studio somewhere else. Unset, these are
+# the paths on the usual build machine.
+$qtRoot     = if ($env:SINGULARITY_QT)     { $env:SINGULARITY_QT }     else { 'C:\Qt\6.10.3\msvc2022_64' }
+$vcvars     = if ($env:SINGULARITY_VCVARS) { $env:SINGULARITY_VCVARS } else { 'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat' }
+$ninjaDir   = if ($env:SINGULARITY_NINJA)  { $env:SINGULARITY_NINJA }  else { 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja' }
 $config     = if ($Debug) { 'Debug' } else { 'Release' }
 $buildDir   = Join-Path $root "build\$config"
 $distDir    = Join-Path $root 'dist'

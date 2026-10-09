@@ -21,8 +21,9 @@ $ErrorActionPreference = 'Stop'
 
 $root     = $PSScriptRoot
 $third    = Join-Path $root 'third_party'
-$vcvars   = 'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat'
-$ninjaDir = 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja'
+# Overridable for the cloud build, as in build.ps1.
+$vcvars   = if ($env:SINGULARITY_VCVARS) { $env:SINGULARITY_VCVARS } else { 'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat' }
+$ninjaDir = if ($env:SINGULARITY_NINJA)  { $env:SINGULARITY_NINJA }  else { 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja' }
 
 New-Item -ItemType Directory -Force -Path $third | Out-Null
 

@@ -1,0 +1,98 @@
+name: Build
+
+# Builds the installer on GitHub's machines, for when the usual build machine
+# is not to hand. It runs the same restore.ps1 and build.ps1, pointed at where
+# this machine keeps Qt and Visual Studio.
+#
+# Nothing is published from here. The installer is left on the run as an
+# artifact, and publishing it is the same gh release create that release.ps1
+# does, run by hand.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.10.3'
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: 'qtwebsockets qtmultimedia'
+          aqtversion: '>=3.3'
+          cache: true
+
+      - name: Visual Studio, Inno Setup
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * `
+                  -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          "SINGULARITY_VCVARS=$vs\VC\Auxiliary\Build\vcvars64.bat" >> $env:GITHUB_ENV
+          "SINGULARITY_NINJA=$vs\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja" >> $env:GITHUB_ENV
+          "SINGULARITY_QT=$env:QT_ROOT_DIR" >> $env:GITHUB_ENV
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+          }
+
+      # The captcha window. Shipped builds have always carried it.
+      - name: WebView2
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install webview2:x64-windows
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          "SINGULARITY_WEBVIEW2=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows" >> $env:GITHUB_ENV
+
+      # Only what CMakeLists reads, not the whole four gigabytes. restore.ps1
+      # skips each piece whose library is already here.
+      - name: Cache third_party
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/ffmpeg
+            third_party/libsodium
+            third_party/opus-install
+            third_party/libdave/cpp/includes
+            third_party/libdave/cpp/build/libdave.lib
+            third_party/libdave/cpp/build/vcpkg_installed/x64-windows-static-md
+          key: third-party-${{ hashFiles('restore.ps1') }}
+
+      # libdave brings its own vcpkg. The one this machine has preinstalled
+      # must not be the one it picks up.
+      - name: third_party
+        run: |
+          Remove-Item Env:VCPKG_ROOT -ErrorAction SilentlyContinue
+          .\restore.ps1
+
+      - name: Build
+        run: .\build.ps1 -Installer
+
+      # A missing piece here is a broken update for everyone, so say what is
+      # in the folder and stop on anything a shipped build has always had.
+      - name: Check
+        run: |
+          $dist = (Resolve-Path dist).Path
+          Get-ChildItem $dist -Recurse -File | ForEach-Object { $_.FullName.Substring($dist.Length + 1) }
+          foreach ($need in 'Singularity.exe', 'WebView2Loader.dll', 'avcodec-62.dll', 'Qt6WebSockets.dll',
+                            'Qt6Multimedia.dll', 'plugins\platforms\qwindows.dll', 'plugins\tls\qschannelbackend.dll') {
+            if (-not (Test-Path (Join-Path $dist $need))) { throw "dist is missing $need" }
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer
+          path: dist-installer/*-setup.exe
+          if-no-files-found: error
+
+      # A freeze report can only be read with the PDB from the build that shipped.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: symbols
+          path: |
+            build/Release/Singularity.pdb
+            dist/Singularity.exe
