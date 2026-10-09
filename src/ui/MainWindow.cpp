@@ -522,6 +522,13 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
                                  {QStringLiteral("activities"), m_gateway->clientActivities()},
                              });
     });
+    // Switched from the Anonymous plugin. The gateway has told this session;
+    // the account is what everyone else sees. Before sign-in there is no
+    // account to write to, and onGatewayReady does it instead.
+    connect(m_gateway, &GatewayClient::appearOfflineChanged, this, [this]() {
+        storeStatusOnDiscord();
+        showOwnPresence();
+    });
     connect(m_gateway, &GatewayClient::fatalAuthError, this, [this]() {
         flashStatus(QStringLiteral("Discord refused this session. Log out and sign in again."), 0);
 
@@ -2367,9 +2374,12 @@ void MainWindow::onGatewayReady(const QJsonObject &payload)
     // other people should see - so it does need saying. But what it says has
     // to be the account's, not ours: another device may have changed it
     // since, and saying ours back overwrote that.
+    //
+    // Appear offline is the exception, handled inside: an account still
+    // saying idle or online is told invisible here.
     {
         const QString stored = statusFromProto(settingsProto);
-        setPresenceStatus(stored.isEmpty() ? m_gateway->presenceStatus() : stored,
+        setPresenceStatus(stored.isEmpty() ? m_gateway->chosenPresenceStatus() : stored,
                           /*storeOnDiscord*/ false);
     }
     ensureClientActivity();
@@ -6275,9 +6285,63 @@ void MainWindow::setActivityShared(bool on)
 
 void MainWindow::setPresenceStatus(const QString &status, bool storeOnDiscord)
 {
-    m_gateway->setPresenceStatus(status);
-    AppConfig::instance().setValue(QStringLiteral("presence/status"), status);
+    const bool held = m_gateway->appearOffline();
 
+    // While appear offline holds, an "invisible" coming from Discord is our
+    // own write on its way back. Taking it as your choice would leave you
+    // invisible after the switch goes off, so the choice underneath stays.
+    if (!(held && !storeOnDiscord && status == QLatin1String("invisible"))) {
+        m_gateway->setPresenceStatus(status);
+        AppConfig::instance().setValue(QStringLiteral("presence/status"), status);
+    }
+
+    showOwnPresence();
+
+    // Opcode 3 tells this session. The settings write is what the real client
+    // does, and it is what other people and your other sessions actually use.
+    //
+    // Only for a choice somebody made. This used to run on every sign-in with
+    // whatever status was saved on this machine, so an old copy of the
+    // program, or one started from a stale settings file, quietly set the
+    // whole account back to what it had last seen - Do Not Disturb turned
+    // into Online by nothing more than opening it.
+    //
+    // Appear offline is the exception: it is a choice somebody made too, and
+    // an account left saying idle while this session said invisible is
+    // exactly how it showed you to everyone anyway (2026-10-09).
+    if (storeOnDiscord || (held && status != QLatin1String("invisible")))
+        storeStatusOnDiscord();
+
+    if (held && storeOnDiscord)
+        flashStatus(QStringLiteral("Kept as your status for when \"Always appear offline\" is switched off."),
+                    6000);
+
+    wlog(QStringLiteral("ui"), QStringLiteral("status set to %1").arg(m_gateway->presenceStatus()));
+}
+
+void MainWindow::storeStatusOnDiscord()
+{
+    if (!m_rest || m_selfUserId.isEmpty())
+        return;
+
+    const QString sent = m_gateway->presenceStatus();
+    m_rest->updateStatus(
+        sent,
+        [sent](const QJsonObject &) {
+            wlog(QStringLiteral("gateway"),
+                 QStringLiteral("Discord stored status \"%1\"").arg(sent));
+        },
+        [sent](const RestClient::Error &error) {
+            wlog(QStringLiteral("gateway"),
+                 QStringLiteral("Discord refused status \"%1\": HTTP %2 %3")
+                     .arg(sent)
+                     .arg(error.httpStatus)
+                     .arg(error.message));
+        });
+}
+
+void MainWindow::showOwnPresence()
+{
     // The panel reads the gateway. The member list and everyone else read the
     // presence store, which only changes when Discord says so. Put the choice
     // there too, so this client agrees with itself at once.
@@ -6288,33 +6352,6 @@ void MainWindow::setPresenceStatus(const QString &status, bool storeOnDiscord)
                                  {QStringLiteral("activities"), m_gateway->clientActivities()},
                              });
     }
-
-    // Opcode 3 tells this session. The settings write is what the real client
-    // does, and it is what other people and your other sessions actually use.
-    //
-    // Only for a choice somebody made. This used to run on every sign-in with
-    // whatever status was saved on this machine, so an old copy of the
-    // program, or one started from a stale settings file, quietly set the
-    // whole account back to what it had last seen - Do Not Disturb turned
-    // into Online by nothing more than opening it.
-    if (m_rest && storeOnDiscord) {
-        const QString chosen = m_gateway->presenceStatus();
-        m_rest->updateStatus(
-            chosen,
-            [chosen](const QJsonObject &) {
-                wlog(QStringLiteral("gateway"),
-                     QStringLiteral("Discord stored status \"%1\"").arg(chosen));
-            },
-            [chosen](const RestClient::Error &error) {
-                wlog(QStringLiteral("gateway"),
-                     QStringLiteral("Discord refused status \"%1\": HTTP %2 %3")
-                         .arg(chosen)
-                         .arg(error.httpStatus)
-                         .arg(error.message));
-            });
-    }
-
-    wlog(QStringLiteral("ui"), QStringLiteral("status set to %1").arg(m_gateway->presenceStatus()));
     updateUserPanel();
 }
 
@@ -12804,8 +12841,9 @@ void MainWindow::maybeNotify(const QJsonObject &data, const MessageInfo &message
         return;
 
     // Do Not Disturb silences Discord's own notifications. This account sits
-    // on it most of the time, so here it is a choice, on by default.
-    if (m_gateway && m_gateway->presenceStatus() == QLatin1String("dnd")
+    // on it most of the time, so here it is a choice, on by default. The
+    // status you picked, so appearing offline over it still counts.
+    if (m_gateway && m_gateway->chosenPresenceStatus() == QLatin1String("dnd")
         && !config.value(QStringLiteral("notifications/duringDnd"), true).toBool())
         return;
 

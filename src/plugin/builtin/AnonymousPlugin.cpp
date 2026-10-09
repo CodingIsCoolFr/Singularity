@@ -172,13 +172,10 @@ void AnonymousPlugin::onUnload()
     // would leave you invisible with nothing left on screen to explain why.
     //
     // Back to what you chose, not to "online". Hard-coding online here meant
-    // this quietly cancelled a Do Not Disturb you had set yourself.
-    if (context() && context()->gateway()) {
-        context()->gateway()->setPresenceStatus(
-            AppConfig::instance()
-                .value(QStringLiteral("presence/status"), QStringLiteral("online"))
-                .toString());
-    }
+    // this quietly cancelled a Do Not Disturb you had set yourself. The
+    // gateway kept that choice underneath the hold, so lifting it is enough.
+    if (context() && context()->gateway())
+        context()->gateway()->setAppearOffline(false);
 
     Plugin::onUnload();
 }
@@ -205,11 +202,11 @@ void AnonymousPlugin::applyPresence()
     if (!context() || !context()->gateway())
         return;
 
-    context()->gateway()->setPresenceStatus(
-        appearOffline() ? QStringLiteral("invisible")
-                        : AppConfig::instance()
-                              .value(QStringLiteral("presence/status"), QStringLiteral("online"))
-                              .toString());
+    // A hold over your status rather than a new one. Setting the status
+    // itself only told this session, while the account kept saying idle or
+    // online to everyone else (2026-10-09), and the next sign-in replaced it
+    // with whatever the account had stored.
+    context()->gateway()->setAppearOffline(appearOffline());
 }
 
 QString AnonymousPlugin::cleanLinks(const QString &text, int *removedCount)
@@ -336,8 +333,10 @@ QWidget *AnonymousPlugin::createSettingsWidget(QWidget *parent)
     offline->setChecked(appearOffline());
     layout->addWidget(offline);
     layout->addWidget(note(QStringLiteral(
-        "Hides you from other people. It does not hide you from Discord, whose servers "
-        "still know you are connected, because you are."), page));
+        "Hides you from other people on every device you are signed in on, whatever status "
+        "you pick while it is on. Switching it off brings back the status you had. It does "
+        "not hide you from Discord, whose servers still know you are connected, because "
+        "you are."), page));
 
     // ---- what Singularity never did in the first place ------------------------
 

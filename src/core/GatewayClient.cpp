@@ -135,7 +135,7 @@ GatewayClient::GatewayClient(QObject *parent)
     // idle is kept and sent again unchanged, the way Discord's own client does.
     m_taglineTimer.setInterval(3 * 60 * 1000);
     connect(&m_taglineTimer, &QTimer::timeout, this, [this]() {
-        if (!m_activityShared || m_presenceStatus == QLatin1String("invisible"))
+        if (!m_activityShared || presenceStatus() == QLatin1String("invisible"))
             return;
         ++m_tagline;
         publishPresence();
@@ -569,7 +569,7 @@ void GatewayClient::sendIdentify()
     };
 
     const QJsonObject presence{
-        {QStringLiteral("status"), m_presenceStatus},
+        {QStringLiteral("status"), presenceStatus()},
         {QStringLiteral("since"), 0},
         {QStringLiteral("activities"), clientActivities()},
         {QStringLiteral("afk"), false},
@@ -677,7 +677,7 @@ void GatewayClient::subscribeToGuild(const QString &guildId, const QString &chan
 
 QJsonArray GatewayClient::clientActivities() const
 {
-    if (m_presenceStatus == QLatin1String("invisible"))
+    if (presenceStatus() == QLatin1String("invisible"))
         return {};
 
     // A Playing card, the same shape as a game: the logo, a line, a clock,
@@ -806,8 +806,29 @@ void GatewayClient::setPresenceStatus(const QString &status)
     }
 
     m_presenceStatus = status;
-    wlog(QStringLiteral("gateway"), QStringLiteral("presence is now \"%1\"").arg(status));
+    wlog(QStringLiteral("gateway"),
+         m_appearOffline
+             ? QStringLiteral("presence is now \"%1\", held at invisible by appear offline").arg(status)
+             : QStringLiteral("presence is now \"%1\"").arg(status));
     publishPresence();
+}
+
+QString GatewayClient::presenceStatus() const
+{
+    return m_appearOffline ? QStringLiteral("invisible") : m_presenceStatus;
+}
+
+void GatewayClient::setAppearOffline(bool on)
+{
+    if (m_appearOffline == on)
+        return;
+
+    m_appearOffline = on;
+    wlog(QStringLiteral("gateway"),
+         on ? QStringLiteral("appear offline on, sending invisible")
+            : QStringLiteral("appear offline off, back to \"%1\"").arg(m_presenceStatus));
+    publishPresence();
+    emit appearOfflineChanged(on);
 }
 
 void GatewayClient::publishPresence()
@@ -820,13 +841,14 @@ void GatewayClient::publishPresence()
     // Idle is the only status that carries a time. Everyone else sends 0,
     // which means "not idle". A missing or wrong `since` is dropped whole,
     // and the status on screen never leaves this machine.
-    const bool idle = m_presenceStatus == QLatin1String("idle");
+    const QString status = presenceStatus();
+    const bool idle = status == QLatin1String("idle");
     if (idle && m_idleSinceMs == 0)
         m_idleSinceMs = QDateTime::currentMSecsSinceEpoch();
     const QJsonObject body{
         {QStringLiteral("since"), idle ? QJsonValue(m_idleSinceMs) : QJsonValue(0)},
         {QStringLiteral("activities"), clientActivities()},
-        {QStringLiteral("status"), m_presenceStatus},
+        {QStringLiteral("status"), status},
         {QStringLiteral("afk"), idle},
     };
 

@@ -44,7 +44,8 @@ private:
     bool hideTyping() const;
     bool appearOffline() const;
 
-    // Pushes the current "appear offline" choice at the gateway.
+    // Pushes the current "appear offline" choice at the gateway, which holds
+    // you at invisible and has the window store that on the account.
     void applyPresence();
 
     // Runs the link cleaner over known cases when the plugin loads. If any of

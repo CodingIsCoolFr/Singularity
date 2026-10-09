@@ -79,7 +79,22 @@ public:
     // Takes effect at once when already signed in, and is carried by the next
     // sign-in otherwise.
     void setPresenceStatus(const QString &status);
-    QString presenceStatus() const { return m_presenceStatus; }
+
+    // What is sent: the status you picked, or "invisible" while appear
+    // offline holds.
+    QString presenceStatus() const;
+
+    // What you picked, which appear offline covers without forgetting, so
+    // switching it off puts this back.
+    QString chosenPresenceStatus() const { return m_presenceStatus; }
+
+    // "Always appear offline", from the Anonymous plugin. While it holds,
+    // every presence goes out as invisible whatever status is picked.
+    // Opcode 3 alone only covers this session - other people and your other
+    // devices go by the status stored on the account - so the window listens
+    // for appearOfflineChanged and stores it there too.
+    void setAppearOffline(bool on);
+    bool appearOffline() const { return m_appearOffline; }
 
     // The Playing card other people see while this client is open.
     // Empty while invisible, so appearing offline does not advertise the app.
@@ -153,6 +168,8 @@ signals:
     void fatalAuthError();
     // A game set or cleared its card. The presence has already been sent.
     void gameActivityChanged();
+    // Appear offline was switched. The presence has already been sent.
+    void appearOfflineChanged(bool on);
 
 private slots:
     void onConnected();
@@ -222,9 +239,10 @@ private:
     bool m_voiceDeafened = false;
     bool m_selfVideo = false;
 
-    // What Discord tells everybody else about you. The Anonymous plugin is
-    // the only thing that changes this.
+    // The status you picked. What Discord tells everybody else is this, or
+    // invisible while m_appearOffline holds - see presenceStatus().
     QString m_presenceStatus{QStringLiteral("online")};
+    bool m_appearOffline = false;
 
     // When this process opened. The activity clock counts from here, so a
     // status change does not reset "how long you have had the client open".

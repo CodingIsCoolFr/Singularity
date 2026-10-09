@@ -514,7 +514,17 @@ private:
     // Anything else - signing in, another device changing it - adopts what
     // Discord already has and must never write back, or an old copy of this
     // program overwrites the status someone set somewhere else.
+    //
+    // The one exception is appear offline. While it holds, the account must
+    // keep saying invisible, so a status from anywhere else is kept as your
+    // choice and invisible is written back over it.
     void setPresenceStatus(const QString &status, bool storeOnDiscord = true);
+    // Writes what the gateway is sending to the account's stored settings,
+    // which is what other people and your other devices go by.
+    void storeStatusOnDiscord();
+    // The member list and everyone else read the presence store. Puts your
+    // own status there and on the panel at once.
+    void showOwnPresence();
 
     void startScreenShare();
     void stopScreenShare();
