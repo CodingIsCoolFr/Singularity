@@ -26,7 +26,8 @@ jobs:
           host: windows
           target: desktop
           arch: win64_msvc2022_64
-          modules: 'qtwebsockets qtmultimedia'
+          # qtimageformats is WebP, which Discord serves most pictures as.
+          modules: 'qtwebsockets qtmultimedia qtimageformats'
           aqtversion: '>=3.3'
           cache: true
 
@@ -79,7 +80,9 @@ jobs:
           $dist = (Resolve-Path dist).Path
           Get-ChildItem $dist -Recurse -File | ForEach-Object { $_.FullName.Substring($dist.Length + 1) }
           foreach ($need in 'Singularity.exe', 'WebView2Loader.dll', 'avcodec-62.dll', 'Qt6WebSockets.dll',
-                            'Qt6Multimedia.dll', 'plugins\platforms\qwindows.dll', 'plugins\tls\qschannelbackend.dll') {
+                            'Qt6Multimedia.dll', 'Qt6Svg.dll', 'plugins\platforms\qwindows.dll',
+                            'plugins\tls\qschannelbackend.dll', 'plugins\imageformats\qwebp.dll',
+                            'plugins\multimedia\ffmpegmediaplugin.dll') {
             if (-not (Test-Path (Join-Path $dist $need))) { throw "dist is missing $need" }
           }
 
