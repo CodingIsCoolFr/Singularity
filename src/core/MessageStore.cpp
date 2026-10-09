@@ -805,7 +805,24 @@ MemberList MessageStore::memberList(const QString &guildId) const
 
 void MessageStore::applyGuild(const QJsonObject &rawGuild)
 {
+    // GUILD_UPDATE carries the server's own fields and its roles, but never
+    // its channels, and not always its emoji or stickers. Whatever a payload
+    // leaves out is kept from the copy we already have, or renaming the
+    // server would empty its sidebar.
+    const GuildInfo before = m_guilds.value(rawGuild.value(QStringLiteral("id")).toString());
     ingestGuild(rawGuild);
+    if (before.id.isEmpty())
+        return;
+
+    GuildInfo &after = m_guilds[before.id];
+    if (!rawGuild.contains(QStringLiteral("channels")))
+        after.channelIds = before.channelIds;
+    if (!rawGuild.contains(QStringLiteral("roles")))
+        after.roles = before.roles;
+    if (!rawGuild.contains(QStringLiteral("emojis")))
+        after.emojis = before.emojis;
+    if (!rawGuild.contains(QStringLiteral("stickers")))
+        after.stickers = before.stickers;
 }
 
 void MessageStore::ingestGuild(const QJsonObject &rawGuild)
@@ -951,6 +968,15 @@ void MessageStore::ingestChannel(const QJsonObject &rawChannel, const QString &g
         else
             channel.name = names.join(QStringLiteral(", "));
     }
+
+    // A CHANNEL_UPDATE can leave these out, and a message that arrived after
+    // Discord built its copy is newer than the id in it. Losing either one
+    // cleared the unread mark, or turned a group chat into "1 people".
+    const ChannelInfo before = m_channels.value(channel.id);
+    if (newerId(before.lastMessageId, channel.lastMessageId))
+        channel.lastMessageId = before.lastMessageId;
+    if (channel.isDirect() && channel.recipientIds.isEmpty())
+        channel.recipientIds = before.recipientIds;
 
     m_channels.insert(channel.id, channel);
 }

@@ -396,6 +396,7 @@ public:
     void ingestReady(const QJsonObject &readyPayload);
 
     // A large server arrives later, already full, after an empty placeholder.
+    // Also GUILD_UPDATE, which leaves the channels out: those are kept.
     void applyGuild(const QJsonObject &rawGuild);
 
     // User accounts get a second payload right after READY. That is where
@@ -451,7 +452,8 @@ public:
     // were ever opened - so the store had to learn to let go.
     void trimHistories(const QString &keepChannelId);
 
-    // Used for CHANNEL_CREATE, so a chat opened from a profile card shows up.
+    // Used for CHANNEL_CREATE, so a chat opened from a profile card shows up,
+    // and for CHANNEL_UPDATE, which replaces the channel with the new copy.
     void ingestChannelObject(const QJsonObject &rawChannel);
 
     // CHANNEL_DELETE, and closing a direct message. Returns false when the

@@ -210,6 +210,10 @@ private:
     // selection, or clicking a person gets undone a moment later.
     void populateChannelList(bool autoSelectFirst = true);
 
+    // Rebuilds the sidebar for a change Discord sent, keeping the selection
+    // and the scroll, and without opening a different channel.
+    void refreshChannelListInPlace();
+
     // Updates the existing direct message rows in place. Far better than
     // rebuilding: the selection, the scroll and the hover all survive.
     void refreshDirectRows();
@@ -784,6 +788,7 @@ private:
 
     QTimer m_typingClearTimer;
     QTimer m_voiceRefreshTimer;
+    QTimer m_channelLayoutTimer;
     QElapsedTimer m_typingSentTimer;
     QHash<QString, QString> m_userNameCache;
 };

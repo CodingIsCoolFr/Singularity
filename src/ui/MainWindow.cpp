@@ -1254,6 +1254,11 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         m_channelList->verticalScrollBar()->setValue(scroll);
     });
 
+    // Dragging channels around in Discord sends one CHANNEL_UPDATE for every
+    // channel that moved, so the sidebar is rebuilt once for the whole burst.
+    m_channelLayoutTimer.setSingleShot(true);
+    connect(&m_channelLayoutTimer, &QTimer::timeout, this, &MainWindow::refreshChannelListInPlace);
+
     // Server icons arrive after the rail is already on screen.
     connect(&MediaCache::instance(), &MediaCache::ready, this, [this](const QUrl &url) {
         if (url.path().startsWith(QLatin1String("/icons/"))) {
@@ -2531,25 +2536,69 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
 
     if (eventType == QLatin1String("CHANNEL_CREATE")) {
         m_store->ingestChannelObject(data);
-        // A new direct chat should appear in the sidebar at once.
-        if (m_currentGuildId.isEmpty() && data.value(QStringLiteral("guild_id")).toString().isEmpty()) {
-            const int scroll = m_channelList->verticalScrollBar()->value();
-            const QString keep = m_currentChannelId;
+        // A new direct chat, or a new channel in the server on screen, should
+        // appear in the sidebar at once. Only direct chats used to: a new
+        // server channel waited until the server was opened again.
+        if (data.value(QStringLiteral("guild_id")).toString() == m_currentGuildId)
+            refreshChannelListInPlace();
+        return;
+    }
 
-            populateChannelList(false);
+    // A channel or category renamed, moved, put under another category or
+    // given a new topic, here or in any other client. Deleting a category
+    // lands here too, once for each channel that was inside it. This was not
+    // handled at all, so the sidebar kept the layout it had at sign-in.
+    if (eventType == QLatin1String("CHANNEL_UPDATE")) {
+        const QString channelId = data.value(QStringLiteral("id")).toString();
+        if (channelId.isEmpty())
+            return;
+        m_store->ingestChannelObject(data);
+        if (data.value(QStringLiteral("guild_id")).toString() == m_currentGuildId
+            && !m_channelLayoutTimer.isActive())
+            m_channelLayoutTimer.start(100);
 
-            // Put the selection back without reopening the channel.
-            {
-                QSignalBlocker blocker(m_channelList);
-                for (int row = 0; row < m_channelList->count(); ++row) {
-                    if (m_channelList->item(row)->data(IdRole).toString() == keep) {
-                        m_channelList->setCurrentRow(row);
-                        break;
-                    }
-                }
-            }
-            m_channelList->verticalScrollBar()->setValue(scroll);
+        if (channelId == m_currentChannelId) {
+            const ChannelInfo channel = m_store->channel(channelId);
+            m_channelTitle->setText(channel.isDirect() ? channel.name : QStringLiteral("# ") + channel.name);
+            m_channelTopic->setText(channel.topic);
+            m_channelTopic->setVisible(!channel.topic.isEmpty());
+            m_composer->setPlaceholderText(
+                QStringLiteral("Message %1").arg(channel.isDirect() ? channel.name : QStringLiteral("#") + channel.name));
         }
+        // The name under "Voice connected".
+        if (channelId == m_voiceChannelId)
+            updateVoicePanel();
+        return;
+    }
+
+    // The server renamed, or given a new icon or banner, here or anywhere else.
+    if (eventType == QLatin1String("GUILD_UPDATE")) {
+        const QString guildId = data.value(QStringLiteral("id")).toString();
+        if (guildId.isEmpty() || m_store->guild(guildId).id.isEmpty())
+            return;
+        m_notifyRules.applyGuild(data);
+        m_store->applyGuild(data);
+        const GuildInfo guild = m_store->guild(guildId);
+
+        // The tile is edited where it stands. Rebuilding the rail selects the
+        // server again, and that opens its first channel.
+        const QString name = guild.name.isEmpty() ? QStringLiteral("Server") : guild.name;
+        for (int row = 0; row < m_guildRail->count(); ++row) {
+            QListWidgetItem *item = m_guildRail->item(row);
+            if (item->data(IdRole).toString() != guildId
+                || item->data(KindRole).toString() != QLatin1String("guild"))
+                continue;
+            item->setToolTip(name);
+            // Letters until the new picture is in, which is also what a server
+            // with its icon removed should show.
+            item->setIcon(MediaCache::initialsAvatar(name, GuildIconPixels));
+        }
+        refreshGuildIcons();
+
+        if (guildId == m_currentGuildId)
+            m_sidebarHeader->setGuild(guild);
+        if (!m_voiceChannelId.isEmpty() && m_store->channel(m_voiceChannelId).guildId == guildId)
+            updateVoicePanel();
         return;
     }
 
@@ -3820,6 +3869,28 @@ void MainWindow::populateChannelList(bool autoSelectFirst)
         m_channelList->setCurrentRow(firstSelectable);
     else
         openChannel(QString());
+}
+
+void MainWindow::refreshChannelListInPlace()
+{
+    const int scroll = m_channelList->verticalScrollBar()->value();
+    const QString keep = m_currentChannelId;
+
+    populateChannelList(false);
+
+    // Put the selection back without reopening the channel.
+    {
+        QSignalBlocker blocker(m_channelList);
+        for (int row = 0; row < m_channelList->count(); ++row) {
+            if (m_channelList->item(row)->data(IdRole).toString() == keep) {
+                m_channelList->setCurrentRow(row);
+                break;
+            }
+        }
+    }
+
+    // Last, because selecting a row scrolls to it on its own.
+    m_channelList->verticalScrollBar()->setValue(scroll);
 }
 
 void MainWindow::watchGuildChannel(const QString &guildId, const QString &channelId)
