@@ -20,6 +20,12 @@ constexpr quint64 ReadMessageHistory = 1ull << 16;
 constexpr quint64 Connect = 1ull << 20;
 constexpr quint64 All = ~0ull;
 
+// Channel object flags. CHANNEL_OBFUSCATED means READY hid the real name
+// because this account cannot view the channel. IS_SPOILER_CHANNEL is an
+// opt-in content gate, not a permission bit.
+constexpr int ChannelObfuscated = 1 << 17;
+constexpr int IsSpoilerChannel = 1 << 21;
+
 // One entry from a channel's permission_overwrites array.
 // type 0 is a role (the guild id is @everyone), type 1 is a member.
 struct Overwrite

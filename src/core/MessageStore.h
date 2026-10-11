@@ -135,6 +135,8 @@ struct ChannelInfo
     int userLimit = 0;          // voice channels only, 0 means no limit
     QString lastMessageId;
     QList<DiscordPermissions::Overwrite> overwrites;
+    int flags = 0;
+    bool nsfw = false;
 
     bool isTextLike() const { return type == 0 || type == 1 || type == 3 || type == 5; }
     bool isDirect() const { return type == 1 || type == 3; }
@@ -448,6 +450,9 @@ public:
     // already in it. That is what GET /channels/{id}/messages requires.
     bool canRequestMessages(const QString &channelId) const;
     QString permissionSummary(const QString &channelId) const;
+    // Compact log / UI line: who is allowed VIEW_CHANNEL on this channel,
+    // versus the roles this account actually holds. Never includes tokens.
+    QString viewAccessExplain(const QString &channelId) const;
     QString selfUserId() const { return m_selfUserId; }
     QStringList selfRoles(const QString &guildId) const { return m_selfRoles.value(guildId); }
     ChannelInfo channel(const QString &channelId) const;

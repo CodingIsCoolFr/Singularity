@@ -509,6 +509,26 @@ void RestClient::fetchChannel(const QString &channelId, ObjectHandler onOk, Erro
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+void RestClient::fetchGuildChannels(const QString &guildId, ArrayHandler onOk, ErrorHandler onError)
+{
+    QNetworkReply *reply = m_network.get(
+        buildRequest(QStringLiteral("/guilds/%1/channels?permissions=true").arg(guildId)));
+    dispatch(reply, nullptr, std::move(onOk), std::move(onError));
+}
+
+void RestClient::fetchCurrentGuildMember(const QString &guildId, ObjectHandler onOk, ErrorHandler onError)
+{
+    QNetworkReply *reply = m_network.get(
+        buildRequest(QStringLiteral("/users/@me/guilds/%1/member").arg(guildId)));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
+void RestClient::fetchGuildOnboarding(const QString &guildId, ObjectHandler onOk, ErrorHandler onError)
+{
+    QNetworkReply *reply = m_network.get(buildRequest(QStringLiteral("/guilds/%1/onboarding").arg(guildId)));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::fetchUserProfile(const QString &userId, const QString &guildId, ObjectHandler onOk,
                                   ErrorHandler onError)
 {

@@ -4043,9 +4043,9 @@ void MainWindow::openChannel(const QString &channelId)
     // asks Discord: a guessed VIEW_CHANNEL miss must not hide history this
     // account is actually allowed to read.
     wlog(QStringLiteral("rest"),
-         QStringLiteral("history open channel=%1 guild=%2 type=%3 account=%4 %5")
+         QStringLiteral("history open channel=%1 guild=%2 type=%3 account=%4 %5 %6")
              .arg(channelId, channel.guildId, QString::number(channel.type), m_selfUserId,
-                  m_store->permissionSummary(channelId)));
+                  m_store->permissionSummary(channelId), m_store->viewAccessExplain(channelId)));
 
     if (channel.id.isEmpty()) {
         m_composer->setEnabled(false);
@@ -4126,10 +4126,13 @@ void MainWindow::openChannel(const QString &channelId)
                 break;
             case DiscordPermissions::HistoryFailure::MissingAccess:
                 reason = QStringLiteral("Missing Access (Discord 50001). "
-                                       "GET /channels/{id}/messages requires VIEW_CHANNEL.");
+                                       "GET /channels/{id}/messages requires VIEW_CHANNEL. ");
+                reason += m_store->viewAccessExplain(channelId);
                 if (m_store->canViewChannel(channelId))
                     reason += QStringLiteral(" This account looks like it has VIEW_CHANNEL locally; "
                                             "the refusal came from Discord, not a guessed permission bit.");
+                if (!info.guildId.isEmpty())
+                    diagnoseMissingAccess(channelId);
                 break;
             case DiscordPermissions::HistoryFailure::MissingPermissions:
                 reason = QStringLiteral("Missing Permissions (Discord 50013).");
@@ -4155,6 +4158,117 @@ void MainWindow::openChannel(const QString &channelId)
             }
             m_messageView->setHtml(QStringLiteral("<p class=\"system\">Could not load messages: %1</p>")
                                        .arg(reason.toHtmlEscaped()));
+        });
+}
+
+void MainWindow::diagnoseMissingAccess(const QString &channelId)
+{
+    const ChannelInfo channel = m_store->channel(channelId);
+    if (channel.guildId.isEmpty() || !m_rest)
+        return;
+
+    wlog(QStringLiteral("rest"),
+         QStringLiteral("access dump channel=%1 guild=%2 %3")
+             .arg(channelId, channel.guildId, m_store->viewAccessExplain(channelId)));
+
+    m_rest->fetchChannel(
+        channelId,
+        [this, channelId](const QJsonObject &raw) {
+            wlog(QStringLiteral("rest"),
+                 QStringLiteral("GET channel %1 flags=%2 nsfw=%3 name=%4")
+                     .arg(channelId)
+                     .arg(raw.value(QStringLiteral("flags")).toInt())
+                     .arg(raw.value(QStringLiteral("nsfw")).toBool() ? QStringLiteral("yes")
+                                                                    : QStringLiteral("no"),
+                          raw.value(QStringLiteral("name")).toString()));
+        },
+        [this, channelId](const RestClient::Error &error) {
+            wlog(QStringLiteral("rest"),
+                 QStringLiteral("GET channel %1 failed http=%2 discord=%3")
+                     .arg(channelId)
+                     .arg(error.httpStatus)
+                     .arg(error.discordCode()));
+        });
+
+    m_rest->fetchCurrentGuildMember(
+        channel.guildId,
+        [this, channelId](const QJsonObject &raw) {
+            const bool pending = raw.value(QStringLiteral("pending")).toBool();
+            QStringList roles;
+            for (const QJsonValue &value : raw.value(QStringLiteral("roles")).toArray())
+                roles.append(value.toString());
+            wlog(QStringLiteral("rest"),
+                 QStringLiteral("GET member me channel=%1 pending=%2 flags=%3 roles=%4")
+                     .arg(channelId, pending ? QStringLiteral("yes") : QStringLiteral("no"))
+                     .arg(raw.value(QStringLiteral("flags")).toInt())
+                     .arg(roles.join(QLatin1Char(','))));
+            if (!roles.isEmpty())
+                m_store->setSelfRoles(m_store->channel(channelId).guildId, roles);
+        },
+        [this, channelId](const RestClient::Error &error) {
+            wlog(QStringLiteral("rest"),
+                 QStringLiteral("GET member me channel=%1 failed http=%2 discord=%3")
+                     .arg(channelId)
+                     .arg(error.httpStatus)
+                     .arg(error.discordCode()));
+        });
+
+    m_rest->fetchGuildOnboarding(
+        channel.guildId,
+        [this, channelId](const QJsonObject &raw) {
+            const bool enabled = raw.value(QStringLiteral("enabled")).toBool();
+            const int prompts = raw.value(QStringLiteral("prompts")).toArray().size();
+            wlog(QStringLiteral("rest"),
+                 QStringLiteral("GET onboarding channel=%1 enabled=%2 prompts=%3")
+                     .arg(channelId, enabled ? QStringLiteral("yes") : QStringLiteral("no"))
+                     .arg(prompts));
+        },
+        [this, channelId](const RestClient::Error &error) {
+            wlog(QStringLiteral("rest"),
+                 QStringLiteral("GET onboarding channel=%1 failed http=%2 discord=%3")
+                     .arg(channelId)
+                     .arg(error.httpStatus)
+                     .arg(error.discordCode()));
+        });
+
+    m_rest->fetchGuildChannels(
+        channel.guildId,
+        [this, channelId](const QJsonArray &channels) {
+            bool found = false;
+            QString perms;
+            for (const QJsonValue &value : channels) {
+                const QJsonObject raw = value.toObject();
+                if (raw.value(QStringLiteral("id")).toString() != channelId)
+                    continue;
+                found = true;
+                perms = raw.value(QStringLiteral("permissions")).toString();
+                break;
+            }
+            if (!found) {
+                wlog(QStringLiteral("rest"),
+                     QStringLiteral("HTTP guild channels omits %1 (Discord agrees this account cannot view it)")
+                         .arg(channelId));
+                return;
+            }
+            bool ok = false;
+            const quint64 bits = perms.toULongLong(&ok);
+            const bool view = ok && DiscordPermissions::has(bits, DiscordPermissions::ViewChannel);
+            wlog(QStringLiteral("rest"),
+                 QStringLiteral("HTTP guild channels includes %1 permissions=%2 view=%3")
+                     .arg(channelId, perms, view ? QStringLiteral("yes") : QStringLiteral("no")));
+            if (!view || m_historyAccessRetried.contains(channelId) || channelId != m_currentChannelId)
+                return;
+            m_historyAccessRetried.insert(channelId);
+            wlog(QStringLiteral("rest"),
+                 QStringLiteral("Discord computed VIEW_CHANNEL for %1; retrying history").arg(channelId));
+            openChannel(channelId);
+        },
+        [this, channelId](const RestClient::Error &error) {
+            wlog(QStringLiteral("rest"),
+                 QStringLiteral("GET guild channels channel=%1 failed http=%2 discord=%3")
+                     .arg(channelId)
+                     .arg(error.httpStatus)
+                     .arg(error.discordCode()));
         });
 }
 

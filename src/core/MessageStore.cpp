@@ -21,6 +21,21 @@ quint64 bitsFromJson(const QJsonValue &value)
     return 0;
 }
 
+// Discord documents overwrite type as an int, but READY has sent it as the
+// strings "0"/"1" (and occasionally "role"/"member"). QJsonValue::toInt()
+// on a string is 0, which turned every member overwrite into a role.
+int overwriteTypeFromJson(const QJsonValue &value)
+{
+    if (value.isString()) {
+        const QString text = value.toString();
+        if (text == QLatin1String("1")
+            || text.compare(QLatin1String("member"), Qt::CaseInsensitive) == 0)
+            return 1;
+        return 0;
+    }
+    return value.toInt();
+}
+
 } // namespace
 
 MessageStore::MessageStore(QObject *parent)
@@ -1002,7 +1017,7 @@ void MessageStore::ingestChannel(const QJsonObject &rawChannel, const QString &g
             overwrite.id = raw.value(QStringLiteral("id")).toString();
             if (overwrite.id.isEmpty())
                 continue;
-            overwrite.type = raw.value(QStringLiteral("type")).toInt();
+            overwrite.type = overwriteTypeFromJson(raw.value(QStringLiteral("type")));
             overwrite.allow = bitsFromJson(raw.value(QStringLiteral("allow")));
             overwrite.deny = bitsFromJson(raw.value(QStringLiteral("deny")));
             channel.overwrites.append(overwrite);
@@ -1010,6 +1025,15 @@ void MessageStore::ingestChannel(const QJsonObject &rawChannel, const QString &g
     } else {
         channel.overwrites = before.overwrites;
     }
+
+    if (rawChannel.contains(QStringLiteral("flags")))
+        channel.flags = rawChannel.value(QStringLiteral("flags")).toInt();
+    else
+        channel.flags = before.flags;
+    if (rawChannel.contains(QStringLiteral("nsfw")))
+        channel.nsfw = rawChannel.value(QStringLiteral("nsfw")).toBool();
+    else
+        channel.nsfw = before.nsfw;
 
     m_channels.insert(channel.id, channel);
 }
@@ -1729,13 +1753,69 @@ bool MessageStore::canRequestMessages(const QString &channelId) const
 QString MessageStore::permissionSummary(const QString &channelId) const
 {
     const quint64 bits = channelPermissions(channelId);
-    return QStringLiteral("view=%1 history=%2 connect=%3 bits=0x%4")
+    const ChannelInfo channel = m_channels.value(channelId);
+    return QStringLiteral("view=%1 history=%2 connect=%3 bits=0x%4 flags=0x%5 nsfw=%6")
         .arg(canViewChannel(channelId) ? QStringLiteral("yes") : QStringLiteral("no"),
              DiscordPermissions::has(bits, DiscordPermissions::ReadMessageHistory) ? QStringLiteral("yes")
                                                                                    : QStringLiteral("no"),
              DiscordPermissions::has(bits, DiscordPermissions::Connect) ? QStringLiteral("yes")
                                                                         : QStringLiteral("no"))
-        .arg(bits, 0, 16);
+        .arg(bits, 0, 16)
+        .arg(channel.flags, 0, 16)
+        .arg(channel.nsfw ? QStringLiteral("yes") : QStringLiteral("no"));
+}
+
+QString MessageStore::viewAccessExplain(const QString &channelId) const
+{
+    const ChannelInfo channel = m_channels.value(channelId);
+    if (channel.id.isEmpty())
+        return QStringLiteral("channel not in session");
+    if (channel.isDirect() || channel.guildId.isEmpty())
+        return QStringLiteral("direct message");
+
+    const GuildInfo guild = m_guilds.value(channel.guildId);
+    QStringList allowRoles;
+    QStringList denyRoles;
+    QString everyone = QStringLiteral("default");
+    QString member = QStringLiteral("none");
+    for (const DiscordPermissions::Overwrite &overwrite : channel.overwrites) {
+        const bool allows = DiscordPermissions::has(overwrite.allow, DiscordPermissions::ViewChannel);
+        const bool denies = DiscordPermissions::has(overwrite.deny, DiscordPermissions::ViewChannel);
+        if (!allows && !denies)
+            continue;
+        if (overwrite.type == 1) {
+            if (overwrite.id == m_selfUserId)
+                member = allows ? QStringLiteral("allow") : QStringLiteral("deny");
+            continue;
+        }
+        const RoleInfo role = guild.roles.value(overwrite.id);
+        const QString label = role.name.isEmpty() ? overwrite.id : role.name;
+        if (overwrite.id == channel.guildId)
+            everyone = denies ? QStringLiteral("deny") : QStringLiteral("allow");
+        else if (allows)
+            allowRoles.append(label);
+        else
+            denyRoles.append(label);
+    }
+
+    QStringList held;
+    for (const QString &roleId : m_selfRoles.value(channel.guildId)) {
+        const RoleInfo role = guild.roles.value(roleId);
+        held.append(role.name.isEmpty() ? roleId : role.name);
+    }
+
+    QString flags;
+    if (channel.flags & DiscordPermissions::ChannelObfuscated)
+        flags += QStringLiteral(" obfuscated");
+    if (channel.flags & DiscordPermissions::IsSpoilerChannel)
+        flags += QStringLiteral(" spoiler");
+    if (channel.nsfw)
+        flags += QStringLiteral(" nsfw");
+
+    return QStringLiteral("everyone=%1 allow=[%2] deny=[%3] member=%4 held=[%5]%6 overwrites=%7")
+        .arg(everyone, allowRoles.join(QLatin1Char(',')), denyRoles.join(QLatin1Char(',')), member,
+             held.join(QLatin1Char(',')), flags)
+        .arg(channel.overwrites.size());
 }
 
 QList<QPair<QString, QString>> MessageStore::unreadChannels() const

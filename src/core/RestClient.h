@@ -169,6 +169,18 @@ public:
     // yet. The reply carries its guild and type, so we can jump to it.
     void fetchChannel(const QString &channelId, ObjectHandler onOk, ErrorHandler onError);
 
+    // GET /guilds/{id}/channels?permissions=true — Discord's own computed
+    // bits for this account. Channels this account cannot view are omitted.
+    void fetchGuildChannels(const QString &guildId, ArrayHandler onOk, ErrorHandler onError);
+
+    // GET /users/@me/guilds/{id}/member — pending (membership screening) and
+    // the live role list, which READY can be stale on.
+    void fetchCurrentGuildMember(const QString &guildId, ObjectHandler onOk, ErrorHandler onError);
+
+    // GET /guilds/{id}/onboarding — community onboarding that grants roles
+    // and channel access when completed.
+    void fetchGuildOnboarding(const QString &guildId, ObjectHandler onOk, ErrorHandler onError);
+
     // GET /users/{id}/profile - the whole profile: banner, bio, badges,
     // connections, mutual servers and friends, and the member record for one
     // server when `guildId` is given.

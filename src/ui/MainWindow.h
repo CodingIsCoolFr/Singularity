@@ -218,6 +218,7 @@ private:
     // rebuilding: the selection, the scroll and the hover all survive.
     void refreshDirectRows();
     void openChannel(const QString &channelId);
+    void diagnoseMissingAccess(const QString &channelId);
     void renderChannel();
     void appendMessageToView(const MessageInfo &message, bool grouped);
 
@@ -740,6 +741,7 @@ private:
 
     QStringList m_prefetchQueue;
     QSet<QString> m_prefetchAsked;
+    QSet<QString> m_historyAccessRetried;
     QTimer m_prefetchTimer;
     QTimer m_memoryTimer;
 
