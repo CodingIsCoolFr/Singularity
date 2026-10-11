@@ -1102,7 +1102,7 @@ QList<ChannelInfo> MessageStore::channelsOfGuild(const QString &guildId) const
     const GuildInfo info = m_guilds.value(guildId);
     for (const QString &channelId : info.channelIds) {
         const ChannelInfo channel = m_channels.value(channelId);
-        if (channel.isTextLike() && canViewChannel(channel.id))
+        if (channel.isTextLike())
             result.append(channel);
     }
     std::sort(result.begin(), result.end(), [](const ChannelInfo &a, const ChannelInfo &b) {
@@ -1129,10 +1129,9 @@ QList<ChannelGroup> MessageStore::groupedChannels(const QString &guildId) const
         } else if (channel.isTextLike() || channel.isVoice()) {
             // Voice channels belong in the sidebar too. Modern Discord gives
             // them their own text chat, so they open like any other channel.
-            // A channel without VIEW_CHANNEL is still in READY; listing it as
-            // if it could be read is how #play-tests opened and then 403'd.
-            if (!canViewChannel(channel.id))
-                continue;
+            // READY lists channels this account may not be able to read.
+            // They stay in the sidebar; Discord's reply to GET messages is
+            // what decides whether the history appears.
             if (channel.parentId.isEmpty())
                 loose.append(channel);
             else

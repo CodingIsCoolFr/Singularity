@@ -4039,8 +4039,9 @@ void MainWindow::openChannel(const QString &channelId)
     loadCommandIndex({}, {});
     updateCommandPopup();
 
-    // READY still lists channels this account cannot view. Being in the
-    // sidebar is not proof that GET /channels/{id}/messages will succeed.
+    // Local overwrite math is a hint for prefetch and logs. A click always
+    // asks Discord: a guessed VIEW_CHANNEL miss must not hide history this
+    // account is actually allowed to read.
     wlog(QStringLiteral("rest"),
          QStringLiteral("history open channel=%1 guild=%2 type=%3 account=%4 %5")
              .arg(channelId, channel.guildId, QString::number(channel.type), m_selfUserId,
@@ -4052,30 +4053,6 @@ void MainWindow::openChannel(const QString &channelId)
             QStringLiteral("<p class=\"system\">This channel is not in the session (id %1). "
                            "It may have been deleted, or the id never arrived from Discord.</p>")
                 .arg(channelId.toHtmlEscaped()));
-        return;
-    }
-
-    if (!channel.guildId.isEmpty() && !m_store->canViewChannel(channelId)) {
-        m_composer->setEnabled(false);
-        m_messageView->setHtml(
-            QStringLiteral("<p class=\"system\">This channel is not readable on this account "
-                           "(VIEW_CHANNEL is missing). Discord would refuse "
-                           "GET /channels/%1/messages with 403 Missing Access (50001).</p>")
-                .arg(channelId.toHtmlEscaped()));
-        return;
-    }
-    if (!channel.guildId.isEmpty() && !m_store->canReadMessageHistory(channelId)) {
-        m_store->setHistory(channelId, {});
-        m_messageView->setHtml(
-            QStringLiteral("<p class=\"system\">No message history to show. Discord documents "
-                           "missing READ_MESSAGE_HISTORY as an empty list, not an error. "
-                           "New messages in this channel will still appear.</p>"));
-        return;
-    }
-    if (!m_store->canRequestMessages(channelId)) {
-        m_messageView->setHtml(
-            QStringLiteral("<p class=\"system\">This voice channel's messages need CONNECT as well as "
-                           "VIEW_CHANNEL. Discord would refuse the history request.</p>"));
         return;
     }
 
