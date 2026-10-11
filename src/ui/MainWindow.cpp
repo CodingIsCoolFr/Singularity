@@ -4039,6 +4039,46 @@ void MainWindow::openChannel(const QString &channelId)
     loadCommandIndex({}, {});
     updateCommandPopup();
 
+    // READY still lists channels this account cannot view. Being in the
+    // sidebar is not proof that GET /channels/{id}/messages will succeed.
+    wlog(QStringLiteral("rest"),
+         QStringLiteral("history open channel=%1 guild=%2 type=%3 account=%4 %5")
+             .arg(channelId, channel.guildId, QString::number(channel.type), m_selfUserId,
+                  m_store->permissionSummary(channelId)));
+
+    if (channel.id.isEmpty()) {
+        m_composer->setEnabled(false);
+        m_messageView->setHtml(
+            QStringLiteral("<p class=\"system\">This channel is not in the session (id %1). "
+                           "It may have been deleted, or the id never arrived from Discord.</p>")
+                .arg(channelId.toHtmlEscaped()));
+        return;
+    }
+
+    if (!channel.guildId.isEmpty() && !m_store->canViewChannel(channelId)) {
+        m_composer->setEnabled(false);
+        m_messageView->setHtml(
+            QStringLiteral("<p class=\"system\">This channel is not readable on this account "
+                           "(VIEW_CHANNEL is missing). Discord would refuse "
+                           "GET /channels/%1/messages with 403 Missing Access (50001).</p>")
+                .arg(channelId.toHtmlEscaped()));
+        return;
+    }
+    if (!channel.guildId.isEmpty() && !m_store->canReadMessageHistory(channelId)) {
+        m_store->setHistory(channelId, {});
+        m_messageView->setHtml(
+            QStringLiteral("<p class=\"system\">No message history to show. Discord documents "
+                           "missing READ_MESSAGE_HISTORY as an empty list, not an error. "
+                           "New messages in this channel will still appear.</p>"));
+        return;
+    }
+    if (!m_store->canRequestMessages(channelId)) {
+        m_messageView->setHtml(
+            QStringLiteral("<p class=\"system\">This voice channel's messages need CONNECT as well as "
+                           "VIEW_CHANNEL. Discord would refuse the history request.</p>"));
+        return;
+    }
+
     if (m_store->hasHistory(channelId)) {
         renderChannel();
         acknowledgeChannel(channelId);
@@ -4071,9 +4111,11 @@ void MainWindow::openChannel(const QString &channelId)
     m_rest->fetchMessages(
         channelId, limit,
         [this, channelId, started](const QJsonArray &messages) {
+            const ChannelInfo info = m_store->channel(channelId);
             wlog(QStringLiteral("rest"),
-                 QStringLiteral("history for %1 arrived in %2 ms (%3 messages)")
-                     .arg(channelId)
+                 QStringLiteral("history ok channel=%1 guild=%2 type=%3 account=%4 %5 in %6 ms (%7 messages)")
+                     .arg(channelId, info.guildId, QString::number(info.type), m_selfUserId,
+                          m_store->permissionSummary(channelId))
                      .arg(started->elapsed())
                      .arg(messages.size()));
             m_store->setHistory(channelId, messages);
@@ -4083,15 +4125,57 @@ void MainWindow::openChannel(const QString &channelId)
             }
         },
         [this, channelId](const RestClient::Error &error) {
-            wlog(QStringLiteral("rest"), QStringLiteral("history failed for %1: HTTP %2 %3")
-                                             .arg(channelId).arg(error.httpStatus).arg(error.message));
+            const ChannelInfo info = m_store->channel(channelId);
+            wlog(QStringLiteral("rest"),
+                 QStringLiteral("history failed channel=%1 guild=%2 type=%3 account=%4 %5 http=%6 discord=%7 msg=%8")
+                     .arg(channelId, info.guildId, QString::number(info.type), m_selfUserId,
+                          m_store->permissionSummary(channelId))
+                     .arg(error.httpStatus)
+                     .arg(error.discordCode())
+                     .arg(error.message));
             if (channelId != m_currentChannelId)
                 return;
-            QString reason = error.message;
-            if (error.httpStatus == 403)
-                reason = QStringLiteral("No permission to read this channel.");
-            else if (error.isRateLimit())
+            QString reason;
+            const int code = error.discordCode();
+            switch (DiscordPermissions::classifyHistoryFailure(error.httpStatus, code)) {
+            case DiscordPermissions::HistoryFailure::RateLimit:
                 reason = QStringLiteral("Rate limited. Try again in a moment.");
+                break;
+            case DiscordPermissions::HistoryFailure::Auth:
+                reason = QStringLiteral("Session expired or invalid (HTTP 401). Sign in again.");
+                break;
+            case DiscordPermissions::HistoryFailure::MissingChannel:
+                reason = QStringLiteral("This channel was not found (HTTP 404).");
+                break;
+            case DiscordPermissions::HistoryFailure::MissingAccess:
+                reason = QStringLiteral("Missing Access (Discord 50001). "
+                                       "GET /channels/{id}/messages requires VIEW_CHANNEL.");
+                if (m_store->canViewChannel(channelId))
+                    reason += QStringLiteral(" This account looks like it has VIEW_CHANNEL locally; "
+                                            "the refusal came from Discord, not a guessed permission bit.");
+                break;
+            case DiscordPermissions::HistoryFailure::MissingPermissions:
+                reason = QStringLiteral("Missing Permissions (Discord 50013).");
+                break;
+            case DiscordPermissions::HistoryFailure::Forbidden:
+                reason = QStringLiteral("HTTP 403");
+                if (code)
+                    reason += QStringLiteral(", Discord %1").arg(code);
+                if (!error.message.isEmpty())
+                    reason += QStringLiteral(": %1").arg(error.message);
+                break;
+            case DiscordPermissions::HistoryFailure::Other:
+                if (code != 0)
+                    reason = QStringLiteral("HTTP %1, Discord %2: %3")
+                                 .arg(error.httpStatus)
+                                 .arg(code)
+                                 .arg(error.message);
+                else if (!error.message.isEmpty())
+                    reason = QStringLiteral("HTTP %1: %2").arg(error.httpStatus).arg(error.message);
+                else
+                    reason = QStringLiteral("HTTP %1").arg(error.httpStatus);
+                break;
+            }
             m_messageView->setHtml(QStringLiteral("<p class=\"system\">Could not load messages: %1</p>")
                                        .arg(reason.toHtmlEscaped()));
         });
@@ -4202,7 +4286,12 @@ void MainWindow::prefetchChannel(const QString &channelId)
 
     // Only the ones that hold messages. A voice channel or a category has no
     // history to fetch and asking for it spends the allowance for nothing.
+    // Neither does a channel this account cannot view: Discord answers 403
+    // Missing Access, which is how prefetch used to hammer private channels.
     if (!channel.isTextLike())
+        return;
+    if (!m_store->canViewChannel(channelId) || !m_store->canReadMessageHistory(channelId)
+        || !m_store->canRequestMessages(channelId))
         return;
 
     m_prefetchAsked.insert(channelId);

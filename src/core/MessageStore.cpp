@@ -4,8 +4,24 @@
 #include "core/Logger.h"
 
 #include <QElapsedTimer>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QJsonValue>
 
 #include <algorithm>
+
+namespace {
+
+quint64 bitsFromJson(const QJsonValue &value)
+{
+    if (value.isString())
+        return value.toString().toULongLong();
+    if (value.isDouble())
+        return static_cast<quint64>(value.toDouble());
+    return 0;
+}
+
+} // namespace
 
 MessageStore::MessageStore(QObject *parent)
     : QObject(parent)
@@ -978,6 +994,23 @@ void MessageStore::ingestChannel(const QJsonObject &rawChannel, const QString &g
     if (channel.isDirect() && channel.recipientIds.isEmpty())
         channel.recipientIds = before.recipientIds;
 
+    if (rawChannel.contains(QStringLiteral("permission_overwrites"))) {
+        const QJsonArray rawOverwrites = rawChannel.value(QStringLiteral("permission_overwrites")).toArray();
+        for (const QJsonValue &value : rawOverwrites) {
+            const QJsonObject raw = value.toObject();
+            DiscordPermissions::Overwrite overwrite;
+            overwrite.id = raw.value(QStringLiteral("id")).toString();
+            if (overwrite.id.isEmpty())
+                continue;
+            overwrite.type = raw.value(QStringLiteral("type")).toInt();
+            overwrite.allow = bitsFromJson(raw.value(QStringLiteral("allow")));
+            overwrite.deny = bitsFromJson(raw.value(QStringLiteral("deny")));
+            channel.overwrites.append(overwrite);
+        }
+    } else {
+        channel.overwrites = before.overwrites;
+    }
+
     m_channels.insert(channel.id, channel);
 }
 
@@ -1069,7 +1102,7 @@ QList<ChannelInfo> MessageStore::channelsOfGuild(const QString &guildId) const
     const GuildInfo info = m_guilds.value(guildId);
     for (const QString &channelId : info.channelIds) {
         const ChannelInfo channel = m_channels.value(channelId);
-        if (channel.isTextLike())
+        if (channel.isTextLike() && canViewChannel(channel.id))
             result.append(channel);
     }
     std::sort(result.begin(), result.end(), [](const ChannelInfo &a, const ChannelInfo &b) {
@@ -1096,6 +1129,10 @@ QList<ChannelGroup> MessageStore::groupedChannels(const QString &guildId) const
         } else if (channel.isTextLike() || channel.isVoice()) {
             // Voice channels belong in the sidebar too. Modern Discord gives
             // them their own text chat, so they open like any other channel.
+            // A channel without VIEW_CHANNEL is still in READY; listing it as
+            // if it could be read is how #play-tests opened and then 403'd.
+            if (!canViewChannel(channel.id))
+                continue;
             if (channel.parentId.isEmpty())
                 loose.append(channel);
             else
@@ -1630,6 +1667,76 @@ quint64 MessageStore::selfPermissions(const QString &guildId) const
     if (permissions & Administrator)
         return ~0ull;
     return permissions;
+}
+
+quint64 MessageStore::channelPermissions(const QString &channelId) const
+{
+    const ChannelInfo channel = m_channels.value(channelId);
+    if (channel.id.isEmpty())
+        return 0;
+    if (channel.isDirect() || channel.guildId.isEmpty())
+        return DiscordPermissions::All;
+
+    const GuildInfo guild = m_guilds.value(channel.guildId);
+    const QStringList roles = m_selfRoles.value(channel.guildId);
+    QList<quint64> rolePerms;
+    rolePerms.reserve(roles.size());
+    for (const QString &roleId : roles)
+        rolePerms.append(guild.roles.value(roleId).permissions);
+
+    const bool owner = !m_selfUserId.isEmpty() && guild.ownerId == m_selfUserId;
+    const quint64 everyone = guild.roles.value(channel.guildId).permissions;
+    const quint64 base = DiscordPermissions::computeBase(owner, everyone, rolePerms);
+    return DiscordPermissions::applyOverwrites(base, channel.guildId, m_selfUserId, roles, channel.overwrites);
+}
+
+bool MessageStore::canViewChannel(const QString &channelId) const
+{
+    const ChannelInfo channel = m_channels.value(channelId);
+    if (channel.id.isEmpty())
+        return false;
+    if (channel.isDirect() || channel.guildId.isEmpty())
+        return true;
+    if (channel.isVoice() && voiceState(m_selfUserId).channelId == channelId)
+        return true;
+    return DiscordPermissions::has(channelPermissions(channelId), DiscordPermissions::ViewChannel);
+}
+
+bool MessageStore::canReadMessageHistory(const QString &channelId) const
+{
+    const ChannelInfo channel = m_channels.value(channelId);
+    if (channel.id.isEmpty())
+        return false;
+    if (channel.isDirect() || channel.guildId.isEmpty())
+        return true;
+    const quint64 bits = channelPermissions(channelId);
+    return DiscordPermissions::has(bits, DiscordPermissions::ViewChannel)
+        && DiscordPermissions::has(bits, DiscordPermissions::ReadMessageHistory);
+}
+
+bool MessageStore::canRequestMessages(const QString &channelId) const
+{
+    const ChannelInfo channel = m_channels.value(channelId);
+    if (!canViewChannel(channelId))
+        return false;
+    if (channel.isVoice()) {
+        const bool sitting = voiceState(m_selfUserId).channelId == channelId;
+        if (!sitting && !DiscordPermissions::has(channelPermissions(channelId), DiscordPermissions::Connect))
+            return false;
+    }
+    return true;
+}
+
+QString MessageStore::permissionSummary(const QString &channelId) const
+{
+    const quint64 bits = channelPermissions(channelId);
+    return QStringLiteral("view=%1 history=%2 connect=%3 bits=0x%4")
+        .arg(canViewChannel(channelId) ? QStringLiteral("yes") : QStringLiteral("no"),
+             DiscordPermissions::has(bits, DiscordPermissions::ReadMessageHistory) ? QStringLiteral("yes")
+                                                                                   : QStringLiteral("no"),
+             DiscordPermissions::has(bits, DiscordPermissions::Connect) ? QStringLiteral("yes")
+                                                                        : QStringLiteral("no"))
+        .arg(bits, 0, 16);
 }
 
 QList<QPair<QString, QString>> MessageStore::unreadChannels() const

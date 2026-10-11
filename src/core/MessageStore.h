@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/DiscordPermissions.h"
+
 #include <QDateTime>
 #include <QHash>
 #include <QJsonArray>
@@ -132,6 +134,7 @@ struct ChannelInfo
     int bitrate = 0;            // voice channels only
     int userLimit = 0;          // voice channels only, 0 means no limit
     QString lastMessageId;
+    QList<DiscordPermissions::Overwrite> overwrites;
 
     bool isTextLike() const { return type == 0 || type == 1 || type == 3 || type == 5; }
     bool isDirect() const { return type == 1 || type == 3; }
@@ -432,6 +435,20 @@ public:
     // Owner and Administrator count as every bit. Otherwise @everyone plus
     // the roles you hold, which is what Mute / Deafen / Move Members read.
     quint64 selfPermissions(const QString &guildId) const;
+    // The same bits after this channel's permission_overwrites. Direct
+    // messages are every bit. Owner and Administrator still bypass overwrites.
+    quint64 channelPermissions(const QString &channelId) const;
+    // VIEW_CHANNEL, or already sitting in this voice channel.
+    bool canViewChannel(const QString &channelId) const;
+    // VIEW_CHANNEL and READ_MESSAGE_HISTORY. Discord returns an empty list
+    // when history is missing, not 403; the caller should not treat that as
+    // a failed request.
+    bool canReadMessageHistory(const QString &channelId) const;
+    // VIEW_CHANNEL, and CONNECT when the channel is voice and we are not
+    // already in it. That is what GET /channels/{id}/messages requires.
+    bool canRequestMessages(const QString &channelId) const;
+    QString permissionSummary(const QString &channelId) const;
+    QString selfUserId() const { return m_selfUserId; }
     QStringList selfRoles(const QString &guildId) const { return m_selfRoles.value(guildId); }
     ChannelInfo channel(const QString &channelId) const;
     QList<ChannelInfo> channelsOfGuild(const QString &guildId) const;

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(Singularity VERSION 0.8.67 LANGUAGES CXX)
+project(Singularity VERSION 0.8.68 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -28,6 +28,7 @@ qt_add_executable(Singularity WIN32
     src/core/TokenStore.cpp
     src/core/DiscordIdentity.h
     src/core/DiscordIdentity.cpp
+    src/core/DiscordPermissions.h
     src/core/AuthClient.h
     src/core/AuthClient.cpp
     src/core/RestClient.h
@@ -405,3 +406,10 @@ endif()
 set_target_properties(Singularity PROPERTIES
     OUTPUT_NAME "Singularity"
 )
+
+# Permission overwrite math has no Discord traffic and no window. Keep it
+# honest with a small console check so a sidebar 403 is not "fixed" by
+# guessing the bit order.
+add_executable(test_permissions tools/test_permissions.cpp)
+target_include_directories(test_permissions PRIVATE src)
+target_link_libraries(test_permissions PRIVATE Qt6::Core)

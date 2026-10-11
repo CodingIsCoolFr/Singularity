@@ -28,6 +28,7 @@ public:
         QString message;
         QJsonObject body;
         bool isRateLimit() const { return httpStatus == 429; }
+        int discordCode() const { return body.value(QStringLiteral("code")).toInt(); }
     };
 
     using ObjectHandler = std::function<void(const QJsonObject &)>;
