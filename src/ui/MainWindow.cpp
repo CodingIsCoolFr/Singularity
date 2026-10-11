@@ -2620,8 +2620,11 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
     if (eventType == QLatin1String("GUILD_MEMBER_UPDATE")
         && data.value(QStringLiteral("user")).toObject().value(QStringLiteral("id")).toString() == m_selfUserId) {
         QStringList roles;
-        for (const QJsonValue &role : data.value(QStringLiteral("roles")).toArray())
-            roles.append(role.toString());
+        for (const QJsonValue &role : data.value(QStringLiteral("roles")).toArray()) {
+            const QString id = MessageStore::snowflake(role);
+            if (!id.isEmpty())
+                roles.append(id);
+        }
         m_notifyRules.setSelfRoles(data.value(QStringLiteral("guild_id")).toString(), roles);
         m_store->setSelfRoles(data.value(QStringLiteral("guild_id")).toString(), roles);
         // Fall through: anything else that wants member updates still gets it.
@@ -4170,6 +4173,8 @@ void MainWindow::diagnoseMissingAccess(const QString &channelId)
     wlog(QStringLiteral("rest"),
          QStringLiteral("access dump channel=%1 guild=%2 %3")
              .arg(channelId, channel.guildId, m_store->viewAccessExplain(channelId)));
+    wlog(QStringLiteral("rest"),
+         QStringLiteral("overwrites channel=%1 %2").arg(channelId, m_store->overwriteDump(channelId)));
 
     m_rest->fetchChannel(
         channelId,
@@ -4195,13 +4200,17 @@ void MainWindow::diagnoseMissingAccess(const QString &channelId)
         [this, channelId](const QJsonObject &raw) {
             const bool pending = raw.value(QStringLiteral("pending")).toBool();
             QStringList roles;
-            for (const QJsonValue &value : raw.value(QStringLiteral("roles")).toArray())
-                roles.append(value.toString());
+            for (const QJsonValue &value : raw.value(QStringLiteral("roles")).toArray()) {
+                const QString id = MessageStore::snowflake(value);
+                if (!id.isEmpty())
+                    roles.append(id);
+            }
             wlog(QStringLiteral("rest"),
-                 QStringLiteral("GET member me channel=%1 pending=%2 flags=%3 roles=%4")
+                 QStringLiteral("GET member me channel=%1 pending=%2 flags=%3 roles_n=%4 roles=%5 keys=%6")
                      .arg(channelId, pending ? QStringLiteral("yes") : QStringLiteral("no"))
                      .arg(raw.value(QStringLiteral("flags")).toInt())
-                     .arg(roles.join(QLatin1Char(','))));
+                     .arg(roles.size())
+                     .arg(roles.join(QLatin1Char(',')), raw.keys().join(QLatin1Char(','))));
             if (!roles.isEmpty())
                 m_store->setSelfRoles(m_store->channel(channelId).guildId, roles);
         },

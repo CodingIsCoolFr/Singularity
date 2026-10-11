@@ -38,6 +38,18 @@ int overwriteTypeFromJson(const QJsonValue &value)
 
 } // namespace
 
+QString MessageStore::snowflake(const QJsonValue &value)
+{
+    if (value.isString())
+        return value.toString();
+    if (value.isDouble()) {
+        const double number = value.toDouble();
+        if (number >= 0 && number < 9007199254740992.0)
+            return QString::number(static_cast<qint64>(number));
+    }
+    return {};
+}
+
 MessageStore::MessageStore(QObject *parent)
     : QObject(parent)
 {
@@ -530,25 +542,19 @@ void MessageStore::ingestReady(const QJsonObject &readyPayload)
     }
 
     const QJsonArray guilds = readyPayload.value(QStringLiteral("guilds")).toArray();
+    // Roles on guild.members are matched against this id. It used to be set
+    // after ingestGuild, so READY's own member row was ignored.
+    m_selfUserId = readyPayload.value(QStringLiteral("user")).toObject().value(QStringLiteral("id")).toString();
     for (const QJsonValue &value : guilds)
         ingestGuild(value.toObject());
 
     // Your own member record in each server: merged_members runs parallel to
     // guilds, and it is where your roles are.
-    m_selfUserId = readyPayload.value(QStringLiteral("user")).toObject().value(QStringLiteral("id")).toString();
     const QJsonArray merged = readyPayload.value(QStringLiteral("merged_members")).toArray();
     for (int i = 0; i < guilds.size() && i < merged.size(); ++i) {
         const QString guildId = guilds.at(i).toObject().value(QStringLiteral("id")).toString();
-        for (const QJsonValue &value : merged.at(i).toArray()) {
-            const QJsonObject member = value.toObject();
-            const QString who = member.value(QStringLiteral("user_id")).toString();
-            if (!who.isEmpty() && who != m_selfUserId)
-                continue;
-            QStringList roles;
-            for (const QJsonValue &role : member.value(QStringLiteral("roles")).toArray())
-                roles.append(role.toString());
-            m_selfRoles.insert(guildId, roles);
-        }
+        for (const QJsonValue &value : merged.at(i).toArray())
+            ingestSelfMember(guildId, value.toObject());
     }
 
     const QJsonArray privateChannels = readyPayload.value(QStringLiteral("private_channels")).toArray();
@@ -619,10 +625,16 @@ void MessageStore::ingestReadySupplemental(const QJsonObject &payload)
 
     // Members ride along too, which is how names appear under a voice channel.
     const QJsonArray mergedMembers = payload.value(QStringLiteral("merged_members")).toArray();
-    for (const QJsonValue &group : mergedMembers) {
-        const QJsonArray list = group.toArray();
-        for (const QJsonValue &value : list)
-            rememberUser(value.toObject().value(QStringLiteral("user")).toObject());
+    for (int index = 0; index < mergedMembers.size(); ++index) {
+        QString guildId;
+        if (index < m_guildOrder.size())
+            guildId = m_guildOrder.at(index);
+        const QJsonArray list = mergedMembers.at(index).toArray();
+        for (const QJsonValue &value : list) {
+            const QJsonObject member = value.toObject();
+            rememberUser(member.value(QStringLiteral("user")).toObject());
+            ingestSelfMember(guildId, member);
+        }
     }
 
     wlog(QStringLiteral("store"), QStringLiteral("supplemental: %1 guilds, %2 people in voice, "
@@ -889,7 +901,7 @@ void MessageStore::ingestGuild(const QJsonObject &rawGuild)
     for (const QJsonValue &value : roles) {
         const QJsonObject rawRole = value.toObject();
         RoleInfo role;
-        role.id = rawRole.value(QStringLiteral("id")).toString();
+        role.id = snowflake(rawRole.value(QStringLiteral("id")));
         if (role.id.isEmpty())
             continue;
         role.name = rawRole.value(QStringLiteral("name")).toString();
@@ -932,6 +944,10 @@ void MessageStore::ingestGuild(const QJsonObject &rawGuild)
         ingestChannel(rawChannel, guild.id);
         guild.channelIds.append(channelId);
     }
+
+    const QJsonArray members = rawGuild.value(QStringLiteral("members")).toArray();
+    for (const QJsonValue &value : members)
+        ingestSelfMember(guild.id, value.toObject());
 
     const bool known = m_guilds.contains(guild.id);
     m_guilds.insert(guild.id, guild);
@@ -1014,7 +1030,7 @@ void MessageStore::ingestChannel(const QJsonObject &rawChannel, const QString &g
         for (const QJsonValue &value : rawOverwrites) {
             const QJsonObject raw = value.toObject();
             DiscordPermissions::Overwrite overwrite;
-            overwrite.id = raw.value(QStringLiteral("id")).toString();
+            overwrite.id = snowflake(raw.value(QStringLiteral("id")));
             if (overwrite.id.isEmpty())
                 continue;
             overwrite.type = overwriteTypeFromJson(raw.value(QStringLiteral("type")));
@@ -1653,6 +1669,26 @@ void MessageStore::setSelfRoles(const QString &guildId, const QStringList &roleI
         m_selfRoles.insert(guildId, roleIds);
 }
 
+void MessageStore::ingestSelfMember(const QString &guildId, const QJsonObject &member)
+{
+    if (guildId.isEmpty())
+        return;
+
+    QString who = snowflake(member.value(QStringLiteral("user_id")));
+    if (who.isEmpty())
+        who = snowflake(member.value(QStringLiteral("user")).toObject().value(QStringLiteral("id")));
+    if (!who.isEmpty() && !m_selfUserId.isEmpty() && who != m_selfUserId)
+        return;
+
+    QStringList roles;
+    for (const QJsonValue &role : member.value(QStringLiteral("roles")).toArray()) {
+        const QString id = snowflake(role);
+        if (!id.isEmpty())
+            roles.append(id);
+    }
+    m_selfRoles.insert(guildId, roles);
+}
+
 RolePower MessageStore::rolePower(const QString &guildId) const
 {
     constexpr quint64 Administrator = 1ull << 3;
@@ -1778,16 +1814,21 @@ QString MessageStore::viewAccessExplain(const QString &channelId) const
     QStringList denyRoles;
     QString everyone = QStringLiteral("default");
     QString member = QStringLiteral("none");
+    int memberAllows = 0;
+    int memberOverwrites = 0;
     for (const DiscordPermissions::Overwrite &overwrite : channel.overwrites) {
         const bool allows = DiscordPermissions::has(overwrite.allow, DiscordPermissions::ViewChannel);
         const bool denies = DiscordPermissions::has(overwrite.deny, DiscordPermissions::ViewChannel);
-        if (!allows && !denies)
-            continue;
         if (overwrite.type == 1) {
+            ++memberOverwrites;
+            if (allows)
+                ++memberAllows;
             if (overwrite.id == m_selfUserId)
-                member = allows ? QStringLiteral("allow") : QStringLiteral("deny");
+                member = allows ? QStringLiteral("allow") : (denies ? QStringLiteral("deny") : QStringLiteral("other"));
             continue;
         }
+        if (!allows && !denies)
+            continue;
         const RoleInfo role = guild.roles.value(overwrite.id);
         const QString label = role.name.isEmpty() ? overwrite.id : role.name;
         if (overwrite.id == channel.guildId)
@@ -1812,10 +1853,28 @@ QString MessageStore::viewAccessExplain(const QString &channelId) const
     if (channel.nsfw)
         flags += QStringLiteral(" nsfw");
 
-    return QStringLiteral("everyone=%1 allow=[%2] deny=[%3] member=%4 held=[%5]%6 overwrites=%7")
-        .arg(everyone, allowRoles.join(QLatin1Char(',')), denyRoles.join(QLatin1Char(',')), member,
-             held.join(QLatin1Char(',')), flags)
+    return QStringLiteral("everyone=%1 allow=[%2] deny=[%3] member=%4 member_allows=%5/%6 held=[%7]%8 overwrites=%9")
+        .arg(everyone, allowRoles.join(QLatin1Char(',')), denyRoles.join(QLatin1Char(',')), member)
+        .arg(memberAllows)
+        .arg(memberOverwrites)
+        .arg(held.join(QLatin1Char(',')), flags)
         .arg(channel.overwrites.size());
+}
+
+QString MessageStore::overwriteDump(const QString &channelId) const
+{
+    const ChannelInfo channel = m_channels.value(channelId);
+    QStringList parts;
+    parts.reserve(channel.overwrites.size());
+    for (const DiscordPermissions::Overwrite &overwrite : channel.overwrites) {
+        parts.append(QStringLiteral("t%1:%2 a=0x%3 d=0x%4%5")
+                         .arg(overwrite.type)
+                         .arg(overwrite.id)
+                         .arg(overwrite.allow, 0, 16)
+                         .arg(overwrite.deny, 0, 16)
+                         .arg(overwrite.id == m_selfUserId ? QStringLiteral(" SELF") : QString()));
+    }
+    return parts.join(QLatin1Char(' '));
 }
 
 QList<QPair<QString, QString>> MessageStore::unreadChannels() const

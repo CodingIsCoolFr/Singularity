@@ -6,6 +6,7 @@
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QList>
 #include <QObject>
 #include <QSet>
@@ -453,6 +454,9 @@ public:
     // Compact log / UI line: who is allowed VIEW_CHANNEL on this channel,
     // versus the roles this account actually holds. Never includes tokens.
     QString viewAccessExplain(const QString &channelId) const;
+    // One line per overwrite (type, id, allow, deny). For the log, not the UI.
+    QString overwriteDump(const QString &channelId) const;
+    static QString snowflake(const QJsonValue &value);
     QString selfUserId() const { return m_selfUserId; }
     QStringList selfRoles(const QString &guildId) const { return m_selfRoles.value(guildId); }
     ChannelInfo channel(const QString &channelId) const;
@@ -604,6 +608,7 @@ signals:
 private:
     void ingestGuild(const QJsonObject &rawGuild);
     void ingestChannel(const QJsonObject &rawChannel, const QString &guildId);
+    void ingestSelfMember(const QString &guildId, const QJsonObject &member);
 
     // Records one voice state without telling anyone; returns whose it was.
     // The public setters call this and then signal once.
