@@ -62,6 +62,22 @@ int main()
     expect(classifyHistoryFailure(403, 0) == HistoryFailure::Forbidden, "bare 403 is not assumed to be 50001");
     expect(classifyHistoryFailure(500, 0) == HistoryFailure::Other, "500 is not a permission error");
 
+    // #play-test-builds: @everyone denied, 24 member allows, this account not among them.
+    const Overwrite allowA{QStringLiteral("a"), 1, ViewChannel, 0};
+    const Overwrite allowB{QStringLiteral("b"), 1, ViewChannel, 0};
+    const quint64 notOnList = applyOverwrites(base, guild, user, {}, {denyEveryone, allowA, allowB});
+    expect(!has(notOnList, ViewChannel), "member allow-list does not grant VIEW_CHANNEL to anyone else");
+    const quint64 onList = applyOverwrites(base, guild, QStringLiteral("a"), {}, {denyEveryone, allowA, allowB});
+    expect(has(onList, ViewChannel), "a member overwrite allow grants VIEW_CHANNEL to that member");
+
+    expect(historyFailureDisablesComposer(HistoryFailure::MissingAccess), "50001 disables the composer");
+    expect(historyFailureDisablesComposer(HistoryFailure::MissingPermissions), "50013 disables the composer");
+    expect(historyFailureDisablesComposer(HistoryFailure::Auth), "401 disables the composer");
+    expect(historyFailureDisablesComposer(HistoryFailure::MissingChannel), "404 disables the composer");
+    expect(!historyFailureDisablesComposer(HistoryFailure::RateLimit), "429 does not disable the composer");
+    expect(!historyFailureDisablesComposer(HistoryFailure::Other), "5xx does not disable the composer");
+    expect(!historyFailureDisablesComposer(HistoryFailure::Forbidden), "bare 403 does not disable the composer");
+
     std::printf("%d passed, %d failed\n", g_passed, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

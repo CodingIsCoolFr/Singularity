@@ -129,4 +129,21 @@ inline HistoryFailure classifyHistoryFailure(int httpStatus, int discordCode)
     return HistoryFailure::Other;
 }
 
+// Confirmed the account cannot use this channel. A 429 or 5xx is not that.
+inline bool historyFailureDisablesComposer(HistoryFailure failure)
+{
+    switch (failure) {
+    case HistoryFailure::Auth:
+    case HistoryFailure::MissingChannel:
+    case HistoryFailure::MissingAccess:
+    case HistoryFailure::MissingPermissions:
+        return true;
+    case HistoryFailure::RateLimit:
+    case HistoryFailure::Forbidden:
+    case HistoryFailure::Other:
+        return false;
+    }
+    return false;
+}
+
 } // namespace DiscordPermissions

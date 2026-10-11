@@ -4100,6 +4100,7 @@ void MainWindow::openChannel(const QString &channelId)
                      .arg(messages.size()));
             m_store->setHistory(channelId, messages);
             if (channelId == m_currentChannelId) {
+                m_composer->setEnabled(true);
                 refreshCallBanner();
                 acknowledgeChannel(channelId);
             }
@@ -4117,7 +4118,8 @@ void MainWindow::openChannel(const QString &channelId)
                 return;
             QString reason;
             const int code = error.discordCode();
-            switch (DiscordPermissions::classifyHistoryFailure(error.httpStatus, code)) {
+            const auto kind = DiscordPermissions::classifyHistoryFailure(error.httpStatus, code);
+            switch (kind) {
             case DiscordPermissions::HistoryFailure::RateLimit:
                 reason = QStringLiteral("Rate limited. Try again in a moment.");
                 break;
@@ -4159,6 +4161,10 @@ void MainWindow::openChannel(const QString &channelId)
                     reason = QStringLiteral("HTTP %1").arg(error.httpStatus);
                 break;
             }
+            if (DiscordPermissions::historyFailureDisablesComposer(kind))
+                m_composer->setEnabled(false);
+            else
+                m_composer->setEnabled(true);
             m_messageView->setHtml(QStringLiteral("<p class=\"system\">Could not load messages: %1</p>")
                                        .arg(reason.toHtmlEscaped()));
         });
