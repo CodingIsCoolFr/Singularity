@@ -5817,9 +5817,25 @@ QString MainWindow::embedsHtml(const MessageInfo &message)
             inner += QStringLiteral("<div class=\"embed-provider\">%1</div>")
                          .arg(embed.providerName.toHtmlEscaped());
         }
+        // Only Discord's own hosts, like every other picture in the chat.
+        const auto smallPicture = [](const QString &address, int size) {
+            if (address.isEmpty() || !ChatView::isAllowedImageHost(QUrl(address)))
+                return QString();
+            // One arg() call: a proxied address is full of "%2F", which a
+            // second call would take for its own placeholder.
+            return QStringLiteral("<img src=\"%1\" width=\"%2\" height=\"%2\"> ")
+                .arg(address.toHtmlEscaped(), QString::number(size));
+        };
+
         if (!embed.authorName.isEmpty()) {
-            inner += QStringLiteral("<div class=\"embed-author\">%1</div>")
-                         .arg(embed.authorName.toHtmlEscaped());
+            const QString name = embed.authorName.toHtmlEscaped();
+            const QString scheme = QUrl(embed.authorUrl).scheme();
+            const bool linked = scheme == QLatin1String("https") || scheme == QLatin1String("http");
+            inner += QStringLiteral("<div class=\"embed-author\">%1%2</div>")
+                         .arg(smallPicture(embed.authorIconUrl, 18),
+                              linked ? QStringLiteral("<a href=\"%1\">%2</a>")
+                                           .arg(embed.authorUrl.toHtmlEscaped(), name)
+                                     : name);
         }
         if (!embed.title.isEmpty()) {
             const QString title = renderContent(embed.title);
@@ -5831,10 +5847,75 @@ QString MainWindow::embedsHtml(const MessageInfo &message)
         if (!embed.description.isEmpty()) {
             inner += QStringLiteral("<div class=\"embed-body\">%1</div>").arg(renderContent(embed.description));
         }
+
+        // Fields, laid out the way Discord does: an inline field shares a row
+        // with up to two more beside it, and any other takes a row to itself.
+        // One table for all of them, so the columns line up row to row. The
+        // values go through the same renderer as a message, so a mention in
+        // one is a name you can click, as it is everywhere else.
+        if (!embed.fields.isEmpty()) {
+            QList<QStringList> rows;
+            QList<bool> wide;
+            int columns = 1;
+            for (const EmbedInfo::Field &field : embed.fields) {
+                const QString cell = QStringLiteral("<div class=\"embed-field-name\">%1</div>"
+                                                    "<div class=\"embed-field-value\">%2</div>")
+                                         .arg(renderContent(field.name), renderContent(field.value));
+                const bool joins = field.isInline && !rows.isEmpty() && !wide.last()
+                                   && rows.last().size() < 3;
+                if (joins) {
+                    rows.last() << cell;
+                } else {
+                    rows << QStringList{cell};
+                    wide << !field.isInline;
+                }
+                if (!wide.last())
+                    columns = qMax(columns, int(rows.last().size()));
+            }
+
+            QString table = QStringLiteral("<table class=\"embed-fields\" cellspacing=\"0\" cellpadding=\"0\">");
+            for (int row = 0; row < rows.size(); ++row) {
+                table += QStringLiteral("<tr>");
+                for (const QString &cell : rows.at(row)) {
+                    table += wide.at(row)
+                        ? QStringLiteral("<td class=\"embed-field\" valign=\"top\" colspan=\"%1\">%2</td>")
+                              .arg(QString::number(columns), cell)
+                        : QStringLiteral("<td class=\"embed-field\" valign=\"top\">%1</td>").arg(cell);
+                }
+                table += QStringLiteral("</tr>");
+            }
+            table += QStringLiteral("</table>");
+            inner += table;
+        }
+
         if (pictureReachable) {
             inner += QStringLiteral("<div class=\"attach\"><a href=\"singularity-image:%1\">"
                                     "<img src=\"%2\"></a></div>")
                          .arg(opened.toHtmlEscaped(), shown.toHtmlEscaped());
+        }
+
+        // The footer line, and the time Discord prints after it, worded as
+        // Discord words it.
+        {
+            QStringList parts;
+            if (!embed.footerText.isEmpty())
+                parts << embed.footerText.toHtmlEscaped();
+            if (embed.timestamp.isValid()) {
+                const QDate day = embed.timestamp.date();
+                const QDate today = QDate::currentDate();
+                const QString clock = QLocale().toString(embed.timestamp, QStringLiteral("h:mm AP"));
+                if (day == today)
+                    parts << QStringLiteral("Today at %1").arg(clock);
+                else if (day == today.addDays(-1))
+                    parts << QStringLiteral("Yesterday at %1").arg(clock);
+                else
+                    parts << QLocale().toString(embed.timestamp, QStringLiteral("M/d/yy, h:mm AP"));
+            }
+            if (!parts.isEmpty()) {
+                inner += QStringLiteral("<div class=\"embed-footer\">%1%2</div>")
+                             .arg(smallPicture(embed.footerIconUrl, 16),
+                                  parts.join(QStringLiteral(" &bull; ")));
+            }
         }
 
         if (inner.isEmpty())
@@ -6111,8 +6192,11 @@ QString MainWindow::renderContent(const QString &raw, bool jumbo)
             const ChannelInfo channel = m_store->channel(match.captured(1));
             const QString label = channel.name.isEmpty() ? QStringLiteral("channel") : channel.name;
             rebuilt += text.mid(last, match.capturedStart() - last);
-            rebuilt += QStringLiteral("<a href=\"singularity-channel:%1\" class=\"mention\">#%2</a>")
-                           .arg(match.captured(1), label.toHtmlEscaped());
+            // A speaker for a voice channel, as Discord draws it, not a #.
+            rebuilt += QStringLiteral("<a href=\"singularity-channel:%1\" class=\"mention\">%2%3</a>")
+                           .arg(match.captured(1),
+                                channel.isVoice() ? QStringLiteral("\U0001F50A ") : QStringLiteral("#"),
+                                label.toHtmlEscaped());
             last = match.capturedEnd();
         }
         rebuilt += text.mid(last);
@@ -6167,8 +6251,10 @@ QString MainWindow::renderContent(const QString &raw, bool jumbo)
             const ChannelInfo channel = m_store->channel(channelId);
             const QString label = channel.name.isEmpty() ? QStringLiteral("channel") : channel.name;
             rebuilt += text.mid(last, match.capturedStart() - last);
-            rebuilt += QStringLiteral("<a href=\"singularity-channel:%1\" class=\"mention\">#%2</a>")
-                           .arg(channelId, label.toHtmlEscaped());
+            rebuilt += QStringLiteral("<a href=\"singularity-channel:%1\" class=\"mention\">%2%3</a>")
+                           .arg(channelId,
+                                channel.isVoice() ? QStringLiteral("\U0001F50A ") : QStringLiteral("#"),
+                                label.toHtmlEscaped());
             last = match.capturedEnd();
         }
         rebuilt += text.mid(last);

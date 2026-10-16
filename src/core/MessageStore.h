@@ -244,10 +244,27 @@ struct EmbedInfo
     QString description;
     QString providerName;
     QString authorName;
+    QString authorUrl;
+
+    // A bot's card is mostly these: a name over a value, side by side when
+    // `isInline`, as many as 25. Values carry markdown and mentions.
+    struct Field
+    {
+        QString name;
+        QString value;
+        bool isInline = false;
+    };
+    QList<Field> fields;
+
+    // The small line under the card, and the time Discord prints after it.
+    QString footerText;
+    QDateTime timestamp;
 
     // Always the proxied address, never the original host, so the client only
     // ever fetches pictures through Discord.
     QString imageUrl;
+    QString authorIconUrl;
+    QString footerIconUrl;
 
     // gifv embeds keep the moving picture here (an mp4 on Discord's proxy).
     // imageUrl is the poster, which is one frame and never plays.

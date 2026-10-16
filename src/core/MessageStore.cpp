@@ -1344,10 +1344,27 @@ MessageInfo MessageStore::parseMessage(const QJsonObject &raw)
                                  .toObject()
                                  .value(QStringLiteral("name"))
                                  .toString();
-        embed.authorName = rawEmbed.value(QStringLiteral("author"))
-                               .toObject()
-                               .value(QStringLiteral("name"))
-                               .toString();
+        const QJsonObject author = rawEmbed.value(QStringLiteral("author")).toObject();
+        embed.authorName = author.value(QStringLiteral("name")).toString();
+        embed.authorUrl = author.value(QStringLiteral("url")).toString();
+        embed.authorIconUrl = author.value(QStringLiteral("proxy_icon_url")).toString();
+
+        for (const QJsonValue &rawField : rawEmbed.value(QStringLiteral("fields")).toArray()) {
+            const QJsonObject object = rawField.toObject();
+            EmbedInfo::Field field;
+            field.name = object.value(QStringLiteral("name")).toString();
+            field.value = object.value(QStringLiteral("value")).toString();
+            field.isInline = object.value(QStringLiteral("inline")).toBool();
+            if (!field.name.isEmpty() || !field.value.isEmpty())
+                embed.fields.append(field);
+        }
+
+        const QJsonObject footer = rawEmbed.value(QStringLiteral("footer")).toObject();
+        embed.footerText = footer.value(QStringLiteral("text")).toString();
+        embed.footerIconUrl = footer.value(QStringLiteral("proxy_icon_url")).toString();
+        const QString stamp = rawEmbed.value(QStringLiteral("timestamp")).toString();
+        if (!stamp.isEmpty())
+            embed.timestamp = QDateTime::fromString(stamp, Qt::ISODateWithMs).toLocalTime();
 
         // Prefer "image", fall back to "thumbnail". Always take proxy_url:
         // that address is served by Discord, so the client never has to call
@@ -1384,7 +1401,9 @@ MessageInfo MessageStore::parseMessage(const QJsonObject &raw)
                 embed.imageHeight = video.value(QStringLiteral("height")).toInt();
         }
 
-        if (embed.imageUrl.isEmpty() && embed.title.isEmpty() && embed.description.isEmpty())
+        // A card of nothing but fields is still a card: a log bot's often is.
+        if (embed.imageUrl.isEmpty() && embed.title.isEmpty() && embed.description.isEmpty()
+            && embed.fields.isEmpty() && embed.authorName.isEmpty() && embed.footerText.isEmpty())
             continue;
 
         message.embeds.append(embed);

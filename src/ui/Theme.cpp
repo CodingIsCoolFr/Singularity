@@ -1072,6 +1072,25 @@ a.fwd-link { color: @faint; text-decoration: none; }
     color: @muted;
     font-size: 12px;
 }
+/* A bot's fields: a name over a value, side by side when inline. */
+table.embed-fields { margin: 4px 0 0 0; }
+.embed-field { padding: 3px 24px 3px 0; }
+.embed-field-name {
+    color: @text;
+    font-family: "Poppins", "Segoe UI", sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+}
+.embed-field-value {
+    color: @muted;
+    font-size: 12px;
+}
+.embed-footer {
+    color: @faint;
+    font-family: "Poppins", "Segoe UI", sans-serif;
+    font-size: 10px;
+    margin-top: 6px;
+}
 .file {
     margin: 4px 0 2px 0;
     font-family: "Poppins", "Segoe UI", sans-serif;
