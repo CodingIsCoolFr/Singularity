@@ -157,6 +157,12 @@ private:
     // Out of the call for good, saying why: everything leaveVoice does, so
     // no retry or later reconnect tries to put us back in it.
     void abandonVoice(const QString &why);
+
+    // Discord's Speak Message: a message as Discord reads it aloud -
+    // "<name> said <words>", with mentions, emoji, timestamps and links made
+    // into words - and reading it, offering the natural voice the first time.
+    QString spokenText(const MessageInfo &message) const;
+    void speakMessage(const MessageInfo &message);
     // People in our call other than us; -1 when not in one.
     int othersInCall() const;
     // Join or leave, by how the count moved. See the definition for the rule.

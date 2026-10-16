@@ -114,6 +114,9 @@ private:
     QWidget *buildVoicePage();
     QWidget *buildActivityPage();
     QWidget *buildNotificationsPage();
+    // Speak Message: the natural voice, which voice, its speed and volume, and
+    // reading new messages aloud.
+    QWidget *buildAccessibilityPage();
     QWidget *buildAppearancePage();
     QWidget *buildPluginsPage();
     QWidget *buildAdvancedPage();

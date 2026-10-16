@@ -22,6 +22,7 @@
 #include "ui/MemberListPanel.h"
 #include "ui/ShareDialog.h"
 #include "ui/Sounds.h"
+#include "ui/Speech.h"
 #include "ui/UpdateFlow.h"
 
 #include <QProcess>
@@ -66,6 +67,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <QCamera>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -2554,6 +2556,13 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
                 m_rest->ackMessage(channelId, message.id);
             if (!mine)
                 maybeNotify(data, message);
+            // Discord's text-to-speech for the chat on screen: new messages
+            // read out as they arrive, each after the one before. Not while
+            // deafened, as in Discord.
+            if (!mine && channelId == m_currentChannelId
+                && AppConfig::instance().value(QStringLiteral("speech/readNew"), false).toBool()
+                && !(m_voice && m_voice->isDeafened()))
+                Speech::instance().speak(spokenText(message), /*queue*/ true);
             if (message.type == 3)
                 noteCallMessage(message);
 
@@ -10223,6 +10232,15 @@ void MainWindow::showMessageMenu(const QPoint &pos)
         QApplication::clipboard()->setText(message.content);
     });
 
+    // Discord's Speak Message: the message read aloud, worded as Discord words
+    // it. Stop Speaking while something is being read.
+    connect(menu.addAction(QStringLiteral("Speak Message")), &QAction::triggered, this,
+            [this, message]() { speakMessage(message); });
+    if (Speech::instance().speaking()) {
+        connect(menu.addAction(QStringLiteral("Stop Speaking")), &QAction::triggered, this,
+                []() { Speech::instance().stop(); });
+    }
+
     const QString link = channel.guildId.isEmpty()
         ? QStringLiteral("https://discord.com/channels/@me/%1/%2").arg(channel.id, message.id)
         : QStringLiteral("https://discord.com/channels/%1/%2/%3").arg(channel.guildId, channel.id, message.id);
@@ -12205,6 +12223,112 @@ void MainWindow::leaveVoice()
     m_joinSoundFor.clear();
     updateVoicePanel();
     updateOutgoingRing();
+}
+
+QString MainWindow::spokenText(const MessageInfo &message) const
+{
+    // Discord's own preparation, from its client: spoilers kept secret, every
+    // mention a name, an emoji its name, a command its slash, a timestamp a
+    // time, a link only its site. Then "<name> said <words>".
+    const auto replaced = [](const QString &text, const QRegularExpression &pattern,
+                             const std::function<QString(const QRegularExpressionMatch &)> &with) {
+        QString out;
+        qsizetype last = 0;
+        for (auto it = pattern.globalMatch(text); it.hasNext();) {
+            const QRegularExpressionMatch match = it.next();
+            out += text.mid(last, match.capturedStart() - last);
+            out += with(match);
+            last = match.capturedEnd();
+        }
+        return out + text.mid(last);
+    };
+
+    const QString guildId = m_store->channel(message.channelId).guildId;
+    QString body = message.content;
+
+    static const QRegularExpression spoiler(QStringLiteral(R"(\|\|([\s\S]+?)\|\|)"));
+    body.replace(spoiler, QStringLiteral("spoiler"));
+
+    static const QRegularExpression user(QStringLiteral(R"(<@!?(\d+)>)"));
+    body = replaced(body, user, [this](const QRegularExpressionMatch &match) {
+        const QString name = m_store->userName(match.captured(1));
+        return name.isEmpty() ? QStringLiteral("unknown user") : name;
+    });
+
+    static const QRegularExpression role(QStringLiteral(R"(<@&(\d+)>)"));
+    body = replaced(body, role, [this, guildId](const QRegularExpressionMatch &match) {
+        const QString name = m_store->guild(guildId).roles.value(match.captured(1)).name;
+        return name.isEmpty() ? QStringLiteral("deleted role") : name;
+    });
+
+    static const QRegularExpression channel(QStringLiteral(R"(<#(\d+)>)"));
+    body = replaced(body, channel, [this](const QRegularExpressionMatch &match) {
+        const QString name = m_store->channel(match.captured(1)).name;
+        return name.isEmpty() ? QStringLiteral("deleted channel") : name;
+    });
+
+    static const QRegularExpression emoji(QStringLiteral(R"(<a?:(\w+):\d+>)"));
+    body.replace(emoji, QStringLiteral("emoji \\1"));
+
+    static const QRegularExpression command(QStringLiteral(R"(</([^\s]+?):\d+>)"));
+    body.replace(command, QStringLiteral("/\\1"));
+
+    static const QRegularExpression timestamp(QStringLiteral(R"(<t:(-?\d+)(?::[A-Za-z])?>)"));
+    body = replaced(body, timestamp, [](const QRegularExpressionMatch &match) {
+        const QDateTime when = QDateTime::fromSecsSinceEpoch(match.captured(1).toLongLong());
+        return QLocale().toString(when, QLocale::LongFormat);
+    });
+
+    // A link is read as its site: "youtube.com", not every letter of it.
+    static const QRegularExpression link(QStringLiteral(R"(https?://(?:www\.)?([^/?#\s]+)[^\s]*)"));
+    body.replace(link, QStringLiteral("\\1"));
+
+    // Markdown's marks, which a voice would only stumble over.
+    static const QRegularExpression marks(QStringLiteral(R"(\*\*|__|~~|`+|^>\s?)"),
+                                          QRegularExpression::MultilineOption);
+    body.remove(marks);
+    body = body.simplified();
+
+    // Nothing to read but a picture or a file is still worth a line.
+    if (body.isEmpty())
+        body = message.attachments.isEmpty() ? QStringLiteral("nothing") : QStringLiteral("an attachment");
+
+    const QString name = message.authorName.isEmpty() ? QStringLiteral("Someone") : message.authorName;
+    if (!message.replyAuthorName.isEmpty())
+        return QStringLiteral("%1 replied to %2: %3").arg(name, message.replyAuthorName, body);
+    return QStringLiteral("%1 said %2").arg(name, body);
+}
+
+void MainWindow::speakMessage(const MessageInfo &message)
+{
+    // The first time, an offer of the natural voice. It is a large download,
+    // so it is asked for, once; until it is here, Windows' own voice reads.
+    Speech &speech = Speech::instance();
+    AppConfig &config = AppConfig::instance();
+    if (speech.naturalState() == Speech::Natural::Missing
+        && config.value(QStringLiteral("speech/natural"), true).toBool()
+        && !config.value(QStringLiteral("speech/offered"), false).toBool()) {
+        config.setValue(QStringLiteral("speech/offered"), true);
+        QMessageBox ask(QMessageBox::Question, QStringLiteral("Speak Message"),
+                        QStringLiteral("Singularity can read messages in a natural, human-sounding voice instead "
+                                       "of Windows' robotic one.\n\n"
+                                       "It is a one-time download of about %1 MB (the Kokoro voice and the "
+                                       "sherpa-onnx engine, both open source) and runs entirely on this PC: "
+                                       "nothing that is read is sent anywhere.\n\n"
+                                       "Until it is ready, Windows' own voice reads. You can change voices, "
+                                       "speed and volume in Settings > Accessibility.")
+                            .arg(Speech::DownloadMegabytes),
+                        QMessageBox::NoButton, this);
+        QPushButton *yes = ask.addButton(QStringLiteral("Download it"), QMessageBox::AcceptRole);
+        ask.addButton(QStringLiteral("Not now"), QMessageBox::RejectRole);
+        ask.exec();
+        if (ask.clickedButton() == yes) {
+            speech.downloadNatural();
+            flashStatus(QStringLiteral("Downloading the natural voice. Windows' voice reads until it is ready."),
+                        6000);
+        }
+    }
+    speech.speak(spokenText(message));
 }
 
 void MainWindow::abandonVoice(const QString &why)

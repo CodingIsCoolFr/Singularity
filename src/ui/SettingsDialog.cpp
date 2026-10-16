@@ -12,6 +12,7 @@
 #include "ui/MediaCache.h"
 #include "ui/ProfilePreview.h"
 #include "ui/Sounds.h"
+#include "ui/Speech.h"
 #include "ui/Theme.h"
 
 #include <QApplication>
@@ -174,6 +175,7 @@ SettingsDialog::SettingsDialog(MessageStore *store, RestClient *rest, PluginHost
     addSection(QStringLiteral("Voice & Video"), [this]() { return buildVoicePage(); });
     addSection(QStringLiteral("Activity"), [this]() { return buildActivityPage(); });
     addSection(QStringLiteral("Notifications"), [this]() { return buildNotificationsPage(); });
+    addSection(QStringLiteral("Accessibility"), [this]() { return buildAccessibilityPage(); });
     addSection(QStringLiteral("Appearance"), [this]() { return buildAppearancePage(); });
     addSection(QStringLiteral("Plugins"), [this]() { return buildPluginsPage(); });
     addSection(QStringLiteral("Advanced"), [this]() { return buildAdvancedPage(); });
@@ -1376,6 +1378,134 @@ QWidget *SettingsDialog::buildNotificationsPage()
         ++slot;
     }
     layout->addLayout(grid);
+
+    layout->addStretch(1);
+    return page;
+}
+
+// ---------------------------------------------------------------------------
+// Accessibility
+// ---------------------------------------------------------------------------
+
+QWidget *SettingsDialog::buildAccessibilityPage()
+{
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(34, 28, 34, 28);
+    layout->setSpacing(8);
+
+    layout->addWidget(pageTitle(QStringLiteral("Accessibility"), page));
+    layout->addWidget(groupTitle(QStringLiteral("TEXT TO SPEECH"), page));
+    layout->addWidget(hint(QStringLiteral("Right-click any message and choose Speak Message to hear it read aloud, "
+                                          "as in Discord: who said it, then what they said, with mentions, emoji and "
+                                          "links read as words. Stop Speaking in the same menu stops it."),
+                           page));
+
+    AppConfig &config = AppConfig::instance();
+
+    // Where the natural voice is, and a way to fetch it.
+    auto *status = new QLabel(page);
+    status->setWordWrap(true);
+    auto *fetch = new QPushButton(page);
+    fetch->setMaximumWidth(280);
+    const auto refresh = [status, fetch]() {
+        const Speech &speech = Speech::instance();
+        switch (speech.naturalState()) {
+        case Speech::Natural::Missing:
+            status->setText(QStringLiteral("The natural voice is not downloaded yet. It is about %1 MB, once, and "
+                                           "runs on this PC; until then Windows' own voice reads.")
+                                .arg(Speech::DownloadMegabytes));
+            fetch->setText(QStringLiteral("Download the natural voice"));
+            fetch->show();
+            break;
+        case Speech::Natural::Downloading:
+            status->setText(QStringLiteral("Downloading the natural voice: %1%").arg(speech.downloadPercent()));
+            fetch->hide();
+            break;
+        case Speech::Natural::Unpacking:
+            status->setText(QStringLiteral("Unpacking the natural voice..."));
+            fetch->hide();
+            break;
+        case Speech::Natural::Ready:
+            status->setText(QStringLiteral("The natural voice is ready."));
+            fetch->hide();
+            break;
+        case Speech::Natural::Failed:
+            status->setText(QStringLiteral("The natural voice could not be set up: %1").arg(speech.failure()));
+            fetch->setText(QStringLiteral("Try again"));
+            fetch->show();
+            break;
+        }
+    };
+    refresh();
+    connect(&Speech::instance(), &Speech::changed, status, refresh);
+    connect(fetch, &QPushButton::clicked, this, []() { Speech::instance().downloadNatural(); });
+    layout->addWidget(status);
+    layout->addWidget(fetch);
+
+    auto *natural = new QCheckBox(QStringLiteral("Use the natural voice once it is downloaded"), page);
+    natural->setChecked(config.value(QStringLiteral("speech/natural"), true).toBool());
+    connect(natural, &QCheckBox::toggled, this,
+            [](bool on) { AppConfig::instance().setValue(QStringLiteral("speech/natural"), on); });
+    layout->addWidget(natural);
+
+    auto *voiceRow = new QHBoxLayout;
+    voiceRow->addWidget(new QLabel(QStringLiteral("Voice"), page));
+    auto *voice = new QComboBox(page);
+    const QString chosen = config.value(QStringLiteral("speech/voice"), QStringLiteral("af_heart")).toString();
+    for (const Speech::Voice &each : Speech::voices()) {
+        voice->addItem(QLatin1String(each.label), QLatin1String(each.id));
+        if (chosen == QLatin1String(each.id))
+            voice->setCurrentIndex(voice->count() - 1);
+    }
+    connect(voice, &QComboBox::currentIndexChanged, this, [voice]() {
+        AppConfig::instance().setValue(QStringLiteral("speech/voice"), voice->currentData().toString());
+    });
+    voiceRow->addWidget(voice);
+    voiceRow->addStretch(1);
+    layout->addLayout(voiceRow);
+    layout->addWidget(hint(QStringLiteral("The natural voice's own voices. Windows' voice, when it is reading, is "
+                                          "the first woman's voice Windows has."),
+                           page));
+
+    // Speed and volume, each shown as it moves.
+    const auto slider = [&](const QString &label, const QString &key, int low, int high, int fallback) {
+        auto *row = new QHBoxLayout;
+        row->addWidget(new QLabel(label, page));
+        auto *bar = new QSlider(Qt::Horizontal, page);
+        bar->setRange(low, high);
+        bar->setValue(config.value(key, fallback).toInt());
+        bar->setMaximumWidth(240);
+        auto *shown = new QLabel(QStringLiteral("%1%").arg(bar->value()), page);
+        connect(bar, &QSlider::valueChanged, this, [key, shown](int value) {
+            AppConfig::instance().setValue(key, value);
+            shown->setText(QStringLiteral("%1%").arg(value));
+        });
+        row->addWidget(bar);
+        row->addWidget(shown);
+        row->addStretch(1);
+        layout->addLayout(row);
+    };
+    slider(QStringLiteral("Speed"), QStringLiteral("speech/speed"), 50, 200, 100);
+    slider(QStringLiteral("Volume"), QStringLiteral("speech/volume"), 0, 100, 100);
+
+    auto *hear = new QPushButton(QStringLiteral("Hear it"), page);
+    hear->setMaximumWidth(160);
+    connect(hear, &QPushButton::clicked, this, []() {
+        Speech::instance().speak(QStringLiteral("This is how Singularity reads your messages to you."));
+    });
+    layout->addSpacing(4);
+    layout->addWidget(hear);
+
+    layout->addSpacing(12);
+    auto *readNew = new QCheckBox(QStringLiteral("Read new messages aloud in the chat I am looking at"), page);
+    readNew->setChecked(config.value(QStringLiteral("speech/readNew"), false).toBool());
+    connect(readNew, &QCheckBox::toggled, this,
+            [](bool on) { AppConfig::instance().setValue(QStringLiteral("speech/readNew"), on); });
+    layout->addWidget(readNew);
+    layout->addWidget(hint(QStringLiteral("Discord's text-to-speech for the current channel. Each message waits for "
+                                          "the one before it, and none are read while you are deafened."),
+                           page));
 
     layout->addStretch(1);
     return page;
