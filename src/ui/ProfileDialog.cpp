@@ -771,6 +771,14 @@ void ProfileDialog::showFor(const QString &userId, const QString &guildId, bool 
     m_noteEdit->clear();
     m_noteStatus->setVisible(false);
 
+    // The bio, badges and connections only change when Discord's answer
+    // arrives. When it did not - somebody who left the server, or was never
+    // in it - the last person's bio stayed on this one's card.
+    m_bioLabel->clear();
+    m_bioSection->setVisible(false);
+    rebuildBadges(0);
+    rebuildConnections({});
+
     applyLocalData();
     rebuildActivity();
     rebuildMutuals();
@@ -783,17 +791,7 @@ void ProfileDialog::showFor(const QString &userId, const QString &guildId, bool 
     raise();
 
     // Then ask Discord for everything the gateway did not give us.
-    m_rest->fetchUserProfile(
-        userId, guildId,
-        [this, userId](const QJsonObject &payload) {
-            if (m_userId != userId)
-                return;
-            applyProfilePayload(payload);
-        },
-        [this, userId](const RestClient::Error &error) {
-            wlog(QStringLiteral("profile"), QStringLiteral("profile fetch failed for %1: HTTP %2 %3")
-                                                .arg(userId).arg(error.httpStatus).arg(error.message));
-        });
+    requestProfile(userId, guildId, ++m_profileRequest);
 
     m_rest->fetchNote(
         userId,
@@ -804,6 +802,30 @@ void ProfileDialog::showFor(const QString &userId, const QString &guildId, bool 
         },
         [](const RestClient::Error &) {
             // A missing note answers 404. That is normal and needs no fuss.
+        });
+}
+
+void ProfileDialog::requestProfile(const QString &userId, const QString &guildId, int request)
+{
+    m_rest->fetchUserProfile(
+        userId, guildId,
+        [this, userId, request](const QJsonObject &payload) {
+            if (request != m_profileRequest || m_userId != userId)
+                return;
+            applyProfilePayload(payload);
+        },
+        [this, userId, guildId, request](const RestClient::Error &error) {
+            if (request != m_profileRequest || m_userId != userId)
+                return;
+            wlog(QStringLiteral("profile"),
+                 QStringLiteral("profile fetch failed for %1%2: HTTP %3 %4")
+                     .arg(userId, guildId.isEmpty() ? QString() : QStringLiteral(" in server %1").arg(guildId))
+                     .arg(error.httpStatus)
+                     .arg(error.message));
+            // Asked as a member of a server they are not in. Their own
+            // profile, without the server's part, may still be there.
+            if (!guildId.isEmpty() && !error.isRateLimit())
+                requestProfile(userId, QString(), request);
         });
 }
 

@@ -52,6 +52,11 @@ private:
     // Filling them in.
     void applyLocalData();
     void applyProfilePayload(const QJsonObject &payload);
+
+    // Asks Discord for the profile. With a server first, for the nickname,
+    // roles and server bio; without one if that is refused, which it is for
+    // somebody who has left the server or was never in it.
+    void requestProfile(const QString &userId, const QString &guildId, int request);
     void refreshArtwork();
     void rebuildBadges(int publicFlags);
     void rebuildRoles();
@@ -119,6 +124,10 @@ private:
     QString m_userId;
     QString m_guildId;
     bool m_isSelf = false;
+
+    // Which opening of the card a reply belongs to. A reply for an earlier
+    // one is dropped, even when it is for the same person.
+    int m_profileRequest = 0;
 
     // The press that closed the window was eaten, so its release is too.
     bool m_swallowRelease = false;
