@@ -647,7 +647,7 @@ int Speech::downloadPercent() const
     qint64 total = 0;
     for (const Package &package : kPackages)
         total += package.bytes;
-    return total > 0 ? int(qBound<qint64>(0, m_received * 100 / total, 100)) : 0;
+    return total > 0 ? int(qBound(qint64(0), m_received * 100 / total, qint64(100))) : 0;
 }
 
 void Speech::downloadNatural()
