@@ -1,23 +1,33 @@
 #include "ui/ImageViewer.h"
 
+#include "core/AppConfig.h"
+#include "core/DiscordIdentity.h"
 #include "core/Logger.h"
 #include "ui/AnimatedImage.h"
 #include "ui/ClipPlayer.h"
 #include "ui/MediaCache.h"
 #include "ui/Theme.h"
 
+#include <QAudioOutput>
 #include <QDesktopServices>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QMediaPlayer>
 #include <QMouseEvent>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QPainter>
 #include <QPushButton>
 #include <QSaveFile>
 #include <QScreen>
+#include <QSlider>
+#include <QStackedLayout>
 #include <QVBoxLayout>
+#include <QVideoWidget>
 #include <QWheelEvent>
 
 namespace {
@@ -226,8 +236,59 @@ ImageViewer::ImageViewer(QWidget *parent)
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
 
-    m_canvas = new Canvas(this);
-    layout->addWidget(m_canvas, 1);
+    // The picture, or a playing video, in the same place.
+    auto *stage = new QWidget(this);
+    m_stack = new QStackedLayout(stage);
+    m_stack->setContentsMargins(0, 0, 0, 0);
+    m_canvas = new Canvas(stage);
+    m_stack->addWidget(m_canvas);
+    layout->addWidget(stage, 1);
+
+    // A video's controls, over the usual bar. Hidden for a picture.
+    m_videoBar = new QWidget(this);
+    m_videoBar->setObjectName(QStringLiteral("ViewerBar"));
+    m_videoBar->setFixedHeight(42);
+    auto *videoLayout = new QHBoxLayout(m_videoBar);
+    videoLayout->setContentsMargins(14, 6, 14, 6);
+    videoLayout->setSpacing(10);
+
+    m_playButton = new QPushButton(QStringLiteral("Pause"), m_videoBar);
+    m_playButton->setFixedHeight(28);
+    m_playButton->setFocusPolicy(Qt::NoFocus);
+    connect(m_playButton, &QPushButton::clicked, this, &ImageViewer::togglePlay);
+    videoLayout->addWidget(m_playButton);
+
+    m_seek = new QSlider(Qt::Horizontal, m_videoBar);
+    m_seek->setFocusPolicy(Qt::NoFocus);
+    m_seek->setToolTip(QStringLiteral("Drag to skip through the video"));
+    connect(m_seek, &QSlider::sliderMoved, this, [this](int ms) {
+        if (m_player)
+            m_player->setPosition(ms);
+    });
+    videoLayout->addWidget(m_seek, 1);
+
+    m_timeLabel = new QLabel(QStringLiteral("0:00 / 0:00"), m_videoBar);
+    m_timeLabel->setStyleSheet(QStringLiteral("color: %1; font-size: 11px;").arg(QLatin1String(Theme::TextMuted)));
+    videoLayout->addWidget(m_timeLabel);
+
+    auto *volumeLabel = new QLabel(QStringLiteral("Vol"), m_videoBar);
+    volumeLabel->setStyleSheet(QStringLiteral("color: %1; font-size: 11px;").arg(QLatin1String(Theme::TextFaint)));
+    videoLayout->addWidget(volumeLabel);
+
+    m_volume = new QSlider(Qt::Horizontal, m_videoBar);
+    m_volume->setRange(0, 100);
+    m_volume->setValue(AppConfig::instance().value(QStringLiteral("viewer/volume"), 80).toInt());
+    m_volume->setFixedWidth(110);
+    m_volume->setFocusPolicy(Qt::NoFocus);
+    connect(m_volume, &QSlider::valueChanged, this, [this](int value) {
+        if (m_audio)
+            m_audio->setVolume(value / 100.0f);
+        AppConfig::instance().setValue(QStringLiteral("viewer/volume"), value);
+    });
+    videoLayout->addWidget(m_volume);
+
+    m_videoBar->hide();
+    layout->addWidget(m_videoBar);
 
     auto *bar = new QWidget(this);
     bar->setObjectName(QStringLiteral("ViewerBar"));
@@ -242,6 +303,13 @@ ImageViewer::ImageViewer(QWidget *parent)
                                    .arg(QLatin1String(Theme::TextFaint)));
     barLayout->addWidget(m_nameLabel, 1);
 
+    // Zoom and fit belong to a picture. A video fits itself.
+    m_pictureTools = new QWidget(bar);
+    auto *toolsLayout = new QHBoxLayout(m_pictureTools);
+    toolsLayout->setContentsMargins(0, 0, 0, 0);
+    toolsLayout->setSpacing(8);
+    barLayout->addWidget(m_pictureTools);
+
     auto *zoomOut = new QPushButton(QStringLiteral("−"), bar);
     zoomOut->setFixedSize(30, 28);
     // The app's button padding is wider than 30 pixels, which left these two
@@ -249,32 +317,32 @@ ImageViewer::ImageViewer(QWidget *parent)
     zoomOut->setStyleSheet(QStringLiteral("padding: 0; font-size: 16px;"));
     zoomOut->setToolTip(QStringLiteral("Zoom out"));
     connect(zoomOut, &QPushButton::clicked, this, [this]() { m_canvas->zoomBy(1.0 / WheelStep); });
-    barLayout->addWidget(zoomOut);
+    toolsLayout->addWidget(zoomOut);
 
     m_zoomLabel = new QLabel(bar);
     m_zoomLabel->setFixedWidth(52);
     m_zoomLabel->setAlignment(Qt::AlignCenter);
     m_zoomLabel->setStyleSheet(QStringLiteral("color: %1;").arg(QLatin1String(Theme::TextPrimary)));
-    barLayout->addWidget(m_zoomLabel);
+    toolsLayout->addWidget(m_zoomLabel);
 
     auto *zoomIn = new QPushButton(QStringLiteral("+"), bar);
     zoomIn->setFixedSize(30, 28);
     zoomIn->setStyleSheet(QStringLiteral("padding: 0; font-size: 16px;"));
     zoomIn->setToolTip(QStringLiteral("Zoom in"));
     connect(zoomIn, &QPushButton::clicked, this, [this]() { m_canvas->zoomBy(WheelStep); });
-    barLayout->addWidget(zoomIn);
+    toolsLayout->addWidget(zoomIn);
 
     auto *fit = new QPushButton(QStringLiteral("Fit"), bar);
     fit->setFixedHeight(28);
     connect(fit, &QPushButton::clicked, this, [this]() { m_canvas->fitToWindow(); });
-    barLayout->addWidget(fit);
+    toolsLayout->addWidget(fit);
 
     auto *actual = new QPushButton(QStringLiteral("100%"), bar);
     actual->setFixedHeight(28);
     connect(actual, &QPushButton::clicked, this, [this]() {
         m_canvas->setScaleAround(1.0, QPointF(m_canvas->width() / 2.0, m_canvas->height() / 2.0));
     });
-    barLayout->addWidget(actual);
+    toolsLayout->addWidget(actual);
 
     auto *save = new QPushButton(QStringLiteral("Save"), bar);
     save->setFixedHeight(28);
@@ -296,8 +364,165 @@ ImageViewer::ImageViewer(QWidget *parent)
 
     // A late download replaces the placeholder.
     connect(&MediaCache::instance(), &MediaCache::ready, this, [this](const QUrl &url) {
-        if (url == m_url && !m_clip)
+        if (url == m_url && !m_clip && !playingVideo())
             showImage(url);
+    });
+}
+
+void ImageViewer::presentWindow()
+{
+    if (!isVisible()) {
+        if (parentWidget())
+            move(parentWidget()->geometry().center() - rect().center());
+        show();
+    }
+    raise();
+    activateWindow();
+}
+
+bool ImageViewer::playingVideo() const
+{
+    return m_videoWidget && m_stack->currentWidget() == m_videoWidget;
+}
+
+void ImageViewer::showVideo(const QUrl &url)
+{
+    if (!MediaCache::isAllowedHost(url)) {
+        wlog(QStringLiteral("viewer"), QStringLiteral("refusing %1: not a Discord host").arg(url.toString()));
+        return;
+    }
+
+    delete m_clip;
+    m_clip = nullptr;
+    m_canvas->clearVideo();
+    m_url = url;
+    const QString name = QFileInfo(url.path()).fileName();
+    m_nameLabel->setText(name.isEmpty() ? url.toString() : name);
+    setWindowTitle(QStringLiteral("Video"));
+
+    // Qt's own player, which plays sound, seeks and streams as it goes. The
+    // chat's clip player is muted and loads the whole file first, which is
+    // right for a GIF and wrong for something to watch. Its video widget draws
+    // frames where they were decoded, so a frame made on the graphics card is
+    // never copied back - the copy that once froze the window on AMD cards.
+    if (!m_player) {
+        m_videoWidget = new QVideoWidget(this);
+        m_videoWidget->setAspectRatioMode(Qt::KeepAspectRatio);
+        m_stack->addWidget(m_videoWidget);
+
+        m_player = new QMediaPlayer(this);
+        m_audio = new QAudioOutput(this);
+        m_player->setAudioOutput(m_audio);
+        m_player->setVideoOutput(m_videoWidget);
+
+        connect(m_player, &QMediaPlayer::durationChanged, this, [this](qint64 ms) {
+            m_seek->setRange(0, int(ms));
+            updateTime();
+        });
+        connect(m_player, &QMediaPlayer::positionChanged, this, [this](qint64 ms) {
+            if (!m_seek->isSliderDown())
+                m_seek->setValue(int(ms));
+            updateTime();
+        });
+        connect(m_player, &QMediaPlayer::playbackStateChanged, this, [this](QMediaPlayer::PlaybackState state) {
+            m_playButton->setText(state == QMediaPlayer::PlayingState ? QStringLiteral("Pause")
+                                                                      : QStringLiteral("Play"));
+        });
+        connect(m_player, &QMediaPlayer::errorOccurred, this,
+                [this](QMediaPlayer::Error, const QString &reason) {
+                    wlog(QStringLiteral("viewer"),
+                         QStringLiteral("could not play %1: %2").arg(m_url.toString().left(200), reason));
+                    m_nameLabel->setText(QStringLiteral("This video could not be played here: %1. "
+                                                        "Open in browser plays it there.")
+                                             .arg(reason));
+                });
+    }
+
+    m_audio->setVolume(m_volume->value() / 100.0f);
+    m_seek->setRange(0, 0);
+    m_seek->setValue(0);
+    m_stack->setCurrentWidget(m_videoWidget);
+    m_pictureTools->hide();
+    m_videoBar->show();
+    updateTime();
+    presentWindow();
+
+    wlog(QStringLiteral("viewer"), QStringLiteral("playing %1").arg(name));
+    m_player->setSource(url);
+    m_player->play();
+}
+
+void ImageViewer::stopVideo()
+{
+    if (m_player) {
+        m_player->stop();
+        m_player->setSource(QUrl());
+    }
+    m_stack->setCurrentWidget(m_canvas);
+    m_videoBar->hide();
+    m_pictureTools->show();
+    setWindowTitle(QStringLiteral("Picture"));
+}
+
+void ImageViewer::togglePlay()
+{
+    if (!m_player)
+        return;
+    if (m_player->playbackState() == QMediaPlayer::PlayingState)
+        m_player->pause();
+    else
+        m_player->play();
+}
+
+void ImageViewer::updateTime()
+{
+    const auto clock = [](qint64 ms) {
+        const qint64 seconds = qMax<qint64>(0, ms / 1000);
+        return seconds >= 3600
+            ? QStringLiteral("%1:%2:%3").arg(seconds / 3600).arg((seconds / 60) % 60, 2, 10, QLatin1Char('0'))
+                  .arg(seconds % 60, 2, 10, QLatin1Char('0'))
+            : QStringLiteral("%1:%2").arg(seconds / 60).arg(seconds % 60, 2, 10, QLatin1Char('0'));
+    };
+    const qint64 position = m_player ? m_player->position() : 0;
+    const qint64 duration = m_player ? m_player->duration() : 0;
+    m_timeLabel->setText(QStringLiteral("%1 / %2").arg(clock(position), clock(duration)));
+}
+
+void ImageViewer::saveVideo()
+{
+    QString suggested = QFileInfo(m_url.path()).fileName();
+    if (suggested.isEmpty())
+        suggested = QStringLiteral("video.mp4");
+    const QString path = QFileDialog::getSaveFileName(this, QStringLiteral("Save video"), suggested);
+    if (path.isEmpty())
+        return;
+
+    // Written as it arrives rather than held whole in memory: a video can be
+    // hundreds of megabytes.
+    auto *file = new QSaveFile(path, this);
+    if (!file->open(QIODevice::WriteOnly)) {
+        m_nameLabel->setText(QStringLiteral("Could not write %1").arg(QFileInfo(path).fileName()));
+        delete file;
+        return;
+    }
+    if (!m_network)
+        m_network = new QNetworkAccessManager(this);
+    QNetworkRequest request(m_url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, DiscordIdentity::userAgent());
+    QNetworkReply *reply = m_network->get(request);
+    m_nameLabel->setText(QStringLiteral("Saving %1...").arg(QFileInfo(path).fileName()));
+    connect(reply, &QNetworkReply::readyRead, file, [reply, file]() { file->write(reply->readAll()); });
+    connect(reply, &QNetworkReply::finished, this, [this, reply, file, path]() {
+        reply->deleteLater();
+        file->write(reply->readAll());
+        const QString shown = QFileInfo(path).fileName();
+        if (reply->error() == QNetworkReply::NoError && file->commit()) {
+            m_nameLabel->setText(QStringLiteral("Saved %1").arg(shown));
+        } else {
+            file->cancelWriting();
+            m_nameLabel->setText(QStringLiteral("Could not save %1: %2").arg(shown, reply->errorString()));
+        }
+        file->deleteLater();
     });
 }
 
@@ -308,6 +533,8 @@ void ImageViewer::showImage(const QUrl &url)
         return;
     }
 
+    if (playingVideo())
+        stopVideo();
     m_url = url;
 
     const QString name = QFileInfo(url.path()).fileName();
@@ -372,6 +599,11 @@ void ImageViewer::updateZoomLabel()
 
 void ImageViewer::saveAs()
 {
+    if (playingVideo()) {
+        saveVideo();
+        return;
+    }
+
     const QByteArray animation = m_clip ? m_clip->data() : MediaCache::instance().animationData(m_url);
     // Saving hands over what arrived, not the copy made for the message list.
     const QImage still = MediaCache::instance().fullImage(m_url);
@@ -407,11 +639,35 @@ void ImageViewer::hideEvent(QHideEvent *event)
     delete m_clip;
     m_clip = nullptr;
     m_canvas->clearVideo();
+    // Closing a video stops its sound with it.
+    if (playingVideo())
+        stopVideo();
     QDialog::hideEvent(event);
 }
 
 void ImageViewer::keyPressEvent(QKeyEvent *event)
 {
+    if (playingVideo()) {
+        switch (event->key()) {
+        case Qt::Key_Space:
+        case Qt::Key_K:
+            togglePlay();
+            return;
+        case Qt::Key_Left:
+            m_player->setPosition(qMax<qint64>(0, m_player->position() - 5000));
+            return;
+        case Qt::Key_Right:
+            m_player->setPosition(qMin(m_player->duration(), m_player->position() + 5000));
+            return;
+        case Qt::Key_Escape:
+            close();
+            return;
+        default:
+            QDialog::keyPressEvent(event);
+            return;
+        }
+    }
+
     switch (event->key()) {
     case Qt::Key_Escape:
         close();

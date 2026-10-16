@@ -1320,10 +1320,12 @@ MessageInfo MessageStore::parseMessage(const QJsonObject &raw)
         attachment.url = raw.value(QStringLiteral("url")).toString();
         if (attachment.url.isEmpty())
             continue;
+        attachment.proxyUrl = raw.value(QStringLiteral("proxy_url")).toString();
         attachment.filename = raw.value(QStringLiteral("filename")).toString();
         attachment.contentType = raw.value(QStringLiteral("content_type")).toString();
         attachment.size = static_cast<qint64>(raw.value(QStringLiteral("size")).toDouble());
-        // Only pictures carry width and height, which is how isImage() works.
+        // Pictures and videos carry a width and height; isVideo() tells them
+        // apart, and isImage() needs both.
         attachment.width = raw.value(QStringLiteral("width")).toInt();
         attachment.height = raw.value(QStringLiteral("height")).toInt();
         message.attachments.append(attachment);

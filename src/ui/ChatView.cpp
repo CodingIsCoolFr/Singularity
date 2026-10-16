@@ -46,11 +46,53 @@ bool looksLikeEmoji(const QUrl &url)
     return url.path().startsWith(QLatin1String("/emojis/"));
 }
 
+// A still of a video attachment, from ChatView::videoStill. Its address still
+// ends in .mp4, so this has to be asked before looksLikeVideo.
+bool looksLikeVideoStill(const QUrl &url)
+{
+    return url.fragment().startsWith(QLatin1String("video="));
+}
+
 bool looksLikeVideo(const QUrl &url)
 {
+    if (looksLikeVideoStill(url))
+        return false;
     const QString path = url.path().toLower();
     return path.endsWith(QLatin1String(".mp4")) || path.endsWith(QLatin1String(".webm"))
         || path.endsWith(QLatin1String(".mov"));
+}
+
+// The size a video's box takes in the chat: its own shape, no bigger than a
+// picture may be. Zero when the address carries no size.
+QSize videoBox(const QUrl &still)
+{
+    const QStringList size = still.fragment().mid(6).split(QLatin1Char('x'));
+    const int width = size.value(0).toInt();
+    const int height = size.value(1).toInt();
+    if (width <= 0 || height <= 0)
+        return {};
+    return QSize(width, height).scaled(QSize(MaxPictureWidth, MaxPictureHeight), Qt::KeepAspectRatio)
+        .boundedTo(QSize(width, height));
+}
+
+// A round dark button with a triangle, over the middle of a video's box.
+void drawPlayButton(QImage &image)
+{
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::Antialiasing);
+    const qreal radius = qMin<qreal>(24.0, qMin(image.width(), image.height()) / 3.0);
+    const QPointF centre(image.width() / 2.0, image.height() / 2.0);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(0, 0, 0, 160));
+    painter.drawEllipse(centre, radius, radius);
+    const qreal side = radius * 0.8;
+    QPainterPath triangle;
+    triangle.moveTo(centre.x() - side * 0.38, centre.y() - side * 0.55);
+    triangle.lineTo(centre.x() - side * 0.38, centre.y() + side * 0.55);
+    triangle.lineTo(centre.x() + side * 0.62, centre.y());
+    triangle.closeSubpath();
+    painter.setBrush(QColor(255, 255, 255, 230));
+    painter.drawPath(triangle);
 }
 
 } // namespace
@@ -151,6 +193,34 @@ ChatView::~ChatView() = default;
 bool ChatView::isAllowedImageHost(const QUrl &url)
 {
     return MediaCache::isAllowedHost(url);
+}
+
+QUrl ChatView::videoStill(const QString &proxyUrl, const QString &url, int width, int height)
+{
+    // Discord's media server answers a video's address with a picture of it
+    // when asked for one by format - the poster its own client shows. The
+    // proxy address is preferred; a plain CDN one is moved across to it.
+    QUrl still(proxyUrl.isEmpty() ? url : proxyUrl);
+    if (still.host() == QLatin1String("cdn.discordapp.com"))
+        still.setHost(QStringLiteral("media.discordapp.net"));
+
+    // Twice the size it is drawn, so it stays sharp on a scaled screen.
+    const QSize most(MaxPictureWidth * 2, MaxPictureHeight * 2);
+    const QSize asked = width > 0 && height > 0
+        ? QSize(width, height).scaled(most, Qt::KeepAspectRatio).boundedTo(QSize(width, height))
+        : most;
+
+    // Added to the signed query by hand: rebuilding it could re-encode the
+    // signature, and Discord refuses an address whose signature changed.
+    QString query = still.query(QUrl::FullyEncoded);
+    while (query.endsWith(QLatin1Char('&')))
+        query.chop(1);
+    if (!query.isEmpty())
+        query += QLatin1Char('&');
+    query += QStringLiteral("format=webp&width=%1&height=%2").arg(asked.width()).arg(asked.height());
+    still.setQuery(query, QUrl::StrictMode);
+    still.setFragment(QStringLiteral("video=%1x%2").arg(width).arg(height));
+    return still;
 }
 
 qint64 ChatView::takePictureWorkMs()
@@ -293,6 +363,34 @@ QPixmap ChatView::prepare(const QUrl &url) const
     const auto done = m_prepared.constFind(key);
     if (done != m_prepared.constEnd())
         return done.value();
+
+    // A video attachment: its still with a play button over it. Until the
+    // still arrives, or if Discord never makes one, the box is drawn dark at
+    // the video's own shape with the button alone - something to click,
+    // never an empty space. Only the real still is kept.
+    if (looksLikeVideoStill(url)) {
+        const QImage still = MediaCache::instance().image(url);
+        QSize box = videoBox(url);
+        if (!box.isValid() && !still.isNull())
+            box = still.size().scaled(QSize(MaxPictureWidth, MaxPictureHeight), Qt::KeepAspectRatio);
+        if (!box.isValid())
+            return {};
+
+        QImage face(box, QImage::Format_ARGB32_Premultiplied);
+        face.fill(QColor(12, 12, 16));
+        if (!still.isNull()) {
+            QPainter painter(&face);
+            painter.setRenderHint(QPainter::SmoothPixmapTransform);
+            painter.drawImage(QRect(QPoint(0, 0), box), still);
+        }
+        drawPlayButton(face);
+        const QPixmap pixmap = QPixmap::fromImage(face);
+        if (!still.isNull()) {
+            m_preparedBytes += qint64(pixmap.width()) * pixmap.height() * 4;
+            m_prepared.insert(key, pixmap);
+        }
+        return pixmap;
+    }
 
     QElapsedTimer clock;
     clock.start();

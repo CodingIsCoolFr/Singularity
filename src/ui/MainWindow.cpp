@@ -5089,6 +5089,18 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
             const QString label = attachment.filename.isEmpty() ? QStringLiteral("file")
                                                                 : attachment.filename.toHtmlEscaped();
 
+            // A video is a still with a play button, as Discord shows it, and
+            // a click plays it with its sound. It used to be handed to the
+            // chat as a picture: a silent loop at best, and a black box once
+            // four GIFs on screen had used up the moving-picture budget.
+            if (attachment.isVideo() && ChatView::isAllowedImageHost(QUrl(attachment.url))) {
+                const QUrl still = ChatView::videoStill(attachment.proxyUrl, attachment.url,
+                                                        attachment.width, attachment.height);
+                html += QStringLiteral("<div class=\"attach\"><a href=\"singularity-video:%1\" title=\"%2\">"
+                                       "<img src=\"%3\"></a></div>")
+                            .arg(safeUrl, label, still.toString(QUrl::FullyEncoded).toHtmlEscaped());
+                continue;
+            }
             if (attachment.isImage() && ChatView::isAllowedImageHost(QUrl(attachment.url))) {
                 // Wrapped so a click opens the big view rather than a browser.
                 html += QStringLiteral("<div class=\"attach\"><a href=\"singularity-image:%1\">"
@@ -5798,6 +5810,28 @@ QString MainWindow::embedsHtml(const MessageInfo &message)
 
         // A Tenor, Klipy or Giphy link is only a picture, so skip the card
         // frame. A gifv with a video and no poster is one too.
+        // A link to a video file is a film to watch, like an attachment: a
+        // still with a play button, played with sound when clicked - on its
+        // own, or inside its card. A gifv stays a silent loop, as Discord
+        // plays those.
+        QString watchHtml;
+        if (embed.type == QLatin1String("video") && !opened.isEmpty() && opened == embed.videoUrl) {
+            QUrl still;
+            if (!embed.imageUrl.isEmpty() && ChatView::isAllowedImageHost(QUrl(embed.imageUrl))) {
+                still = QUrl(embed.imageUrl);
+                still.setFragment(QStringLiteral("video=%1x%2").arg(embed.imageWidth).arg(embed.imageHeight));
+            } else {
+                still = ChatView::videoStill(QString(), embed.videoUrl, embed.imageWidth, embed.imageHeight);
+            }
+            watchHtml = QStringLiteral("<div class=\"attach\"><a href=\"singularity-video:%1\"><img src=\"%2\"></a></div>")
+                            .arg(opened.toHtmlEscaped(), still.toString(QUrl::FullyEncoded).toHtmlEscaped());
+        }
+
+        if (embed.isPictureOnly() && !watchHtml.isEmpty()) {
+            html += watchHtml;
+            continue;
+        }
+
         if (embed.isPictureOnly()) {
             if (!pictureReachable) {
                 wlog(QStringLiteral("media"), QStringLiteral("a %1 preview has no picture we can load: image %2, video %3")
@@ -5888,7 +5922,9 @@ QString MainWindow::embedsHtml(const MessageInfo &message)
             inner += table;
         }
 
-        if (pictureReachable) {
+        if (!watchHtml.isEmpty()) {
+            inner += watchHtml;
+        } else if (pictureReachable) {
             inner += QStringLiteral("<div class=\"attach\"><a href=\"singularity-image:%1\">"
                                     "<img src=\"%2\"></a></div>")
                          .arg(opened.toHtmlEscaped(), shown.toHtmlEscaped());
@@ -6837,6 +6873,18 @@ void MainWindow::handleAnchor(const QUrl &url)
         if (!m_imageViewer)
             m_imageViewer = new ImageViewer(this);
         m_imageViewer->showImage(QUrl(target));
+        return;
+    }
+
+    // A video attachment's play button: the viewer plays it with its sound
+    // and the usual controls.
+    if (url.scheme() == QLatin1String("singularity-video")) {
+        const QString target = whole.mid(QStringLiteral("singularity-video:").size());
+        if (target.isEmpty())
+            return;
+        if (!m_imageViewer)
+            m_imageViewer = new ImageViewer(this);
+        m_imageViewer->showVideo(QUrl(target));
         return;
     }
 
@@ -9996,18 +10044,21 @@ void MainWindow::showMessageMenu(const QPoint &pos)
     // is a different thing and keeps its own name further down.
     const QString anchor = m_messageView->anchorAt(pos);
     QString pointedUrl;
-    bool pointedImage = false;
+    QString pointedKind;   // "Image ", "Video ", or nothing for a web link
     if (anchor.startsWith(QLatin1String("http://")) || anchor.startsWith(QLatin1String("https://"))) {
         pointedUrl = anchor;
     } else if (anchor.startsWith(QLatin1String("singularity-image:"))) {
         pointedUrl = anchor.mid(int(qstrlen("singularity-image:")));
-        pointedImage = true;
+        pointedKind = QStringLiteral("Image ");
+    } else if (anchor.startsWith(QLatin1String("singularity-video:"))) {
+        pointedUrl = anchor.mid(int(qstrlen("singularity-video:")));
+        pointedKind = QStringLiteral("Video ");
     }
     if (!pointedUrl.isEmpty()) {
-        connect(menu.addAction(pointedImage ? QStringLiteral("Copy Image Link") : QStringLiteral("Copy Link")),
+        connect(menu.addAction(QStringLiteral("Copy %1Link").arg(pointedKind)),
                 &QAction::triggered, this, [pointedUrl]() { QApplication::clipboard()->setText(pointedUrl); });
-        connect(menu.addAction(pointedImage ? QStringLiteral("Open Image in Browser")
-                                            : QStringLiteral("Open Link")),
+        connect(menu.addAction(pointedKind.isEmpty() ? QStringLiteral("Open Link")
+                                                     : QStringLiteral("Open %1in Browser").arg(pointedKind)),
                 &QAction::triggered, this, [pointedUrl]() { QDesktopServices::openUrl(QUrl(pointedUrl)); });
         menu.addSeparator();
     }

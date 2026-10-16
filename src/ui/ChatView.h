@@ -33,6 +33,13 @@ public:
 
     static bool isAllowedImageHost(const QUrl &url);
 
+    // The still Discord's media server makes of a video attachment, for the
+    // chat to show with a play button until it is clicked. `width` and
+    // `height` are the video's own; they ride along as "#video=WxH" so the
+    // box is the right shape before the still arrives, and stays one if it
+    // never does.
+    static QUrl videoStill(const QString &proxyUrl, const QString &url, int width, int height);
+
     // How much of the last layout went on shrinking and rounding pictures,
     // and how many had to be done from scratch. Reading it clears it.
     //

@@ -10,6 +10,7 @@
 #include <QNetworkReply>
 #include <QPainter>
 #include <QPainterPath>
+#include <QUrlQuery>
 
 namespace {
 
@@ -197,6 +198,11 @@ namespace {
 bool looksLikeAPicture(const QUrl &url)
 {
     const QString path = url.path().toLower();
+
+    // A still Discord's media server makes of a video: the address keeps the
+    // video's name and asks for a picture by format.
+    if (QUrlQuery(url).hasQueryItem(QStringLiteral("format")))
+        return true;
 
     // Avatars, icons, banners and emoji have no extension at all. They are
     // always pictures.

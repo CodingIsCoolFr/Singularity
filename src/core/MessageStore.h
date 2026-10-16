@@ -225,13 +225,27 @@ struct GuildInfo
 struct Attachment
 {
     QString url;
+    // The same file on media.discordapp.net, which can also hand back a still
+    // of a video: the picture shown in its place until it is played.
+    QString proxyUrl;
     QString filename;
     QString contentType;
     qint64 size = 0;
     int width = 0;
     int height = 0;
 
-    bool isImage() const { return width > 0 && height > 0; }
+    // A film, not a picture. Discord gives a video a width and height too, so
+    // this is asked first: a clip treated as a picture was a black box that
+    // played muted, or not at all once four GIFs were already moving.
+    bool isVideo() const
+    {
+        if (contentType.startsWith(QLatin1String("video/")))
+            return true;
+        const QString name = filename.toLower();
+        return name.endsWith(QLatin1String(".mp4")) || name.endsWith(QLatin1String(".mov"))
+               || name.endsWith(QLatin1String(".webm")) || name.endsWith(QLatin1String(".m4v"));
+    }
+    bool isImage() const { return width > 0 && height > 0 && !isVideo(); }
 };
 
 // A link preview. Discord builds these itself for links people post, which is
