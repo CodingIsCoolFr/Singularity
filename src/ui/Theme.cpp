@@ -762,7 +762,7 @@ QPushButton#CallButton:hover, QPushButton#CallAccept:hover, QPushButton#CallDecl
     background: transparent;
     border: none;
 }
-#IncomingCall, #IncomingCallText {
+#IncomingCall, #IncomingCallText, #DiscordChanged, #DiscordChangedText {
     background: transparent;
     border: none;
     color: @text;

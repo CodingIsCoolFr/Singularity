@@ -1,6 +1,7 @@
 #include "core/GatewayClient.h"
 
 #include "core/DiscordIdentity.h"
+#include "core/DiscordWatch.h"
 #include "core/DiscordIpcServer.h"
 #include "core/GameActivity.h"
 #include "core/Logger.h"
@@ -117,9 +118,17 @@ GatewayClient::GatewayClient(QObject *parent)
 
     m_clientActivityStart = QDateTime::currentMSecsSinceEpoch();
 
+    m_activityTimer.setSingleShot(true);
+    connect(&m_activityTimer, &QTimer::timeout, this, [this]() {
+        m_lastActivitySendMs = QDateTime::currentMSecsSinceEpoch();
+        publishPresence();
+    });
+
+    // The window is told at once, so your own card is current on screen;
+    // Discord is told at the pace above.
     m_gameActivity = new DiscordIpcServer(this);
     connect(m_gameActivity, &DiscordIpcServer::activityChanged, this, [this]() {
-        publishPresence();
+        publishActivitySoon();
         emit gameActivityChanged();
     });
     m_gameActivity->start();
@@ -157,7 +166,7 @@ void GatewayClient::setGames(GameActivity *games)
     if (!games)
         return;
     connect(games, &GameActivity::changed, this, [this]() {
-        publishPresence();
+        publishActivitySoon();
         emit gameActivityChanged();
     });
 }
@@ -290,10 +299,10 @@ void GatewayClient::scheduleReconnect()
     m_reconnectTimer.start(delay);
 }
 
-void GatewayClient::sendJson(const QJsonObject &payload)
+bool GatewayClient::sendJson(const QJsonObject &payload)
 {
     if (m_socket.state() != QAbstractSocket::ConnectedState)
-        return;
+        return false;
 
     const int op = payload.value(QStringLiteral("op")).toInt(-1);
 
@@ -304,23 +313,29 @@ void GatewayClient::sendJson(const QJsonObject &payload)
     // those does not save the connection, it kills it: an identify that never
     // goes out means the socket sits silent until Discord times it out, and
     // the client reconnects into the same trap for ever.
+    //
+    // A presence is the first thing to give way. It is the cheapest to lose -
+    // the next one carries the same news - and the rest is what keeps the
+    // window working: joining a call, a server's member list, a stream.
     const bool mustGoOut = op == OpHeartbeat || op == OpIdentify || op == OpResume;
     if (!mustGoOut) {
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
         while (!m_recentSends.isEmpty() && now - m_recentSends.first() > 60000)
             m_recentSends.removeFirst();
-        m_recentSends.append(now);
 
-        if (m_recentSends.size() > 100) {
+        const int budget = op == OpPresenceUpdate ? 60 : 110;
+        if (m_recentSends.size() >= budget) {
             wlog(QStringLiteral("gateway"),
                  QStringLiteral("holding back op %1: %2 commands in the last minute, near the limit")
                      .arg(op)
                      .arg(m_recentSends.size()));
-            return;
+            return false;
         }
+        m_recentSends.append(now);
     }
 
     m_socket.sendTextMessage(QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact)));
+    return true;
 }
 
 void GatewayClient::onConnected()
@@ -382,11 +397,19 @@ void GatewayClient::onDisconnected()
                       .arg(m_identifiesWithoutReady);
     }
 
+    DiscordWatch::instance().noteGatewayClose(code);
+
     if (fatal) {
         m_wantConnection = false;
         setState(State::Disconnected);
         wlog(QStringLiteral("gateway"), QStringLiteral("giving up: %1 (close code %2)").arg(meaning).arg(code));
-        emit fatalAuthError();
+        // 4010 to 4014 are about the protocol, not the account: signing in
+        // again cannot help, and saying so sent people round in a
+        // circle while the real fault was a change on Discord's side.
+        if (code >= 4010 && code <= 4014)
+            emit incompatible(meaning);
+        else
+            emit fatalAuthError();
         return;
     }
 
@@ -489,6 +512,9 @@ void GatewayClient::onTextMessage(const QString &message)
     }
 
     default:
+        // One Discord added. Not broken by itself, but worth a line in a
+        // report if something else is.
+        DiscordWatch::instance().noteUnknownOpcode(op);
         break;
     }
 }
@@ -852,14 +878,36 @@ void GatewayClient::publishPresence()
         {QStringLiteral("afk"), idle},
     };
 
+    if (body == m_lastPresenceSent)
+        return;
+
     wlog(QStringLiteral("gateway"),
          QStringLiteral("telling Discord %1")
              .arg(QString::fromUtf8(QJsonDocument(body).toJson(QJsonDocument::Compact))));
 
-    sendJson(QJsonObject{
-        {QStringLiteral("op"), OpPresenceUpdate},
-        {QStringLiteral("d"), body},
-    });
+    // Remembered only once it has gone, so one held back is tried again.
+    if (sendJson(QJsonObject{
+            {QStringLiteral("op"), OpPresenceUpdate},
+            {QStringLiteral("d"), body},
+        }))
+        m_lastPresenceSent = body;
+}
+
+void GatewayClient::publishActivitySoon()
+{
+    constexpr qint64 Gap = 15000;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const qint64 wait = m_lastActivitySendMs + Gap - now;
+    if (wait <= 0) {
+        m_activityTimer.stop();
+        m_lastActivitySendMs = now;
+        publishPresence();
+        return;
+    }
+    // Already booked: that send reads the card as it is then, so it carries
+    // this change too.
+    if (!m_activityTimer.isActive())
+        m_activityTimer.start(int(wait));
 }
 
 void GatewayClient::joinVoice(const QString &guildId, const QString &channelId, bool selfMute, bool selfDeaf,
@@ -1094,6 +1142,7 @@ void GatewayClient::handleDispatch(const QString &type, const QJsonObject &data,
         m_subscribedGuilds.clear();
         m_subscribedChannels.clear();
         setState(State::Ready);
+        m_lastPresenceSent = {};   // a new session has heard nothing yet
         publishPresence();
         emit logLine(QStringLiteral("ready as %1").arg(m_currentUser.value(QStringLiteral("username")).toString()));
         wlog(QStringLiteral("gateway"),
@@ -1101,10 +1150,12 @@ void GatewayClient::handleDispatch(const QString &type, const QJsonObject &data,
                  .arg(m_currentUser.value(QStringLiteral("username")).toString())
                  .arg(data.value(QStringLiteral("guilds")).toArray().size())
                  .arg(data.value(QStringLiteral("private_channels")).toArray().size()));
+        DiscordWatch::instance().noteReady(data);
         emit ready(data);
     } else if (type == QLatin1String("RESUMED")) {
         m_reconnectAttempts = 0;
         setState(State::Ready);
+        m_lastPresenceSent = {};   // nor, to be safe, has a resumed one
         publishPresence();
         emit logLine(QStringLiteral("session resumed"));
     }

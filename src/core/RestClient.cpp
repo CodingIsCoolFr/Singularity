@@ -1,6 +1,7 @@
 #include "core/RestClient.h"
 
 #include "core/DiscordIdentity.h"
+#include "core/DiscordWatch.h"
 #include "core/Logger.h"
 
 #include <QDateTime>
@@ -79,6 +80,23 @@ void RestClient::dispatch(QNetworkReply *reply, ObjectHandler onObject, ArrayHan
 
         if (status == 401)
             emit unauthorized();
+
+        // Every refusal is looked at, so one that means Discord changed an
+        // address or what it accepts is told apart from the everyday ones.
+        if (status != 0) {
+            QString method = QString::fromLatin1(reply->request().attribute(QNetworkRequest::CustomVerbAttribute).toByteArray());
+            if (method.isEmpty()) {
+                switch (reply->operation()) {
+                case QNetworkAccessManager::GetOperation:    method = QStringLiteral("GET"); break;
+                case QNetworkAccessManager::PostOperation:   method = QStringLiteral("POST"); break;
+                case QNetworkAccessManager::PutOperation:    method = QStringLiteral("PUT"); break;
+                case QNetworkAccessManager::DeleteOperation: method = QStringLiteral("DELETE"); break;
+                case QNetworkAccessManager::HeadOperation:   method = QStringLiteral("HEAD"); break;
+                default:                                     method = QStringLiteral("?"); break;
+                }
+            }
+            DiscordWatch::instance().noteRestFailure(method, reply->url().path(), status, error.discordCode());
+        }
 
         if (onError)
             onError(error);

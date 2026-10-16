@@ -1,6 +1,7 @@
 #include "ui/MainWindow.h"
 
 #include "core/AppConfig.h"
+#include "core/DiscordWatch.h"
 #include "core/GameActivity.h"
 #include "core/Logger.h"
 #include "core/RestClient.h"
@@ -546,6 +547,25 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
             "<br><br>Fix it: <b>Singularity &gt; Log out</b>, then sign in again."
             "<br><br><b>Singularity &gt; Log</b> shows the exact reason, on the line beginning "
             "\"giving up\".</p>"));
+    });
+
+    // Not the account: the gateway refused the protocol itself. Signing in
+    // again cannot fix that, so this says what can.
+    connect(m_gateway, &GatewayClient::incompatible, this, [this](const QString &meaning) {
+        flashStatus(QStringLiteral("Discord changed how it connects. Singularity needs an update."), 0);
+        if (m_selfStatus) {
+            setPanelText(m_selfStatus, QStringLiteral("disconnected"));
+            m_selfStatus->setStyleSheet(QStringLiteral("color: %1; font-size: 11px;")
+                                            .arg(QLatin1String(Theme::Accent)));
+        }
+        m_messageView->setHtml(QStringLiteral(
+            "<p class=\"system\"><b>Discord changed how it connects, and this version cannot keep up.</b>"
+            "<br><br>Discord said: %1. That is about the way Singularity talks to it, not about your "
+            "account, so signing out and in again will not help."
+            "<br><br>Singularity is checking for an update now. If none is out yet, "
+            "<b>Report it</b> above tells the developer.</p>")
+                                   .arg(meaning.toHtmlEscaped()));
+        showDiscordChanged(meaning);
     });
 
     // Redrawing is expensive and arrives in bursts.
@@ -1474,6 +1494,53 @@ void MainWindow::buildUi()
         if (!m_bannerChannelId.isEmpty())
             declineCall(m_bannerChannelId);
     });
+    // Built like the call banner above, and shown above it: when Discord has
+    // changed something under us, that is the first thing worth knowing.
+    m_discordBanner = new QWidget(chatCard);
+    m_discordBanner->setObjectName(QStringLiteral("DiscordChanged"));
+    m_discordBanner->setFixedHeight(44);
+    auto *discordLayout = new QHBoxLayout(m_discordBanner);
+    discordLayout->setContentsMargins(18, 0, 12, 0);
+    discordLayout->setSpacing(8);
+    m_discordBannerText = new QLabel(m_discordBanner);
+    m_discordBannerText->setObjectName(QStringLiteral("DiscordChangedText"));
+    m_discordBannerText->setTextFormat(Qt::RichText);
+    auto *discordDetails = new QPushButton(QStringLiteral("Details"), m_discordBanner);
+    auto *discordReport = new QPushButton(QStringLiteral("Report it"), m_discordBanner);
+    auto *discordDismiss = new QPushButton(QStringLiteral("Dismiss"), m_discordBanner);
+    for (QPushButton *button : {discordDetails, discordReport, discordDismiss}) {
+        button->setObjectName(QStringLiteral("CallButton"));
+        button->setCursor(Qt::PointingHandCursor);
+        button->setFocusPolicy(Qt::NoFocus);
+    }
+    discordLayout->addWidget(m_discordBannerText, 1);
+    discordLayout->addWidget(discordDetails);
+    discordLayout->addWidget(discordReport);
+    discordLayout->addWidget(discordDismiss);
+    m_discordBanner->hide();
+    connect(discordDetails, &QPushButton::clicked, this, [this]() {
+        QMessageBox box(this);
+        box.setWindowTitle(QStringLiteral("What Discord changed"));
+        box.setText(QStringLiteral("Singularity noticed these. \"Broken\" ones stop something working until "
+                                   "an update; \"noted\" ones are new on Discord's side and harmless so far."));
+        box.setDetailedText(DiscordWatch::instance().report());
+        box.exec();
+    });
+    // Opens a filled-in GitHub issue in the browser. Nothing is sent unless
+    // the person reads it and presses Submit there.
+    connect(discordReport, &QPushButton::clicked, this,
+            []() { QDesktopServices::openUrl(DiscordWatch::instance().issueUrl()); });
+    connect(discordDismiss, &QPushButton::clicked, m_discordBanner, &QWidget::hide);
+    connect(&DiscordWatch::instance(), &DiscordWatch::broke, this, &MainWindow::showDiscordChanged);
+    // Something may have broken before this window existed, at sign-in.
+    for (const DiscordWatch::Finding &finding : DiscordWatch::instance().findings()) {
+        if (finding.major) {
+            QTimer::singleShot(0, this, [this, what = finding.what]() { showDiscordChanged(what); });
+            break;
+        }
+    }
+
+    chatLayout->addWidget(m_discordBanner);
     chatLayout->addWidget(m_callBanner);
     chatLayout->addWidget(m_chatSplitter);
 
@@ -7733,6 +7800,17 @@ void MainWindow::loadCommandIndex(const QString &guildId, const QString &channel
         },
         [this, key, guildId, channelId, attempt](const RestClient::Error &error) {
             m_commandIndexLoading.remove(key);
+            // A direct message with no apps in it has no list at all, and
+            // Discord says so with a 404. That is an answer, not a failure:
+            // keep the empty list as long as a real one, rather than asking
+            // again every time the conversation is opened.
+            if (error.httpStatus == 404) {
+                m_commandIndex.insert(key, {});
+                m_commandIndexAt.insert(key, QDateTime::currentMSecsSinceEpoch());
+                if (m_composer && m_composer->toPlainText().startsWith(QLatin1Char('/')))
+                    updateCommandPopup();
+                return;
+            }
             wlog(QStringLiteral("commands"),
                  QStringLiteral("%1: list failed, HTTP %2 %3").arg(key).arg(error.httpStatus).arg(error.message));
             if (error.isRateLimit() && attempt < 3) {
@@ -11699,6 +11777,23 @@ void MainWindow::updateCallButton()
     const ChannelInfo channel = m_store->channel(m_currentChannelId);
     const bool inThisCall = m_voiceChannelId == m_currentChannelId && !m_voiceChannelId.isEmpty();
     m_callButton->setVisible(channel.isDirect() && !inThisCall);
+}
+
+void MainWindow::showDiscordChanged(const QString &summary)
+{
+    if (!m_discordBanner)
+        return;
+    m_discordBannerText->setText(
+        QStringLiteral("<b>Discord changed something Singularity relies on.</b> %1. "
+                       "Parts may not work until an update.")
+            .arg(summary.toHtmlEscaped()));
+    m_discordBanner->show();
+
+    // The fix, when there is one, is a new version. The updater looks every
+    // few minutes anyway; this looks now, quietly, and a version that is
+    // already out installs beside this one as any update does.
+    wlog(QStringLiteral("discord"), QStringLiteral("checking for an update after: %1").arg(summary));
+    UpdateFlow::run(true, this);
 }
 
 void MainWindow::refreshCallBanner()

@@ -1,0 +1,111 @@
+name: Discord watch
+
+# Tells us when Discord changes something, before somebody's client finds out.
+#
+# The app notices breakage on its own machine (src/core/DiscordWatch) and can
+# only say so to the person in front of it. This looks from the outside, once
+# a day, and opens an issue here when:
+#
+#   - the gateway address for the API version Singularity speaks stops
+#     answering the way it did
+#   - Discord publishes an entry in its API change log
+#   - the official client has moved far past the build number Singularity
+#     reports itself as (src/core/DiscordIdentity.cpp)
+#
+# Nothing here signs in or touches an account. Every request is one any
+# browser makes without being logged in.
+
+on:
+  schedule:
+    - cron: '17 9 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Labels
+        run: |
+          gh label create discord-watch --color 5865F2 --description "Found by the daily Discord watch" --force --repo "$REPO"
+          gh label create discord-change --color D93F0B --description "Reported from the app: Discord changed something" --force --repo "$REPO"
+
+      # Opens an issue unless one with the same title is already open.
+      - name: Helpers
+        run: |
+          cat > "$RUNNER_TEMP/raise.sh" <<'EOF'
+          #!/usr/bin/env bash
+          title="$1"; body="$2"
+          if gh issue list --repo "$REPO" --label discord-watch --state open --search "\"$title\" in:title" --json title -q '.[].title' | grep -Fxq "$title"; then
+            echo "already open: $title"
+          else
+            gh issue create --repo "$REPO" --label discord-watch --title "$title" --body "$body"
+          fi
+          EOF
+          chmod +x "$RUNNER_TEMP/raise.sh"
+
+      - name: Gateway
+        run: |
+          version=$(grep -oP 'constexpr int ApiVersion = \K[0-9]+' src/core/DiscordIdentity.h)
+          status=$(curl -s -o gateway.json -w '%{http_code}' "https://discord.com/api/v${version}/gateway")
+          echo "API v${version} gateway: HTTP ${status} $(cat gateway.json)"
+          if [ "$status" != "200" ] || ! grep -q '"url"' gateway.json; then
+            "$RUNNER_TEMP/raise.sh" "Discord's gateway answers differently for API v${version}" \
+              "The daily check asked \`https://discord.com/api/v${version}/gateway\` and got HTTP ${status}:
+
+          \`\`\`
+          $(head -c 600 gateway.json)
+          \`\`\`
+
+          Singularity connects with this version (\`ApiVersion\` in \`src/core/DiscordIdentity.h\`). If Discord has retired it, every copy will fail to connect."
+          fi
+
+      - name: API change log
+        run: |
+          since=$(date -u -d '26 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+          # One file since Discord's docs moved in February 2026; it was a
+          # folder, docs/change-log, before that.
+          gh api "repos/discord/discord-api-docs/commits?path=developers/change-log.mdx&since=${since}&per_page=20" \
+            -q '.[] | [.sha[0:7], .html_url, (.commit.message | split("\n")[0])] | @tsv' > changes.tsv || true
+          if [ ! -s changes.tsv ]; then echo "No change log entries since ${since}."; exit 0; fi
+          while IFS=$'\t' read -r sha url subject; do
+            "$RUNNER_TEMP/raise.sh" "Discord API change ${sha}: ${subject}" \
+              "Discord published a change log entry: ${url}
+
+          Worth a look for anything Singularity uses: the gateway, messages, voice, settings, commands. If it changes something Singularity relies on, the app's own watch will say so too once it happens (look for \`[discord]\` lines in the log)."
+          done < changes.tsv
+
+      # Best effort: the build number lives in the web client's scripts, whose
+      # names change with every release. If it cannot be found, that alone is
+      # not worth an issue - Discord reshuffles those files often.
+      - name: Client build
+        run: |
+          ours=$(grep -oP 'kClientBuildNumber = \K[0-9]+' src/core/DiscordIdentity.cpp)
+          curl -sL -A "Mozilla/5.0" https://discord.com/login -o login.html
+          theirs=""
+          # The number is in web.<hash>.js (October 2026), so that goes first;
+          # the rest are only looked through if Discord moves it.
+          scripts=$( { grep -oE '/assets/web\.[A-Za-z0-9._-]+\.js' login.html; grep -oE '/assets/[A-Za-z0-9._-]+\.js' login.html; } | awk '!seen[$0]++')
+          for script in $scripts; do
+            n=$(curl -sL -A "Mozilla/5.0" "https://discord.com${script}" | grep -oE '(build_number|buildNumber)["'"'"': ]{1,4}[0-9]{6,}' | grep -oE '[0-9]{6,}' | head -1)
+            if [ -n "$n" ]; then theirs="$n"; break; fi
+          done
+          echo "Singularity reports build ${ours}; Discord's web client is on ${theirs:-unknown}."
+          if [ -z "$theirs" ]; then exit 0; fi
+          # About three months of Discord's releases.
+          if [ $((theirs - ours)) -gt 20000 ]; then
+            "$RUNNER_TEMP/raise.sh" "Singularity's client build number is far behind Discord's" \
+              "Singularity says it is Discord build **${ours}** (\`kClientBuildNumber\` in \`src/core/DiscordIdentity.cpp\`). Discord's web client is on **${theirs}**.
+
+          A very old build number is one of the things Discord can use to refuse a sign-in or to treat a client as unusual. Moving it up, along with \`kClientVersion\`, \`kChromeVersion\` and \`kElectronVersion\` next to it, keeps Singularity looking like a current client. Close this once it is done; it reopens when the gap is this wide again."
+          fi

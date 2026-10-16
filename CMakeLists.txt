@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(Singularity VERSION 0.8.73 LANGUAGES CXX)
+project(Singularity VERSION 0.8.74 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -28,6 +28,8 @@ qt_add_executable(Singularity WIN32
     src/core/TokenStore.cpp
     src/core/DiscordIdentity.h
     src/core/DiscordIdentity.cpp
+    src/core/DiscordWatch.h
+    src/core/DiscordWatch.cpp
     src/core/DiscordPermissions.h
     src/core/AuthClient.h
     src/core/AuthClient.cpp

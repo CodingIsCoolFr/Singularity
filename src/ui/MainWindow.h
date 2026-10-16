@@ -146,6 +146,9 @@ private:
     void declineCall(const QString &channelId);
     void startCall();
     void refreshCallBanner();
+    // Says that Discord changed something Singularity relies on, and asks for
+    // an update at once in case a fixed version is already out.
+    void showDiscordChanged(const QString &summary);
     void updateCallButton();
     void notePrivateCall(const QJsonObject &data, bool ended);
     void noteCallMessage(const MessageInfo &message);
@@ -621,6 +624,11 @@ private:
     CallView *m_callView = nullptr;
     QWidget *m_callBanner = nullptr;
     QLabel *m_callBannerText = nullptr;
+
+    // "Discord changed something": shown when DiscordWatch finds a break, with
+    // what it was, the details, and a report the person can choose to send.
+    QWidget *m_discordBanner = nullptr;
+    QLabel *m_discordBannerText = nullptr;
     QPushButton *m_callAccept = nullptr;
     QPushButton *m_callDecline = nullptr;
     QPushButton *m_callButton = nullptr;

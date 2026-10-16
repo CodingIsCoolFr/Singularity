@@ -166,6 +166,9 @@ signals:
     void dispatch(const QString &eventType, const QJsonObject &data);
     void logLine(const QString &line);
     void fatalAuthError();
+    // The gateway refused the protocol itself - its version, intents or
+    // sharding - which no sign-in can fix. Discord changed; this has to.
+    void incompatible(const QString &meaning);
     // A game set or cleared its card. The presence has already been sent.
     void gameActivityChanged();
     // Appear offline was switched. The presence has already been sent.
@@ -181,7 +184,8 @@ private:
     void closeKeepingSession();
     void openSocket();
     void scheduleReconnect();
-    void sendJson(const QJsonObject &payload);
+    // False when it did not go out: no socket, or held back by the limit.
+    bool sendJson(const QJsonObject &payload);
     void sendIdentify();
     void sendResume();
     void sendHeartbeat();
@@ -230,8 +234,9 @@ private:
     // command against a limit and hangs up when it is passed.
     QHash<QString, QString> m_subscribedChannels;
 
-    // A rolling count of commands sent, purely so the log shows it before a
-    // close rather than leaving us guessing.
+    // When each command in the last minute went out. Only ones that did: a
+    // held-back command counted too, so a busy minute never emptied and every
+    // later command was held back as well.
     QList<qint64> m_recentSends;
     QString m_voiceGuildId;
     QString m_voiceChannelId;
@@ -255,6 +260,19 @@ private:
 
     // When the current idle began, in ms since the epoch; 0 when not idle.
     qint64 m_idleSinceMs = 0;
+
+    // A game's card changing goes out at most once every 15 seconds, the
+    // latest one, as the official client paces it. A game that rewrote its
+    // card every second sent 14,000 presences in one evening and filled the
+    // command budget, so voice joins and member lists were held back with it.
+    void publishActivitySoon();
+    QTimer m_activityTimer;
+    qint64 m_lastActivitySendMs = 0;
+
+    // The last presence that went out on this session. The same one again
+    // is not sent; a new session clears it, because Discord needs to hear
+    // the status once after every sign-in.
+    QJsonObject m_lastPresenceSent;
     QString m_activityApplicationId;
     QString m_activityImageKey;
     bool m_activityShared = true;
