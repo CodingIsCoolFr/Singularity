@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(Singularity VERSION 0.8.75 LANGUAGES CXX)
+project(Singularity VERSION 0.8.76 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -153,6 +153,8 @@ qt_add_executable(Singularity WIN32
     src/ui/FlowLayout.cpp
     src/ui/ImageViewer.h
     src/ui/ImageViewer.cpp
+    src/ui/Sounds.h
+    src/ui/Sounds.cpp
     src/ui/FriendsPage.h
     src/ui/FriendsPage.cpp
     src/ui/RailLayout.h

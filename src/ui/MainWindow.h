@@ -146,6 +146,25 @@ private:
     void declineCall(const QString &channelId);
     void startCall();
     void refreshCallBanner();
+
+    // Discord's sounds, through Sounds. Nothing while m_quietSounds is up:
+    // leaving a call stops the share and the camera too, and deafening mutes,
+    // but each of those has one sound of its own, not three.
+    void playSound(const QString &name);
+    int m_quietSounds = 0;
+    // The outgoing ring: on while alone in a private call that is ringing.
+    void updateOutgoingRing();
+    // People in our call other than us; -1 when not in one.
+    int othersInCall() const;
+    // Join or leave, by how the count moved. See the definition for the rule.
+    void soundCallChange(const QString &callBefore, int before);
+    // The call our own join sound was played for, so a reconnect is quiet.
+    QString m_joinSoundFor;
+    // Who was watching our stream, for the viewer sounds.
+    QSet<QString> m_myStreamViewers;
+    // The Home easter egg: clicks on Home, and when the last one was.
+    int m_homeClicks = 0;
+    QElapsedTimer m_homeClickClock;
     void updateCallButton();
     void notePrivateCall(const QJsonObject &data, bool ended);
     void noteCallMessage(const MessageInfo &message);

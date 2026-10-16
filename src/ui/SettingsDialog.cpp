@@ -11,6 +11,7 @@
 #include "ui/CaptchaDialog.h"
 #include "ui/MediaCache.h"
 #include "ui/ProfilePreview.h"
+#include "ui/Sounds.h"
 #include "ui/Theme.h"
 
 #include <QApplication>
@@ -1302,6 +1303,79 @@ QWidget *SettingsDialog::buildNotificationsPage()
     connect(test, &QPushButton::clicked, this, [this]() { emit testNotificationRequested(); });
     layout->addSpacing(8);
     layout->addWidget(test);
+
+    // ---- Discord's sounds ---------------------------------------------------
+
+    layout->addSpacing(16);
+    layout->addWidget(groupTitle(QStringLiteral("SOUNDS"), page));
+    layout->addWidget(hint(QStringLiteral("Discord's own sounds, chosen the way Discord chooses them. Each is "
+                                          "fetched from Discord the first time it is needed and kept, and plays "
+                                          "through the same speakers as your calls."),
+                           page));
+    toggle(QStringLiteral("sounds/enabled"), QStringLiteral("Play sounds"), true);
+
+    auto *packRow = new QHBoxLayout;
+    packRow->addWidget(new QLabel(QStringLiteral("Sound pack"), page));
+    auto *pack = new QComboBox(page);
+    const QString chosenPack = config.value(QStringLiteral("sounds/pack"), QStringLiteral("classic")).toString();
+    for (const Sounds::Pack &each : Sounds::packs()) {
+        pack->addItem(QLatin1String(each.label), QLatin1String(each.id));
+        if (chosenPack == QLatin1String(each.id))
+            pack->setCurrentIndex(pack->count() - 1);
+    }
+    connect(pack, &QComboBox::currentIndexChanged, this, [pack]() {
+        AppConfig::instance().setValue(QStringLiteral("sounds/pack"), pack->currentData().toString());
+        Sounds::instance().prefetch();
+        Sounds::instance().play(QStringLiteral("user_join"));
+    });
+    packRow->addWidget(pack);
+    packRow->addStretch(1);
+    layout->addLayout(packRow);
+
+    toggle(QStringLiteral("sounds/holidays"),
+           QStringLiteral("Holiday sounds: Halloween and winter packs at their time of year"), true);
+    QString season = QStringLiteral("Like Discord, they take over only while you are on Classic, and go back after: "
+                                    "Halloween from 7 October to 2 November, Winter Holiday from 1 December to "
+                                    "6 January.");
+    const QString holiday = Sounds::holidayOn(QDate::currentDate());
+    if (holiday == QLatin1String("halloween"))
+        season += QStringLiteral(" It is Halloween now.");
+    else if (holiday == QLatin1String("winter_holiday"))
+        season += QStringLiteral(" It is the winter holiday now.");
+    layout->addWidget(hint(season, page));
+
+    auto *volumeRow = new QHBoxLayout;
+    volumeRow->addWidget(new QLabel(QStringLiteral("Volume"), page));
+    auto *volume = new QSlider(Qt::Horizontal, page);
+    volume->setRange(0, 100);
+    volume->setValue(config.value(QStringLiteral("sounds/volume"), 100).toInt());
+    volume->setMaximumWidth(240);
+    connect(volume, &QSlider::valueChanged, this,
+            [](int value) { AppConfig::instance().setValue(QStringLiteral("sounds/volume"), value); });
+    // Heard when let go, so the level can be judged without a sound per step.
+    connect(volume, &QSlider::sliderReleased, this, []() { Sounds::instance().play(QStringLiteral("message1")); });
+    volumeRow->addWidget(volume);
+    volumeRow->addStretch(1);
+    layout->addLayout(volumeRow);
+
+    // One switch a sound, as in Discord's own settings.
+    auto *grid = new QGridLayout;
+    grid->setHorizontalSpacing(18);
+    grid->setVerticalSpacing(4);
+    int slot = 0;
+    for (const Sounds::Switch &each : Sounds::switches()) {
+        const QString name = QLatin1String(each.name);
+        auto *box = new QCheckBox(QLatin1String(each.label), page);
+        box->setChecked(!config.value(QStringLiteral("sounds/off/%1").arg(name), false).toBool());
+        connect(box, &QCheckBox::toggled, this, [name](bool on) {
+            AppConfig::instance().setValue(QStringLiteral("sounds/off/%1").arg(name), !on);
+            if (on && name != QLatin1String("call_ringing") && name != QLatin1String("call_calling"))
+                Sounds::instance().play(name);
+        });
+        grid->addWidget(box, slot / 3, slot % 3);
+        ++slot;
+    }
+    layout->addLayout(grid);
 
     layout->addStretch(1);
     return page;

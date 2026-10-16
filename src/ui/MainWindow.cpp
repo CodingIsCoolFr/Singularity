@@ -21,6 +21,7 @@
 #include "ui/LoadingOverlay.h"
 #include "ui/MemberListPanel.h"
 #include "ui/ShareDialog.h"
+#include "ui/Sounds.h"
 #include "ui/UpdateFlow.h"
 
 #include <QProcess>
@@ -99,6 +100,7 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QStackedWidget>
+#include <QScopeGuard>
 #include <QScreen>
 #include <QScrollBar>
 #include <QSignalBlocker>
@@ -495,14 +497,14 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     m_typingClearTimer.setSingleShot(true);
     connect(&m_typingClearTimer, &QTimer::timeout, this, [this]() { setTypingHint(QString()); });
 
+    // The ring is Discord's own, looping in Sounds. This only ends it after
+    // half a minute, as the Windows beeps it replaced did.
     m_ringTimer.setInterval(2500);
     connect(&m_ringTimer, &QTimer::timeout, this, [this]() {
         if (++m_ringBeeps > 12) {
             m_ringTimer.stop();
-            return;
+            Sounds::instance().stopLoop(QStringLiteral("call_ringing"));
         }
-        if (AppConfig::instance().value(QStringLiteral("notifications/desktop"), true).toBool())
-            QApplication::beep();
     });
 
     connect(m_gateway, &GatewayClient::ready, this, &MainWindow::onGatewayReady);
@@ -911,6 +913,7 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
                 if (m_share && !m_share->isRunning()) {
                     m_share->start(m_shareMonitorId, m_shareWidth, m_shareHeight, m_shareFps,
                                    m_shareBitrate);
+                    playSound(QStringLiteral("stream_started"));
                 }
             });
 
@@ -940,6 +943,12 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
             m_voiceState->setText(QStringLiteral("Voice connected"));
             m_voiceRetries = 0;   // a good connection clears the slate
             flashStatus(QStringLiteral("Voice connected and encrypted."), 5000);
+            // Discord's join sound as you arrive, once per channel: a
+            // reconnect to the same call is not a new arrival.
+            if (!m_voiceChannelId.isEmpty() && m_joinSoundFor != m_voiceChannelId) {
+                m_joinSoundFor = m_voiceChannelId;
+                playSound(QStringLiteral("user_join"));
+            }
             break;
         case VoiceConnection::State::Failed:      m_voiceState->setText(QStringLiteral("Voice failed")); break;
         }
@@ -1587,6 +1596,25 @@ QWidget *MainWindow::buildGuildRail(QWidget *parent)
     connect(joinServer, &QToolButton::clicked, this, [this]() { showJoinServerDialog(); });
 
     connect(m_guildRail, &QListWidget::currentRowChanged, this, &MainWindow::onGuildSelected);
+
+    // Discord's Home easter egg: sixteen clicks on Home, each within half a
+    // second of the last, switch Discodo on or off - its own sound going on,
+    // a leave going off.
+    connect(m_guildRail, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
+        if (!item || m_guildRail->row(item) != 0) {
+            m_homeClicks = 0;
+            return;
+        }
+        if (!m_homeClickClock.isValid() || m_homeClickClock.elapsed() > 500)
+            m_homeClicks = 0;
+        m_homeClickClock.restart();
+        if (++m_homeClicks < 16)
+            return;
+        m_homeClicks = 0;
+        const bool on = Sounds::instance().toggleDiscodo();
+        Sounds::instance().play(on ? QStringLiteral("discodo") : QStringLiteral("user_leave"));
+        flashStatus(on ? QStringLiteral("Discodo.") : QStringLiteral("No more Discodo."), 3000);
+    });
     connect(m_guildRail, &QListWidget::customContextMenuRequested, this, &MainWindow::showRailMenu);
 
     // After a drag, read the tiles back and save the new order.
@@ -2384,6 +2412,10 @@ void MainWindow::onGatewayReady(const QJsonObject &payload)
     }
     ensureClientActivity();
 
+    // Discord's sounds for the pack in use, fetched now so the first one is
+    // not late. Kept after the first time, so this is usually nothing.
+    Sounds::instance().prefetch();
+
     updateUserPanel();
 
     if (!wasInGuild.isEmpty()) {
@@ -2709,14 +2741,29 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
             else
                 others.append(state);
         }
+        const QString callBefore = m_voiceChannelId;
+        const int before = othersInCall();
         m_store->setVoiceStates(others);
+        soundCallChange(callBefore, before);
+        updateOutgoingRing();
         for (const QJsonObject &state : ours)
             onGatewayDispatch(QStringLiteral("VOICE_STATE_UPDATE"), state);
         return;
     }
 
     if (eventType == QLatin1String("VOICE_STATE_UPDATE")) {
+        const QString callBefore = m_voiceChannelId;
+        const int before = othersInCall();
+        const QString mover = data.value(QStringLiteral("user_id")).toString();
+        const bool wasStreaming = m_store->voiceState(mover).streaming;
         m_store->setVoiceState(data);
+        soundCallChange(callBefore, before);
+        // Somebody else going live in our call. Our own share plays its own.
+        if (!mover.isEmpty() && mover != m_selfUserId && !m_voiceChannelId.isEmpty()
+            && data.value(QStringLiteral("channel_id")).toString() == m_voiceChannelId && !wasStreaming
+            && data.value(QStringLiteral("self_stream")).toBool())
+            playSound(QStringLiteral("stream_started"));
+        updateOutgoingRing();
 
         // Says out loud who the main gateway thinks has a camera or a screen
         // running in the call we are in.
@@ -2816,6 +2863,21 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
 
             const QString wasIn = m_voiceChannelId;
 
+            // Moved by somebody else, with no join of ours in flight: Discord's
+            // sound for it, and not its join sound on top when the new
+            // connection comes up.
+            if (!wasIn.isEmpty() && !nowIn.isEmpty() && nowIn != wasIn && !m_voiceWatchdog.isActive()) {
+                playSound(QStringLiteral("user_moved"));
+                m_joinSoundFor = nowIn;
+            }
+            // Taken out of the call from elsewhere - a moderator, another
+            // device. Our own Leave played this already and cleared the
+            // channel, so it never gets here.
+            if (nowIn.isEmpty() && !wasIn.isEmpty()) {
+                playSound(QStringLiteral("disconnect"));
+                m_joinSoundFor.clear();
+            }
+
             if (nowIn != m_voiceChannelId) {
                 m_voiceChannelId = nowIn;
                 updateVoicePanel();
@@ -2873,6 +2935,27 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
             m_voiceWatchdog.start(10000);
         }
         return;
+    }
+
+    // Who is watching our stream. Discord's viewer sounds, for up to 25, as
+    // its client plays them.
+    if (eventType == QLatin1String("STREAM_UPDATE")) {
+        const QString key = data.value(QStringLiteral("stream_key")).toString();
+        if (!m_myStreamKey.isEmpty() && key == m_myStreamKey) {
+            QSet<QString> watching;
+            for (const QJsonValue &id : data.value(QStringLiteral("viewer_ids")).toArray()) {
+                const QString viewer = id.toVariant().toString();
+                if (!viewer.isEmpty() && viewer != m_selfUserId)
+                    watching.insert(viewer);
+            }
+            if (m_myStreamViewers.size() <= 25) {
+                if (watching.size() > m_myStreamViewers.size())
+                    playSound(QStringLiteral("stream_user_joined"));
+                else if (watching.size() < m_myStreamViewers.size())
+                    playSound(QStringLiteral("stream_user_left"));
+            }
+            m_myStreamViewers = watching;
+        }
     }
 
     if (eventType == QLatin1String("STREAM_CREATE")) {
@@ -6540,6 +6623,11 @@ void MainWindow::setSelfMuted(bool on)
         return;
     }
 
+    // The connection's own state, not the button's: a click has already
+    // flipped the button by the time this runs.
+    if (m_voice && m_voice->isMuted() != on)
+        playSound(on ? QStringLiteral("mute") : QStringLiteral("unmute"));
+
     if (m_voice)
         m_voice->setMuted(on);
     if (m_muteButton && m_muteButton->isChecked() != on) {
@@ -6559,6 +6647,13 @@ void MainWindow::setSelfMuted(bool on)
 
 void MainWindow::setSelfDeafened(bool on)
 {
+    // Deafening mutes too, but Discord plays only the deafen sound; the mute
+    // below stays quiet.
+    if (m_voice && m_voice->isDeafened() != on)
+        playSound(on ? QStringLiteral("deafen") : QStringLiteral("undeafen"));
+    ++m_quietSounds;
+    const auto loud = qScopeGuard([this]() { --m_quietSounds; });
+
     if (m_voice)
         m_voice->setDeafened(on);
     if (m_deafenButton && m_deafenButton->isChecked() != on) {
@@ -11039,6 +11134,9 @@ void MainWindow::stopScreenShare()
     if (m_myStreamKey.isEmpty())
         return;
 
+    playSound(QStringLiteral("stream_ended"));
+    m_myStreamViewers.clear();
+
     if (m_share)
         m_share->stop();
     if (m_shareAudio)
@@ -11752,10 +11850,68 @@ void MainWindow::updateCallButton()
     m_callButton->setVisible(channel.isDirect() && !inThisCall);
 }
 
+void MainWindow::playSound(const QString &name)
+{
+    if (m_quietSounds > 0)
+        return;
+    Sounds::instance().play(name);
+}
+
+int MainWindow::othersInCall() const
+{
+    if (m_voiceChannelId.isEmpty() || !m_store)
+        return -1;
+    int count = int(m_store->voiceMembers(m_voiceChannelId).size());
+    if (m_store->voiceState(m_selfUserId).channelId == m_voiceChannelId)
+        --count;
+    return count;
+}
+
+void MainWindow::soundCallChange(const QString &callBefore, int before)
+{
+    // Discord's rule, from its client: in the call you are in, more people
+    // than a moment ago is a join and fewer is a leave, so long as there were
+    // no more than 25. Someone moving in or out counts the same way, and a
+    // batch of changes is one sound, not one each.
+    if (before < 0 || before > 25 || callBefore != m_voiceChannelId)
+        return;
+    const int after = othersInCall();
+    if (after > before)
+        playSound(QStringLiteral("user_join"));
+    else if (after < before)
+        playSound(QStringLiteral("user_leave"));
+}
+
+void MainWindow::updateOutgoingRing()
+{
+    // Discord's rule: in a private call, alone, while somebody else is still
+    // being rung. It stops the moment anyone picks up, or the ringing ends.
+    bool calling = false;
+    if (!m_voiceChannelId.isEmpty() && m_store) {
+        const ChannelInfo channel = m_store->channel(m_voiceChannelId);
+        if (channel.isDirect()) {
+            bool othersRung = false;
+            for (const QString &id : m_ringing.value(m_voiceChannelId)) {
+                if (id != m_selfUserId) {
+                    othersRung = true;
+                    break;
+                }
+            }
+            calling = othersRung && m_store->voiceMembers(m_voiceChannelId).size() < 2;
+        }
+    }
+    if (calling)
+        Sounds::instance().startLoop(QStringLiteral("call_calling"));
+    else
+        Sounds::instance().stopLoop(QStringLiteral("call_calling"));
+}
+
 void MainWindow::refreshCallBanner()
 {
     if (!m_callBanner)
         return;
+
+    updateOutgoingRing();
 
     QString ringChannel;
     for (auto it = m_ringing.constBegin(); it != m_ringing.constEnd(); ++it) {
@@ -11794,6 +11950,7 @@ void MainWindow::refreshCallBanner()
         m_bannerChannelId.clear();
         m_callBanner->hide();
         m_ringTimer.stop();
+        Sounds::instance().stopLoop(QStringLiteral("call_ringing"));
         return;
     }
 
@@ -11811,6 +11968,7 @@ void MainWindow::refreshCallBanner()
 
     if (!ringing) {
         m_ringTimer.stop();
+        Sounds::instance().stopLoop(QStringLiteral("call_ringing"));
         return;
     }
     if (m_announcedRing != channelId) {
@@ -11819,8 +11977,7 @@ void MainWindow::refreshCallBanner()
         wlog(QStringLiteral("call"), QStringLiteral("ringing from %1 in %2").arg(callPeerName(channelId), channelId));
         if (QApplication::activeWindow() == nullptr)
             showDesktopNotification(QStringLiteral("Incoming call"), callPeerName(channelId), channelId);
-        if (AppConfig::instance().value(QStringLiteral("notifications/desktop"), true).toBool())
-            QApplication::beep();
+        Sounds::instance().startLoop(QStringLiteral("call_ringing"));
     }
     if (!m_ringTimer.isActive())
         m_ringTimer.start();
@@ -11901,6 +12058,7 @@ void MainWindow::toggleCamera()
 {
     if (m_camera && m_camera->isRunning()) {
         stopCamera();
+        playSound(QStringLiteral("camera_off"));
         return;
     }
 
@@ -11919,6 +12077,7 @@ void MainWindow::toggleCamera()
 
     m_webcam->start();
     m_camera->start(960, 540, 20);
+    playSound(QStringLiteral("camera_on"));
     if (m_cameraButton) {
         m_cameraButton->setChecked(true);
         m_cameraButton->setText(QStringLiteral("Camera on"));
@@ -12002,11 +12161,17 @@ void MainWindow::leaveVoice()
     if (guildId.isEmpty())
         guildId = m_store->channel(m_voiceChannelId).guildId;
 
+    // Leaving has one sound, Discord's disconnect. The share and the camera
+    // going with it stay quiet.
+    playSound(QStringLiteral("disconnect"));
+    ++m_quietSounds;
+
     // Before anything else. A share outlives the call it belonged to if it is
     // not ended explicitly: Discord keeps the stream, and the people left
     // behind watch a picture that has stopped arriving.
     stopScreenShare();
     stopCamera();
+    --m_quietSounds;
 
     m_voiceRetryTimer.stop();
     m_voiceRetries = 0;
@@ -12026,7 +12191,9 @@ void MainWindow::leaveVoice()
     // event confirm it.
     m_voiceChannelId.clear();
     m_voiceGuildId.clear();
+    m_joinSoundFor.clear();
     updateVoicePanel();
+    updateOutgoingRing();
 }
 
 void MainWindow::rejoinVoiceIfNeeded()
@@ -13164,20 +13331,6 @@ void MainWindow::maybeNotify(const QJsonObject &data, const MessageInfo &message
     if (message.type == 3)
         return;
     AppConfig &config = AppConfig::instance();
-    if (!config.value(QStringLiteral("notifications/desktop"), true).toBool())
-        return;
-
-    // Discord shows these only while it is not the window in front. Reading
-    // the chat already tells you, and a pop-up on top of it would be noise.
-    if (QApplication::activeWindow() != nullptr)
-        return;
-
-    // Do Not Disturb silences Discord's own notifications. This account sits
-    // on it most of the time, so here it is a choice, on by default. The
-    // status you picked, so appearing offline over it still counts.
-    if (m_gateway && m_gateway->chosenPresenceStatus() == QLatin1String("dnd")
-        && !config.value(QStringLiteral("notifications/duringDnd"), true).toBool())
-        return;
 
     if (m_store->user(message.authorId).isBlocked())
         return;
@@ -13187,6 +13340,28 @@ void MainWindow::maybeNotify(const QJsonObject &data, const MessageInfo &message
     const NotificationRules::Verdict verdict =
         m_notifyRules.judge(data, m_selfUserId, channel.parentId, QDateTime::currentMSecsSinceEpoch());
     if (!verdict.notify)
+        return;
+
+    // The status you picked, so appearing offline over it still counts.
+    const bool dnd = m_gateway && m_gateway->chosenPresenceStatus() == QLatin1String("dnd");
+
+    // Discord's message sound: for anything that notifies, unless it is in
+    // the chat you are looking at. Do Not Disturb silences it, as in Discord.
+    const bool looking = QApplication::activeWindow() != nullptr && channelId == m_currentChannelId;
+    if (!looking && !dnd)
+        playSound(QStringLiteral("message1"));
+
+    if (!config.value(QStringLiteral("notifications/desktop"), true).toBool())
+        return;
+
+    // Discord shows these only while it is not the window in front. Reading
+    // the chat already tells you, and a pop-up on top of it would be noise.
+    if (QApplication::activeWindow() != nullptr)
+        return;
+
+    // Do Not Disturb silences Discord's own notifications. This account sits
+    // on it most of the time, so here it is a choice, on by default.
+    if (dnd && !config.value(QStringLiteral("notifications/duringDnd"), true).toBool())
         return;
 
     // Who and where, as Discord words it.
