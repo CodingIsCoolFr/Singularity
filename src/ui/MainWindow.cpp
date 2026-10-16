@@ -1037,18 +1037,14 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         if (m_voiceRetries >= 4) {
             wlog(QStringLiteral("voice"), QStringLiteral("giving up after %1 tries: %2")
                                               .arg(m_voiceRetries).arg(reason));
-            if (m_voiceState)
-                m_voiceState->setText(QStringLiteral("Voice failed"));
-
             // This one has a cause outside the client, so say so rather than
             // leaving a bare error on screen.
-            if (reason.contains(QStringLiteral("4006"))) {
-                flashStatus(
-                    QStringLiteral("Discord allows one voice connection per account. Close the "
-                                   "official Discord app completely, including the tray icon, "
-                                   "then try again."),
-                    0);
-            }
+            abandonVoice(reason.contains(QStringLiteral("4006"))
+                             ? QStringLiteral("Discord allows one voice connection per account. Close the "
+                                              "official Discord app completely, including the tray icon, "
+                                              "then try again.")
+                             : QStringLiteral("Voice could not reconnect, so you are out of the call. "
+                                              "Join it again to get back in."));
             return;
         }
 
@@ -1072,6 +1068,12 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         // channel and sends no new voice server, so it only added ten seconds
         // of silence before this.
         m_voiceSessionId.clear();
+        // Said, because it is the one way this goes wrong: the last one out
+        // of a temporary channel empties it, and its bot deletes it.
+        if (othersInCall() == 0)
+            wlog(QStringLiteral("voice"),
+                 QStringLiteral("leaving to rejoin while alone in the channel; a temporary channel "
+                                "would be deleted now"));
         m_gateway->leaveVoice(m_voiceGuildId);
         m_voiceRetryTimer.start(1200);
     });
@@ -1211,10 +1213,12 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
                             "channel=%2 guild=%3")
                  .arg(missing.join(QStringLiteral(" and ")), m_voiceChannelId, m_voiceGuildId));
 
-        if (m_voiceState)
-            m_voiceState->setText(QStringLiteral("Discord did not answer"));
-        flashStatus(
-            QStringLiteral("Discord never answered the join. It may not allow this channel."), 8000);
+        // Out of the call for good, not half in it. This used to leave the
+        // channel remembered, so every later reconnect of the gateway "rejoined"
+        // it again - for two hours on 16 October, into a channel that no longer
+        // answered.
+        abandonVoice(QStringLiteral("Discord never answered the join, so you are out of the call. "
+                                    "The channel may be gone, or may not let you in."));
     });
 
     // People joining or leaving voice changes the sidebar, but only redraw
@@ -2570,6 +2574,13 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
     }
 
     if (eventType == QLatin1String("CHANNEL_DELETE")) {
+        // Our own call's channel, gone. A "join to create" room is deleted the
+        // moment it empties - which a leave-and-rejoin does when we were the
+        // last one in it - and after that no join is ever answered.
+        if (!m_voiceChannelId.isEmpty() && data.value(QStringLiteral("id")).toString() == m_voiceChannelId)
+            abandonVoice(QStringLiteral("The voice channel was deleted, so you are out of the call. "
+                                        "A temporary channel is removed as soon as it empties."));
+
         // Nobody can still be sitting in a channel that no longer exists.
         m_store->dropVoiceStatesInChannel(data.value(QStringLiteral("id")).toString());
         applyChannelClosed(data.value(QStringLiteral("id")).toString());
@@ -12194,6 +12205,19 @@ void MainWindow::leaveVoice()
     m_joinSoundFor.clear();
     updateVoicePanel();
     updateOutgoingRing();
+}
+
+void MainWindow::abandonVoice(const QString &why)
+{
+    if (m_voiceChannelId.isEmpty())
+        return;
+    wlog(QStringLiteral("voice"), QStringLiteral("out of the call: %1").arg(why));
+    // Leave properly - retries stopped, Discord told, the channel forgotten -
+    // so nothing later tries to put us back in it.
+    leaveVoice();
+    if (m_voiceState)
+        m_voiceState->setText(QStringLiteral("Not in voice"));
+    flashStatus(why, 0);
 }
 
 void MainWindow::rejoinVoiceIfNeeded()

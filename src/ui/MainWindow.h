@@ -154,6 +154,9 @@ private:
     int m_quietSounds = 0;
     // The outgoing ring: on while alone in a private call that is ringing.
     void updateOutgoingRing();
+    // Out of the call for good, saying why: everything leaveVoice does, so
+    // no retry or later reconnect tries to put us back in it.
+    void abandonVoice(const QString &why);
     // People in our call other than us; -1 when not in one.
     int othersInCall() const;
     // Join or leave, by how the count moved. See the definition for the rule.

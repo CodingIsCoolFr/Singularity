@@ -507,8 +507,13 @@ VoiceConnection::VoiceConnection(QObject *parent)
         if (m_resuming) {
             wlog(QStringLiteral("voice"),
                  QStringLiteral("resume try %1 got no answer; dropping it").arg(m_resumeAttempts));
-            m_resumeQueued = false;
+            // Aborting reports the close it causes, and that close books a try
+            // of its own - so every try that got no answer booked two, and the
+            // count went 1, 3, 5 (16 October, 03:28). Marked as booked while
+            // it aborts, the close leaves it to this.
+            m_resumeQueued = true;
             m_socket.abort();
+            m_resumeQueued = false;
             if (scheduleResume())
                 return;
         }
