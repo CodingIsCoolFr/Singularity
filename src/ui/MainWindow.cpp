@@ -4219,57 +4219,43 @@ void MainWindow::openChannel(const QString &channelId)
                      .arg(error.message));
             if (channelId != m_currentChannelId)
                 return;
+
+            // What the chat shows is a plain sentence, the way Discord does:
+            // nobody reading it needs the API path, the role names or the
+            // overwrite count. The full diagnosis still goes to the log above,
+            // and diagnoseMissingAccess adds more there - that is where to look
+            // when a channel will not open, not on the screen.
             QString reason;
             const int code = error.discordCode();
             const auto kind = DiscordPermissions::classifyHistoryFailure(error.httpStatus, code);
             switch (kind) {
             case DiscordPermissions::HistoryFailure::RateLimit:
-                reason = QStringLiteral("Rate limited. Try again in a moment.");
+                reason = QStringLiteral("Too many requests just now. This will sort itself out in a moment.");
                 break;
             case DiscordPermissions::HistoryFailure::Auth:
-                reason = QStringLiteral("Session expired or invalid (HTTP 401). Sign in again.");
+                reason = QStringLiteral("Your session has expired. Sign out and sign in again.");
                 break;
             case DiscordPermissions::HistoryFailure::MissingChannel:
-                reason = QStringLiteral("This channel was not found (HTTP 404).");
+                reason = QStringLiteral("This channel no longer exists.");
                 break;
             case DiscordPermissions::HistoryFailure::MissingAccess:
-                reason = QStringLiteral("Missing Access (Discord 50001). "
-                                       "GET /channels/{id}/messages requires VIEW_CHANNEL. ");
-                reason += m_store->viewAccessExplain(channelId);
-                if (m_store->canViewChannel(channelId))
-                    reason += QStringLiteral(" This account looks like it has VIEW_CHANNEL locally; "
-                                            "the refusal came from Discord, not a guessed permission bit.");
+            case DiscordPermissions::HistoryFailure::MissingPermissions:
+                reason = QStringLiteral("You do not have access to this channel.");
                 if (!info.guildId.isEmpty())
                     diagnoseMissingAccess(channelId);
                 break;
-            case DiscordPermissions::HistoryFailure::MissingPermissions:
-                reason = QStringLiteral("Missing Permissions (Discord 50013).");
-                break;
             case DiscordPermissions::HistoryFailure::Forbidden:
-                reason = QStringLiteral("HTTP 403");
-                if (code)
-                    reason += QStringLiteral(", Discord %1").arg(code);
-                if (!error.message.isEmpty())
-                    reason += QStringLiteral(": %1").arg(error.message);
+                reason = QStringLiteral("You do not have access to this channel.");
                 break;
             case DiscordPermissions::HistoryFailure::Other:
-                if (code != 0)
-                    reason = QStringLiteral("HTTP %1, Discord %2: %3")
-                                 .arg(error.httpStatus)
-                                 .arg(code)
-                                 .arg(error.message);
-                else if (!error.message.isEmpty())
-                    reason = QStringLiteral("HTTP %1: %2").arg(error.httpStatus).arg(error.message);
-                else
-                    reason = QStringLiteral("HTTP %1").arg(error.httpStatus);
+                reason = QStringLiteral("These messages could not be loaded. The log has the details.");
                 break;
             }
             if (DiscordPermissions::historyFailureDisablesComposer(kind))
                 m_composer->setEnabled(false);
             else
                 m_composer->setEnabled(true);
-            m_messageView->setHtml(QStringLiteral("<p class=\"system\">Could not load messages: %1</p>")
-                                       .arg(reason.toHtmlEscaped()));
+            m_messageView->setHtml(QStringLiteral("<p class=\"system\">%1</p>").arg(reason.toHtmlEscaped()));
         });
 }
 

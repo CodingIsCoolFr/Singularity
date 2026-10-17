@@ -103,7 +103,7 @@ int main(int argc, char *argv[])
     CrashLog::install();
     app.setApplicationName(QStringLiteral("Singularity"));
     app.setOrganizationName(QStringLiteral("Singularity"));
-    app.setApplicationVersion(QStringLiteral("0.8.78"));
+    app.setApplicationVersion(QStringLiteral("0.8.79"));
     app.setWindowIcon(QIcon(QStringLiteral(":/brand/singularity.png")));
 
     Theme::applySeed(QColor(AppConfig::instance().value(QStringLiteral("appearance/themeSeed"),
