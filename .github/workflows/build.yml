@@ -86,16 +86,22 @@ jobs:
             if (-not (Test-Path (Join-Path $dist $need))) { throw "dist is missing $need" }
           }
 
+      # Kept a week, not GitHub's default 90 days. Artifact storage is one small
+      # quota shared by the account's repos, and six runs of this once filled it.
       - uses: actions/upload-artifact@v4
         with:
           name: installer
           path: dist-installer/*-setup.exe
           if-no-files-found: error
+          retention-days: 7
 
       # A freeze report can only be read with the PDB from the build that shipped.
+      # If this build ships, file the PDB in symbols\v<version> before the week
+      # is up, as release.ps1 does for a local build. Nothing else keeps it.
       - uses: actions/upload-artifact@v4
         with:
           name: symbols
           path: |
             build/Release/Singularity.pdb
             dist/Singularity.exe
+          retention-days: 7
