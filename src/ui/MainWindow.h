@@ -171,6 +171,7 @@ private:
     QString m_joinSoundFor;
     // Who was watching our stream, for the viewer sounds.
     QSet<QString> m_myStreamViewers;
+    bool m_myStreamPaused = false;   // what Discord last said about our stream
     // The Home easter egg: clicks on Home, and when the last one was.
     int m_homeClicks = 0;
     QElapsedTimer m_homeClickClock;

@@ -796,6 +796,13 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
                 if (m_shareVoice)
                     m_shareVoice->startSendingVideo(width, height, m_shareFps, m_shareBitrate);
 
+                // Discord's client says "not paused" the moment its picture
+                // starts, and so do the other Go Live senders. We never did,
+                // which left the stream's paused state to whatever each
+                // viewer's app assumed. Friends watching on phones saw a
+                // black screen on 17 October while the picture was going out.
+                m_gateway->setStreamPaused(m_myStreamKey, false);
+
                 // Sound starts with the picture, once the stream connection
                 // holds its keys, so nothing piles up waiting for them.
                 const auto source = ShareAudio::Source(m_shareSoundSource);
@@ -2968,6 +2975,22 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
                 if (!viewer.isEmpty() && viewer != m_selfUserId)
                     watching.insert(viewer);
             }
+            // Said whenever it changes, so a report of "it's black for me"
+            // can be checked against who Discord says is actually watching,
+            // and whether it thinks the stream is paused.
+            const bool paused = data.value(QStringLiteral("paused")).toBool();
+            if (watching != m_myStreamViewers || paused != m_myStreamPaused) {
+                QStringList names;
+                for (const QString &viewer : watching)
+                    names.append(m_store->userName(viewer));
+                wlog(QStringLiteral("share"),
+                     QStringLiteral("Discord says %1 watching%2%3")
+                         .arg(QString::number(watching.size()),
+                              names.isEmpty() ? QString()
+                                              : QStringLiteral(" (") + names.join(QStringLiteral(", ")) + QLatin1Char(')'),
+                              paused ? QStringLiteral(", stream marked paused") : QString()));
+                m_myStreamPaused = paused;
+            }
             if (m_myStreamViewers.size() <= 25) {
                 if (watching.size() > m_myStreamViewers.size())
                     playSound(QStringLiteral("stream_user_joined"));
@@ -2987,7 +3010,10 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
             m_myStreamServerId = data.value(QStringLiteral("rtc_server_id")).toString();
             m_myStreamChannelId = data.value(QStringLiteral("rtc_channel_id")).toString();
             wlog(QStringLiteral("share"),
-                 QStringLiteral("our stream was accepted, server %1").arg(m_myStreamServerId));
+                 QStringLiteral("our stream was accepted, server %1%2")
+                     .arg(m_myStreamServerId,
+                          data.value(QStringLiteral("paused")).toBool()
+                              ? QStringLiteral(", marked paused") : QString()));
             tryBeginBroadcast();
             return;
         }
@@ -11151,6 +11177,7 @@ void MainWindow::stopScreenShare()
 
     playSound(QStringLiteral("stream_ended"));
     m_myStreamViewers.clear();
+    m_myStreamPaused = false;
 
     if (m_share)
         m_share->stop();
