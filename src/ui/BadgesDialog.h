@@ -45,6 +45,12 @@ public:
     // A profile badge's picture.
     static QUrl profileBadgeIconUrl(const QString &iconHash);
 
+    // The picture of a badge from Discord's directory, at the tier it shows:
+    // the one you have, or the first one you could get.
+    static QUrl directoryIconUrl(const QJsonObject &badge);
+    // Its name, with the tier's after it ("Account Age - Sapling").
+    static QString directoryName(const QJsonObject &badge);
+
     // Discord's badge numbers that are used by name here.
     enum : int {
         PremiumTenure = 1,

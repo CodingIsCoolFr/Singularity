@@ -84,6 +84,7 @@ private:
     void loadServerNickname();
     void fillProfileFields();
     void refreshProfileArt();   // both cards and the decoration tiles
+    void refreshCardBadges();   // both cards' badges, the unsaved order included
     void paintDecorationTile(class QListWidgetItem *item, const QImage &frame);
     void animateDecorationTile(int row);
     void profileEdited();
@@ -177,6 +178,9 @@ private:
     int m_profilesRow = 1;
 
     ProfilePreview *m_accountCard = nullptr;
+    // "Customize your badges", on My Account. Its edits wait for Save Changes
+    // with the rest of the profile, as in Discord.
+    class BadgeCustomizer *m_badgeCustomizer = nullptr;
     ProfilePreview *m_preview = nullptr;
     QLabel *m_accountStatus = nullptr;
     QLabel *m_profileStatus = nullptr;

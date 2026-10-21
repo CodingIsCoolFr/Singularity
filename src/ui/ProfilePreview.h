@@ -2,6 +2,8 @@
 
 #include <QColor>
 #include <QImage>
+#include <QList>
+#include <QPixmap>
 #include <QString>
 #include <QWidget>
 
@@ -28,6 +30,9 @@ public:
     void setNames(const QString &displayName, const QString &username);
     void setPronouns(const QString &pronouns);
     void setBio(const QString &bio);
+    // Your badges in the order your profile shows them, beside the name:
+    // Discord's six, then "+N" for the rest.
+    void setBadges(const QList<QImage> &icons);
 
     QSize sizeHint() const override { return {300, 420}; }
 
@@ -49,4 +54,6 @@ private:
     QString m_username;
     QString m_pronouns;
     QString m_bio;
+    QList<QPixmap> m_badgeIcons;   // already at size, the first six
+    int m_moreBadges = 0;
 };

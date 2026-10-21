@@ -15,6 +15,12 @@ constexpr int BannerHeight = 106;
 constexpr int AvatarSize = 88;    // the frame; the face is 76% of it with a decoration
 constexpr int AvatarLeft = 16;
 
+// Discord's profile shows six badges and a count of the rest.
+constexpr int BadgesShown = 6;
+constexpr int BadgeIcon = 20;
+constexpr int BadgeGap = 4;
+constexpr int BadgePad = 6;
+
 } // namespace
 
 ProfilePreview::ProfilePreview(QWidget *parent)
@@ -95,6 +101,25 @@ void ProfilePreview::setBio(const QString &bio)
     update();
 }
 
+void ProfilePreview::setBadges(const QList<QImage> &icons)
+{
+    // Scaled once here rather than on every paint: the card repaints for each
+    // frame of a moving banner.
+    const qreal ratio = qMax<qreal>(1.0, devicePixelRatioF());
+    m_badgeIcons.clear();
+    for (int i = 0; i < qMin<int>(icons.size(), BadgesShown); ++i) {
+        QPixmap picture;
+        if (!icons.at(i).isNull()) {
+            picture = QPixmap::fromImage(icons.at(i).scaled(QSize(BadgeIcon, BadgeIcon) * ratio, Qt::KeepAspectRatio,
+                                                            Qt::SmoothTransformation));
+            picture.setDevicePixelRatio(ratio);
+        }
+        m_badgeIcons.append(picture);
+    }
+    m_moreBadges = qMax(0, int(icons.size()) - BadgesShown);
+    update();
+}
+
 void ProfilePreview::paintEvent(QPaintEvent *)
 {
     QPainter painter(this);
@@ -161,14 +186,48 @@ void ProfilePreview::paintEvent(QPaintEvent *)
     const int left = 16;
     const int textWidth = width() - 2 * left;
 
+    // --- badges, on the right of the name line, in a dark pill.
+    int nameWidth = textWidth;
+    if (!m_badgeIcons.isEmpty()) {
+        QFont count = font();
+        count.setPixelSize(12);
+        count.setWeight(QFont::DemiBold);
+        const QString more = m_moreBadges > 0 ? QStringLiteral("+%1").arg(m_moreBadges) : QString();
+        const int moreWidth = more.isEmpty() ? 0 : QFontMetrics(count).horizontalAdvance(more) + BadgeGap;
+        const int shown = int(m_badgeIcons.size());
+        const int stripWidth = 2 * BadgePad + shown * BadgeIcon + (shown - 1) * BadgeGap + moreWidth;
+        const QRectF strip(width() - left - stripWidth, y - 1, stripWidth, 28);
+
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(Theme::SurfaceRail));
+        painter.drawRoundedRect(strip, 8, 8);
+        qreal x = strip.left() + BadgePad;
+        for (const QPixmap &icon : std::as_const(m_badgeIcons)) {
+            if (!icon.isNull()) {
+                const QSizeF size = QSizeF(icon.size()) / icon.devicePixelRatio();
+                painter.drawPixmap(QPointF(x + (BadgeIcon - size.width()) / 2.0,
+                                           strip.center().y() - size.height() / 2.0),
+                                   icon);
+            }
+            x += BadgeIcon + BadgeGap;
+        }
+        if (!more.isEmpty()) {
+            painter.setFont(count);
+            painter.setPen(QColor(Theme::TextPrimary));
+            painter.drawText(QRectF(x, strip.top(), moreWidth, strip.height()), Qt::AlignLeft | Qt::AlignVCenter,
+                             more);
+        }
+        nameWidth = qMax(60, textWidth - stripWidth - 10);
+    }
+
     QFont nameFont = font();
     nameFont.setPixelSize(20);
     nameFont.setWeight(QFont::Bold);
     painter.setFont(nameFont);
     painter.setPen(QColor(Theme::TextPrimary));
     const QString shownName = m_displayName.isEmpty() ? m_username : m_displayName;
-    painter.drawText(QRect(left, y, textWidth, 26), Qt::AlignLeft | Qt::AlignVCenter,
-                     QFontMetrics(nameFont).elidedText(shownName, Qt::ElideRight, textWidth));
+    painter.drawText(QRect(left, y, nameWidth, 26), Qt::AlignLeft | Qt::AlignVCenter,
+                     QFontMetrics(nameFont).elidedText(shownName, Qt::ElideRight, nameWidth));
     y += 26;
 
     QFont small = font();

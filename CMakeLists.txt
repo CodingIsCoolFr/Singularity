@@ -170,6 +170,8 @@ qt_add_executable(Singularity WIN32
     src/ui/RailLayout.cpp
     src/ui/BadgesDialog.h
     src/ui/BadgesDialog.cpp
+    src/ui/BadgeCustomizer.h
+    src/ui/BadgeCustomizer.cpp
     src/ui/ProfileDialog.h
     src/ui/ProfileDialog.cpp
     src/ui/ShareDialog.h

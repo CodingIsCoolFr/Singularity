@@ -8,6 +8,8 @@
 #include "plugin/PluginHost.h"
 #include "ui/AnimatedImage.h"
 #include "ui/AudioMeter.h"
+#include "ui/BadgeCustomizer.h"
+#include "ui/BadgesDialog.h"
 #include "ui/CaptchaDialog.h"
 #include "ui/MediaCache.h"
 #include "ui/ProfilePreview.h"
@@ -370,6 +372,22 @@ QWidget *SettingsDialog::buildAccountPage()
     connect(editProfile, &QPushButton::clicked, this, [this]() { m_sections->setCurrentRow(m_profilesRow); });
     layout->addWidget(editProfile);
 
+    // Discord's "Customize your badges" card. The card above shows the order
+    // as it is being changed; Save Changes sends it.
+    m_badgeCustomizer = new BadgeCustomizer(m_rest, page);
+    m_badgeCustomizer->setMaximumWidth(440);
+    connect(m_badgeCustomizer, &BadgeCustomizer::changed, this, [this]() {
+        refreshCardBadges();
+        if (m_displayName)
+            updateSaveBar();
+    });
+    connect(m_badgeCustomizer, &BadgeCustomizer::viewBadgesRequested, this, [this]() {
+        const QString name = m_loaded.globalName.isEmpty() ? m_loaded.username : m_loaded.globalName;
+        BadgesDialog::open(m_rest, m_selfUserId, name, true, 0, this);
+    });
+    layout->addSpacing(8);
+    layout->addWidget(m_badgeCustomizer);
+
     // What Discord said about the last change: saved, or why not.
     m_accountStatus = new QLabel(page);
     m_accountStatus->setWordWrap(true);
@@ -711,6 +729,8 @@ QWidget *SettingsDialog::buildSaveBar()
     connect(reset, &QPushButton::clicked, this, [this]() {
         m_pending = PendingProfile{};
         m_userEdited = false;
+        if (m_badgeCustomizer)
+            m_badgeCustomizer->reset();
         fillProfileFields();
         refreshProfileArt();
         updateSaveBar();
@@ -759,6 +779,10 @@ void SettingsDialog::setAccountStatus(bool ok, const QString &text)
 
 bool SettingsDialog::profileDirty() const
 {
+    if (m_badgeCustomizer && m_badgeCustomizer->isDirty())
+        return true;
+    if (!m_displayName)
+        return false;
     return m_displayName->text().trimmed() != m_loaded.globalName
         || m_pronouns->text().trimmed() != m_loaded.pronouns || m_bio->toPlainText() != m_loaded.bio
         || m_pending.avatarTouched || m_pending.bannerTouched || m_pending.accentTouched
@@ -885,6 +909,21 @@ void SettingsDialog::refreshProfileArt()
     // picked - as in Discord. Playing all of them would hold every frame of
     // every decoration in memory at once.
     animateDecorationTile(m_decorationHover >= 0 ? m_decorationHover : m_decorations->currentRow());
+
+    refreshCardBadges();
+}
+
+void SettingsDialog::refreshCardBadges()
+{
+    if (!m_badgeCustomizer)
+        return;
+    QList<QImage> icons;
+    for (const QUrl &url : m_badgeCustomizer->shownIcons())
+        icons.append(url.isEmpty() ? QImage() : MediaCache::instance().image(url));
+    for (ProfilePreview *card : {m_preview, m_accountCard}) {
+        if (card)
+            card->setBadges(icons);
+    }
 }
 
 void SettingsDialog::paintDecorationTile(QListWidgetItem *item, const QImage &frame)
@@ -959,6 +998,8 @@ void SettingsDialog::loadProfile(bool force)
     }
     m_pending = PendingProfile{};
     m_userEdited = false;
+    if (m_badgeCustomizer)
+        m_badgeCustomizer->load();
     fillProfileFields();
     refreshProfileArt();
     updateSaveBar();
@@ -1101,20 +1142,41 @@ void SettingsDialog::saveProfile()
     const auto finish = [this](bool ok, const QString &problem) {
         m_saveButton->setText(QStringLiteral("Save Changes"));
         m_saveButton->setEnabled(true);
+        // Said on both pages: the save bar is under either.
         if (!ok) {
             setProfileStatus(false, QStringLiteral("Not saved: %1").arg(problem));
+            setAccountStatus(false, QStringLiteral("Not saved: %1").arg(problem));
             return;
         }
         setProfileStatus(true, QStringLiteral("Saved."));
+        setAccountStatus(true, QStringLiteral("Saved."));
         loadProfile(true);
     };
 
-    const auto saveProfilePart = [this, profileFields, finish]() {
-        if (profileFields.isEmpty()) {
+    // Badges last, the way Discord's own Save does them first: a separate
+    // request either way, and the order does not matter to Discord.
+    const auto saveBadges = [this, finish]() {
+        if (!m_badgeCustomizer || !m_badgeCustomizer->isDirty()) {
             finish(true, QString());
             return;
         }
-        editProfileFields(profileFields, finish);
+        m_badgeCustomizer->save([finish](bool ok, const QString &problem) {
+            finish(ok, ok ? QString() : QStringLiteral("badges: %1").arg(problem));
+        });
+    };
+
+    const auto saveProfilePart = [this, profileFields, saveBadges, finish]() {
+        if (profileFields.isEmpty()) {
+            saveBadges();
+            return;
+        }
+        editProfileFields(profileFields, [saveBadges, finish](bool ok, const QString &problem) {
+            if (!ok) {
+                finish(false, problem);
+                return;
+            }
+            saveBadges();
+        });
     };
 
     if (userFields.isEmpty()) {

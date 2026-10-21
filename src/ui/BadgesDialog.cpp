@@ -184,6 +184,20 @@ QUrl BadgesDialog::profileBadgeIconUrl(const QString &iconHash)
     return QUrl(QStringLiteral("https://cdn.discordapp.com/badge-icons/%1.png").arg(iconHash));
 }
 
+QUrl BadgesDialog::directoryIconUrl(const QJsonObject &badge)
+{
+    return iconUrl(badge, shownTier(badge));
+}
+
+QString BadgesDialog::directoryName(const QJsonObject &badge)
+{
+    QString text = badge.value(QStringLiteral("name")).toString();
+    const QString tierName = shownTier(badge).value(QStringLiteral("name")).toString();
+    if (!tierName.isEmpty())
+        text += QStringLiteral(" - ") + tierName;
+    return text;
+}
+
 // ---------------------------------------------------------------------------
 // The window
 // ---------------------------------------------------------------------------
