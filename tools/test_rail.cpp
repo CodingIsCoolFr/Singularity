@@ -14,6 +14,7 @@
 
 #include <QCoreApplication>
 #include <QFile>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSettings>
@@ -305,8 +306,11 @@ static int sortFile(const QString &namesPath, const QString &gamesPath)
     if (games.open(QIODevice::ReadOnly)) {
         QStringList names;
         const QJsonObject catalog = QJsonDocument::fromJson(games.readAll()).object();
-        for (auto it = catalog.constBegin(); it != catalog.constEnd(); ++it)
-            names.append(it.value().toObject().value(QStringLiteral("n")).toString());
+        for (auto it = catalog.constBegin(); it != catalog.constEnd(); ++it) {
+            const QJsonArray rows = it.value().isArray() ? it.value().toArray() : QJsonArray{it.value()};
+            for (const QJsonValue &row : rows)
+                names.append(row.toObject().value(QStringLiteral("n")).toString());
+        }
         ServerCategories::setKnownGames(names);
     }
     std::printf("%d games known\n", ServerCategories::knownGameCount());

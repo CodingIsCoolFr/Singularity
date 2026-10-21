@@ -32,6 +32,7 @@ public:
         QString title;
         QString exe;
         bool known = false;
+        quint32 pid = 0;
     };
 
     explicit GameActivity(QObject *parent = nullptr);
@@ -81,14 +82,26 @@ private:
     {
         QString name;
         QString id;
+        QString path;    // Discord's name for the program, folders and all, lower case with '/'
+        QString args;    // what its command line must contain, lower case; usually empty
+        bool exact = false;   // ">name" in Discord's list: the file name alone, any folder
     };
 
+    // The game a running program is, by Discord's own rule: its full path
+    // ends with the name in Discord's list, folders included. 192 games run a
+    // "game.exe" and 34 an "hl2.exe"; the file name alone credited all of
+    // them to whichever came first in the list. A few are told apart only by
+    // their command line - Garry's Mod, Team Fortress 2, Left 4 Dead 2 and
+    // Half-Life 2 by "-game ...", Minecraft by its main class in javaw.exe -
+    // which is read from the process `pid` when one of those is the question.
+    Known match(const QString &fullPath, quint32 pid = 0) const;
+
     bool m_shown = false;
-    bool m_detect = false;
+    bool m_detect = true;
     QList<Saved> m_saved;
     QList<Running> m_running;
     QJsonArray m_activities;
-    QHash<QString, Known> m_catalog;          // exe basename, lower case
+    QHash<QString, QList<Known>> m_catalog;   // by file name, lower case
     QHash<QString, qint64> m_started;         // exe -> when we first saw it
     QString m_runningKey;
     QTimer m_timer;

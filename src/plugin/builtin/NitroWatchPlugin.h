@@ -37,6 +37,15 @@ class QWidget;
 // Singularity watches every channel at once, including ones you are not looking at,
 // and takes you from "a gift exists" to "one button" instantly. The press
 // stays yours, which is also what keeps the account ordinary.
+//
+// Unless you choose otherwise (2026-10-21: "so I don't have to click
+// anything"). "Claim on its own" redeems a gift Discord says is still live the
+// moment it is posted - in your direct messages, or everywhere - and tells you
+// afterwards. It is off unless chosen, says plainly in Settings what it risks,
+// never claims a gift you posted, and stops at five a day. It does nothing to
+// look less automatic than it is: no made-up delays, no pretending to read.
+// When Discord wants a captcha it cannot go on without you, so the ordinary
+// alert comes up instead.
 class NitroWatchPlugin : public Plugin
 {
 public:
@@ -45,8 +54,8 @@ public:
     QString description() const override
     {
         return QStringLiteral("Spots gift links the instant they are posted, checks each one with "
-                              "Discord, and offers a Claim button for the real ones. A Windows "
-                              "notification is raised for those. Never claims on its own.");
+                              "Discord, and offers a Claim button for the real ones, with a Windows "
+                              "notification. Can claim them on its own instead, if you choose that.");
     }
     bool enabledByDefault() const override { return false; }
 
@@ -78,7 +87,19 @@ private:
         bool claimable = false;
         QString whyNot;     // when it is not: spent, expired, already yours
         int left = 0;       // uses remaining
+        QString giverId;    // who bought it, when Discord says
     };
+
+    // "Claim on its own": 0 never, 1 gifts in your own direct messages, 2
+    // every real gift, servers included.
+    enum AutoClaim { AutoNever = 0, AutoDirect = 1, AutoEverywhere = 2 };
+    static constexpr int MaxAutoClaimsPerDay = 5;
+    int autoClaimScope() const;
+    // Empty when this gift may be claimed without asking; otherwise why not.
+    QString autoClaimRefusal(const QString &channelId, const QString &fromUserId, const Gift &gift) const;
+    void claimOnItsOwn(const QString &code, const QString &fromUserId, const QString &channelId, const Gift &gift);
+    QList<qint64> autoClaimsToday() const;
+    void describeSource(const QString &fromUserId, const QString &channelId, QString *who, QString *where) const;
 
     // Asks Discord about the code and only then decides whether to raise an
     // alert. This is the whole of the "skip the fakes" job: a made-up code is
@@ -87,8 +108,10 @@ private:
     void inspect(const QString &code, const QString &fromUserId, const QString &channelId);
     static Gift readGift(const QJsonObject &body);
 
+    // `note` replaces the panel's usual line under the gift, to say why it
+    // was not claimed on its own.
     void offer(const QString &code, const QString &fromUserId, const QString &channelId,
-               const Gift &gift);
+               const Gift &gift, const QString &note = QString());
     void claim(const QString &code, const QString &channelId, QLabel *status, QPushButton *button,
                const RestClient::CaptchaProof &proof = {});
     void warnAboutFake(const QString &host);

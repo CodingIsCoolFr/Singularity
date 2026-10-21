@@ -6,6 +6,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QJsonArray>
@@ -75,6 +76,18 @@ const QRegularExpression &lookalikePattern()
         QStringLiteral(R"(https?://[^\s<>"']*(?:gift|nitro)[^\s<>"']*)"),
         QRegularExpression::CaseInsensitiveOption);
     return pattern;
+}
+
+// Discord answering a redeem with "do a captcha first".
+bool wantsCaptcha(const RestClient::Error &error)
+{
+    if (error.body.contains(QStringLiteral("captcha_sitekey")))
+        return true;
+    for (const QJsonValue &key : error.body.value(QStringLiteral("captcha_key")).toArray()) {
+        if (key.toString() == QLatin1String("captcha-required"))
+            return true;
+    }
+    return false;
 }
 
 QLabel *line(const QString &text, const char *colour, int size, bool bold, QWidget *parent)
@@ -289,14 +302,130 @@ bool NitroWatchPlugin::windowsNotify() const
     return !context() || context()->setting(QStringLiteral("windowsNotify"), true).toBool();
 }
 
+int NitroWatchPlugin::autoClaimScope() const
+{
+    if (!context())
+        return AutoNever;
+    return qBound(int(AutoNever), context()->setting(QStringLiteral("autoClaim"), int(AutoNever)).toInt(),
+                  int(AutoEverywhere));
+}
+
+QList<qint64> NitroWatchPlugin::autoClaimsToday() const
+{
+    QList<qint64> stamps;
+    if (!context())
+        return stamps;
+    const qint64 dayAgo = QDateTime::currentMSecsSinceEpoch() - 24LL * 60 * 60 * 1000;
+    for (const QVariant &value : context()->setting(QStringLiteral("autoClaimedAt")).toList()) {
+        const qint64 at = value.toLongLong();
+        if (at > dayAgo)
+            stamps.append(at);
+    }
+    return stamps;
+}
+
+QString NitroWatchPlugin::autoClaimRefusal(const QString &channelId, const QString &fromUserId,
+                                           const Gift &gift) const
+{
+    const int scope = autoClaimScope();
+    if (scope == AutoNever)
+        return QStringLiteral("claiming on its own is off");
+    if (!context() || !context()->store())
+        return QStringLiteral("not signed in yet");
+
+    // A gift you posted is meant for somebody else. Claiming it uses it up.
+    const QString self = context()->store()->selfUserId();
+    if (!self.isEmpty() && (fromUserId == self || gift.giverId == self))
+        return QStringLiteral("you posted it");
+
+    // Type 1 is a direct message between two people: a gift there is for you.
+    if (scope == AutoDirect && context()->store()->channel(channelId).type != 1)
+        return QStringLiteral("it is not in a direct message to you");
+
+    if (autoClaimsToday().size() >= MaxAutoClaimsPerDay)
+        return QStringLiteral("%1 were already claimed on their own today").arg(MaxAutoClaimsPerDay);
+    return {};
+}
+
+void NitroWatchPlugin::describeSource(const QString &fromUserId, const QString &channelId, QString *who,
+                                      QString *where) const
+{
+    *who = QStringLiteral("Someone");
+    where->clear();
+    if (!context() || !context()->store())
+        return;
+    const QString name = context()->store()->userName(fromUserId);
+    if (!name.isEmpty())
+        *who = name;
+    const ChannelInfo channel = context()->store()->channel(channelId);
+    if (!channel.name.isEmpty())
+        *where = QStringLiteral(" in #%1").arg(channel.name);
+}
+
+void NitroWatchPlugin::claimOnItsOwn(const QString &code, const QString &fromUserId, const QString &channelId,
+                                     const Gift &gift)
+{
+    if (!context() || !context()->rest())
+        return;
+
+    // Counted when tried, not when it works: a day's five tries are five.
+    QList<qint64> stamps = autoClaimsToday();
+    stamps.append(QDateTime::currentMSecsSinceEpoch());
+    QVariantList stored;
+    for (const qint64 at : std::as_const(stamps))
+        stored.append(at);
+    context()->setSetting(QStringLiteral("autoClaimedAt"), stored);
+
+    wlog(QStringLiteral("nitro"), QStringLiteral("claiming %1 on its own, as Settings says to (%2 of %3 today)")
+                                      .arg(gift.what)
+                                      .arg(stamps.size())
+                                      .arg(MaxAutoClaimsPerDay));
+
+    QString who;
+    QString where;
+    describeSource(fromUserId, channelId, &who, &where);
+    context()->rest()->redeemGift(
+        code, channelId,
+        [this, gift, who, where, channelId](const QJsonObject &) {
+            wlog(QStringLiteral("nitro"), QStringLiteral("gift claimed on its own"));
+            if (!context())
+                return;
+            context()->log(QStringLiteral("Claimed %1 on its own, from %2%3.").arg(gift.what, who, where));
+            context()->notify(QStringLiteral("Claimed: %1").arg(gift.what),
+                              QStringLiteral("%1 posted it%2. It is on your account now.").arg(who, where),
+                              channelId);
+        },
+        [this, code, fromUserId, channelId, gift](const RestClient::Error &error) {
+            // A captcha needs a person. The ordinary alert and its Claim
+            // button take over, and the button brings the check up.
+            if (wantsCaptcha(error)) {
+                wlog(QStringLiteral("nitro"),
+                     QStringLiteral("Discord wants a captcha before this claim, so it is offered instead"));
+                offer(code, fromUserId, channelId, gift,
+                      QStringLiteral("Discord wants a quick check before this one. Press Enter, do the check, "
+                                     "and it is yours."));
+                return;
+            }
+            wlog(QStringLiteral("nitro"), QStringLiteral("claiming on its own did not work: HTTP %1 %2")
+                                              .arg(error.httpStatus)
+                                              .arg(error.message));
+            if (context()) {
+                context()->log(QStringLiteral("Could not claim %1 on its own: %2")
+                                   .arg(gift.what, error.message.isEmpty()
+                                                       ? QStringLiteral("HTTP %1").arg(error.httpStatus)
+                                                       : error.message));
+            }
+        });
+}
+
 void NitroWatchPlugin::onGatewayEvent(const QString &eventType, const QJsonObject &data)
 {
     if (eventType != QLatin1String("MESSAGE_CREATE") && eventType != QLatin1String("MESSAGE_UPDATE"))
         return;
-    // Either the in-app Claim panel or a Windows toast is enough reason to
-    // look. Turning the panel off so it does not cover a game must not also
-    // kill the toast that is meant to reach you there.
-    if (!watchEnabled() && !windowsNotify())
+    // Either the in-app Claim panel, a Windows toast or claiming on its own is
+    // enough reason to look. Turning the panel off so it does not cover a game
+    // must not also kill the toast that is meant to reach you there.
+    if (!watchEnabled() && !windowsNotify() && autoClaimScope() == AutoNever)
         return;
 
     // Native gift cards often have empty content; the link is on the embed.
@@ -357,6 +486,7 @@ NitroWatchPlugin::Gift NitroWatchPlugin::readGift(const QJsonObject &body)
     const int uses = body.value(QStringLiteral("uses")).toInt();
     const int maxUses = body.value(QStringLiteral("max_uses")).toInt();
     gift.left = maxUses > 0 ? qMax(0, maxUses - uses) : 1;
+    gift.giverId = body.value(QStringLiteral("user")).toObject().value(QStringLiteral("id")).toString();
 
     // Already ours. Claiming again does nothing but put another redeem on the
     // account, which is the one thing worth not doing.
@@ -387,9 +517,10 @@ void NitroWatchPlugin::inspect(const QString &code, const QString &fromUserId,
                                const QString &channelId)
 {
     // Asking first is off only if somebody turns it off. Then every link that
-    // looks right is offered, exactly as before.
-    if (!checkFirst() || !context() || !context()->rest()) {
-        offer(code, fromUserId, channelId, Gift{QStringLiteral("a gift"), true, QString(), 1});
+    // looks right is offered, exactly as before. Claiming on its own always
+    // asks: it never redeems a code Discord has not said is live.
+    if ((!checkFirst() && autoClaimScope() == AutoNever) || !context() || !context()->rest()) {
+        offer(code, fromUserId, channelId, Gift{QStringLiteral("a gift"), true, QString(), 1, QString()});
         return;
     }
 
@@ -414,7 +545,19 @@ void NitroWatchPlugin::inspect(const QString &code, const QString &fromUserId,
 
             wlog(QStringLiteral("nitro"),
                  QStringLiteral("Discord says it is live: %1, %2 left").arg(gift.what).arg(gift.left));
-            offer(code, fromUserId, channelId, gift);
+
+            const QString refusal = autoClaimRefusal(channelId, fromUserId, gift);
+            if (refusal.isEmpty()) {
+                claimOnItsOwn(code, fromUserId, channelId, gift);
+                return;
+            }
+            if (autoClaimScope() == AutoNever) {
+                offer(code, fromUserId, channelId, gift);
+                return;
+            }
+            wlog(QStringLiteral("nitro"), QStringLiteral("not claiming it on its own: %1").arg(refusal));
+            offer(code, fromUserId, channelId, gift,
+                  QStringLiteral("Press Enter to claim. Not claimed on its own because %1.").arg(refusal));
         },
         [this](const RestClient::Error &error) {
             // 404 is the ordinary answer for a code somebody made up, and it
@@ -432,21 +575,13 @@ void NitroWatchPlugin::inspect(const QString &code, const QString &fromUserId,
 }
 
 void NitroWatchPlugin::offer(const QString &code, const QString &fromUserId,
-                             const QString &channelId, const Gift &gift)
+                             const QString &channelId, const Gift &gift, const QString &note)
 {
     wlog(QStringLiteral("nitro"), QStringLiteral("gift spotted in channel %1").arg(channelId));
 
-    QString who = QStringLiteral("Someone");
+    QString who;
     QString where;
-    if (context() && context()->store()) {
-        const QString name = context()->store()->userName(fromUserId);
-        if (!name.isEmpty())
-            who = name;
-
-        const ChannelInfo channel = context()->store()->channel(channelId);
-        if (!channel.name.isEmpty())
-            where = QStringLiteral(" in #%1").arg(channel.name);
-    }
+    describeSource(fromUserId, channelId, &who, &where);
 
     // A Windows notification for a gift Discord says is still claimable. The
     // in-app panel is easy to miss behind a full-screen game; this is the
@@ -511,8 +646,9 @@ void NitroWatchPlugin::offer(const QString &code, const QString &fromUserId,
                                Theme::Green, 12, true, alert));
     }
 
-    layout->addWidget(line(QStringLiteral("Press Enter to claim. Singularity will not press it for you, "
-                                          "and that is what keeps this account looking ordinary."),
+    layout->addWidget(line(note.isEmpty() ? QStringLiteral("Press Enter to claim. Settings can have Singularity "
+                                                           "claim real gifts on its own instead.")
+                                          : note,
                            Theme::TextFaint, 11, false, alert));
 
     auto *status = line(QString(), Theme::TextMuted, 12, false, alert);
@@ -701,6 +837,20 @@ QWidget *NitroWatchPlugin::createSettingsWidget(QWidget *parent)
     fakes->setChecked(warnFakes());
     layout->addWidget(fakes);
 
+    auto *autoRow = new QHBoxLayout;
+    autoRow->setSpacing(8);
+    auto *autoLabel = line(QStringLiteral("Claim on its own:"), Theme::TextPrimary, 13, false, page);
+    autoLabel->setWordWrap(false);
+    auto *autoPick = new QComboBox(page);
+    autoPick->addItem(QStringLiteral("Never - I press Claim"), int(AutoNever));
+    autoPick->addItem(QStringLiteral("Gifts sent to me in a direct message"), int(AutoDirect));
+    autoPick->addItem(QStringLiteral("Every real gift, servers included"), int(AutoEverywhere));
+    autoPick->setCurrentIndex(qMax(0, autoPick->findData(autoClaimScope())));
+    autoRow->addWidget(autoLabel);
+    autoRow->addWidget(autoPick, 1);
+    layout->addSpacing(6);
+    layout->addLayout(autoRow);
+
     layout->addWidget(line(QStringLiteral(
         "What the check does.\n\n"
         "Every code found is looked up with Discord before anything appears. Codes that do not "
@@ -714,21 +864,20 @@ QWidget *NitroWatchPlugin::createSettingsWidget(QWidget *parent)
         Theme::TextFaint, 11, false, page));
 
     layout->addWidget(line(QStringLiteral(
-        "Why there is still no automatic claim.\n\n"
-        "Discord does not catch automated accounts by timing your click. It catches them on the "
-        "shape of the account: a redeem arriving from a session that never opened the channel, "
-        "never scrolled, never moved a pointer, and that does it again next week at four in the "
-        "morning. A random delay hides none of that, because none of it is about timing.\n\n"
-        "Dead codes are also posted on purpose to see who bites. A person glances at a suspicious "
-        "link and moves on. Anything claiming on its own takes the bait every time, and marks "
-        "itself doing it.\n\n"
-        "Discord also asks for a captcha on most redeems, so anything claiming on its own stops "
-        "dead at the exact moment it mattered and waits for you anyway.\n\n"
-        "So this automates the slow parts, which are noticing and checking. Singularity watches every "
-        "channel at once, including the ones you are not looking at, throws away the dead codes, "
-        "and gets you from \"a gift exists\" to one keypress. You are still faster than anyone "
-        "reading their messages. The press stays yours, which is the part that keeps the account "
-        "ordinary."),
+        "Claiming on its own.\n\n"
+        "Off unless you choose it. When it is on, a gift Discord says is still unclaimed is redeemed "
+        "the moment it is posted, with no alert first, and a Windows notification says what you got "
+        "and from whom. It only ever claims codes Discord has just confirmed are live, so made-up "
+        "and spent codes are never redeemed. It never claims a gift you posted yourself, and it "
+        "stops at five a day; after that you get the alert instead.\n\n"
+        "\"Gifts sent to me in a direct message\" claims only in one-to-one chats, where a gift is "
+        "meant for you. \"Every real gift\" also takes the ones in servers and group chats, which "
+        "may have been meant for somebody else.\n\n"
+        "Discord asks for a captcha on many redeems. That needs you, so when it does, the alert "
+        "comes up as usual and the check opens when you press Claim.\n\n"
+        "The risk. Redeeming gifts on its own is the kind of thing Discord looks for in automated "
+        "accounts, and an account caught at it can be limited or banned. Singularity does nothing "
+        "to hide it: no made-up delays, no pretending to read the chat first."),
         Theme::TextFaint, 11, false, page));
 
     layout->addStretch(1);
@@ -748,6 +897,16 @@ QWidget *NitroWatchPlugin::createSettingsWidget(QWidget *parent)
     QObject::connect(fakes, &QCheckBox::toggled, page, [this](bool on) {
         if (context())
             context()->setSetting(QStringLiteral("warnFakes"), on);
+    });
+    QObject::connect(autoPick, &QComboBox::currentIndexChanged, page, [this, autoPick](int) {
+        if (!context())
+            return;
+        const int scope = autoPick->currentData().toInt();
+        context()->setSetting(QStringLiteral("autoClaim"), scope);
+        wlog(QStringLiteral("nitro"), QStringLiteral("claim on its own: %1")
+                                          .arg(scope == AutoNever    ? QStringLiteral("never")
+                                               : scope == AutoDirect ? QStringLiteral("direct messages")
+                                                                     : QStringLiteral("everywhere")));
     });
 
     return page;

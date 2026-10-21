@@ -17,6 +17,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <tlhelp32.h>
+#include <winternl.h>
 
 namespace {
 
@@ -67,10 +68,40 @@ QSet<QString> runningExes()
     return names;
 }
 
+// Another program's command line, as Task Manager shows it. Windows hands it
+// over to anyone allowed to ask what a process is (ProcessCommandLineInformation,
+// Windows 8.1 and later). Empty when it cannot be read.
+QString commandLineOf(quint32 pid)
+{
+    using Query = LONG(WINAPI *)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+    static const auto query = reinterpret_cast<Query>(
+        reinterpret_cast<void *>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationProcess")));
+    constexpr ULONG ProcessCommandLineInformation = 60;
+    if (!query || pid == 0)
+        return {};
+    const HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!process)
+        return {};
+    QString text;
+    ULONG needed = 0;
+    query(process, ProcessCommandLineInformation, nullptr, 0, &needed);
+    if (needed > sizeof(UNICODE_STRING) && needed < (1u << 20)) {
+        QByteArray buffer(int(needed), Qt::Uninitialized);
+        if (query(process, ProcessCommandLineInformation, buffer.data(), needed, &needed) >= 0) {
+            const auto *line = reinterpret_cast<const UNICODE_STRING *>(buffer.constData());
+            if (line->Buffer)
+                text = QString::fromWCharArray(line->Buffer, line->Length / int(sizeof(wchar_t)));
+        }
+    }
+    CloseHandle(process);
+    return text;
+}
+
 struct Windowed
 {
     QString title;
     QString exe;
+    quint32 pid = 0;
 };
 
 BOOL CALLBACK collectWindow(HWND window, LPARAM param)
@@ -99,6 +130,7 @@ BOOL CALLBACK collectWindow(HWND window, LPARAM param)
     Windowed row;
     row.title = QString::fromWCharArray(title).trimmed();
     row.exe = QString::fromWCharArray(path);
+    row.pid = pid;
     if (!row.title.isEmpty() && !skipped(row.exe))
         list->append(row);
     return TRUE;
@@ -118,7 +150,10 @@ GameActivity::GameActivity(QObject *parent)
 {
     AppConfig &config = AppConfig::instance();
     m_shown = config.value(QStringLiteral("presence/showGames"), false).toBool();
-    m_detect = config.value(QStringLiteral("presence/detectGames"), false).toBool();
+    // On unless switched off, as in Discord's own client. Game Time and Game
+    // Variety, the 2026 badges, only grow for games Discord sees you playing,
+    // and with this off it saw only the ones added by hand.
+    m_detect = config.value(QStringLiteral("presence/detectGames"), true).toBool();
     loadSaved();
     loadCatalog();
 
@@ -269,12 +304,55 @@ void GameActivity::loadCatalog()
     QFile file(catalogPath());
     if (!file.open(QIODevice::ReadOnly))
         return;
+    // {"game.exe": [{"n": name, "id": id, "p": "folder/game.exe"}, ...]}. A
+    // file from before paths were kept has one object per name and no "p";
+    // it is matched by name alone until Discord's list is read again.
     const QJsonObject object = QJsonDocument::fromJson(file.readAll()).object();
     for (auto it = object.begin(); it != object.end(); ++it) {
-        const QJsonObject known = it.value().toObject();
-        m_catalog.insert(it.key(), Known{known.value(QStringLiteral("n")).toString(),
-                                         known.value(QStringLiteral("id")).toString()});
+        const QJsonArray rows = it.value().isArray() ? it.value().toArray() : QJsonArray{it.value()};
+        QList<Known> &list = m_catalog[it.key()];
+        for (const QJsonValue &value : rows) {
+            const QJsonObject row = value.toObject();
+            const QString path = row.value(QStringLiteral("p")).toString();
+            list.append(Known{row.value(QStringLiteral("n")).toString(), row.value(QStringLiteral("id")).toString(),
+                              path.isEmpty() ? it.key() : path, row.value(QStringLiteral("a")).toString(),
+                              row.value(QStringLiteral("x")).toBool()});
+        }
     }
+}
+
+GameActivity::Known GameActivity::match(const QString &fullPath, quint32 pid) const
+{
+    const QString path = QDir::fromNativeSeparators(fullPath).toLower();
+    const auto found = m_catalog.constFind(exeBase(fullPath));
+    if (found == m_catalog.constEnd())
+        return {};
+
+    QString commandLine;
+    bool commandLineRead = false;
+    const Known *best = nullptr;
+    int bestScore = -1;
+    for (const Known &known : found.value()) {
+        const bool fits = known.exact || path == known.path || path.endsWith(QLatin1Char('/') + known.path);
+        if (!fits)
+            continue;
+        if (!known.args.isEmpty()) {
+            if (!commandLineRead) {
+                commandLine = commandLineOf(pid).toLower();
+                commandLineRead = true;
+            }
+            if (!commandLine.contains(known.args))
+                continue;
+        }
+        // One that names its command line is the more particular match;
+        // after that, the longer path.
+        const int score = (known.args.isEmpty() ? 0 : 1 << 20) + int(known.path.size());
+        if (score > bestScore) {
+            best = &known;
+            bestScore = score;
+        }
+    }
+    return best ? *best : Known{};
 }
 
 void GameActivity::fetchCatalog(RestClient *rest)
@@ -292,8 +370,9 @@ void GameActivity::fetchCatalog(RestClient *rest)
 void GameActivity::applyCatalog(const QJsonArray &apps)
 {
     wlog(QStringLiteral("presence"), QStringLiteral("reading Discord's game list (%1)").arg(apps.size()));
-    QJsonObject compact;
     m_catalog.clear();
+    int programs = 0;
+    int byCommandLine = 0;
     for (const QJsonValue &value : apps) {
         const QJsonObject app = value.toObject();
         const QString name = app.value(QStringLiteral("name")).toString();
@@ -307,21 +386,55 @@ void GameActivity::applyCatalog(const QJsonArray &apps)
                 continue;
             if (row.value(QStringLiteral("is_launcher")).toBool())
                 continue;
-            const QString base = exeBase(row.value(QStringLiteral("name")).toString());
-            if (base.isEmpty() || m_catalog.contains(base))
+            // ">name" is a file name in any folder. A few are told apart only
+            // by their command line ("hl2.exe -game tf", javaw.exe running
+            // Minecraft), which match() reads when it comes to one of them.
+            QString path = QDir::fromNativeSeparators(row.value(QStringLiteral("name")).toString()).toLower();
+            const bool exact = path.startsWith(QLatin1Char('>'));
+            if (exact)
+                path = path.mid(1);
+            const QString args = row.value(QStringLiteral("arguments")).toString().trimmed().toLower();
+            if (!args.isEmpty())
+                ++byCommandLine;
+            const QString base = exeBase(path);
+            if (base.isEmpty())
                 continue;
-            m_catalog.insert(base, Known{name, id});
-            compact.insert(base, QJsonObject{{QStringLiteral("n"), name}, {QStringLiteral("id"), id}});
+            QList<Known> &list = m_catalog[base];
+            const bool again = std::any_of(list.cbegin(), list.cend(), [&](const Known &known) {
+                return known.id == id && known.path == path && known.args == args && known.exact == exact;
+            });
+            if (again)
+                continue;
+            list.append(Known{name, id, path, args, exact});
+            ++programs;
         }
     }
 
+    QJsonObject compact;
+    for (auto it = m_catalog.cbegin(); it != m_catalog.cend(); ++it) {
+        QJsonArray rows;
+        for (const Known &known : it.value()) {
+            QJsonObject row{{QStringLiteral("n"), known.name},
+                            {QStringLiteral("id"), known.id},
+                            {QStringLiteral("p"), known.path}};
+            if (!known.args.isEmpty())
+                row.insert(QStringLiteral("a"), known.args);
+            if (known.exact)
+                row.insert(QStringLiteral("x"), true);
+            rows.append(row);
+        }
+        compact.insert(it.key(), rows);
+    }
     QFile file(catalogPath());
     QDir().mkpath(QFileInfo(catalogPath()).absolutePath());
     if (file.open(QIODevice::WriteOnly))
         file.write(QJsonDocument(compact).toJson(QJsonDocument::Compact));
 
     wlog(QStringLiteral("presence"),
-         QStringLiteral("game list has %1 programs").arg(m_catalog.size()));
+         QStringLiteral("game list has %1 programs under %2 file names, %3 told apart by their command line")
+             .arg(programs)
+             .arg(m_catalog.size())
+             .arg(byCommandLine));
     scan();
 }
 
@@ -339,6 +452,7 @@ void GameActivity::scan()
         row.title = window.title;
         row.exe = window.exe;
         row.known = m_catalog.contains(base);
+        row.pid = window.pid;
         windows.append(row);
         if (windows.size() >= 40)
             break;
@@ -399,27 +513,20 @@ void GameActivity::scan()
         const bool always = game.exe.trimmed().isEmpty();
         if (!always && !running.contains(base))
             continue;
-        const Known known = m_catalog.value(base);
+        const Known known = always ? Known{} : match(game.exe);
         push(game.name, game.details, game.exe, known.id);
     }
 
-    QSet<QString> visible;
-    for (const Running &row : windows)
-        visible.insert(exeBase(row.exe));
-
+    // Programs with a window only, matched by their full path. A process
+    // with no window is not a game you are playing: Roblox left
+    // RobloxPlayerBeta running with no window, and that was enough to put
+    // ROBLOX on the profile.
     if (m_detect) {
-        for (const QString &exe : running) {
-            if (skipped(exe))
-                continue;
-            // A process with no window is not a game you are playing. Roblox
-            // left RobloxPlayerBeta running with no window, and that was enough
-            // to put ROBLOX on the profile.
-            if (!visible.contains(exe))
-                continue;
-            const Known known = m_catalog.value(exe);
+        for (const Running &row : windows) {
+            const Known known = match(row.exe, row.pid);
             if (known.name.isEmpty())
                 continue;
-            push(known.name, {}, exe, known.id);
+            push(known.name, {}, row.exe, known.id);
         }
     }
 

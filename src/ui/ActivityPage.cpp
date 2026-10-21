@@ -53,9 +53,9 @@ QWidget *SettingsDialog::buildActivityPage()
 
     layout->addWidget(pageTitle(QStringLiteral("Activity"), page));
     layout->addWidget(hint(QStringLiteral(
-                               "Off until you turn it on. Add a program, and if that program already "
-                               "talks to Discord, its own card is used, picture included. Automatic "
-                               "detection stays off unless you turn that on too."),
+                               "Games are off until you turn \"Show games I'm playing\" on. Add a "
+                               "program, and if that program already talks to Discord, its own card is "
+                               "used, picture included."),
                            page));
 
     auto *share = new QCheckBox(QStringLiteral("Show the Singularity card"), page);
@@ -79,6 +79,13 @@ QWidget *SettingsDialog::buildActivityPage()
     });
     layout->addWidget(showGames);
     layout->addWidget(detect);
+    layout->addWidget(hint(QStringLiteral(
+                               "Game Time and Game Variety, the levelled badges, grow from the games "
+                               "Discord sees you playing, so they only count here with both of these on. "
+                               "Games are recognised the way Discord's own app does it, by where the "
+                               "program is installed as well as its name. Appearing invisible hides them, "
+                               "as it does in Discord."),
+                           page));
 
     layout->addWidget(groupTitle(QStringLiteral("SHOWING NOW"), page));
     auto *showing = new QLabel(page);

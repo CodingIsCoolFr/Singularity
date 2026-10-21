@@ -11,6 +11,7 @@
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QStandardPaths>
 #include <QLabel>
@@ -629,9 +630,10 @@ bool ServerOrganizerPlugin::canUndo() const
 
 void ServerOrganizerPlugin::loadGameCatalog()
 {
-    // The file the "Playing" status is matched against: {"game.exe": {"n":
-    // name, "id": application id}}, written by GameActivity a moment after
-    // start and refreshed by it now and then.
+    // The file the "Playing" status is matched against, written by
+    // GameActivity a moment after start and refreshed by it now and then:
+    // {"game.exe": [{"n": name, "id": application id, "p": path}, ...]}, or
+    // one object per name in a file from before 0.8.86.
     const QString path =
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/detectable-games.json");
     const QFileInfo info(path);
@@ -647,14 +649,17 @@ void ServerOrganizerPlugin::loadGameCatalog()
     m_gameNames.clear();
     QStringList names;
     for (auto it = catalog.constBegin(); it != catalog.constEnd(); ++it) {
-        const QJsonObject game = it.value().toObject();
-        const QString name = game.value(QStringLiteral("n")).toString();
-        const QString id = game.value(QStringLiteral("id")).toString();
-        if (name.isEmpty())
-            continue;
-        names.append(name);
-        if (!id.isEmpty())
-            m_gameNames.insert(id, name);
+        const QJsonArray rows = it.value().isArray() ? it.value().toArray() : QJsonArray{it.value()};
+        for (const QJsonValue &row : rows) {
+            const QJsonObject game = row.toObject();
+            const QString name = game.value(QStringLiteral("n")).toString();
+            const QString id = game.value(QStringLiteral("id")).toString();
+            if (name.isEmpty() || (!id.isEmpty() && m_gameNames.contains(id)))
+                continue;
+            names.append(name);
+            if (!id.isEmpty())
+                m_gameNames.insert(id, name);
+        }
     }
     ServerCategories::setKnownGames(names);
     wlog(QStringLiteral("organizer"), QStringLiteral("knows %1 games by name").arg(ServerCategories::knownGameCount()));
