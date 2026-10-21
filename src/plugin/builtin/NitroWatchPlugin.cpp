@@ -90,6 +90,16 @@ bool wantsCaptcha(const RestClient::Error &error)
     return false;
 }
 
+// The Singularity window, for the alert and the check to sit on.
+QWidget *mainWindow()
+{
+    for (QWidget *w : QApplication::topLevelWidgets()) {
+        if (qobject_cast<QMainWindow *>(w) && w->isVisible())
+            return w;
+    }
+    return nullptr;
+}
+
 QLabel *line(const QString &text, const char *colour, int size, bool bold, QWidget *parent)
 {
     auto *label = new QLabel(text, parent);
@@ -302,10 +312,6 @@ bool NitroWatchPlugin::windowsNotify() const
     return !context() || context()->setting(QStringLiteral("windowsNotify"), true).toBool();
 }
 
-bool NitroWatchPlugin::letCheckedGiftsGo() const
-{
-    return context() && context()->setting(QStringLiteral("letCheckedGiftsGo"), false).toBool();
-}
 
 int NitroWatchPlugin::autoClaimScope() const
 {
@@ -386,6 +392,15 @@ void NitroWatchPlugin::claimOnItsOwn(const QString &code, const QString &fromUse
                                       .arg(stamps.size())
                                       .arg(MaxAutoClaimsPerDay));
 
+    redeemOnItsOwn(code, fromUserId, channelId, gift);
+}
+
+void NitroWatchPlugin::redeemOnItsOwn(const QString &code, const QString &fromUserId, const QString &channelId,
+                                      const Gift &gift, const RestClient::CaptchaProof &proof)
+{
+    if (!context() || !context()->rest())
+        return;
+
     QString who;
     QString where;
     describeSource(fromUserId, channelId, &who, &where);
@@ -400,24 +415,19 @@ void NitroWatchPlugin::claimOnItsOwn(const QString &code, const QString &fromUse
                               QStringLiteral("%1 posted it%2. It is on your account now.").arg(who, where),
                               channelId);
         },
-        [this, code, fromUserId, channelId, gift](const RestClient::Error &error) {
-            // A captcha needs a person. The ordinary alert and its Claim
-            // button take over, and the button brings the check up - unless
-            // Settings says to let such a gift go and not interrupt you.
-            if (wantsCaptcha(error) && letCheckedGiftsGo()) {
-                wlog(QStringLiteral("nitro"), QStringLiteral("Discord wants a captcha before this claim; "
-                                                             "letting it go, as Settings says"));
-                if (context())
-                    context()->log(QStringLiteral("Let %1 go: Discord wanted a human check before claiming it.")
-                                       .arg(gift.what));
-                return;
-            }
+        [this, code, fromUserId, channelId, gift, proof](const RestClient::Error &error) {
+            // A captcha needs a person, so it is put in front of you now and
+            // the gift is claimed the moment it is done. A second demand after
+            // one was done is not looped on: the ordinary alert takes over.
             if (wantsCaptcha(error)) {
+                if (proof.key.isEmpty()) {
+                    checkThenClaim(code, fromUserId, channelId, gift, error);
+                    return;
+                }
                 wlog(QStringLiteral("nitro"),
-                     QStringLiteral("Discord wants a captcha before this claim, so it is offered instead"));
+                     QStringLiteral("Discord asked for a second check, so the gift is offered instead"));
                 offer(code, fromUserId, channelId, gift,
-                      QStringLiteral("Discord wants a quick check before this one. Press Enter, do the check, "
-                                     "and it is yours."));
+                      QStringLiteral("Discord wants one more check. Press Enter, do it, and it is yours."));
                 return;
             }
             wlog(QStringLiteral("nitro"), QStringLiteral("claiming on its own did not work: HTTP %1 %2")
@@ -429,7 +439,70 @@ void NitroWatchPlugin::claimOnItsOwn(const QString &code, const QString &fromUse
                                                        ? QStringLiteral("HTTP %1").arg(error.httpStatus)
                                                        : error.message));
             }
-        });
+        },
+        proof);
+}
+
+void NitroWatchPlugin::checkThenClaim(const QString &code, const QString &fromUserId, const QString &channelId,
+                                      const Gift &gift, const RestClient::Error &demand)
+{
+    if (!context())
+        return;
+
+    // One check on screen at a time. A gift that wants one while another is
+    // open gets the ordinary alert, and its Claim button brings its own check.
+    if (m_checkOpen) {
+        offer(code, fromUserId, channelId, gift,
+              QStringLiteral("Discord wants a quick check before this one. Press Enter, do the check, "
+                             "and it is yours."));
+        return;
+    }
+
+    QString who;
+    QString where;
+    describeSource(fromUserId, channelId, &who, &where);
+    wlog(QStringLiteral("nitro"), QStringLiteral("Discord wants a captcha before claiming %1; opening it now")
+                                      .arg(gift.what));
+
+    // The check comes up at once, with the challenge Discord just sent: no
+    // alert to press first, and no second request to bring it up again. Over
+    // a game Windows will not let it take the keyboard, so a notification and
+    // the flashing taskbar say it is waiting.
+    QWidget *parent = mainWindow();
+    if (QGuiApplication::applicationState() != Qt::ApplicationActive) {
+        if (windowsNotify())
+            context()->notify(QStringLiteral("Quick check for %1").arg(gift.what),
+                              QStringLiteral("%1 posted it%2. Discord wants a human check first; it is open in "
+                                             "Singularity, and the gift is yours the moment it is done.")
+                                  .arg(who, where),
+                              channelId);
+        if (parent)
+            QApplication::alert(parent);
+    }
+
+    m_checkOpen = true;
+    const QString token = CaptchaDialog::solve(
+        parent, demand.body.value(QStringLiteral("captcha_sitekey")).toString(),
+        demand.body.value(QStringLiteral("captcha_rqdata")).toString(),
+        QStringLiteral("%1 from %2%3. Discord wants a quick check before it is yours; finish it and it is "
+                       "claimed straight away.")
+            .arg(gift.what, who, where));
+    m_checkOpen = false;
+    if (!context())
+        return;
+
+    if (token.isEmpty()) {
+        wlog(QStringLiteral("nitro"), QStringLiteral("the check was closed before it finished"));
+        offer(code, fromUserId, channelId, gift,
+              QStringLiteral("The check was closed before it finished. Press Enter to try again."));
+        return;
+    }
+
+    RestClient::CaptchaProof proof;
+    proof.key = token;
+    proof.rqtoken = demand.body.value(QStringLiteral("captcha_rqtoken")).toString();
+    proof.sessionId = demand.body.value(QStringLiteral("captcha_session_id")).toString();
+    redeemOnItsOwn(code, fromUserId, channelId, gift, proof);
 }
 
 void NitroWatchPlugin::onGatewayEvent(const QString &eventType, const QJsonObject &data)
@@ -621,13 +694,7 @@ void NitroWatchPlugin::offer(const QString &code, const QString &fromUserId,
     if (m_alert)
         m_alert->deleteLater();
 
-    QWidget *parent = nullptr;
-    for (QWidget *w : QApplication::topLevelWidgets()) {
-        if (qobject_cast<QMainWindow *>(w) && w->isVisible()) {
-            parent = w;
-            break;
-        }
-    }
+    QWidget *parent = mainWindow();
 
     Qt::WindowFlags flags = Qt::Dialog | Qt::FramelessWindowHint;
     if (inFront)
@@ -782,15 +849,8 @@ void NitroWatchPlugin::claim(const QString &code, const QString &channelId, QLab
             // One check, solved by the person at the keyboard, then one retry.
             // A second demand is reported instead of looping.
             if (needsCheck && proof.key.isEmpty()) {
-                QWidget *parent = nullptr;
-                for (QWidget *w : QApplication::topLevelWidgets()) {
-                    if (qobject_cast<QMainWindow *>(w) && w->isVisible()) {
-                        parent = w;
-                        break;
-                    }
-                }
                 const QString token = CaptchaDialog::solve(
-                    parent, error.body.value(QStringLiteral("captcha_sitekey")).toString(),
+                    mainWindow(), error.body.value(QStringLiteral("captcha_sitekey")).toString(),
                     error.body.value(QStringLiteral("captcha_rqdata")).toString());
                 if (token.isEmpty()) {
                     if (statusLabel) {
@@ -865,12 +925,6 @@ QWidget *NitroWatchPlugin::createSettingsWidget(QWidget *parent)
     layout->addSpacing(6);
     layout->addLayout(autoRow);
 
-    auto *letGo = new QCheckBox(
-        QStringLiteral("If Discord asks for a human check, let that gift go instead of asking me"), page);
-    letGo->setChecked(letCheckedGiftsGo());
-    letGo->setEnabled(autoClaimScope() != AutoNever);
-    layout->addWidget(letGo);
-
     layout->addWidget(line(QStringLiteral(
         "What the check does.\n\n"
         "Every code found is looked up with Discord before anything appears. Codes that do not "
@@ -893,11 +947,11 @@ QWidget *NitroWatchPlugin::createSettingsWidget(QWidget *parent)
         "\"Gifts sent to me in a direct message\" claims only in one-to-one chats, where a gift is "
         "meant for you. \"Every real gift\" also takes the ones in servers and group chats, which "
         "may have been meant for somebody else.\n\n"
-        "Discord asks for a captcha on many redeems. That needs you, so when it does, the alert "
-        "comes up as usual and the check opens when you press Claim. Tick \"let that gift go\" and "
-        "those gifts are skipped instead, with nothing put in front of you; the ones Discord lets "
-        "through without a check are still claimed. Either way the check itself is never skipped "
-        "or answered for you.\n\n"
+        "Discord asks for a captcha on many redeems. That needs you, so when it does, the check "
+        "opens at once with the gift named, and the gift is claimed the moment you finish it. "
+        "There is no alert to press first. Over a game it does not take the keyboard; a "
+        "notification says it is waiting. The check itself is never skipped or answered for "
+        "you.\n\n"
         "The risk. Redeeming gifts on its own is the kind of thing Discord looks for in automated "
         "accounts, and an account caught at it can be limited or banned. Singularity does nothing "
         "to hide it: no made-up delays, no pretending to read the chat first."),
@@ -921,15 +975,10 @@ QWidget *NitroWatchPlugin::createSettingsWidget(QWidget *parent)
         if (context())
             context()->setSetting(QStringLiteral("warnFakes"), on);
     });
-    QObject::connect(letGo, &QCheckBox::toggled, page, [this](bool on) {
-        if (context())
-            context()->setSetting(QStringLiteral("letCheckedGiftsGo"), on);
-    });
-    QObject::connect(autoPick, &QComboBox::currentIndexChanged, page, [this, autoPick, letGo](int) {
+    QObject::connect(autoPick, &QComboBox::currentIndexChanged, page, [this, autoPick](int) {
         if (!context())
             return;
         const int scope = autoPick->currentData().toInt();
-        letGo->setEnabled(scope != AutoNever);
         context()->setSetting(QStringLiteral("autoClaim"), scope);
         wlog(QStringLiteral("nitro"), QStringLiteral("claim on its own: %1")
                                           .arg(scope == AutoNever    ? QStringLiteral("never")

@@ -13,8 +13,10 @@ class CaptchaDialog : public QDialog
     Q_OBJECT
 
 public:
-    // Empty if the window was closed before the check finished.
-    static QString solve(QWidget *parent, const QString &sitekey, const QString &rqdata);
+    // Empty if the window was closed before the check finished. `note` says
+    // what the check is for, in place of the usual line about a message.
+    static QString solve(QWidget *parent, const QString &sitekey, const QString &rqdata,
+                         const QString &note = QString());
 
     // True when an error body is Discord asking for a check: a captcha_key
     // list and a site key. Whatever the words in captcha_key say. Discord's
@@ -23,7 +25,7 @@ public:
     static bool isDemand(const QJsonObject &body);
 
 private:
-    CaptchaDialog(const QString &sitekey, const QString &rqdata, QWidget *parent);
+    CaptchaDialog(const QString &sitekey, const QString &rqdata, const QString &note, QWidget *parent);
     ~CaptchaDialog() override;
 
     void startBrowser();

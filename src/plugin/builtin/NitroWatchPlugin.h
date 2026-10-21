@@ -98,6 +98,13 @@ private:
     // Empty when this gift may be claimed without asking; otherwise why not.
     QString autoClaimRefusal(const QString &channelId, const QString &fromUserId, const Gift &gift) const;
     void claimOnItsOwn(const QString &code, const QString &fromUserId, const QString &channelId, const Gift &gift);
+    void redeemOnItsOwn(const QString &code, const QString &fromUserId, const QString &channelId, const Gift &gift,
+                        const RestClient::CaptchaProof &proof = {});
+    // Discord answered an automatic claim with a human check: the check opens
+    // now, with that challenge, and the gift is claimed once it is done.
+    void checkThenClaim(const QString &code, const QString &fromUserId, const QString &channelId, const Gift &gift,
+                        const RestClient::Error &demand);
+    bool m_checkOpen = false;
     QList<qint64> autoClaimsToday() const;
     void describeSource(const QString &fromUserId, const QString &channelId, QString *who, QString *where) const;
 
@@ -120,9 +127,6 @@ private:
     bool warnFakes() const;
     bool checkFirst() const;
     bool windowsNotify() const;
-    // A claim made on its own that Discord answers with a human check is let
-    // go without a word, rather than offered for you to do the check.
-    bool letCheckedGiftsGo() const;
 
     // Codes already put in front of you. A gift posted in two channels, or
     // edited, must not raise two alerts.

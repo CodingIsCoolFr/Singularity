@@ -74,7 +74,8 @@ struct CaptchaDialog::Browser
 };
 #endif
 
-CaptchaDialog::CaptchaDialog(const QString &sitekey, const QString &rqdata, QWidget *parent)
+CaptchaDialog::CaptchaDialog(const QString &sitekey, const QString &rqdata, const QString &note,
+                             QWidget *parent)
     : QDialog(parent)
     , m_sitekey(sitekey)
     , m_rqdata(rqdata)
@@ -87,12 +88,12 @@ CaptchaDialog::CaptchaDialog(const QString &sitekey, const QString &rqdata, QWid
     layout->setContentsMargins(16, 16, 16, 16);
     layout->setSpacing(10);
 
-    auto *note = new QLabel(
-        QStringLiteral("Discord asked for a check before that message can be sent. "
-                       "Finish it here and the message goes out."),
-        this);
-    note->setWordWrap(true);
-    layout->addWidget(note);
+    auto *what = new QLabel(note.isEmpty() ? QStringLiteral("Discord asked for a check before that message can be "
+                                                            "sent. Finish it here and the message goes out.")
+                                           : note,
+                            this);
+    what->setWordWrap(true);
+    layout->addWidget(what);
 
     m_host = new QWidget(this);
     m_host->setAttribute(Qt::WA_NativeWindow);
@@ -113,12 +114,12 @@ bool CaptchaDialog::isDemand(const QJsonObject &body)
         && !body.value(QStringLiteral("captcha_sitekey")).toString().isEmpty();
 }
 
-QString CaptchaDialog::solve(QWidget *parent, const QString &sitekey, const QString &rqdata)
+QString CaptchaDialog::solve(QWidget *parent, const QString &sitekey, const QString &rqdata, const QString &note)
 {
     if (sitekey.isEmpty())
         return {};
 
-    CaptchaDialog dialog(sitekey, rqdata, parent);
+    CaptchaDialog dialog(sitekey, rqdata, note, parent);
     dialog.show();
     dialog.startBrowser();
     dialog.exec();
@@ -195,8 +196,12 @@ void CaptchaDialog::startBrowser()
                     dialog->m_browser->view->add_WebMessageReceived(new MsgDone(dialog), &token);
                     // The puzzle has to run on discord.com. The site key is
                     // registered to that name, and a token from anywhere else
-                    // is refused.
-                    dialog->m_browser->view->Navigate(L"https://discord.com/login");
+                    // is refused. Its robots.txt is the lightest page there:
+                    // two kilobytes and no Content-Security-Policy, against
+                    // the whole web app behind /login, which kept the check
+                    // waiting seconds before it showed. If the puzzle cannot
+                    // load there, the script moves on to /login.
+                    dialog->m_browser->view->Navigate(L"https://discord.com/robots.txt");
                     return S_OK;
                 }
             };
@@ -240,10 +245,11 @@ void CaptchaDialog::inject()
   window.__singularityCaptcha = true;
   const sitekey = %1;
   const rqdata = %2;
+  // Covers the page at once, so the text of robots.txt never shows.
+  const box = document.createElement('div');
+  box.style.cssText = 'position:fixed;inset:0;background:#0b0d12;z-index:2147483647;display:flex;align-items:center;justify-content:center;';
+  (document.body || document.documentElement).appendChild(box);
   function start() {
-    const box = document.createElement('div');
-    box.style.cssText = 'position:fixed;inset:0;background:#0b0d12;z-index:2147483647;display:flex;align-items:center;justify-content:center;';
-    document.body.appendChild(box);
     const id = hcaptcha.render(box, {
       sitekey: sitekey,
       theme: 'dark',
@@ -255,7 +261,10 @@ void CaptchaDialog::inject()
   const tag = document.createElement('script');
   tag.src = 'https://js.hcaptcha.com/1/api.js?render=explicit';
   tag.onload = start;
-  document.head.appendChild(tag);
+  tag.onerror = function () {
+    if (location.pathname === '/robots.txt') location.href = 'https://discord.com/login';
+  };
+  (document.head || document.documentElement).appendChild(tag);
 })();
 )JS")
                              .arg(QString::fromUtf8(QJsonDocument(QJsonArray{sitekey}).toJson(QJsonDocument::Compact)).mid(1).chopped(1),
