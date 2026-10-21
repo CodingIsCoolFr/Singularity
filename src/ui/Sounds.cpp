@@ -318,17 +318,21 @@ QString Sounds::folder() const
 
 void Sounds::applyDevice(QSoundEffect *effect)
 {
-    // The same speakers as the call, as Discord does.
+    // The same speakers as the call, as Discord does. Looked up every time:
+    // on Default, Windows moves the default when a headset connects or
+    // headphones go in, and the sounds went on playing to the old speakers.
     const QByteArray wanted = AppConfig::instance().value(QStringLiteral("voice/outputDevice")).toByteArray();
-    if (wanted != m_deviceId || m_device.isNull()) {
-        m_deviceId = wanted;
-        m_device = QMediaDevices::defaultAudioOutput();
-        for (const QAudioDevice &device : QMediaDevices::audioOutputs()) {
-            if (!wanted.isEmpty() && device.id() == wanted) {
-                m_device = device;
+    QAudioDevice device = QMediaDevices::defaultAudioOutput();
+    if (!wanted.isEmpty()) {
+        for (const QAudioDevice &each : QMediaDevices::audioOutputs()) {
+            if (each.id() == wanted) {
+                device = each;
                 break;
             }
         }
+    }
+    if (m_device.isNull() || device.id() != m_device.id()) {
+        m_device = device;
         for (QSoundEffect *each : std::as_const(m_effects))
             each->setAudioDevice(m_device);
     }

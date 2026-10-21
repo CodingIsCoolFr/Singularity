@@ -293,6 +293,33 @@ void MessageStore::setVoiceStates(const QJsonArray &states)
     emit voiceStatesChanged();
 }
 
+// A server this session is not subscribed to does not send a
+// VOICE_STATE_UPDATE per person. Every so often it sends PASSIVE_UPDATE_V2
+// instead: the voice states that changed, and the people who left voice.
+// Discord's VoiceStateStore applies both. This client dropped the whole
+// event, so after a reconnect people came and went in your call unseen and
+// unheard.
+void MessageStore::applyPassiveVoiceStates(const QString &guildId, const QJsonArray &updated,
+                                           const QJsonArray &removed)
+{
+    if (guildId.isEmpty())
+        return;
+    bool changed = false;
+    for (const QJsonValue &value : updated) {
+        QJsonObject state = value.toObject();
+        if (!state.contains(QStringLiteral("guild_id")))
+            state.insert(QStringLiteral("guild_id"), guildId);
+        changed = !applyVoiceState(state).isEmpty() || changed;
+    }
+    for (const QJsonValue &value : removed) {
+        const QString userId = value.toString();
+        if (m_voiceStates.value(userId).guildId == guildId && m_voiceStates.remove(userId))
+            changed = true;
+    }
+    if (changed)
+        emit voiceStatesChanged();
+}
+
 // Forgets every voice state, before a complete snapshot replaces them.
 //
 // Discord's client does this when the supplemental half of READY arrives: it

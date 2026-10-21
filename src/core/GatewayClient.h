@@ -69,6 +69,12 @@ public:
     // server looks offline.
     void subscribeToGuild(const QString &guildId, const QString &channelId = QString());
 
+    // Keeps a server's live changes coming, joins and leaves in voice above
+    // all, without touching what is already asked for there. Discord's
+    // client does this for the server your call is in, whichever one is on
+    // screen.
+    void keepGuildSubscribed(const QString &guildId);
+
     // The status Discord broadcasts on your behalf.
     //
     // "online" normally. "invisible" makes everyone else see you as offline.

@@ -2468,11 +2468,24 @@ void MainWindow::onGatewayReady(const QJsonObject &payload)
 
     updateUserPanel();
 
+    // A new session starts with no subscriptions, so the server on screen and
+    // the one your call is in are asked for again, as Discord's client does on
+    // every new connection. The restore used to find the server "already
+    // watched" and ask for nothing, and after a reconnect it went quiet:
+    // stale member list, and joins and leaves in the call never heard.
+    m_listGuild.clear();
+    m_listChannel.clear();
     if (!wasInGuild.isEmpty() && railRowFor(wasInGuild) >= 0) {
         showGuild(wasInGuild);
         if (!wasInChannel.isEmpty())
             selectChannelEverywhere(wasInChannel);
     }
+    if (!m_currentChannelId.isEmpty()) {
+        const ChannelInfo channel = m_store->channel(m_currentChannelId);
+        if (!channel.guildId.isEmpty())
+            watchGuildChannel(channel.guildId, m_currentChannelId);
+    }
+    m_gateway->keepGuildSubscribed(m_voiceGuildId);
 
     // The window is furnished. The overlay waits a moment longer on its own
     // if it has only just appeared, then fades.
@@ -2809,6 +2822,37 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
         updateOutgoingRing();
         for (const QJsonObject &state : ours)
             onGatewayDispatch(QStringLiteral("VOICE_STATE_UPDATE"), state);
+        return;
+    }
+
+    if (eventType == QLatin1String("PASSIVE_UPDATE_V2")) {
+        // A server this session is not subscribed to sends its joins and
+        // leaves grouped in this instead, and Discord's client plays the same
+        // sounds for them. Our own entry is left out: our own changes always
+        // come as a VOICE_STATE_UPDATE of their own.
+        QJsonArray updated;
+        for (const QJsonValue &value : data.value(QStringLiteral("updated_voice_states")).toArray()) {
+            if (value.toObject().value(QStringLiteral("user_id")).toString() != m_selfUserId)
+                updated.append(value);
+        }
+        QJsonArray removed;
+        for (const QJsonValue &value : data.value(QStringLiteral("removed_voice_states")).toArray()) {
+            if (value.toString() != m_selfUserId)
+                removed.append(value);
+        }
+        // Names for the people in those states, which carry no member.
+        for (const QJsonValue &value : data.value(QStringLiteral("updated_members")).toArray()) {
+            const QJsonObject user = value.toObject().value(QStringLiteral("user")).toObject();
+            if (!user.isEmpty())
+                m_store->rememberUser(user);
+        }
+        if (updated.isEmpty() && removed.isEmpty())
+            return;
+        const QString callBefore = m_voiceChannelId;
+        const int before = othersInCall();
+        m_store->applyPassiveVoiceStates(data.value(QStringLiteral("guild_id")).toString(), updated, removed);
+        soundCallChange(callBefore, before);
+        updateOutgoingRing();
         return;
     }
 

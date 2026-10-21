@@ -302,6 +302,11 @@ bool NitroWatchPlugin::windowsNotify() const
     return !context() || context()->setting(QStringLiteral("windowsNotify"), true).toBool();
 }
 
+bool NitroWatchPlugin::letCheckedGiftsGo() const
+{
+    return context() && context()->setting(QStringLiteral("letCheckedGiftsGo"), false).toBool();
+}
+
 int NitroWatchPlugin::autoClaimScope() const
 {
     if (!context())
@@ -397,7 +402,16 @@ void NitroWatchPlugin::claimOnItsOwn(const QString &code, const QString &fromUse
         },
         [this, code, fromUserId, channelId, gift](const RestClient::Error &error) {
             // A captcha needs a person. The ordinary alert and its Claim
-            // button take over, and the button brings the check up.
+            // button take over, and the button brings the check up - unless
+            // Settings says to let such a gift go and not interrupt you.
+            if (wantsCaptcha(error) && letCheckedGiftsGo()) {
+                wlog(QStringLiteral("nitro"), QStringLiteral("Discord wants a captcha before this claim; "
+                                                             "letting it go, as Settings says"));
+                if (context())
+                    context()->log(QStringLiteral("Let %1 go: Discord wanted a human check before claiming it.")
+                                       .arg(gift.what));
+                return;
+            }
             if (wantsCaptcha(error)) {
                 wlog(QStringLiteral("nitro"),
                      QStringLiteral("Discord wants a captcha before this claim, so it is offered instead"));
@@ -851,6 +865,12 @@ QWidget *NitroWatchPlugin::createSettingsWidget(QWidget *parent)
     layout->addSpacing(6);
     layout->addLayout(autoRow);
 
+    auto *letGo = new QCheckBox(
+        QStringLiteral("If Discord asks for a human check, let that gift go instead of asking me"), page);
+    letGo->setChecked(letCheckedGiftsGo());
+    letGo->setEnabled(autoClaimScope() != AutoNever);
+    layout->addWidget(letGo);
+
     layout->addWidget(line(QStringLiteral(
         "What the check does.\n\n"
         "Every code found is looked up with Discord before anything appears. Codes that do not "
@@ -874,7 +894,10 @@ QWidget *NitroWatchPlugin::createSettingsWidget(QWidget *parent)
         "meant for you. \"Every real gift\" also takes the ones in servers and group chats, which "
         "may have been meant for somebody else.\n\n"
         "Discord asks for a captcha on many redeems. That needs you, so when it does, the alert "
-        "comes up as usual and the check opens when you press Claim.\n\n"
+        "comes up as usual and the check opens when you press Claim. Tick \"let that gift go\" and "
+        "those gifts are skipped instead, with nothing put in front of you; the ones Discord lets "
+        "through without a check are still claimed. Either way the check itself is never skipped "
+        "or answered for you.\n\n"
         "The risk. Redeeming gifts on its own is the kind of thing Discord looks for in automated "
         "accounts, and an account caught at it can be limited or banned. Singularity does nothing "
         "to hide it: no made-up delays, no pretending to read the chat first."),
@@ -898,10 +921,15 @@ QWidget *NitroWatchPlugin::createSettingsWidget(QWidget *parent)
         if (context())
             context()->setSetting(QStringLiteral("warnFakes"), on);
     });
-    QObject::connect(autoPick, &QComboBox::currentIndexChanged, page, [this, autoPick](int) {
+    QObject::connect(letGo, &QCheckBox::toggled, page, [this](bool on) {
+        if (context())
+            context()->setSetting(QStringLiteral("letCheckedGiftsGo"), on);
+    });
+    QObject::connect(autoPick, &QComboBox::currentIndexChanged, page, [this, autoPick, letGo](int) {
         if (!context())
             return;
         const int scope = autoPick->currentData().toInt();
+        letGo->setEnabled(scope != AutoNever);
         context()->setSetting(QStringLiteral("autoClaim"), scope);
         wlog(QStringLiteral("nitro"), QStringLiteral("claim on its own: %1")
                                           .arg(scope == AutoNever    ? QStringLiteral("never")

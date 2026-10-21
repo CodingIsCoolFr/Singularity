@@ -921,6 +921,18 @@ void GatewayClient::joinVoice(const QString &guildId, const QString &channelId, 
                   QString::fromUtf8(QJsonDocument(request).toJson(QJsonDocument::Compact))));
 
     sendJson(request);
+
+    // Discord subscribes to the server of the voice channel you pick. Left
+    // passive, a server reports joins and leaves late, grouped, or not at
+    // all, and the sounds for them never played.
+    keepGuildSubscribed(guildId);
+}
+
+void GatewayClient::keepGuildSubscribed(const QString &guildId)
+{
+    if (guildId.isEmpty() || m_subscribedGuilds.contains(guildId))
+        return;
+    subscribeToGuild(guildId);
 }
 
 // Opcode 8 with user_ids: who these people are in this server, answered as

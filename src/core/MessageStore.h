@@ -597,6 +597,10 @@ public:
     void setVoiceStates(const QJsonArray &states);
     void clearVoiceStates();
 
+    // One server's voice changes as PASSIVE_UPDATE_V2 brings them: the states
+    // that changed, and the user ids that left voice there.
+    void applyPassiveVoiceStates(const QString &guildId, const QJsonArray &updated, const QJsonArray &removed);
+
     // Everyone sitting in one channel is out of it once the channel is gone.
     void dropVoiceStatesInChannel(const QString &channelId);
 

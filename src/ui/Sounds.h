@@ -124,7 +124,6 @@ private:
 
     QHash<QString, QSoundEffect *> m_loops;          // "call_ringing" -> what is ringing
 
-    QByteArray m_deviceId;
     QAudioDevice m_device;
 
     // The same sound twice within a moment is one sound: five people joining

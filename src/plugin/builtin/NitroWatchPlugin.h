@@ -120,6 +120,9 @@ private:
     bool warnFakes() const;
     bool checkFirst() const;
     bool windowsNotify() const;
+    // A claim made on its own that Discord answers with a human check is let
+    // go without a word, rather than offered for you to do the check.
+    bool letCheckedGiftsGo() const;
 
     // Codes already put in front of you. A gift posted in two channels, or
     // edited, must not raise two alerts.
