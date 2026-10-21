@@ -23,7 +23,8 @@ public:
     explicit AnimatedImage(QObject *parent = nullptr);
     ~AnimatedImage() override;
 
-    // Returns true if the bytes decoded into something drawable.
+    // Returns true if the bytes decoded into something drawable. The same
+    // bytes again change nothing: what is already decoded keeps playing.
     bool setData(const QByteArray &bytes);
 
     // True when the file has more than one frame.
@@ -34,7 +35,7 @@ public:
     void clear();
 
     QImage currentFrame() const;
-    bool isAnimated() const { return m_movie != nullptr || m_apngFrames.size() > 1; }
+    bool isAnimated() const { return m_movie != nullptr || m_apngFrames.size() > 1 || m_apngPending; }
     bool isNull() const;
 
     // Animation is paused while nothing is on screen, so a hidden profile
@@ -46,6 +47,10 @@ signals:
 
 private:
     void teardown();
+    void showApng(const QList<QImage> &frames, const QList<int> &delays);
+
+    // Hands finished frames to every player still waiting on those bytes.
+    static void apngDecoded(const QByteArray &bytes, const QList<QImage> &frames, const QList<int> &delays);
 
     QByteArray m_bytes;
     QBuffer m_buffer;
@@ -53,9 +58,12 @@ private:
     QImage m_still;
 
     // Animated PNG (Discord's avatar decorations), which QMovie cannot play:
-    // decoded up front by Apng::decode and stepped by a timer.
+    // decoded by Apng::decode off the window's thread and stepped by a timer.
+    // Until the frames arrive the first one stands in, as a still.
     QList<QImage> m_apngFrames;
     QList<int> m_apngDelays;
     int m_apngIndex = 0;
     QTimer m_apngTimer;
+    bool m_apngPending = false;
+    bool m_playing = true;
 };

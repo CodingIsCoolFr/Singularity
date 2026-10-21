@@ -449,6 +449,7 @@ VoiceConnection::VoiceConnection(QObject *parent)
 
     connect(&m_socket, &QWebSocket::connected, this, &VoiceConnection::onSocketConnected);
     connect(&m_socket, &QWebSocket::disconnected, this, &VoiceConnection::onSocketDisconnected);
+    connect(&m_socket, &QWebSocket::aboutToClose, this, [this]() { m_closeFrameSeen = true; });
     connect(&m_socket, &QWebSocket::textMessageReceived, this, &VoiceConnection::onTextMessage);
     connect(&m_socket, &QWebSocket::binaryMessageReceived, this, &VoiceConnection::onBinaryMessage);
     connect(&m_socket, &QWebSocket::errorOccurred, this, [this](QAbstractSocket::SocketError) {
@@ -629,7 +630,35 @@ void VoiceConnection::connectToVoice(const QString &guildId, const QString &chan
     m_handshakeWatchdog.start(15000);
 
     setState(State::Connecting);
+    m_closeFrameSeen = false;
     m_socket.open(QUrl(url));
+}
+
+void VoiceConnection::awaitNewServer()
+{
+    if (postToOwnThread([this]() { awaitNewServer(); }))
+        return;
+    if (m_state == State::Idle || m_awaitingServer)
+        return;
+
+    // Resuming the old server only meets its "521, server down" until the
+    // session is gone, and then the call was left and joined again - everyone
+    // heard it leave (2026-10-21 07:39). Waiting is what Discord's own client
+    // does.
+    wlog(QStringLiteral("voice"),
+         QStringLiteral("Discord is moving this call to another voice server; waiting for it"));
+    m_awaitingServer = true;
+    m_resuming = false;
+    m_heartbeatTimer.stop();
+    stopAudio();
+    m_resumeQueued = true;
+    if (m_socket.state() != QAbstractSocket::UnconnectedState)
+        m_socket.abort();
+    m_resumeQueued = false;
+
+    m_stage = QStringLiteral("waiting for Discord to name a new voice server");
+    setState(State::Connecting);
+    m_handshakeWatchdog.start(15000);
 }
 
 void VoiceConnection::disconnectFromVoice()
@@ -648,6 +677,7 @@ void VoiceConnection::teardown()
 {
     m_resuming = false;
     m_resumeQueued = false;
+    m_awaitingServer = false;
     m_heartbeatTimer.stop();
     m_handshakeWatchdog.stop();
     stopAudio();
@@ -703,8 +733,10 @@ void VoiceConnection::onSocketConnected()
 
 void VoiceConnection::onSocketDisconnected()
 {
-    const int code = static_cast<int>(m_socket.closeCode());
-    const QString reason = m_socket.closeReason();
+    // Without a close frame the connection just dropped, and Qt still reports
+    // the last code the socket held: 1000, for one that never closed before.
+    const int code = m_closeFrameSeen ? static_cast<int>(m_socket.closeCode()) : 1006;
+    const QString reason = m_closeFrameSeen ? m_socket.closeReason() : QString();
 
     // Discord's voice close codes, spelled out so a failure is diagnosable
     // without reading the log.
@@ -727,6 +759,7 @@ void VoiceConnection::onSocketDisconnected()
     case 4020: meaning = QStringLiteral("malformed request"); break;
     case 4021: meaning = QStringLiteral("rate limited"); break;
     case 4022: meaning = QStringLiteral("the call ended"); break;
+    case 1006: meaning = QStringLiteral("dropped with no goodbye"); break;
     default:   meaning = QStringLiteral("closed"); break;
     }
 
@@ -763,8 +796,8 @@ void VoiceConnection::onSocketDisconnected()
                              || code == 4012 || code == 4014 || code == 4016 || code == 4017
                              || code == 4020 || code == 4021 || code == 4022;
     // A close while a try is already booked is the try before it reporting
-    // late. The booked one stands.
-    if (m_resumeQueued)
+    // late. The booked one stands. So does the wait for a new server.
+    if (m_resumeQueued || m_awaitingServer)
         return;
 
     if (callWasLive && !sessionOver && scheduleResume())
@@ -901,6 +934,7 @@ bool VoiceConnection::scheduleResume()
         m_resumeQueued = false;
         QString host = m_endpoint;
         host.remove(QStringLiteral("wss://"));
+        m_closeFrameSeen = false;
         m_socket.open(QUrl(QStringLiteral("wss://%1/?v=8").arg(host)));
     });
     return true;

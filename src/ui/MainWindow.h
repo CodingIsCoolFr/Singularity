@@ -231,6 +231,16 @@ private:
     void showChannelSettings(const QString &channelId);
 
     void populateGuildRail();
+
+    // A server's row on the rail: its own tile, or the closed folder it sits
+    // in - which Discord then marks as selected rather than opening it.
+    // -1 when it is on neither.
+    int railRowFor(const QString &guildId) const;
+
+    // Opens a server from anywhere (a link, the voice panel), its folder
+    // closed or not, the way clicking its tile would.
+    void showGuild(const QString &guildId);
+    void enterGuild(const QString &guildId);
     void refreshGuildIcons();
     void showRailMenu(const QPoint &where);
     void saveRailOrderFromView();

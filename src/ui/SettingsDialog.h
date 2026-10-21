@@ -200,6 +200,9 @@ private:
     QByteArray m_animatedTileBytes;
     int m_decorationHover = -1;
 
+    // Your own pictures arriving redraw the previews once per burst.
+    class QTimer *m_profileArtTimer = nullptr;
+
     // Voice page.
     QComboBox *m_inputDevice = nullptr;
     QComboBox *m_outputDevice = nullptr;

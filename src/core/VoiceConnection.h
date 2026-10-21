@@ -80,6 +80,13 @@ public:
                         quint64 daveGroupId = 0);
     void disconnectFromVoice();
 
+    // Discord's voice server for this call went away and it is choosing
+    // another (a server update with no endpoint). Its guide says to drop the
+    // old one and not try it again until the new one is named; the window
+    // then connects to that. If none is named in 15 seconds the call fails
+    // and the window rejoins, as before.
+    void awaitNewServer();
+
     // Watching rather than taking part.
     //
     // A Go Live stream is a second connection of exactly this shape, so the
@@ -498,6 +505,13 @@ private:
     // not book a second one.
     bool scheduleResume();
     bool m_resumeQueued = false;
+
+    // Waiting for Discord to name a new voice server; see awaitNewServer.
+    bool m_awaitingServer = false;
+
+    // A close frame went one way or the other on this socket. Without one the
+    // connection just dropped, whatever code Qt still reports.
+    bool m_closeFrameSeen = false;
 
     // Outgoing packet counters.
     quint16 m_rtpSequence = 0;

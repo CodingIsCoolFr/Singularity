@@ -356,6 +356,26 @@ void GuildRailDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
         painter->restore();
     };
 
+    // --- the pill on the left --------------------------------------------
+    // A closed folder gets it too while the server you are in sits inside
+    // it, as in Discord: that folder is then the row that is selected.
+    const auto drawPill = [&]() {
+        if (lift <= 0.01)
+            return;
+        // Hover shows a short stub, selection grows it to most of the icon.
+        const qreal stub = GuildIcon * 0.42;
+        const qreal full = GuildIcon * 0.84;
+        const qreal height = stub * hoverAmount + (full - stub) * selectAmount;
+        if (height <= 1.0)
+            return;
+        const QRectF pill(cell.left() + 2.0, cell.center().y() - height / 2.0, PillWidth, height);
+        painter->setPen(Qt::NoPen);
+        QColor pillColor(Theme::Accent);
+        pillColor.setAlphaF(0.55 + 0.45 * qBound(0.0, selectAmount, 1.0));
+        painter->setBrush(pillColor);
+        painter->drawRoundedRect(pill, PillWidth / 2.0, PillWidth / 2.0);
+    };
+
     if (isFolder) {
         const bool open = index.data(SingularityRoles::FolderOpen).toBool();
         const QColor tint = index.data(SingularityRoles::FolderColor).value<QColor>();
@@ -398,6 +418,7 @@ void GuildRailDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
         }
 
         drawMergeRing();
+        drawPill();
         painter->restore();
         return;
     }
@@ -464,22 +485,7 @@ void GuildRailDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
         }
     }
 
-    // --- the pill on the left --------------------------------------------
-    if (lift > 0.01) {
-        // Hover shows a short stub, selection grows it to most of the icon.
-        const qreal stub = GuildIcon * 0.42;
-        const qreal full = GuildIcon * 0.84;
-        const qreal height = stub * hoverAmount + (full - stub) * selectAmount;
-
-        if (height > 1.0) {
-            const QRectF pill(cell.left() + 2.0, cell.center().y() - height / 2.0, PillWidth, height);
-            painter->setPen(Qt::NoPen);
-            QColor pillColor(Theme::Accent);
-            pillColor.setAlphaF(0.55 + 0.45 * qBound(0.0, selectAmount, 1.0));
-            painter->setBrush(pillColor);
-            painter->drawRoundedRect(pill, PillWidth / 2.0, PillWidth / 2.0);
-        }
-    }
+    drawPill();
 
     // Where a dragged server will land between two tiles.
     if (row == m_insertRow) {

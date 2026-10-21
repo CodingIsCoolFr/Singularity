@@ -223,6 +223,9 @@ private:
     bool m_canResume = false;
     // Opcode 7: Discord asked us to resume now, not after the usual backoff.
     bool m_reconnectImmediately = false;
+    // A close frame went one way or the other on this socket. Without one the
+    // connection just dropped, whatever code Qt still reports.
+    bool m_closeFrameSeen = false;
     QSet<QString> m_subscribedGuilds;
 
     // Which channel each guild was subscribed with, so clicking the same

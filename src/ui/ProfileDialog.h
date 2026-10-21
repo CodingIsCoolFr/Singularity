@@ -6,6 +6,8 @@
 #include <QDialog>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QSet>
+#include <QTimer>
 
 class RestClient;
 
@@ -146,4 +148,17 @@ private:
     int m_accentColour = 0;
     QJsonArray m_mutualFriends;
     QJsonArray m_mutualGuilds;
+
+    // The pictures each part of the card shows, by address. The window
+    // downloads hundreds of pictures a minute, and redrawing the whole card for
+    // every one of them - decoding its animations again each time - froze it
+    // for seconds; now only an arrival the card is waiting for redraws, and
+    // only the part it belongs to, once per burst.
+    enum LatePart { LateArtwork = 1, LateBadges = 2, LateActivity = 4, LateMutuals = 8 };
+    QSet<QString> m_artworkUrls;
+    QSet<QString> m_badgeUrls;
+    QSet<QString> m_activityUrls;
+    QSet<QString> m_mutualUrls;
+    int m_lateParts = 0;
+    QTimer m_lateTimer;
 };

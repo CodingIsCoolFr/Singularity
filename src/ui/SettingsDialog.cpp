@@ -640,9 +640,47 @@ QWidget *SettingsDialog::buildProfilesPage()
     left->addStretch(1);
 
     // Pictures arrive after the page is drawn; redraw what depends on them.
-    connect(&MediaCache::instance(), &MediaCache::ready, this, [this](const QUrl &) {
+    //
+    // Only those. Every picture the window downloaded used to redraw both
+    // previews and every decoration tile, a third of a second each time, so
+    // the whole settings window stuttered for as long as anything anywhere was
+    // loading - minutes, on a busy server (2026-10-21). A decoration now
+    // repaints its own tile; your avatar or banner, or the decoration you
+    // wear, redraws the previews, once per burst.
+    m_profileArtTimer = new QTimer(this);
+    m_profileArtTimer->setSingleShot(true);
+    m_profileArtTimer->setInterval(80);
+    connect(m_profileArtTimer, &QTimer::timeout, this, [this]() {
         if (isVisible())
             refreshProfileArt();
+    });
+    connect(&MediaCache::instance(), &MediaCache::ready, this, [this](const QUrl &url) {
+        if (!isVisible() || !m_decorations)
+            return;
+        const QString path = url.path();
+        if (path.startsWith(QLatin1String("/avatar-decoration-presets/"))) {
+            for (int row = 0; row < m_decorations->count(); ++row) {
+                QListWidgetItem *item = m_decorations->item(row);
+                const QString asset = item->data(Qt::UserRole).toMap().value(QStringLiteral("asset")).toString();
+                if (MediaCache::decorationUrl(asset) == url)
+                    paintDecorationTile(item, MediaCache::instance().image(url));
+            }
+            animateDecorationTile(m_decorationHover >= 0 ? m_decorationHover : m_decorations->currentRow());
+
+            const QString worn = m_pending.decorationTouched
+                ? m_pending.decoration.value(QStringLiteral("asset")).toString()
+                : m_loaded.decorationAsset;
+            if (MediaCache::decorationUrl(worn) != url)
+                return;
+        } else {
+            const bool yours = !m_selfUserId.isEmpty()
+                && (path.startsWith(QStringLiteral("/avatars/%1/").arg(m_selfUserId))
+                    || path.startsWith(QStringLiteral("/banners/%1/").arg(m_selfUserId)));
+            if (!yours && !path.startsWith(QLatin1String("/embed/avatars/")))
+                return;
+        }
+        if (!m_profileArtTimer->isActive())
+            m_profileArtTimer->start();
     });
     return page;
 }

@@ -34,6 +34,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <utility>
 
 namespace {
 
@@ -406,13 +407,41 @@ QScrollArea { background: transparent; border: none; }
                            QLatin1String(Theme::SurfaceSidebar), QLatin1String(Theme::Accent),
                            QLatin1String(Theme::SurfaceChat)));
 
-    // Late downloads (avatar, banner, game art) repaint what is on screen.
-    connect(&MediaCache::instance(), &MediaCache::ready, this, [this](const QUrl &) {
+    // Late downloads (avatar, banner, game art) repaint the part of the card
+    // that shows them, and nothing else.
+    m_lateTimer.setSingleShot(true);
+    m_lateTimer.setInterval(60);
+    connect(&m_lateTimer, &QTimer::timeout, this, [this]() {
+        const int parts = std::exchange(m_lateParts, 0);
         if (!isVisible())
             return;
-        refreshArtwork();
-        refreshBadgeIcons();
-        rebuildActivity();
+        if (parts & LateArtwork)
+            refreshArtwork();
+        if (parts & LateBadges)
+            refreshBadgeIcons();
+        if (parts & LateActivity)
+            rebuildActivity();
+        if (parts & LateMutuals)
+            rebuildMutuals();
+    });
+    connect(&MediaCache::instance(), &MediaCache::ready, this, [this](const QUrl &url) {
+        if (!isVisible())
+            return;
+        const QString key = url.toString();
+        int parts = 0;
+        if (m_artworkUrls.contains(key))
+            parts |= LateArtwork;
+        if (m_badgeUrls.contains(key))
+            parts |= LateBadges;
+        if (m_activityUrls.contains(key))
+            parts |= LateActivity;
+        if (m_mutualUrls.contains(key))
+            parts |= LateMutuals;
+        if (parts == 0)
+            return;
+        m_lateParts |= parts;
+        if (!m_lateTimer.isActive())
+            m_lateTimer.start();
     });
     connect(m_store, &MessageStore::userChanged, this, [this](const QString &userId) {
         if (isVisible() && userId == m_userId) {
@@ -974,6 +1003,12 @@ void ProfileDialog::refreshArtwork()
                                                 : QColor(Theme::SurfaceRail);
 
     static_cast<BannerWidget *>(m_banner)->setSource(cache.animationData(bannerUrl), banner, fallback);
+
+    m_artworkUrls.clear();
+    for (const QUrl &url : {avatarUrl, decorationUrl, bannerUrl}) {
+        if (!url.isEmpty())
+            m_artworkUrls.insert(url.toString());
+    }
 }
 
 QWidget *ProfileDialog::makePill(const QString &text, const QColor &dot, QWidget *parent)
@@ -1053,8 +1088,11 @@ void ProfileDialog::rebuildBadges(const QJsonArray &badges, int publicFlags)
 
 void ProfileDialog::refreshBadgeIcons()
 {
+    m_badgeUrls.clear();
     for (QToolButton *button : m_badgeHost->findChildren<QToolButton *>()) {
         const QUrl url = button->property("badgeIcon").toUrl();
+        if (!url.isEmpty())
+            m_badgeUrls.insert(url.toString());
         const QImage image = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
         if (!image.isNull())
             button->setIcon(QIcon(QPixmap::fromImage(
@@ -1265,6 +1303,7 @@ void ProfileDialog::rebuildActivity()
 
     const PresenceInfo presence = m_store->presence(m_userId);
     int shown = 0;
+    m_activityUrls.clear();
 
     const auto addCard = [this](const QString &heading, const QString &title, const QStringList &lines,
                                 const QUrl &artwork, const QStringList &buttonLabels,
@@ -1288,6 +1327,7 @@ void ProfileDialog::rebuildActivity()
         art->setStyleSheet(QStringLiteral("background-color: %1; border-radius: 8px;")
                                .arg(QLatin1String(Theme::SurfaceHover)));
         if (!artwork.isEmpty()) {
+            m_activityUrls.insert(artwork.toString());
             const QImage picture = MediaCache::instance().image(artwork);
             if (!picture.isNull()) {
                 art->setPixmap(QPixmap::fromImage(
@@ -1416,6 +1456,7 @@ void ProfileDialog::rebuildMutuals()
     };
     clear(m_mutualFriendsLayout);
     clear(m_mutualServersLayout);
+    m_mutualUrls.clear();
 
     // --- mutual friends ---------------------------------------------------
     for (const QJsonValue &value : m_mutualFriends) {
@@ -1435,6 +1476,8 @@ void ProfileDialog::rebuildMutuals()
         avatar->setFixedSize(32, 32);
         const QUrl url = MediaCache::avatarUrl(id, info.avatarHash, 80);
         const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
+        if (picture.isNull() && !url.isEmpty())
+            m_mutualUrls.insert(url.toString());
         avatar->setPixmap(picture.isNull() ? MediaCache::initialsAvatar(info.displayName(), 32)
                                            : MediaCache::circular(picture, 32));
         rowLayout->addWidget(avatar);
@@ -1463,6 +1506,8 @@ void ProfileDialog::rebuildMutuals()
         icon->setFixedSize(32, 32);
         const QUrl url = MediaCache::guildIconUrl(guildId, guild.iconHash, 96);
         const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
+        if (picture.isNull() && !url.isEmpty())
+            m_mutualUrls.insert(url.toString());
         icon->setPixmap(picture.isNull() ? MediaCache::initialsAvatar(name, 32)
                                          : MediaCache::circular(picture, 32));
         rowLayout->addWidget(icon);

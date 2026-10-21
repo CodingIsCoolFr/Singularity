@@ -97,6 +97,10 @@ GatewayClient::GatewayClient(QObject *parent)
 
     connect(&m_socket, &QWebSocket::connected, this, &GatewayClient::onConnected);
     connect(&m_socket, &QWebSocket::disconnected, this, &GatewayClient::onDisconnected);
+
+    // Qt says this for a close frame either way, ours or Discord's, and not
+    // when the connection simply vanishes - see onDisconnected.
+    connect(&m_socket, &QWebSocket::aboutToClose, this, [this]() { m_closeFrameSeen = true; });
     connect(&m_socket, &QWebSocket::textMessageReceived, this, &GatewayClient::onTextMessage);
     connect(&m_socket, &QWebSocket::errorOccurred, this, [this](QAbstractSocket::SocketError error) {
         emit logLine(QStringLiteral("socket error: %1").arg(m_socket.errorString()));
@@ -269,6 +273,7 @@ void GatewayClient::openSocket()
     emit logLine(QStringLiteral("connecting to %1").arg(url));
     wlog(QStringLiteral("gateway"), QStringLiteral("opening %1 (resume=%2)").arg(url).arg(m_canResume));
     setState(m_reconnectAttempts > 0 ? State::Reconnecting : State::Connecting);
+    m_closeFrameSeen = false;
 
     QNetworkRequest request{QUrl(url)};
     request.setHeader(QNetworkRequest::UserAgentHeader, DiscordIdentity::userAgent());
@@ -281,9 +286,18 @@ void GatewayClient::scheduleReconnect()
         return;
 
     // Exponential backoff with jitter, capped at one minute.
+    //
+    // Except the first try after a working connection, which goes out within
+    // a second. A session Discord dropped is waiting to be resumed, and the
+    // two to three seconds this used to wait were the whole of what anyone
+    // saw of it: "reconnecting" in the corner for a moment (2026-10-21 07:40;
+    // the resume itself took half a second). If that try fails, the backoff
+    // follows.
     m_reconnectAttempts++;
-    int delay = qMin(MaxReconnectDelayMs, 1000 * (1 << qMin(m_reconnectAttempts, 6)));
-    delay += static_cast<int>(QRandomGenerator::global()->bounded(1000));
+    int delay = m_reconnectAttempts == 1
+        ? 250 + static_cast<int>(QRandomGenerator::global()->bounded(500))
+        : qMin(MaxReconnectDelayMs, 1000 * (1 << qMin(m_reconnectAttempts, 6)))
+              + static_cast<int>(QRandomGenerator::global()->bounded(1000));
 
     emit logLine(QStringLiteral("reconnecting in %1 ms (attempt %2)").arg(delay).arg(m_reconnectAttempts));
     setState(State::Reconnecting);
@@ -336,8 +350,13 @@ void GatewayClient::onDisconnected()
     m_heartbeatTimer.stop();
     m_firstHeartbeatTimer.stop();
 
-    const int code = static_cast<int>(m_socket.closeCode());
-    const QString reason = m_socket.closeReason();
+    // A connection that vanished without a close frame - Discord's server
+    // going away, or the network - is reported by Qt with whatever code the
+    // socket last held, 1000 for one that never closed before. That made a
+    // plain drop read as Discord saying a polite goodbye (2026-10-21 07:40,
+    // the same minute Discord's voice server answered 521). It is 1006.
+    const int code = m_closeFrameSeen ? static_cast<int>(m_socket.closeCode()) : 1006;
+    const QString reason = m_closeFrameSeen ? m_socket.closeReason() : QString();
 
     emit logLine(QStringLiteral("socket closed (code %1)").arg(code));
 
@@ -361,7 +380,8 @@ void GatewayClient::onDisconnected()
     case 4012: meaning = QStringLiteral("unknown gateway version"); break;
     case 4013: meaning = QStringLiteral("bad intents"); break;
     case 4014: meaning = QStringLiteral("intents not allowed"); break;
-    case 1006: meaning = QStringLiteral("the connection dropped with no goodbye"); break;
+    case 1006: meaning = QStringLiteral("the connection dropped with no goodbye, on Discord's side or the "
+                                        "network's"); break;
     default:   meaning = QStringLiteral("closed"); break;
     }
 

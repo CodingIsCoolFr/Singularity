@@ -1633,6 +1633,22 @@ QWidget *MainWindow::buildGuildRail(QWidget *parent)
     // second of the last, switch Discodo on or off - its own sound going on,
     // a leave going off.
     connect(m_guildRail, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
+        // A closed folder marked because the server you are in sits inside
+        // it is already the current row, so a click on it changes no row and
+        // onGuildSelected never hears of it. It opens here instead.
+        if (item && item == m_guildRail->currentItem()
+            && item->data(KindRole).toString() == QLatin1String("folder")) {
+            const QString folderId = item->data(IdRole).toString();
+            const RailLayout::Folder *folder = m_rail.folder(folderId);
+            if (folder && !folder->open && m_rail.folderOf(m_currentGuildId) == folderId) {
+                QTimer::singleShot(0, this, [this, folderId]() {
+                    m_rail.setFolderOpen(folderId, true);
+                    populateGuildRail();
+                });
+                return;
+            }
+        }
+
         if (!item || m_guildRail->row(item) != 0) {
             m_homeClicks = 0;
             return;
@@ -2452,15 +2468,10 @@ void MainWindow::onGatewayReady(const QJsonObject &payload)
 
     updateUserPanel();
 
-    if (!wasInGuild.isEmpty()) {
-        for (int row = 0; row < m_guildRail->count(); ++row) {
-            if (m_guildRail->item(row)->data(IdRole).toString() != wasInGuild)
-                continue;
-            m_guildRail->setCurrentRow(row);
-            if (!wasInChannel.isEmpty())
-                selectChannelEverywhere(wasInChannel);
-            break;
-        }
+    if (!wasInGuild.isEmpty() && railRowFor(wasInGuild) >= 0) {
+        showGuild(wasInGuild);
+        if (!wasInChannel.isEmpty())
+            selectChannelEverywhere(wasInChannel);
     }
 
     // The window is furnished. The overlay waits a moment longer on its own
@@ -3112,6 +3123,15 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
             m_pendingVoiceServerId = data.value(QStringLiteral("channel_id")).toString();
         wlog(QStringLiteral("voice"), QStringLiteral("server update: %1 (server id %2)")
                                           .arg(m_pendingVoiceEndpoint, m_pendingVoiceServerId));
+
+        // No endpoint: the voice server for this call went away and Discord
+        // is choosing another. The next update names it, and tryStartVoice
+        // connects there without anyone seeing us leave.
+        if (m_pendingVoiceEndpoint.isEmpty() && !m_voiceChannelId.isEmpty()
+            && (m_pendingVoiceServerId == m_voiceGuildId || m_pendingVoiceServerId == m_voiceChannelId)) {
+            m_voice->awaitNewServer();
+            return;
+        }
         tryStartVoice();
         return;
     }
@@ -3314,18 +3334,20 @@ void MainWindow::populateGuildRail()
     m_guildRail->blockSignals(false);
     refreshGuildIcons();
 
-    // Stay where we were if that server is still on screen.
-    int wanted = 0;
-    if (!keepSelected.isEmpty()) {
-        for (int row = 0; row < m_guildRail->count(); ++row) {
-            if (m_guildRail->item(row)->data(IdRole).toString() == keepSelected
-                && m_guildRail->item(row)->data(KindRole).toString() == QLatin1String("guild")) {
-                wanted = row;
-                break;
-            }
+    // Stay where we were if that server is still on the rail - in a closed
+    // folder too, which is then the row marked, as Discord marks it. Only a
+    // server that is gone sends the window home. Closing the folder you were
+    // in, or the organizer filing your server away, used to.
+    const int wanted = keepSelected.isEmpty() ? 0 : railRowFor(keepSelected);
+    if (wanted > 0 && m_guildRail->item(wanted)->data(KindRole).toString() == QLatin1String("folder")) {
+        {
+            const QSignalBlocker quiet(m_guildRail);
+            m_guildRail->setCurrentRow(wanted);
         }
+        m_guildRail->viewport()->update();
+    } else {
+        m_guildRail->setCurrentRow(qMax(0, wanted));
     }
-    m_guildRail->setCurrentRow(wanted);
     refreshUnreadMarks();
 }
 
@@ -3911,7 +3933,12 @@ void MainWindow::onGuildSelected(int row)
         return;
     }
 
-    m_currentGuildId = item->data(IdRole).toString();
+    enterGuild(item->data(IdRole).toString());
+}
+
+void MainWindow::enterGuild(const QString &guildId)
+{
+    m_currentGuildId = guildId;
 
     // A direct message has no members to list, and setGuild hides the panel
     // for that case rather than leaving an empty column standing there.
@@ -3923,6 +3950,52 @@ void MainWindow::onGuildSelected(int row)
     prefetchGuild(m_currentGuildId);
 
     populateChannelList();
+}
+
+int MainWindow::railRowFor(const QString &guildId) const
+{
+    if (guildId.isEmpty())
+        return 0;
+    const QString folderId = m_rail.folderOf(guildId);
+    int folderRow = -1;
+    for (int row = 0; row < m_guildRail->count(); ++row) {
+        const QListWidgetItem *item = m_guildRail->item(row);
+        const QString kind = item->data(KindRole).toString();
+        const QString id = item->data(IdRole).toString();
+        if (kind == QLatin1String("guild") && id == guildId)
+            return row;
+        if (kind == QLatin1String("folder") && !folderId.isEmpty() && id == folderId)
+            folderRow = row;
+    }
+    return folderRow;
+}
+
+void MainWindow::showGuild(const QString &guildId)
+{
+    const int row = railRowFor(guildId);
+    if (row < 0)
+        return;
+    QListWidgetItem *item = m_guildRail->item(row);
+    if (item->data(KindRole).toString() == QLatin1String("guild")) {
+        if (m_guildRail->currentRow() != row)
+            m_guildRail->setCurrentRow(row);
+        else if (guildId != m_currentGuildId)
+            enterGuild(guildId);
+        return;
+    }
+
+    // Its folder is closed. Selecting the folder row would open the folder,
+    // so the row is marked quietly and the server shown by hand. Leaving it
+    // unmarked threw the window back to direct messages instead: clicking
+    // "Voice connected" for a call in a server the organizer had filed away
+    // showed the call beside your friends list (2026-10-21).
+    {
+        const QSignalBlocker quiet(m_guildRail);
+        m_guildRail->setCurrentRow(row);
+    }
+    m_guildRail->viewport()->update();
+    if (guildId != m_currentGuildId)
+        enterGuild(guildId);
 }
 
 // ---------------------------------------------------------------------------
@@ -5387,7 +5460,14 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
 
     body += stickersHtml(message);
     body += embedsHtml(message);
-    body += componentsHtml(message.components, message.id, message.applicationId, message.flags);
+    // The bot a press goes to. A bot's own message - not a reply to a slash
+    // command - carries no application id, and Discord's client then sends
+    // the press to its author (applicationId ?? author.id), which for a bot
+    // is the same number. Leaving that out made Tickets' Claim button say it
+    // had no bot to go to (2026-10-21).
+    body += componentsHtml(message.components, message.id,
+                           message.applicationId.isEmpty() ? message.authorId : message.applicationId,
+                           message.flags);
     body += inviteCardsHtml(message);
     body += activityInviteHtml(message);
     body += reactionsHtml(message);
@@ -7549,16 +7629,11 @@ void MainWindow::selectChannelEverywhere(const QString &channelId)
         return;
     }
 
-    // Jump to the right server first, so the sidebar holds the channel.
+    // Jump to the right server first, so the sidebar holds the channel - even
+    // when its tile is tucked in a closed folder.
     const QString wantedGuild = channel.guildId;
-    if (wantedGuild != m_currentGuildId) {
-        for (int row = 0; row < m_guildRail->count(); ++row) {
-            if (m_guildRail->item(row)->data(IdRole).toString() == wantedGuild) {
-                m_guildRail->setCurrentRow(row);
-                break;
-            }
-        }
-    }
+    if (wantedGuild != m_currentGuildId)
+        showGuild(wantedGuild);
 
     for (int row = 0; row < m_channelList->count(); ++row) {
         if (m_channelList->item(row)->data(IdRole).toString() == channelId) {
