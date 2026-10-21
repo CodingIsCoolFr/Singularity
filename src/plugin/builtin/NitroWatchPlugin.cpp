@@ -1,5 +1,6 @@
 #include "plugin/builtin/NitroWatchPlugin.h"
 
+#include "core/GatewayClient.h"
 #include "core/Logger.h"
 #include "ui/CaptchaDialog.h"
 #include "ui/Theme.h"
@@ -201,6 +202,31 @@ void NitroWatchPlugin::onLoad(PluginContext *context)
 {
     Plugin::onLoad(context);
     selfCheck();
+    watchEveryServer();
+}
+
+bool NitroWatchPlugin::watching() const
+{
+    // Either the in-app Claim panel, a Windows toast or claiming on its own is
+    // enough reason to look. Turning the panel off so it does not cover a game
+    // must not also kill the toast that is meant to reach you there.
+    return watchEnabled() || windowsNotify() || autoClaimScope() != AutoNever;
+}
+
+void NitroWatchPlugin::watchEveryServer()
+{
+    // A server of more than 250 members sends no messages at all to a client
+    // that has not subscribed to it (Discord's large_threshold), and only the
+    // server on screen was subscribed. So a gift posted in any big server you
+    // were not looking at never reached this plugin. Every server you are in
+    // is subscribed, the way opening it would, a new session at a time.
+    if (!context() || !context()->gateway() || !context()->store() || !watching()
+        || context()->gateway()->state() != GatewayClient::State::Ready)
+        return;
+    QStringList ids;
+    for (const GuildInfo &guild : context()->store()->guilds())
+        ids.append(guild.id);
+    context()->gateway()->keepGuildsSubscribed(ids);
 }
 
 // Checks the link matcher against cases that must pass and cases that must
@@ -507,12 +533,22 @@ void NitroWatchPlugin::checkThenClaim(const QString &code, const QString &fromUs
 
 void NitroWatchPlugin::onGatewayEvent(const QString &eventType, const QJsonObject &data)
 {
+    // A new session has no subscriptions; the window has read READY's servers
+    // by the time it reaches here. A server joined later arrives on its own,
+    // before the window has filed it, so it is taken from the event.
+    if (eventType == QLatin1String("READY")) {
+        watchEveryServer();
+        return;
+    }
+    if (eventType == QLatin1String("GUILD_CREATE")) {
+        if (watching() && context() && context()->gateway())
+            context()->gateway()->keepGuildsSubscribed({data.value(QStringLiteral("id")).toString()});
+        return;
+    }
+
     if (eventType != QLatin1String("MESSAGE_CREATE") && eventType != QLatin1String("MESSAGE_UPDATE"))
         return;
-    // Either the in-app Claim panel, a Windows toast or claiming on its own is
-    // enough reason to look. Turning the panel off so it does not cover a game
-    // must not also kill the toast that is meant to reach you there.
-    if (!watchEnabled() && !windowsNotify() && autoClaimScope() == AutoNever)
+    if (!watching())
         return;
 
     // Native gift cards often have empty content; the link is on the embed.
@@ -938,6 +974,14 @@ QWidget *NitroWatchPlugin::createSettingsWidget(QWidget *parent)
         Theme::TextFaint, 11, false, page));
 
     layout->addWidget(line(QStringLiteral(
+        "Which servers it sees.\n\n"
+        "Discord sends no messages from a server of more than 250 members until the app subscribes "
+        "to it, which normally happens when you open that server. So while this is on, Singularity "
+        "subscribes to every server you are in, with the same request opening each one sends. Busy "
+        "servers then send a little more traffic, such as who is typing."),
+        Theme::TextFaint, 11, false, page));
+
+    layout->addWidget(line(QStringLiteral(
         "Claiming on its own.\n\n"
         "Off unless you choose it. When it is on, a gift Discord says is still unclaimed is redeemed "
         "the moment it is posted, with no alert first, and a Windows notification says what you got "
@@ -962,10 +1006,12 @@ QWidget *NitroWatchPlugin::createSettingsWidget(QWidget *parent)
     QObject::connect(watch, &QCheckBox::toggled, page, [this](bool on) {
         if (context())
             context()->setSetting(QStringLiteral("watch"), on);
+        watchEveryServer();
     });
     QObject::connect(toast, &QCheckBox::toggled, page, [this](bool on) {
         if (context())
             context()->setSetting(QStringLiteral("windowsNotify"), on);
+        watchEveryServer();
     });
     QObject::connect(check, &QCheckBox::toggled, page, [this](bool on) {
         if (context())
@@ -980,6 +1026,7 @@ QWidget *NitroWatchPlugin::createSettingsWidget(QWidget *parent)
             return;
         const int scope = autoPick->currentData().toInt();
         context()->setSetting(QStringLiteral("autoClaim"), scope);
+        watchEveryServer();
         wlog(QStringLiteral("nitro"), QStringLiteral("claim on its own: %1")
                                           .arg(scope == AutoNever    ? QStringLiteral("never")
                                                : scope == AutoDirect ? QStringLiteral("direct messages")

@@ -123,6 +123,10 @@ private:
                const RestClient::CaptchaProof &proof = {});
     void warnAboutFake(const QString &host);
 
+    // Any of the panel, the toast or claiming on its own is on.
+    bool watching() const;
+    // Subscribes to every server you are in, so big ones send their messages.
+    void watchEveryServer();
     bool watchEnabled() const;
     bool warnFakes() const;
     bool checkFirst() const;

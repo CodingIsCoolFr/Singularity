@@ -672,7 +672,19 @@ void GatewayClient::subscribeToGuild(const QString &guildId, const QString &chan
                                                  ? QStringLiteral(" (no member list)")
                                                  : QStringLiteral(" via channel %1").arg(channelId)));
 
-    const QJsonObject subscription{
+    // One subscription. Sending the older opcode as well made Discord keep
+    // two member lists, and both were drawn, so every person appeared twice.
+    QJsonObject subscriptions;
+    subscriptions.insert(guildId, guildSubscription(channels));
+    sendJson(QJsonObject{
+        {QStringLiteral("op"), OpGuildSubscriptionsBulk},
+        {QStringLiteral("d"), QJsonObject{{QStringLiteral("subscriptions"), subscriptions}}},
+    });
+}
+
+QJsonObject GatewayClient::guildSubscription(const QJsonObject &channels)
+{
+    return QJsonObject{
         {QStringLiteral("typing"), true},
         {QStringLiteral("threads"), true},
         {QStringLiteral("activities"), true},
@@ -684,15 +696,38 @@ void GatewayClient::subscribeToGuild(const QString &guildId, const QString &chan
         {QStringLiteral("channels"), channels},
         {QStringLiteral("thread_member_lists"), QJsonArray{}},
     };
+}
 
-    // One subscription. Sending the older opcode as well made Discord keep
-    // two member lists, and both were drawn, so every person appeared twice.
+void GatewayClient::keepGuildsSubscribed(const QStringList &guildIds)
+{
+    // Several servers to one message, as Discord's client batches them. One
+    // message each would spend a command apiece from the 120 a minute that
+    // closes the socket when it runs out; 25 to a message stays far inside
+    // the 15 KiB a message may be.
     QJsonObject subscriptions;
-    subscriptions.insert(guildId, subscription);
-    sendJson(QJsonObject{
-        {QStringLiteral("op"), OpGuildSubscriptionsBulk},
-        {QStringLiteral("d"), QJsonObject{{QStringLiteral("subscriptions"), subscriptions}}},
-    });
+    int asked = 0;
+    const auto flush = [this, &subscriptions]() {
+        if (subscriptions.isEmpty())
+            return;
+        sendJson(QJsonObject{
+            {QStringLiteral("op"), OpGuildSubscriptionsBulk},
+            {QStringLiteral("d"), QJsonObject{{QStringLiteral("subscriptions"), subscriptions}}},
+        });
+        subscriptions = QJsonObject();
+    };
+    for (const QString &guildId : guildIds) {
+        if (guildId.isEmpty() || m_subscribedGuilds.contains(guildId))
+            continue;
+        m_subscribedGuilds.insert(guildId);
+        m_subscribedChannels.insert(guildId, QString());
+        subscriptions.insert(guildId, guildSubscription({}));
+        ++asked;
+        if (subscriptions.size() >= 25)
+            flush();
+    }
+    flush();
+    if (asked > 0)
+        wlog(QStringLiteral("gateway"), QStringLiteral("subscribing to %1 more servers at once").arg(asked));
 }
 
 QJsonArray GatewayClient::clientActivities() const

@@ -75,6 +75,11 @@ public:
     // screen.
     void keepGuildSubscribed(const QString &guildId);
 
+    // The same for many servers at once, batched. A server of more than 250
+    // members sends a client no messages at all until it is subscribed
+    // (large_threshold), so watching every server for something needs this.
+    void keepGuildsSubscribed(const QStringList &guildIds);
+
     // The status Discord broadcasts on your behalf.
     //
     // "online" normally. "invisible" makes everyone else see you as offline.
@@ -183,6 +188,9 @@ private slots:
     void onTextMessage(const QString &message);
 
 private:
+    // What one server is subscribed with: typing, threads, activities and
+    // voice, plus the member list ranges in `channels`.
+    static QJsonObject guildSubscription(const QJsonObject &channels);
     void setState(State state);
     void closeKeepingSession();
     void openSocket();
