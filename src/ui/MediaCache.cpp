@@ -51,7 +51,14 @@ const QStringList kAllowedSuffixes{
 // channel shows forty messages - so ninety six megabytes of decoded picture
 // was room for far more than anybody is ever looking at.
 constexpr qint64 MaxImageBytes = 40 * 1024 * 1024;
-constexpr qint64 MaxOriginalBytes = 16 * 1024 * 1024;
+// Files as they arrived: what moving pictures play from. 16 MB was less than
+// one person's avatar decorations - each is up to a megabyte of animated PNG -
+// and opening Settings went over it every time (2026-10-21).
+constexpr qint64 MaxOriginalBytes = 48 * 1024 * 1024;
+
+// The pictures used last are never let go, whatever the budgets say. Dropping
+// what is on screen right now would only make it be fetched again at once.
+constexpr int KeepNewest = 64;
 
 // Nothing kept for drawing is larger than this on its long edge.
 //
@@ -113,12 +120,16 @@ bool MediaCache::has(const QUrl &url) const
     return m_images.contains(url.toString());
 }
 
-QByteArray MediaCache::animationData(const QUrl &url) const
+QByteArray MediaCache::animationData(const QUrl &url)
 {
     const QString key = url.toString();
     if (!m_animated.contains(key))
         return {};
-    return m_originals.value(key);
+    const auto original = m_originals.constFind(key);
+    if (original == m_originals.constEnd())
+        return {};
+    touch(key);
+    return original.value();
 }
 
 QImage MediaCache::fullImage(const QUrl &url)
@@ -179,20 +190,32 @@ void MediaCache::evictIfNeeded()
     // ever grows. The budget is large enough that faces on screen are not
     // going anywhere; it is the pictures nobody has looked at for a while that
     // go first, which is what least recently used means.
+    //
+    // Each budget is paid from what it counts. Over on files, the oldest
+    // files go and their pictures stay - a moving one shows still from then
+    // on, and nothing is fetched again. It used to drop whole entries for
+    // either budget, so a few big GIF files had every avatar but the newest
+    // 64 thrown out, avatars that freed none of it. Whatever was still on
+    // screen was fetched again, threw out something else, and so on: Settings
+    // flashed every picture on it, your own avatar too, over and over
+    // (2026-10-21: 690 pictures down to 64 each time it opened).
+    for (int i = 0; m_originalBytes > MaxOriginalBytes && m_order.size() - i > KeepNewest; ++i) {
+        const QString &key = m_order.at(i);
+        const auto original = m_originals.constFind(key);
+        if (original == m_originals.constEnd())
+            continue;
+        m_originalBytes -= original.value().size();
+        m_originals.erase(original);
+        m_animated.remove(key);
+    }
+
     int i = 0;
-    while (i < m_order.size() && (m_imageBytes > MaxImageBytes || m_originalBytes > MaxOriginalBytes)) {
+    while (m_imageBytes > MaxImageBytes && m_order.size() - i > KeepNewest) {
         const QString key = m_order.at(i);
-
-        // Leave the most recent alone. Dropping what is on screen right now
-        // would only make it be fetched again immediately.
-        if (m_order.size() - i <= 64)
-            break;
-
         if (!m_images.contains(key) && !m_originals.contains(key)) {
             m_order.removeAt(i);
             continue;
         }
-
         forget(key);
         m_order.removeAt(i);
     }

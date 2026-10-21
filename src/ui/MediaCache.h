@@ -40,8 +40,10 @@ public:
     QImage fullImage(const QUrl &url);
 
     // The bytes exactly as they arrived, kept for anything that moves so the
-    // caller can hand them to QMovie. Empty for still pictures.
-    QByteArray animationData(const QUrl &url) const;
+    // caller can hand them to QMovie. Empty for still pictures, and for a
+    // moving one whose file the cache let go of to stay in budget. Counts as
+    // a use, so something playing keeps its file.
+    QByteArray animationData(const QUrl &url);
 
     bool has(const QUrl &url) const;
     static bool isAllowedHost(const QUrl &url);
