@@ -555,6 +555,12 @@ void RestClient::fetchUserBadge(const QString &who, int badgeId, ObjectHandler o
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+void RestClient::fetchGuildProfile(const QString &guildId, ObjectHandler onOk, ErrorHandler onError)
+{
+    QNetworkReply *reply = m_network.get(buildRequest(QStringLiteral("/guilds/%1/profile").arg(guildId)));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::updateBadgeSettings(const QList<int> &displayOrder, const QList<int> &hiddenBadges,
                                      ObjectHandler onOk, ErrorHandler onError)
 {

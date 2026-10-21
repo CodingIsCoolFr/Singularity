@@ -1,5 +1,6 @@
 #include "core/AppConfig.h"
 #include "core/CrashLog.h"
+#include "core/DiscordIdentity.h"
 #include "core/GatewayClient.h"
 #include "core/HangWatch.h"
 #include "core/InstallTidy.h"
@@ -219,6 +220,10 @@ int main(int argc, char *argv[])
 
     // Looks again while the program stays open, every hour, as Discord does.
     UpdateFlow::watch();
+
+    // The build number Discord reads to decide which features this client
+    // gets. Last time's at once; the current one a moment later.
+    DiscordIdentity::refreshClientBuild();
 
     RestClient rest;
     MessageStore store;

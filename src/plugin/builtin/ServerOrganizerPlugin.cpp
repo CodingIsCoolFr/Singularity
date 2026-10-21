@@ -1,13 +1,18 @@
 #include "plugin/builtin/ServerOrganizerPlugin.h"
 
 #include "core/Logger.h"
+#include "core/RestClient.h"
 #include "ui/Theme.h"
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDateTime>
+#include <QFile>
+#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QJsonDocument>
+#include <QStandardPaths>
 #include <QLabel>
 #include <QPushButton>
 #include <QShowEvent>
@@ -28,6 +33,12 @@ constexpr double VoiceWeight = 0.2;
 // After signing in, long enough for READY_SUPPLEMENTAL, which is where most
 // voice states arrive, so a new server is judged with them.
 constexpr int SettleMs = 4000;
+
+// Server profiles: one request a second, the way a person opening them would,
+// kept a week, and a day when Discord would not give one.
+constexpr int ProfileGapMs = 1100;
+constexpr qint64 ProfileKeepSecs = 7 * 24 * 3600;
+constexpr qint64 ProfileRetrySecs = 24 * 3600;
 
 // Takes a server out of wherever it sits. A folder left empty goes too, as
 // it does in Discord.
@@ -218,6 +229,12 @@ void ServerOrganizerPlugin::onLoad(PluginContext *context)
     for (auto it = saved.constBegin(); it != saved.constEnd(); ++it)
         m_usualVoice.insert(it.key(), it.value().toDouble());
 
+    m_profiles.clear();
+    const QJsonObject profiles = loadObject(QStringLiteral("profiles"));
+    for (auto it = profiles.constBegin(); it != profiles.constEnd(); ++it)
+        m_profiles.insert(it.key(), it.value().toObject());
+    loadGameCatalog();
+
     m_voiceTimer = std::make_unique<QTimer>();
     m_voiceTimer->setInterval(VoiceSampleMs);
     QObject::connect(m_voiceTimer.get(), &QTimer::timeout, [this]() { sampleVoice(); });
@@ -237,6 +254,9 @@ void ServerOrganizerPlugin::onLoad(PluginContext *context)
 void ServerOrganizerPlugin::onUnload()
 {
     m_voiceTimer.reset();
+    m_profileQueue.clear();
+    m_afterProfiles.clear();
+    m_fetchingProfiles = false;
     Plugin::onUnload();
     refreshPanel();
 }
@@ -263,15 +283,32 @@ bool ServerOrganizerPlugin::running() const
 // Deciding
 // ---------------------------------------------------------------------------
 
-ServerCategories::Verdict ServerOrganizerPlugin::verdictFor(const QString &guildId) const
+ServerCategories::Verdict ServerOrganizerPlugin::verdictFor(const QString &guildId)
 {
+    if (ServerCategories::knownGameCount() == 0)
+        loadGameCatalog();
+
     MessageStore *store = context()->store();
     const GuildInfo guild = store->guild(guildId);
+    const QJsonObject profile = m_profiles.value(guildId);
 
     ServerCategories::Facts facts;
     facts.name = guild.name;
-    facts.description = guild.description;
+    facts.description = guild.description.isEmpty() ? profile.value(QStringLiteral("description")).toString()
+                                                    : guild.description;
     facts.features = guild.features;
+    for (const QJsonValue &trait : profile.value(QStringLiteral("traits")).toArray())
+        facts.traits.append(trait.toString());
+    // Games by id, named from Discord's list; the profile's own names for any
+    // the list does not have; and one that is neither is still a game.
+    const QJsonObject names = profile.value(QStringLiteral("names")).toObject();
+    for (const QJsonValue &id : profile.value(QStringLiteral("games")).toArray()) {
+        QString name = m_gameNames.value(id.toString());
+        if (name.isEmpty())
+            name = names.value(id.toString()).toString();
+        facts.linkedGames.append(name.isEmpty() ? QStringLiteral("a game") : name);
+    }
+    facts.gameActivity = profile.value(QStringLiteral("activity")).toInt();
     facts.memberCount = std::max(guild.memberCount, store->memberList(guildId).memberCount);
     for (const QString &channelId : guild.channelIds) {
         const ChannelInfo channel = store->channel(channelId);
@@ -341,6 +378,20 @@ void ServerOrganizerPlugin::organizeAll()
         setStatus(QStringLiteral("Not connected yet. Try again once your servers have loaded."));
         return;
     }
+    // Every server's profile first, so the sort sees the games and tags.
+    QStringList guildIds;
+    for (const GuildInfo &guild : context()->store()->guilds())
+        guildIds.append(guild.id);
+    ensureProfiles(guildIds, [this]() {
+        if (running())
+            organizeNow();
+    });
+}
+
+void ServerOrganizerPlugin::organizeNow()
+{
+    if (!running())
+        return;
     sampleVoice();
 
     const QList<RailLayout::Entry> current = context()->serverRail();
@@ -486,6 +537,15 @@ void ServerOrganizerPlugin::sortNewServers()
         return;
     }
 
+    // Their profiles first; this runs again once they are in, and finds
+    // them there.
+    for (const QString &guildId : std::as_const(fresh)) {
+        if (!m_profiles.contains(guildId)) {
+            ensureProfiles(fresh, [this]() { sortNewServers(); });
+            return;
+        }
+    }
+
     QStringList moves;
     for (const QString &guildId : std::as_const(fresh)) {
         QString category = chosen.value(guildId).toString();
@@ -561,6 +621,156 @@ void ServerOrganizerPlugin::undo()
 bool ServerOrganizerPlugin::canUndo() const
 {
     return running() && !settingValue(accountKey(QStringLiteral("undo"))).toString().isEmpty();
+}
+
+// ---------------------------------------------------------------------------
+// What is fetched for the deciding
+// ---------------------------------------------------------------------------
+
+void ServerOrganizerPlugin::loadGameCatalog()
+{
+    // The file the "Playing" status is matched against: {"game.exe": {"n":
+    // name, "id": application id}}, written by GameActivity a moment after
+    // start and refreshed by it now and then.
+    const QString path =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/detectable-games.json");
+    const QFileInfo info(path);
+    const qint64 stamp = info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0;
+    if (stamp == m_catalogStamp)
+        return;
+    m_catalogStamp = stamp;
+
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return;
+    const QJsonObject catalog = QJsonDocument::fromJson(file.readAll()).object();
+    m_gameNames.clear();
+    QStringList names;
+    for (auto it = catalog.constBegin(); it != catalog.constEnd(); ++it) {
+        const QJsonObject game = it.value().toObject();
+        const QString name = game.value(QStringLiteral("n")).toString();
+        const QString id = game.value(QStringLiteral("id")).toString();
+        if (name.isEmpty())
+            continue;
+        names.append(name);
+        if (!id.isEmpty())
+            m_gameNames.insert(id, name);
+    }
+    ServerCategories::setKnownGames(names);
+    wlog(QStringLiteral("organizer"), QStringLiteral("knows %1 games by name").arg(ServerCategories::knownGameCount()));
+}
+
+void ServerOrganizerPlugin::ensureProfiles(const QStringList &guildIds, std::function<void()> then)
+{
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
+    for (const QString &guildId : guildIds) {
+        const QJsonObject profile = m_profiles.value(guildId);
+        const qint64 at = qint64(profile.value(QStringLiteral("at")).toDouble());
+        const qint64 keep = profile.value(QStringLiteral("failed")).toBool() ? ProfileRetrySecs : ProfileKeepSecs;
+        if (!profile.isEmpty() && now - at < keep)
+            continue;
+        if (!m_profileQueue.contains(guildId))
+            m_profileQueue.append(guildId);
+    }
+    m_afterProfiles.append(std::move(then));
+    if (m_fetchingProfiles)
+        return;   // the run under way picks these up and then calls everyone back
+    m_profileTotal = int(m_profileQueue.size());
+    if (m_profileTotal == 0) {
+        const QList<std::function<void()>> waiting = std::exchange(m_afterProfiles, {});
+        for (const auto &callback : waiting)
+            callback();
+        return;
+    }
+    m_fetchingProfiles = true;
+    fetchNextProfile();
+}
+
+void ServerOrganizerPlugin::fetchNextProfile()
+{
+    if (!running()) {
+        m_fetchingProfiles = false;
+        m_profileQueue.clear();
+        m_afterProfiles.clear();
+        return;
+    }
+    if (m_profileQueue.isEmpty()) {
+        m_fetchingProfiles = false;
+        QJsonObject saved;
+        for (auto it = m_profiles.constBegin(); it != m_profiles.constEnd(); ++it)
+            saved.insert(it.key(), it.value());
+        saveObject(QStringLiteral("profiles"), saved);
+        const QList<std::function<void()>> waiting = std::exchange(m_afterProfiles, {});
+        for (const auto &callback : waiting)
+            callback();
+        return;
+    }
+
+    const QString guildId = m_profileQueue.first();
+    const int done = m_profileTotal - int(m_profileQueue.size());
+    setStatus(QStringLiteral("Reading your servers' profiles for the games they play and their tags (%1 of %2)...")
+                  .arg(done + 1)
+                  .arg(std::max(m_profileTotal, done + 1)),
+              false);
+
+    const auto next = [this](int waitMs) {
+        QTimer::singleShot(waitMs, [this]() { fetchNextProfile(); });
+    };
+    context()->rest()->fetchGuildProfile(
+        guildId,
+        [this, guildId, next](const QJsonObject &payload) {
+            QJsonObject profile;
+            QJsonArray traits;
+            for (const QJsonValue &value : payload.value(QStringLiteral("traits")).toArray()) {
+                const QString label = value.toObject().value(QStringLiteral("label")).toString().trimmed();
+                if (!label.isEmpty())
+                    traits.append(label);
+            }
+            QJsonArray games;
+            for (const QJsonValue &value : payload.value(QStringLiteral("game_application_ids")).toArray())
+                games.append(value.isString() ? value.toString() : QString::number(qint64(value.toDouble())));
+            // Some answers carry the games themselves too; their names help
+            // with a game Discord's list does not have.
+            QJsonObject names;
+            for (const QJsonValue &value : payload.value(QStringLiteral("games")).toArray()) {
+                const QJsonObject game = value.toObject();
+                const QString id = game.value(QStringLiteral("id")).toString();
+                const QString name = game.value(QStringLiteral("name")).toString();
+                if (!id.isEmpty() && !name.isEmpty())
+                    names.insert(id, name);
+            }
+            int activity = 0;
+            const QJsonObject played = payload.value(QStringLiteral("game_activity")).toObject();
+            for (auto it = played.constBegin(); it != played.constEnd(); ++it)
+                activity = std::max(activity, it.value().toObject().value(QStringLiteral("activity_level")).toInt());
+            profile.insert(QStringLiteral("traits"), traits);
+            profile.insert(QStringLiteral("games"), games);
+            if (!names.isEmpty())
+                profile.insert(QStringLiteral("names"), names);
+            profile.insert(QStringLiteral("activity"), activity);
+            const QString description = payload.value(QStringLiteral("description")).toString();
+            if (!description.isEmpty())
+                profile.insert(QStringLiteral("description"), description);
+            profile.insert(QStringLiteral("at"), double(QDateTime::currentSecsSinceEpoch()));
+            m_profiles.insert(guildId, profile);
+            m_profileQueue.removeAll(guildId);
+            next(ProfileGapMs);
+        },
+        [this, guildId, next](const RestClient::Error &error) {
+            if (error.httpStatus == 429) {
+                // Waited out and asked again.
+                const double retry = error.body.value(QStringLiteral("retry_after")).toDouble(5.0);
+                wlog(QStringLiteral("organizer"), QStringLiteral("profiles rate limited, waiting %1 s").arg(retry));
+                next(int(std::clamp(retry, 1.0, 120.0) * 1000) + 250);
+                return;
+            }
+            // No profile to be had - a server without one, or one Discord
+            // keeps to itself. Remembered, so it is not asked for again today.
+            m_profiles.insert(guildId, QJsonObject{{QStringLiteral("failed"), true},
+                                                   {QStringLiteral("at"), double(QDateTime::currentSecsSinceEpoch())}});
+            m_profileQueue.removeAll(guildId);
+            next(ProfileGapMs);
+        });
 }
 
 // ---------------------------------------------------------------------------
@@ -640,10 +850,11 @@ QList<RailLayout::Entry> ServerOrganizerPlugin::railFromJson(const QJsonArray &a
 // Settings panel
 // ---------------------------------------------------------------------------
 
-void ServerOrganizerPlugin::setStatus(const QString &text)
+void ServerOrganizerPlugin::setStatus(const QString &text, bool log)
 {
     m_status = text;
-    wlog(QStringLiteral("organizer"), text);
+    if (log)
+        wlog(QStringLiteral("organizer"), text);
     refreshPanel();
 }
 

@@ -62,6 +62,8 @@ private:
     // Asks Discord for the directory. `notice` replaces the loading line once
     // it is in, so "Saved" survives the reload a save causes.
     void load(const QString &notice = QString());
+    // When the directory is refused: the badges on the profile instead.
+    void loadFromProfile(int directoryStatus);
     void rebuildGrids();
     void select(int badgeId);
     void showDetail();

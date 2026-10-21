@@ -202,6 +202,12 @@ public:
     void updateBadgeSettings(const QList<int> &displayOrder, const QList<int> &hiddenBadges, ObjectHandler onOk,
                              ErrorHandler onError);
 
+    // GET /guilds/{id}/profile - the server's own card: its description, the
+    // up to five "traits" its admins tagged it with, the games it is linked to
+    // (game_application_ids) and how much each is played there
+    // (game_activity: {app id: {activity_level, activity_score}}).
+    void fetchGuildProfile(const QString &guildId, ObjectHandler onOk, ErrorHandler onError);
+
     // POST /channels/{id}/invites - makes a share link for a channel.
     void createInvite(const QString &channelId, ObjectHandler onOk, ErrorHandler onError);
 

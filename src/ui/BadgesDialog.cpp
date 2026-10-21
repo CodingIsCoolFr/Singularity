@@ -10,6 +10,7 @@
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QListWidget>
 #include <QLocale>
 #include <QPainter>
@@ -428,13 +429,61 @@ void BadgesDialog::load(const QString &notice)
         [this, guard](const RestClient::Error &error) {
             if (!guard)
                 return;
-            wlog(QStringLiteral("badges"), QStringLiteral("badge directory refused: HTTP %1 %2")
+            wlog(QStringLiteral("badges"), QStringLiteral("badge directory refused: HTTP %1 %2 %3")
                                                .arg(error.httpStatus)
-                                               .arg(error.message.left(160)));
-            m_status->setText(QStringLiteral("Discord did not send the badges (%1). The badge directory is still "
-                                             "being rolled out, so this account may not have it yet.")
-                                  .arg(error.message.isEmpty() ? QString::number(error.httpStatus)
-                                                               : error.message.left(120)));
+                                               .arg(error.message.left(160),
+                                                    QString::fromUtf8(QJsonDocument(error.body).toJson(
+                                                                          QJsonDocument::Compact))
+                                                        .left(300)));
+            loadFromProfile(error.httpStatus);
+        });
+}
+
+void BadgesDialog::loadFromProfile(int directoryStatus)
+{
+    // The directory is still being rolled out, client by client. The badges
+    // on the profile itself have been there for years, so they are shown
+    // instead: every badge with its picture and Discord's words for it, just
+    // no tiers, progress or customizing.
+    QPointer<BadgesDialog> guard(this);
+    m_rest->fetchUserProfile(
+        m_userId, QString(),
+        [this, guard, directoryStatus](const QJsonObject &payload) {
+            if (!guard)
+                return;
+            m_order.clear();
+            m_badges.clear();
+            int spare = 1000;
+            for (const QJsonValue &value : payload.value(QStringLiteral("badges")).toArray()) {
+                const QJsonObject source = value.toObject();
+                int id = badgeIdFromProfile(source.value(QStringLiteral("id")).toString());
+                if (id == 0 || m_badges.contains(id))
+                    id = spare++;
+                QJsonObject badge{
+                    {QStringLiteral("badge_id"), id},
+                    {QStringLiteral("name"), source.value(QStringLiteral("description"))},
+                    {QStringLiteral("icon"), source.value(QStringLiteral("icon"))},
+                    {QStringLiteral("owned"), true},
+                };
+                m_badges.insert(id, badge);
+                m_order.append(id);
+            }
+            m_loaded = false;   // nothing here to customize
+            m_customize->setEnabled(false);
+            m_status->setText(QStringLiteral("Discord's badge page did not open for this client (HTTP %1), so these "
+                                             "are the badges on the profile, without tiers or progress.")
+                                  .arg(directoryStatus));
+            m_status->setVisible(true);
+            wlog(QStringLiteral("badges"), QStringLiteral("showing %1 badges from the profile instead").arg(m_order.size()));
+            rebuildGrids();
+        },
+        [this, guard, directoryStatus](const RestClient::Error &error) {
+            if (!guard)
+                return;
+            m_status->setText(QStringLiteral("Discord did not send the badges (HTTP %1, then %2 for the profile).")
+                                  .arg(directoryStatus)
+                                  .arg(error.httpStatus));
+            m_status->setVisible(true);
         });
 }
 
@@ -514,7 +563,7 @@ void BadgesDialog::select(int badgeId)
         grid->blockSignals(false);
     }
     showDetail();
-    if (m_isSelf && badgeId != 0)
+    if (m_isSelf && m_loaded && badgeId != 0)
         fetchProgress(badgeId);
 }
 

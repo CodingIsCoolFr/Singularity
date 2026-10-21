@@ -13,6 +13,8 @@
 #include "ui/RailLayout.h"
 
 #include <QCoreApplication>
+#include <QFile>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QSettings>
 #include <QTemporaryDir>
@@ -193,6 +195,32 @@ static void expectCategory(const ServerCategories::Facts &f, const char *want, c
         std::printf("     %-14s %s\n", qPrintable(verdict.categoryId), qPrintable(verdict.reason));
 }
 
+static void gameTests()
+{
+    using ServerCategories::gamesNamedIn;
+    // A slice of Discord's list, with a few that are also everyday words.
+    ServerCategories::setKnownGames({"Project Zomboid", "Sons of the Forest", "The Forest", "s&box", "Subnautica",
+                                     "Schedule I", "RV There Yet?", "Grounded", "Lethal Company", "VRChat",
+                                     "Call of Duty", "Rocket League", "Matrix", "Chill", "Survival", "Social",
+                                     "Minecraft", "VALORANT", "Beat Saber"});
+
+    expect(gamesNamedIn("Subnautica (Official)") == QStringList{"Subnautica"}, "Subnautica (Official) is Subnautica");
+    expect(gamesNamedIn("Sons Of | The Forest") == QStringList{"Sons of the Forest"},
+           "Sons Of | The Forest is Sons of the Forest, not also The Forest");
+    expect(gamesNamedIn("Unofficial Lethal Company Community") == QStringList{"Lethal Company"},
+           "the words around a game's name are ignored");
+    expect(gamesNamedIn("RV There Yet? Official Server") == QStringList{"RV There Yet?"}, "punctuation in names");
+    expect(gamesNamedIn("s&box") == QStringList{"s&box"}, "s&box");
+    expect(gamesNamedIn("Call of Duty Zombies") == QStringList{"Call of Duty"}, "a game inside a longer name");
+    expect(gamesNamedIn("Matrix of Minds").isEmpty(), "a short game name inside a longer one does not count");
+    expect(gamesNamedIn("ChillZone | Active").isEmpty(), "a game called Chill is not every chill server");
+    expect(gamesNamedIn("Social").isEmpty(), "nor is one called Social");
+    expect(gamesNamedIn("Survival Friends").isEmpty(), "an everyday word is not a game inside a name");
+    expect(ServerCategories::isVrGame("VRChat") && ServerCategories::isVrGame("Beat Saber")
+               && !ServerCategories::isVrGame("Subnautica"),
+           "VR games are told apart");
+}
+
 static void categoryTests()
 {
     using ServerCategories::fold;
@@ -235,6 +263,66 @@ static void categoryTests()
     expectCategory(facts("Active India", {"general", "chat"}, 20000, 0, {"COMMUNITY"}), "communities",
                    "the same server with nobody in voice is just a Community");
     expectCategory(facts("zzz", {"general"}, 200), "other", "nothing to go on is Other");
+
+    // What went wrong on 21 October, with the games list known.
+    expectCategory(facts("Project Zomboid", {"general", "voice", "mods"}, 0, 3), "gaming",
+                   "Project Zomboid with three people in voice is Gaming, not Social");
+    expectCategory(facts("Sons Of | The Forest", {"general"}, 0, 1), "gaming", "Sons of the Forest is Gaming");
+    expectCategory(facts("Subnautica (Official)", {"announcements", "support", "bug-reports", "faq", "feedback"},
+                         90000, 0, {"COMMUNITY", "VERIFIED"}),
+                   "gaming", "an official game server is Gaming, not Apps & Support");
+    expectCategory(facts("Schedule I Official", {"general", "suggestions", "bug-reports"}, 40000, 1, {"COMMUNITY"}),
+                   "gaming", "Schedule I Official is Gaming");
+    expectCategory(facts("VRChat", {"general", "avatars", "worlds"}, 100000, 2, {"COMMUNITY"}), "vr", "VRChat is VR");
+    expectCategory(facts("Standable", {"support", "announcements"}, 3000), "vr", "Standable is VR");
+    expectCategory(facts("XSOverlay", {"support", "faq"}, 8000), "vr", "XSOverlay is VR");
+    expectCategory(facts("Paper_Tracker", {"general", "setup-help"}, 2000), "vr", "Paper_Tracker is VR");
+    expectCategory(facts("Vencord 🎃", {"support", "plugin-development", "faq"}, 60000, 0, {"COMMUNITY"}), "support",
+                   "a client mod's server is Apps & Support");
+    expectCategory(facts("Daniel's Mod", {"general", "downloads"}, 900), "support", "a mod's server is Apps & Support");
+    expectCategory(facts("Matrix of Minds", {"general", "voice"}, 20), "friends",
+                   "Matrix of Minds is not the game called Matrix");
+
+    ServerCategories::Facts crimson = facts("King Crimson", {"general", "showcase"}, 400);
+    crimson.linkedGames = {"VRChat"};
+    expectCategory(crimson, "vr", "a server whose profile is linked to VRChat is VR");
+    ServerCategories::Facts kitten = facts("Kitten Space Agency", {"general", "screenshots"}, 15000, 0, {"COMMUNITY"});
+    kitten.linkedGames = {"a game"};
+    expectCategory(kitten, "gaming", "a game Discord's list does not have is still a game through the profile");
+    ServerCategories::Facts goth = facts("Goth", gothChannels, 1208, 6, {"COMMUNITY"});
+    goth.linkedGames = {"VALORANT", "Minecraft"};
+    expectCategory(goth, "social", "a hangout that plays games is still a hangout");
+    ServerCategories::Facts juice = facts("Library of Juice WRLD", {"general", "unreleased"}, 3000, 0, {"COMMUNITY"});
+    juice.traits = {"Music", "Hip Hop", "Leaks"};
+    expectCategory(juice, "music", "a profile tagged Music and Hip Hop is Music");
+}
+
+// Every server in a file, one "name<TAB>usual voice" per line, sorted with
+// Discord's real list of games: what the organizer would do with names alone.
+static int sortFile(const QString &namesPath, const QString &gamesPath)
+{
+    QFile games(gamesPath);
+    if (games.open(QIODevice::ReadOnly)) {
+        QStringList names;
+        const QJsonObject catalog = QJsonDocument::fromJson(games.readAll()).object();
+        for (auto it = catalog.constBegin(); it != catalog.constEnd(); ++it)
+            names.append(it.value().toObject().value(QStringLiteral("n")).toString());
+        ServerCategories::setKnownGames(names);
+    }
+    std::printf("%d games known\n", ServerCategories::knownGameCount());
+    QFile list(namesPath);
+    if (!list.open(QIODevice::ReadOnly | QIODevice::Text))
+        return 1;
+    for (const QString &line : QString::fromUtf8(list.readAll()).split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+        const QStringList parts = line.split(QLatin1Char('\t'));
+        ServerCategories::Facts f;
+        f.name = parts.value(0).trimmed();
+        f.usualVoice = parts.value(1).toDouble();
+        const ServerCategories::Verdict verdict = ServerCategories::classify(f);
+        std::printf("%-12s %-50s %s\n", qPrintable(verdict.categoryId), f.name.left(50).toUtf8().constData(),
+                    qPrintable(verdict.reason));
+    }
+    return 0;
 }
 
 static void cacheTests()
@@ -264,7 +352,11 @@ int main(int argc, char **argv)
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, scratch.path());
     Logger::useSideFile();
 
+    if (argc == 4 && QString::fromLocal8Bit(argv[1]) == QLatin1String("--sort"))
+        return sortFile(QString::fromLocal8Bit(argv[2]), QString::fromLocal8Bit(argv[3]));
+
     railTests();
+    gameTests();
     categoryTests();
     cacheTests();
 
