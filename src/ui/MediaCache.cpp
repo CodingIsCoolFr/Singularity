@@ -5,8 +5,10 @@
 #include "core/Logger.h"
 #include "ui/Theme.h"
 
+#include <QBuffer>
 #include <QCryptographicHash>
 #include <QElapsedTimer>
+#include <QImageReader>
 #include <QNetworkReply>
 #include <QPainter>
 #include <QPainterPath>
@@ -62,6 +64,10 @@ constexpr qint64 MaxOriginalBytes = 16 * 1024 * 1024;
 // leaves room for a window scaled up a little, and costs 57 per cent less
 // memory per picture than 640 did.
 constexpr int StoreLongEdge = 420;
+
+// The size an SVG is drawn at: the largest anything shows one, a badge in its
+// own window, with room for a display scaled up.
+constexpr int SvgPixels = 256;
 
 // The circle drawn behind someone's initials when they have no picture.
 //
@@ -217,11 +223,14 @@ bool looksLikeAPicture(const QUrl &url)
 
     const QString suffix = path.mid(dot + 1);
 
+    // SVG too: the levelled badges (Account Age, Game Time, ...) are drawn
+    // as SVGs on cdn.discordapp.com/assets/content/, and were left blank.
     static const QSet<QString> pictures = {
         QStringLiteral("png"),  QStringLiteral("jpg"),  QStringLiteral("jpeg"),
         QStringLiteral("gif"),  QStringLiteral("webp"), QStringLiteral("bmp"),
         QStringLiteral("apng"), QStringLiteral("avif"), QStringLiteral("jfif"),
         QStringLiteral("ico"),  QStringLiteral("tif"),  QStringLiteral("tiff"),
+        QStringLiteral("svg"),
     };
 
     return pictures.contains(suffix);
@@ -311,12 +320,31 @@ void MediaCache::fetch(const QUrl &url)
             clock.start();
 
             QImage picture;
-            const bool decoded = picture.loadFromData(payload);
+            bool decoded = false;
             bool moves = false;
             bool shrank = false;
             QSize original;
 
-            if (decoded) {
+            // A drawing rather than a picture has no size of its own worth
+            // keeping - a badge's says 24 by 24 - so it is drawn at the
+            // largest size it is ever shown at and stays sharp there.
+            const bool drawing = url.path().endsWith(QLatin1String(".svg"), Qt::CaseInsensitive)
+                || payload.left(512).contains("<svg");
+            if (drawing) {
+                QBuffer buffer;
+                buffer.setData(payload);
+                buffer.open(QIODevice::ReadOnly);
+                QImageReader reader(&buffer, "svg");
+                QSize size = reader.size();
+                if (!size.isValid() || size.isEmpty())
+                    size = QSize(SvgPixels, SvgPixels);
+                size.scale(SvgPixels, SvgPixels, Qt::KeepAspectRatio);
+                reader.setScaledSize(size);
+                picture = reader.read();
+                decoded = !picture.isNull();
+                if (decoded)
+                    original = picture.size();
+            } else if ((decoded = picture.loadFromData(payload))) {
                 original = picture.size();
                 // imageCount() is 0 for a GIF until its frames are walked, so
                 // the old "count > 1" test stored every animation as a single

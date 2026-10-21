@@ -221,9 +221,10 @@ int main(int argc, char *argv[])
     // Looks again while the program stays open, every hour, as Discord does.
     UpdateFlow::watch();
 
-    // The build number Discord reads to decide which features this client
-    // gets. Last time's at once; the current one a moment later.
-    DiscordIdentity::refreshClientBuild();
+    // The version numbers Discord reads to decide which features this client
+    // gets. Last time's at once; the current ones a moment later, and every
+    // six hours after.
+    DiscordIdentity::refreshIdentity();
 
     RestClient rest;
     MessageStore store;

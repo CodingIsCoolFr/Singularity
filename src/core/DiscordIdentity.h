@@ -11,22 +11,24 @@ namespace DiscordIdentity {
 
 constexpr int ApiVersion = 10;
 
-// Discord's web client build number, sent in the super properties of every
-// request and of IDENTIFY. Discord reads it to decide what a client may use:
-// a feature still being rolled out answers 404 to builds older than the one
-// it needs. The badge directory did exactly that (21 October), against the
-// 419246 this had carried since the first version - while the phone app,
-// on a current build, had it.
+// Who this client says it is: Discord's desktop app, at its current version.
+// Discord reads the build number in the super properties of every request
+// and of IDENTIFY to decide what a client may use, and a feature still being
+// rolled out answers 404 to builds older than the one it needs. The badge
+// directory did exactly that (21 October), against the 419246 and 1.0.9202
+// this had carried since the first version - while the phone app had it.
 //
-// Never lower than the build this version was made against. Start-up hands
-// in the one seen last time, and refreshClientBuild() keeps it current.
+// So nothing here is meant to be edited by hand again. refreshIdentity(),
+// at start and every six hours after, keeps each number current:
+//   web build        discord.com/app (GLOBAL_ENV BUILD_NUMBER)
+//   desktop version  Discord's update server (distributions manifest)
+//   Chrome, Electron the official app's Discord.exe, when it is installed
+//   native build     the official app's own log, when it is installed
+//   Windows          this computer's
+// Each is remembered for the next start and only ever moves forward; the
+// values compiled in are a floor, for a first start with no network.
 int clientBuildNumber();
-void setClientBuildNumber(int build);
-
-// Asks discord.com which build its web app is on now, keeps it for this run
-// and for the next start (AppConfig "identity/clientBuild"). Does nothing
-// when the page cannot be read; the build already in use stays.
-void refreshClientBuild();
+void refreshIdentity();
 
 QString userAgent();
 

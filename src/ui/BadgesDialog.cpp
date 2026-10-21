@@ -2,6 +2,7 @@
 
 #include "core/Logger.h"
 #include "core/RestClient.h"
+#include "ui/FlowLayout.h"
 #include "ui/MediaCache.h"
 #include "ui/Theme.h"
 
@@ -352,9 +353,8 @@ BadgesDialog::BadgesDialog(RestClient *rest, const QString &userId, const QStrin
     // Every tier, the ones not reached yet faded.
     m_tierHost = new QWidget(card);
     m_tierHost->setStyleSheet(QStringLiteral("background: transparent;"));
-    m_tierRow = new QHBoxLayout(m_tierHost);
+    m_tierRow = new FlowLayout(m_tierHost, 0, 10);
     m_tierRow->setContentsMargins(0, 10, 0, 0);
-    m_tierRow->setSpacing(10);
     detail->addWidget(m_tierHost);
     detail->addStretch(1);
 
@@ -637,9 +637,9 @@ void BadgesDialog::showDetail()
         meta << QStringLiteral("Played The Last Meadow Online");
     } else {
         const QDateTime when = obtainedAt(badge);
+        // Written the way the profile card writes its dates.
         meta << (when.isValid() && m_selected != Staff
-                     ? QStringLiteral("Unlocked %1").arg(QLocale().toString(when.toLocalTime().date(),
-                                                                            QLocale::ShortFormat))
+                     ? QStringLiteral("Unlocked %1").arg(when.toLocalTime().toString(QStringLiteral("MMM d, yyyy")))
                      : QStringLiteral("Unlocked"));
     }
     const int rarity = shown.value(QStringLiteral("rarity")).toInt(badge.value(QStringLiteral("rarity")).toInt());
@@ -708,7 +708,6 @@ void BadgesDialog::showDetail()
             if (owned && tiers.at(i).toObject().value(QStringLiteral("key")) == current.value(QStringLiteral("key")))
                 reached = i;
         }
-        m_tierRow->addStretch(1);
         for (int i = 0; i < tiers.size(); ++i) {
             const QJsonObject tier = tiers.at(i).toObject();
             auto *column = new QWidget(m_tierHost);
@@ -727,9 +726,9 @@ void BadgesDialog::showDetail()
             columnLayout->addWidget(label);
             const QString milestone = tier.value(QStringLiteral("milestone_text")).toString();
             column->setToolTip(milestone.isEmpty() ? label->text() : QStringLiteral("%1: %2").arg(label->text(), milestone));
+            column->setFixedWidth(84);
             m_tierRow->addWidget(column);
         }
-        m_tierRow->addStretch(1);
     }
 }
 

@@ -8,6 +8,7 @@
 #include <QPointer>
 #include <QUrl>
 
+class FlowLayout;
 class QListWidget;
 class QListWidgetItem;
 class QProgressBar;
@@ -109,8 +110,10 @@ private:
     QLabel *m_progressText = nullptr;
     QLabel *m_progressTo = nullptr;
     QLabel *m_instructions = nullptr;
+    // Wraps: Account Age alone has nine tiers, and in one row they pushed the
+    // whole card wider than the window, cutting off its text on the right.
     QWidget *m_tierHost = nullptr;
-    QHBoxLayout *m_tierRow = nullptr;
+    FlowLayout *m_tierRow = nullptr;
 
     // Pictures on screen that may still be downloading. Drawn again when the
     // cache says one has landed; a label rebuilt since is simply gone.
