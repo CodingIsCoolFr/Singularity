@@ -18,8 +18,36 @@ namespace {
 // with the second. Ping and pong are the keepalive.
 constexpr quint32 OpcodeHandshake = 0;
 constexpr quint32 OpcodeFrame = 1;
+constexpr quint32 OpcodeClose = 2;
 constexpr quint32 OpcodePing = 3;
 constexpr quint32 OpcodePong = 4;
+
+// Discord's RPC close code for an ordinary goodbye.
+constexpr int CloseNormal = 1000;
+
+// You, as Discord's client describes you to a game: its RPC serializer sends
+// exactly these. The gateway's copy of the account also has your email
+// address and phone number, and every game on the pipe used to get them.
+QJsonObject publicUser(const QJsonObject &user)
+{
+    const QString discriminator = user.value(QStringLiteral("discriminator")).toString();
+    const QJsonValue globalName = user.value(QStringLiteral("global_name"));
+    const QJsonValue avatar = user.value(QStringLiteral("avatar"));
+    const QJsonValue decoration = user.value(QStringLiteral("avatar_decoration_data"));
+    const int flags = user.value(QStringLiteral("public_flags")).toInt(user.value(QStringLiteral("flags")).toInt());
+    return QJsonObject{
+        {QStringLiteral("id"), user.value(QStringLiteral("id")).toString()},
+        {QStringLiteral("username"), user.value(QStringLiteral("username")).toString()},
+        {QStringLiteral("discriminator"), discriminator.isEmpty() ? QStringLiteral("0") : discriminator},
+        {QStringLiteral("global_name"), globalName.isString() ? globalName : QJsonValue(QJsonValue::Null)},
+        {QStringLiteral("avatar"), avatar.isString() ? avatar : QJsonValue(QJsonValue::Null)},
+        {QStringLiteral("avatar_decoration_data"), decoration.isObject() ? decoration : QJsonValue(QJsonValue::Null)},
+        {QStringLiteral("bot"), false},
+        {QStringLiteral("flags"), flags},
+        {QStringLiteral("public_flags"), flags},
+        {QStringLiteral("premium_type"), 0},
+    };
+}
 
 // A timestamp under this is seconds. The pipe speaks seconds. The gateway
 // speaks milliseconds, and sending one as the other makes the clock show
@@ -129,6 +157,18 @@ DiscordIpcServer::DiscordIpcServer(QObject *parent)
     connect(&m_server, &QLocalServer::newConnection, this, &DiscordIpcServer::onNewConnection);
 }
 
+DiscordIpcServer::~DiscordIpcServer()
+{
+    // The pipes are owned by m_server and close as it goes, each saying so
+    // through disconnected(). Members go in reverse, so m_clients was gone by
+    // then and onDisconnected looked a socket up in freed memory: Singularity
+    // crashed on every exit, each update included. Let go of them first.
+    for (auto it = m_clients.cbegin(); it != m_clients.cend(); ++it)
+        disconnect(it.key(), nullptr, this, nullptr);
+    m_clients.clear();
+    m_server.close();
+}
+
 void DiscordIpcServer::start()
 {
     if (m_server.isListening())
@@ -139,6 +179,16 @@ void DiscordIpcServer::start()
     // free slot rather than kicking it off.
     for (int i = 0; i < 10; ++i) {
         const QString name = QStringLiteral("discord-ipc-%1").arg(i);
+
+        // Windows lets a second server take a pipe name that is already
+        // served, so listen() alone never noticed the official client: both
+        // served discord-ipc-0, and a game reached either at random. A name
+        // nobody serves is one WaitNamedPipe calls missing; anything else
+        // means somebody is there. It only looks; it does not connect.
+        const std::wstring path = (QStringLiteral("\\\\.\\pipe\\") + name).toStdWString();
+        if (WaitNamedPipeW(path.c_str(), 1) || GetLastError() != ERROR_FILE_NOT_FOUND)
+            continue;
+
         if (m_server.listen(name)) {
             wlog(QStringLiteral("presence"),
                  QStringLiteral("listening for a game's activity on %1").arg(name));
@@ -254,9 +304,26 @@ void DiscordIpcServer::handleFrame(QLocalSocket *socket, quint32 opcode, const Q
 
     if (opcode == OpcodeHandshake) {
         it->applicationId = message.value(QStringLiteral("client_id")).toString();
-        QJsonObject user = m_user;
-        if (!user.contains(QStringLiteral("discriminator")))
-            user.insert(QStringLiteral("discriminator"), QStringLiteral("0"));
+
+        // Not signed in yet: the first seconds after Singularity starts, which
+        // is exactly when a game that was already running reconnects after an
+        // update. Answering READY then sent a user with no id, and Discord's
+        // Game SDK does not survive that: it took VRChat down with it on every
+        // update. Discord's client never answers without a user. It closes
+        // with "User logged out", and the game tries again a little later.
+        if (m_user.value(QStringLiteral("id")).toString().isEmpty()) {
+            wlog(QStringLiteral("presence"),
+                 QStringLiteral("a game connected before sign-in finished (%1); told to come back, as Discord does")
+                     .arg(it->applicationId));
+            sendFrame(socket, OpcodeClose, QJsonObject{
+                {QStringLiteral("code"), CloseNormal},
+                {QStringLiteral("message"), QStringLiteral("User logged out")},
+            });
+            // May say disconnected() at once, which removes the client.
+            socket->disconnectFromServer();
+            return;
+        }
+
         sendFrame(socket, OpcodeFrame, QJsonObject{
             {QStringLiteral("cmd"), QStringLiteral("DISPATCH")},
             {QStringLiteral("evt"), QStringLiteral("READY")},
@@ -270,7 +337,7 @@ void DiscordIpcServer::handleFrame(QLocalSocket *socket, quint32 opcode, const Q
                       {QStringLiteral("api_endpoint"), QStringLiteral("//discord.com/api")},
                       {QStringLiteral("environment"), QStringLiteral("production")},
                   }},
-                 {QStringLiteral("user"), user},
+                 {QStringLiteral("user"), publicUser(m_user)},
              }},
         });
         wlog(QStringLiteral("presence"),

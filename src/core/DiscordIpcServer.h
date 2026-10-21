@@ -22,6 +22,7 @@ class DiscordIpcServer : public QObject
 
 public:
     explicit DiscordIpcServer(QObject *parent = nullptr);
+    ~DiscordIpcServer() override;
 
     void start();
     void setUser(const QJsonObject &user);
