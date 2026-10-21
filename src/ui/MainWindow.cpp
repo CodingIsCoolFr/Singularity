@@ -1,6 +1,7 @@
 #include "ui/MainWindow.h"
 
 #include "core/AppConfig.h"
+#include "core/DiscordAppCache.h"
 #include "core/GameActivity.h"
 #include "core/Logger.h"
 #include "core/RestClient.h"
@@ -623,6 +624,24 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
                      QStringLiteral("mention search \"%1\" failed: %2").arg(query, error.message.left(120)));
             });
     });
+
+    // The server rail, lent to plugins that arrange it (the server organizer).
+    // A plugin's arrangement goes through the same path as a drag: saved
+    // here, drawn, and sent to Discord shortly after.
+    {
+        PluginHost::RailHooks hooks;
+        hooks.ready = [this]() { return m_railSynced; };
+        hooks.entries = [this]() { return m_rail.entries(); };
+        hooks.replace = [this](const QList<RailLayout::Entry> &entries, const QString &why) {
+            wlog(QStringLiteral("rail"), why);
+            m_rail.setEntries(entries);
+            railChangedByUser();
+            m_rebuildingRail = true;
+            populateGuildRail();   // drops servers you are not in, adds missing ones, saves
+            m_rebuildingRail = false;
+        };
+        m_plugins->setRailHooks(std::move(hooks));
+    }
 
     connect(m_plugins, &PluginHost::repaintRequested, this, [this]() { scheduleRender(); });
     connect(m_plugins, &PluginHost::pluginLogged, this, [this](const QString &id, const QString &line) {
@@ -2406,6 +2425,8 @@ void MainWindow::onGatewayReady(const QJsonObject &payload)
     // Discord's arrangement of the rail replaces whatever this machine had.
     applyDiscordFolders(settingsProto, false);
     populateGuildRail();
+    if (m_railSynced)
+        m_plugins->runServerRail({});
 
     // Say it again now that the session exists, using the status Discord has
     // stored for the account rather than the one this machine last saw.
@@ -2711,6 +2732,8 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
             m_rebuildingRail = true;
             populateGuildRail();
             m_rebuildingRail = false;
+            if (m_railSynced)
+                m_plugins->runServerRail({guildId});
             for (auto it = m_invites.constBegin(); it != m_invites.constEnd(); ++it) {
                 if (it.value().guildId == guildId)
                     redrawInviteWaiters(it.key());
@@ -3308,11 +3331,17 @@ void MainWindow::populateGuildRail()
 
 void MainWindow::saveRailOrderFromView()
 {
-    // Read the tiles back in the order they now sit, and rebuild the saved
-    // arrangement from that. A server dragged under an open folder joins it,
-    // which is the behaviour people expect from dragging.
+    // Read the tiles back in the order they now sit. Only a fallback now:
+    // drops on the rail are handled in handleRailDrag, which changes the
+    // arrangement itself and never moves a row.
+    //
+    // A closed folder has no rows for its servers, so it keeps the ones it
+    // had. It used to be rebuilt empty, which threw it away, and the rail
+    // went to Discord without it. A server stays in the folder it was drawn
+    // in, rather than joining whatever folder happens to sit above it - which
+    // swallowed every loose server under an open folder.
     QList<RailLayout::Entry> rebuilt;
-    QString currentFolder;
+    QHash<QString, int> folderAt;   // folder id -> its place in `rebuilt`
 
     for (int row = 0; row < m_guildRail->count(); ++row) {
         QListWidgetItem *item = m_guildRail->item(row);
@@ -3321,27 +3350,27 @@ void MainWindow::saveRailOrderFromView()
 
         if (kind == QLatin1String("folder")) {
             const RailLayout::Folder *existing = m_rail.folder(id);
+            if (!existing)
+                continue;
             RailLayout::Entry entry;
             entry.isFolder = true;
-            entry.folder.id = id;
-            entry.folder.name = existing ? existing->name : QStringLiteral("Folder");
-            entry.folder.open = existing ? existing->open : true;
+            entry.folder = *existing;
+            if (existing->open)
+                entry.folder.guildIds.clear();   // its rows follow, in their new order
+            folderAt.insert(id, int(rebuilt.size()));
             rebuilt.append(entry);
-            currentFolder = entry.folder.open ? id : QString();
             continue;
         }
 
         if (id.isEmpty() || kind == QLatin1String("unreadDm"))
             continue;   // direct messages, and the unread ones under them
 
-        // Only an open folder can swallow the tiles drawn under it.
-        if (!currentFolder.isEmpty() && !rebuilt.isEmpty() && rebuilt.last().isFolder
-            && rebuilt.last().folder.id == currentFolder) {
-            rebuilt.last().folder.guildIds.append(id);
+        const QString drawnIn = item->data(FolderRole).toString();
+        if (folderAt.contains(drawnIn)) {
+            rebuilt[folderAt.value(drawnIn)].folder.guildIds.append(id);
             continue;
         }
 
-        currentFolder.clear();
         RailLayout::Entry entry;
         entry.guildId = id;
         rebuilt.append(entry);
@@ -3372,8 +3401,14 @@ void MainWindow::showRailMenu(const QPoint &where)
     if (kind == QLatin1String("folder")) {
         QAction *rename = menu.addAction(QStringLiteral("Rename folder..."));
         QAction *dissolve = menu.addAction(QStringLiteral("Remove folder (keep servers)"));
+        menu.addSeparator();
+        QAction *restore = menu.addAction(QStringLiteral("Restore folders from the Discord app..."));
 
         QAction *chosen = menu.exec(m_guildRail->mapToGlobal(where));
+        if (chosen == restore) {
+            restoreRailFromDiscordApp();
+            return;
+        }
         if (chosen == rename) {
             const RailLayout::Folder *folder = m_rail.folder(id);
             bool ok = false;
@@ -3432,6 +3467,7 @@ void MainWindow::showRailMenu(const QPoint &where)
     QAction *takeOut = nullptr;
     if (!inFolder.isEmpty())
         takeOut = menu.addAction(QStringLiteral("Take out of folder"));
+    QAction *restore = menu.addAction(QStringLiteral("Restore folders from the Discord app..."));
 
     menu.addSeparator();
     QAction *markRead = menu.addAction(QStringLiteral("Mark As Read"));
@@ -3454,6 +3490,10 @@ void MainWindow::showRailMenu(const QPoint &where)
     }
     if (chosen == leave) {
         leaveGuild(id);
+        return;
+    }
+    if (chosen == restore) {
+        restoreRailFromDiscordApp();
         return;
     }
 
@@ -3505,6 +3545,7 @@ bool MainWindow::handleRailDrag(QEvent *event)
     QListWidgetItem *source = picked.isEmpty() ? nullptr : picked.first();
     const bool sourceIsServer = source && source->data(KindRole).toString() == QLatin1String("guild")
         && !source->data(IdRole).toString().isEmpty();
+    const bool sourceIsFolder = source && source->data(KindRole).toString() == QLatin1String("folder");
 
     // Over the middle half of a tile is "onto"; the top and bottom quarters
     // stay "between", so reordering still works exactly as before.
@@ -3526,7 +3567,7 @@ bool MainWindow::handleRailDrag(QEvent *event)
     // line in any log, ever). Every drop on the rail is handled here now.
     int insertRow = -1;
     bool below = false;
-    if (sourceIsServer && mergeRow < 0) {
+    if ((sourceIsServer || sourceIsFolder) && mergeRow < 0) {
         // Never above the direct messages tile or the unread chats under it.
         int first = 0;
         while (first < m_guildRail->count()) {
@@ -3583,23 +3624,36 @@ bool MainWindow::handleRailDrag(QEvent *event)
     drop->accept();
 
     if (mergeRow < 0) {
-        const int from = m_guildRail->row(source);
-        if (insertRow == from || insertRow == from + 1)
-            return true;   // dropped where it already was
-        // Moved once the drag is over. The list reports the move, and the
-        // rowsMoved handler reads the rail back, saves it and sends it.
-        QTimer::singleShot(0, this, [this, draggedId, insertRow]() {
-            int now = -1;
-            for (int row = 0; row < m_guildRail->count(); ++row) {
-                if (m_guildRail->item(row)->data(IdRole).toString() == draggedId
-                    && m_guildRail->item(row)->data(KindRole).toString() == QLatin1String("guild")) {
-                    now = row;
-                    break;
-                }
+        // Where it lands is read off the tile it was dropped against, and the
+        // arrangement itself is changed, never the rows on screen. This used
+        // to move the row and read the whole rail back from the rows, and a
+        // closed folder has no rows for its servers: it came back empty, was
+        // dropped, and Discord was sent a rail with no folders at all
+        // (21 October: "2 folders" in, "46 tiles, 0 folders" out).
+        QString anchorId;
+        bool anchorIsFolder = false;
+        bool after = !target;   // under every tile: the very end
+        if (target) {
+            const QString kind = target->data(KindRole).toString();
+            const QString id = target->data(IdRole).toString();
+            // Over direct messages, or the unread chats under them, is the
+            // top of the servers: no anchor, and not after.
+            if (!id.isEmpty() && kind != QLatin1String("unreadDm")) {
+                anchorId = id;
+                anchorIsFolder = kind == QLatin1String("folder");
+                after = below;
             }
-            if (now < 0)
-                return;
-            m_guildRail->model()->moveRow(QModelIndex(), now, QModelIndex(), insertRow);
+        }
+        // Moved once the drag is fully over, not in the middle of it.
+        QTimer::singleShot(0, this, [this, draggedId, sourceIsFolder, anchorId, anchorIsFolder, after]() {
+            const bool moved = sourceIsFolder ? m_rail.moveFolderBeside(draggedId, anchorId, anchorIsFolder, after)
+                                              : m_rail.moveGuildBeside(draggedId, anchorId, anchorIsFolder, after);
+            if (!moved)
+                return;   // dropped where it already was
+            railChangedByUser();
+            m_rebuildingRail = true;
+            populateGuildRail();
+            m_rebuildingRail = false;
         });
         return true;
     }
@@ -3619,6 +3673,67 @@ bool MainWindow::handleRailDrag(QEvent *event)
         m_rebuildingRail = false;
     });
     return true;
+}
+
+void MainWindow::restoreRailFromDiscordApp()
+{
+    // Never before Discord's own copy has been read. The restored rail goes
+    // to Discord and has to replace what is there, not race it.
+    if (!m_railSynced) {
+        flashStatus(QStringLiteral("Wait until your servers have loaded, then try again."), 5000);
+        return;
+    }
+
+    const QList<DiscordAppCache::FolderSnapshot> snapshots = DiscordAppCache::folderSnapshots();
+    if (snapshots.isEmpty()) {
+        QMessageBox::information(
+            this, QStringLiteral("Restore folders"),
+            QStringLiteral("No saved folders were found.\n\nThis reads the copy that Discord's own desktop app "
+                           "keeps on this computer, so it needs that app to have been used here before the "
+                           "folders were lost."));
+        return;
+    }
+
+    // The copy with the most folders is offered first. Once folders are
+    // lost, the newest copy is usually one that already lost them.
+    int best = 0;
+    for (int i = 1; i < snapshots.size(); ++i) {
+        if (snapshots.at(i).folderCount() > snapshots.at(best).folderCount())
+            best = i;
+    }
+
+    QStringList choices;
+    for (const DiscordAppCache::FolderSnapshot &snapshot : snapshots) {
+        choices << QStringLiteral("%1 folders, %2 servers - %3, %4")
+                       .arg(snapshot.folderCount())
+                       .arg(snapshot.serverCount())
+                       .arg(snapshot.app, QLocale().toString(snapshot.savedAt, QLocale::ShortFormat));
+    }
+
+    bool ok = false;
+    const QString picked = QInputDialog::getItem(
+        this, QStringLiteral("Restore folders"),
+        QStringLiteral("Discord's own app kept these copies of your server folders.\n"
+                       "Pick one to put back, here and on every device:"),
+        choices, best, false, &ok);
+    const int index = int(choices.indexOf(picked));
+    if (!ok || index < 0)
+        return;
+
+    QStringList knownIds;
+    for (const GuildInfo &guild : m_store->guilds())
+        knownIds.append(guild.id);
+
+    const DiscordAppCache::FolderSnapshot &snapshot = snapshots.at(index);
+    m_rail.applyFromDiscord(snapshot.folders, knownIds);
+    wlog(QStringLiteral("rail"), QStringLiteral("restored %1 folders from %2's copy of %3")
+                                     .arg(snapshot.folderCount())
+                                     .arg(snapshot.app, snapshot.savedAt.toString(Qt::ISODate)));
+    railChangedByUser();
+    m_rebuildingRail = true;
+    populateGuildRail();
+    m_rebuildingRail = false;
+    flashStatus(QStringLiteral("Folders restored."), 5000);
 }
 
 void MainWindow::railChangedByUser()
@@ -4635,6 +4750,10 @@ void MainWindow::startMediaThread()
 
 MainWindow::~MainWindow()
 {
+    // The plugins outlive this window, so they lose its rail with it.
+    if (m_plugins)
+        m_plugins->setRailHooks({});
+
     // Each connection is deleted on the thread it lives on - its sockets and
     // timers belong to that thread and cannot be torn down from this one -
     // and only then is the thread stopped. The share connection goes first

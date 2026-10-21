@@ -2,6 +2,7 @@
 
 #include "core/AppConfig.h"
 #include "core/MessageStore.h"
+#include "ui/RailLayout.h"
 
 #include <QJsonObject>
 #include <QString>
@@ -43,6 +44,16 @@ public:
     // Singularity forward, and opens `channelId` when one is given.
     void notify(const QString &title, const QString &text, const QString &channelId = QString()) const;
 
+    // The server rail, for a plugin that arranges it. Not ready until the
+    // window has read Discord's own arrangement after signing in; changing
+    // it before then would replace the folders on every device.
+    bool serverRailReady() const;
+    QList<RailLayout::Entry> serverRail() const;
+
+    // Replaces the arrangement, here and on every device. Servers you are not
+    // in are dropped and ones missing are added at the end. `why` is logged.
+    void setServerRail(const QList<RailLayout::Entry> &entries, const QString &why);
+
 private:
     QString m_pluginId;
     RestClient *m_rest = nullptr;
@@ -73,6 +84,14 @@ public:
     // Called for every gateway dispatch, whatever the type.
     virtual void onGatewayEvent(const QString &eventType, const QJsonObject &data) {
         Q_UNUSED(eventType) Q_UNUSED(data)
+    }
+
+    // The server rail is in step with Discord and the client has taken in
+    // what changed: once after signing in, and again when you join a server,
+    // named in `joinedGuildIds`. Unlike onGatewayEvent, the store already
+    // holds the new server's channels here.
+    virtual void onServerRail(const QStringList &joinedGuildIds) {
+        Q_UNUSED(joinedGuildIds)
     }
 
     // Called right before a message leaves. Edit `content` in place to rewrite

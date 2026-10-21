@@ -58,7 +58,13 @@ private:
     // somebody who has left the server or was never in it.
     void requestProfile(const QString &userId, const QString &guildId, int request);
     void refreshArtwork();
-    void rebuildBadges(int publicFlags);
+
+    // The profile's own badge list when Discord sent one - pictures for every
+    // badge, the 2026 levelled ones included - or words from the public flags
+    // when it did not. A badge opens the badges window on itself.
+    void rebuildBadges(const QJsonArray &badges, int publicFlags);
+    void refreshBadgeIcons();
+    void openBadges(int badgeId);
     void rebuildRoles();
 
     // Give or take away a role, when you have Manage Roles and the role is
@@ -98,6 +104,7 @@ private:
     QWidget *m_badgeHost = nullptr;
     QPushButton *m_messageButton = nullptr;
     QPushButton *m_friendButton = nullptr;
+    QPushButton *m_badgesButton = nullptr;
     QPushButton *m_moreButton = nullptr;
     QLabel *m_bioLabel = nullptr;
     QWidget *m_bioSection = nullptr;

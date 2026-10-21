@@ -543,6 +543,37 @@ void RestClient::fetchUserProfile(const QString &userId, const QString &guildId,
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+void RestClient::fetchUserBadges(const QString &who, ObjectHandler onOk, ErrorHandler onError)
+{
+    QNetworkReply *reply = m_network.get(buildRequest(QStringLiteral("/users/%1/badges").arg(who)));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
+void RestClient::fetchUserBadge(const QString &who, int badgeId, ObjectHandler onOk, ErrorHandler onError)
+{
+    QNetworkReply *reply = m_network.get(buildRequest(QStringLiteral("/users/%1/badges/%2").arg(who).arg(badgeId)));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
+void RestClient::updateBadgeSettings(const QList<int> &displayOrder, const QList<int> &hiddenBadges,
+                                     ObjectHandler onOk, ErrorHandler onError)
+{
+    QJsonArray order;
+    for (int badgeId : displayOrder)
+        order.append(badgeId);
+    QJsonArray hidden;
+    for (int badgeId : hiddenBadges)
+        hidden.append(badgeId);
+    const QJsonObject body{
+        {QStringLiteral("display_order"), order},
+        {QStringLiteral("hidden_badges"), hidden},
+    };
+    QNetworkReply *reply = m_network.sendCustomRequest(
+        buildRequest(QStringLiteral("/users/@me/badges/settings")), QByteArrayLiteral("PATCH"),
+        QJsonDocument(body).toJson(QJsonDocument::Compact));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::createInvite(const QString &channelId, ObjectHandler onOk, ErrorHandler onError)
 {
     // The same defaults the real client uses: one day, unlimited uses.

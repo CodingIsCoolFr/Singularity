@@ -490,6 +490,21 @@ QStringList MessageStore::voiceMembers(const QString &channelId) const
     return result;
 }
 
+QHash<QString, int> MessageStore::voiceCountsByGuild() const
+{
+    QHash<QString, int> counts;
+    for (auto it = m_voiceStates.constBegin(); it != m_voiceStates.constEnd(); ++it) {
+        if (it.key() == m_selfUserId || it.value().channelId.isEmpty())
+            continue;
+        QString guildId = it.value().guildId;
+        if (guildId.isEmpty())
+            guildId = m_channels.value(it.value().channelId).guildId;
+        if (!guildId.isEmpty())
+            ++counts[guildId];
+    }
+    return counts;
+}
+
 void MessageStore::clear()
 {
     m_users.clear();
@@ -889,6 +904,11 @@ void MessageStore::ingestGuild(const QJsonObject &rawGuild)
     guild.boostBarEnabled = properties.value(QStringLiteral("premium_progress_bar_enabled")).toBool();
     for (const QJsonValue &feature : properties.value(QStringLiteral("features")).toArray())
         guild.features.append(feature.toString());
+    guild.description = properties.value(QStringLiteral("description")).toString();
+    // Beside "properties" in READY, like the boost count below.
+    guild.memberCount = rawGuild.contains(QStringLiteral("member_count"))
+        ? rawGuild.value(QStringLiteral("member_count")).toInt()
+        : properties.value(QStringLiteral("member_count")).toInt();
 
     // The boost count sits beside "properties" in READY, not inside it, and
     // inside the object itself in GUILD_CREATE / GUILD_UPDATE.

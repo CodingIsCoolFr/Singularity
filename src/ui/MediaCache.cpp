@@ -32,6 +32,10 @@ const QStringList kAllowedSuffixes{
     QStringLiteral(".scdn.co"),
     // The Singularity mark, used as the Playing card's picture.
     QStringLiteral("singularitycord.pages.dev"),
+    // Discord's own site, which serves some badge tier pictures by full
+    // address. Matched as ".discord.com" against ".<host>", so discord.com
+    // itself counts and a look-alike such as notdiscord.com does not.
+    QStringLiteral(".discord.com"),
 };
 
 // What the cache is allowed to hold, in bytes.
@@ -90,8 +94,9 @@ bool MediaCache::isAllowedHost(const QUrl &url)
         return false;
 
     const QString host = url.host().toLower();
+    const QString dotted = QLatin1Char('.') + host;
     for (const QString &suffix : kAllowedSuffixes) {
-        if (host.endsWith(suffix))
+        if (host.endsWith(suffix) || (suffix.startsWith(QLatin1Char('.')) && dotted == suffix))
             return true;
     }
     return false;

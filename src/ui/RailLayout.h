@@ -79,11 +79,29 @@ public:
     // goes in after `afterGuildId`, or at the end when that is empty.
     void insertIntoFolder(const QString &guildId, const QString &folderId, const QString &afterGuildId);
 
+    // A server dragged between two tiles. It lands just before or after the
+    // tile it was dropped against: `anchorId`, a server, or a folder when
+    // `anchorIsFolder`. A server inside a folder takes it into that folder
+    // too, and just under an open folder's own tile is first inside it. An
+    // empty anchor is the very top, or the very end with `after`. False when
+    // nothing moved.
+    bool moveGuildBeside(const QString &guildId, const QString &anchorId, bool anchorIsFolder, bool after);
+
+    // The same for a whole folder. Folders do not nest, so against a server
+    // inside another folder it goes after that folder.
+    bool moveFolderBeside(const QString &folderId, const QString &anchorId, bool anchorIsFolder, bool after);
+
     // The folder a server is in, or empty.
     QString folderOf(const QString &guildId) const;
 
-private:
+    // A fresh folder id, the kind Discord's own client makes.
     static QString newFolderId();
+
+    // Same tiles, same folders, same order. Open and closed, names and
+    // colours are not compared.
+    static bool sameArrangement(const QList<Entry> &a, const QList<Entry> &b);
+
+private:
     int rowOfGuild(const QString &guildId) const;
     void removeGuildEverywhere(const QString &guildId);
 

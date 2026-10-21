@@ -443,3 +443,133 @@ void RailLayout::insertIntoFolder(const QString &guildId, const QString &folderI
     m_entries.append(entry);
     save();
 }
+
+bool RailLayout::moveGuildBeside(const QString &guildId, const QString &anchorId, bool anchorIsFolder, bool after)
+{
+    if (guildId.isEmpty() || (!anchorIsFolder && anchorId == guildId))
+        return false;
+
+    const QList<Entry> before = m_entries;
+    removeGuildEverywhere(guildId);
+
+    Entry loose;
+    loose.guildId = guildId;
+
+    bool placed = false;
+    if (anchorId.isEmpty()) {
+        m_entries.insert(after ? m_entries.size() : 0, loose);
+        placed = true;
+    } else if (anchorIsFolder) {
+        for (int row = 0; row < m_entries.size(); ++row) {
+            Entry &entry = m_entries[row];
+            if (!entry.isFolder || entry.folder.id != anchorId)
+                continue;
+            if (after && entry.folder.open)
+                entry.folder.guildIds.prepend(guildId);
+            else
+                m_entries.insert(after ? row + 1 : row, loose);
+            placed = true;
+            break;
+        }
+    } else {
+        for (int row = 0; row < m_entries.size(); ++row) {
+            Entry &entry = m_entries[row];
+            if (entry.isFolder) {
+                const int at = int(entry.folder.guildIds.indexOf(anchorId));
+                if (at < 0)
+                    continue;
+                entry.folder.guildIds.insert(after ? at + 1 : at, guildId);
+            } else if (entry.guildId == anchorId) {
+                m_entries.insert(after ? row + 1 : row, loose);
+            } else {
+                continue;
+            }
+            placed = true;
+            break;
+        }
+    }
+
+    // Not found means the anchor left with the dragged server - a folder it
+    // was the only one in - so it stays where it was.
+    if (!placed || sameArrangement(before, m_entries)) {
+        m_entries = before;
+        return false;
+    }
+    save();
+    return true;
+}
+
+bool RailLayout::moveFolderBeside(const QString &folderId, const QString &anchorId, bool anchorIsFolder, bool after)
+{
+    if (folderId.isEmpty())
+        return false;
+
+    int from = -1;
+    for (int row = 0; row < m_entries.size(); ++row) {
+        if (m_entries.at(row).isFolder && m_entries.at(row).folder.id == folderId) {
+            from = row;
+            break;
+        }
+    }
+    if (from < 0)
+        return false;
+
+    // A server inside a folder stands for that folder.
+    QString anchor = anchorId;
+    bool isFolder = anchorIsFolder;
+    if (!anchor.isEmpty() && !isFolder) {
+        const QString holder = folderOf(anchor);
+        if (!holder.isEmpty()) {
+            anchor = holder;
+            isFolder = true;
+            after = true;
+        }
+    }
+    if (isFolder && anchor == folderId)
+        return false;
+
+    const QList<Entry> before = m_entries;
+    const Entry moving = m_entries.takeAt(from);
+
+    int to = -1;
+    if (anchor.isEmpty()) {
+        to = after ? int(m_entries.size()) : 0;
+    } else {
+        for (int row = 0; row < m_entries.size(); ++row) {
+            const Entry &entry = m_entries.at(row);
+            if ((isFolder && entry.isFolder && entry.folder.id == anchor)
+                || (!isFolder && !entry.isFolder && entry.guildId == anchor)) {
+                to = after ? row + 1 : row;
+                break;
+            }
+        }
+    }
+    if (to < 0) {
+        m_entries = before;
+        return false;
+    }
+    m_entries.insert(to, moving);
+
+    if (sameArrangement(before, m_entries)) {
+        m_entries = before;
+        return false;
+    }
+    save();
+    return true;
+}
+
+bool RailLayout::sameArrangement(const QList<Entry> &a, const QList<Entry> &b)
+{
+    if (a.size() != b.size())
+        return false;
+    for (int row = 0; row < a.size(); ++row) {
+        const Entry &x = a.at(row);
+        const Entry &y = b.at(row);
+        if (x.isFolder != y.isFolder)
+            return false;
+        if (x.isFolder ? (x.folder.id != y.folder.id || x.folder.guildIds != y.folder.guildIds)
+                       : x.guildId != y.guildId)
+            return false;
+    }
+    return true;
+}

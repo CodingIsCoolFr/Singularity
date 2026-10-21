@@ -10,6 +10,7 @@
 #include "plugin/builtin/PresenceHintsPlugin.h"
 #include "plugin/builtin/QuickTextPlugin.h"
 #include "plugin/builtin/RelationshipNotifierPlugin.h"
+#include "plugin/builtin/ServerOrganizerPlugin.h"
 #include "plugin/builtin/SilentTypingPlugin.h"
 #include "plugin/builtin/TimestampsPlugin.h"
 
@@ -37,6 +38,25 @@ void PluginContext::notify(const QString &title, const QString &text, const QStr
 {
     if (m_host)
         emit m_host->notificationRequested(m_pluginId, title, text, channelId);
+}
+
+bool PluginContext::serverRailReady() const
+{
+    return m_host && m_host->m_railHooks.ready && m_host->m_railHooks.ready();
+}
+
+QList<RailLayout::Entry> PluginContext::serverRail() const
+{
+    if (!serverRailReady() || !m_host->m_railHooks.entries)
+        return {};
+    return m_host->m_railHooks.entries();
+}
+
+void PluginContext::setServerRail(const QList<RailLayout::Entry> &entries, const QString &why)
+{
+    if (!serverRailReady() || !m_host->m_railHooks.replace)
+        return;
+    m_host->m_railHooks.replace(entries, QStringLiteral("[%1] %2").arg(m_pluginId, why));
 }
 
 // ---------------------------------------------------------------------------
@@ -74,6 +94,7 @@ void PluginHost::registerBuiltins()
     add(std::make_unique<RelationshipNotifierPlugin>());
     add(std::make_unique<BigFilesPlugin>());
     add(std::make_unique<FakeNitroPlugin>());
+    add(std::make_unique<ServerOrganizerPlugin>());
 }
 
 void PluginHost::add(std::unique_ptr<Plugin> plugin)
@@ -222,6 +243,14 @@ void PluginHost::runMicrophoneFrame(qint16 *samples, int frames, int channels, i
             entry->plugin->onMicrophoneFrame(samples, frames, channels, sampleRate);
     }
     m_audioGate.unlock();
+}
+
+void PluginHost::runServerRail(const QStringList &joinedGuildIds)
+{
+    for (Entry *entry : m_entries) {
+        if (entry->enabled)
+            entry->plugin->onServerRail(joinedGuildIds);
+    }
 }
 
 QString PluginHost::runDecorateGutter(const MessageInfo &message)

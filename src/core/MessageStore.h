@@ -216,6 +216,11 @@ struct GuildInfo
     bool boostBarEnabled = false;    // premium_progress_bar_enabled
     QStringList features;            // "BANNER", "GUILD_TAGS", ...
 
+    // What the server says about itself, and how big it is. Read by the
+    // server organizer to tell a gaming server from a hangout.
+    QString description;
+    int memberCount = 0;             // 0: Discord did not say
+
     QList<QString> channelIds;
     QHash<QString, RoleInfo> roles;
     QList<EmojiInfo> emojis;
@@ -604,6 +609,9 @@ public:
 
     // Who is sitting in one voice channel right now.
     QStringList voiceMembers(const QString &channelId) const;
+
+    // How many people sit in voice in each server right now, you left out.
+    QHash<QString, int> voiceCountsByGuild() const;
 
     // A note that someone did something a connected client had to be running
     // to do. Only the Presence hints plugin writes these, so with that plugin

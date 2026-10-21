@@ -7,6 +7,7 @@
 #include <QObject>
 #include <QString>
 
+#include <functional>
 #include <memory>
 
 class RestClient;
@@ -52,6 +53,18 @@ public:
     // Runs inside the audio path, every 20 milliseconds, while a call is up.
     void runMicrophoneFrame(qint16 *samples, int frames, int channels, int sampleRate);
 
+    void runServerRail(const QStringList &joinedGuildIds);
+
+    // The window's server rail, lent to plugins through their context. The
+    // window sets these once it exists; until then the rail is not ready.
+    struct RailHooks
+    {
+        std::function<bool()> ready;
+        std::function<QList<RailLayout::Entry>()> entries;
+        std::function<void(const QList<RailLayout::Entry> &, const QString &)> replace;
+    };
+    void setRailHooks(RailHooks hooks) { m_railHooks = std::move(hooks); }
+
 signals:
     void pluginLogged(const QString &pluginId, const QString &line);
     void notificationRequested(const QString &pluginId, const QString &title, const QString &text,
@@ -69,6 +82,7 @@ private:
     GatewayClient *m_gateway = nullptr;
     MessageStore *m_store = nullptr;
     QList<Entry *> m_entries;
+    RailHooks m_railHooks;
 
     // Held while a plugin is switched on or off, and tried - never waited
     // on - by the microphone path, which runs on the media thread. If the

@@ -822,6 +822,8 @@ private:
     void railChangedByUser();
     void pushRailToDiscord();
     void applyDiscordFolders(const QByteArray &settingsProto, bool partial);
+    // Puts back an arrangement Discord's own desktop app still has cached.
+    void restoreRailFromDiscordApp();
 
     // Dropping one server onto another, which makes a folder.
     int m_railMergeRow = -1;

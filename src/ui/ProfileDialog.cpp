@@ -4,6 +4,7 @@
 #include "core/Logger.h"
 #include "core/RestClient.h"
 #include "ui/AnimatedImage.h"
+#include "ui/BadgesDialog.h"
 #include "ui/FlowLayout.h"
 #include "ui/MediaCache.h"
 #include "ui/Theme.h"
@@ -42,6 +43,7 @@ constexpr int LeftCardWidth = 400;
 constexpr int BannerHeight = 150;
 constexpr int AvatarPixels = 112;
 constexpr int CornerRadius = 14;
+constexpr int BadgeIconPixels = 22;
 
 // Status colours, matching the real client closely enough to read at a glance.
 constexpr auto StatusOnline = "#23a55a";
@@ -409,6 +411,7 @@ QScrollArea { background: transparent; border: none; }
         if (!isVisible())
             return;
         refreshArtwork();
+        refreshBadgeIcons();
         rebuildActivity();
     });
     connect(m_store, &MessageStore::userChanged, this, [this](const QString &userId) {
@@ -519,6 +522,12 @@ QWidget *ProfileDialog::buildLeftCard()
     m_friendButton->setMinimumHeight(34);
     connect(m_friendButton, &QPushButton::clicked, this, &ProfileDialog::toggleFriend);
     buttons->addWidget(m_friendButton);
+
+    // Your own card has no Message or Add Friend, so this takes the row.
+    m_badgesButton = new QPushButton(QStringLiteral("Your badges"), body);
+    m_badgesButton->setMinimumHeight(34);
+    connect(m_badgesButton, &QPushButton::clicked, this, [this]() { openBadges(0); });
+    buttons->addWidget(m_badgesButton, 1);
 
     m_moreButton = new QPushButton(QStringLiteral("⋯"), body);
     m_moreButton->setFixedSize(38, 34);
@@ -776,7 +785,7 @@ void ProfileDialog::showFor(const QString &userId, const QString &guildId, bool 
     // in it - the last person's bio stayed on this one's card.
     m_bioLabel->clear();
     m_bioSection->setVisible(false);
-    rebuildBadges(0);
+    rebuildBadges({}, 0);
     rebuildConnections({});
 
     applyLocalData();
@@ -862,6 +871,7 @@ void ProfileDialog::applyLocalData()
 
     m_messageButton->setVisible(!m_isSelf);
     m_friendButton->setVisible(!m_isSelf);
+    m_badgesButton->setVisible(m_isSelf);
     updateFriendButton();
 
     m_noteEdit->parentWidget()->setVisible(!m_isSelf);
@@ -921,7 +931,7 @@ void ProfileDialog::applyProfilePayload(const QJsonObject &payload)
     m_bioSection->setVisible(!bio.isEmpty());
     m_bioLabel->setText(bio);
 
-    rebuildBadges(user.value(QStringLiteral("public_flags")).toInt());
+    rebuildBadges(payload.value(QStringLiteral("badges")).toArray(), user.value(QStringLiteral("public_flags")).toInt());
     rebuildConnections(payload.value(QStringLiteral("connected_accounts")).toArray());
 
     m_mutualFriends = payload.value(QStringLiteral("mutual_friends")).toArray();
@@ -991,24 +1001,77 @@ QWidget *ProfileDialog::makePill(const QString &text, const QColor &dot, QWidget
     return pill;
 }
 
-void ProfileDialog::rebuildBadges(int publicFlags)
+void ProfileDialog::rebuildBadges(const QJsonArray &badges, int publicFlags)
 {
     while (QLayoutItem *item = m_badgeFlow->takeAt(0)) {
         delete item->widget();
         delete item;
     }
 
-    const QStringList names = badgeNames(publicFlags);
-    for (const QString &name : names) {
-        auto *badge = new QLabel(name, m_badgeHost);
-        badge->setStyleSheet(QStringLiteral("background-color: %1; color: %2; border-radius: 6px; "
-                                            "padding: 2px 7px; font-size: 10px; font-weight: 600;")
-                                 .arg(QLatin1String(Theme::SurfaceInput), QLatin1String(Theme::Highlight)));
-        m_badgeFlow->addWidget(badge);
+    // Discord's list, in the order the person chose, with Discord's own
+    // pictures. Nitro, boosting, quests and orbs never were public flags, and
+    // the levelled badges of 2026 - Account Age, Game Time, Streaming, Game
+    // Variety - are only here.
+    int shown = 0;
+    for (const QJsonValue &value : badges) {
+        const QJsonObject badge = value.toObject();
+        const QString icon = badge.value(QStringLiteral("icon")).toString();
+        if (icon.isEmpty())
+            continue;
+        auto *button = new QToolButton(m_badgeHost);
+        button->setAutoRaise(true);
+        button->setIconSize(QSize(BadgeIconPixels, BadgeIconPixels));
+        button->setFixedSize(BadgeIconPixels + 4, BadgeIconPixels + 4);
+        button->setCursor(Qt::PointingHandCursor);
+        button->setToolTip(badge.value(QStringLiteral("description")).toString());
+        button->setProperty("badgeIcon", BadgesDialog::profileBadgeIconUrl(icon));
+        button->setStyleSheet(QStringLiteral("QToolButton { background: transparent; border: none; padding: 0; }"));
+        const int badgeId = BadgesDialog::badgeIdFromProfile(badge.value(QStringLiteral("id")).toString());
+        connect(button, &QToolButton::clicked, this, [this, badgeId]() { openBadges(badgeId); });
+        m_badgeFlow->addWidget(button);
+        ++shown;
     }
 
-    m_badgeHost->setVisible(!names.isEmpty());
+    // No list - a bot, or a profile Discord keeps private - leaves the
+    // flags, which have no pictures of their own to show.
+    if (shown == 0) {
+        const QStringList names = badgeNames(publicFlags);
+        for (const QString &name : names) {
+            auto *badge = new QLabel(name, m_badgeHost);
+            badge->setStyleSheet(QStringLiteral("background-color: %1; color: %2; border-radius: 6px; "
+                                                "padding: 2px 7px; font-size: 10px; font-weight: 600;")
+                                     .arg(QLatin1String(Theme::SurfaceInput), QLatin1String(Theme::Highlight)));
+            m_badgeFlow->addWidget(badge);
+        }
+        shown = int(names.size());
+    }
+
+    refreshBadgeIcons();
+    m_badgeHost->setVisible(shown > 0);
     m_badgeHost->updateGeometry();
+}
+
+void ProfileDialog::refreshBadgeIcons()
+{
+    for (QToolButton *button : m_badgeHost->findChildren<QToolButton *>()) {
+        const QUrl url = button->property("badgeIcon").toUrl();
+        const QImage image = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
+        if (!image.isNull())
+            button->setIcon(QIcon(QPixmap::fromImage(
+                image.scaled(BadgeIconPixels * 2, BadgeIconPixels * 2, Qt::KeepAspectRatio, Qt::SmoothTransformation))));
+    }
+}
+
+void ProfileDialog::openBadges(int badgeId)
+{
+    // This card closes at any click outside it, which the new window would
+    // be, so it goes first.
+    const QString userId = m_userId;
+    const bool self = m_isSelf;
+    const QString name = m_store->user(userId).displayName();
+    QWidget *owner = parentWidget();
+    accept();
+    BadgesDialog::open(m_rest, userId, name, self, badgeId, owner);
 }
 
 void ProfileDialog::rebuildRoles()
@@ -1560,6 +1623,7 @@ void ProfileDialog::showMoreMenu()
 {
     QMenu menu(this);
 
+    QAction *viewBadges = menu.addAction(m_isSelf ? QStringLiteral("Your Badges") : QStringLiteral("View Badges"));
     QAction *copyId = menu.addAction(QStringLiteral("Copy User ID"));
 
     QAction *block = nullptr;
@@ -1572,6 +1636,11 @@ void ProfileDialog::showMoreMenu()
     QAction *chosen = menu.exec(m_moreButton->mapToGlobal(QPoint(0, m_moreButton->height() + 4)));
     if (!chosen)
         return;
+
+    if (chosen == viewBadges) {
+        openBadges(0);
+        return;
+    }
 
     if (chosen == copyId) {
         QApplication::clipboard()->setText(m_userId);

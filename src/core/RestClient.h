@@ -187,6 +187,21 @@ public:
     void fetchUserProfile(const QString &userId, const QString &guildId, ObjectHandler onOk,
                           ErrorHandler onError);
 
+    // Discord's badge directory (2026): every badge there is, which ones this
+    // person owns, the tier each is at and how far it is to the next. Read
+    // from Discord's own web client, not from documentation:
+    //   GET   /users/{id}/badges            {"badges": [...]}
+    //   GET   /users/{id}/badges/{badge}    one badge, with its "progress"
+    //   PATCH /users/@me/badges/settings    {"display_order": [badge ids],
+    //                                        "hidden_badges": [badge ids]}
+    // The last is "Customize your badges": the order they show in on your
+    // profile, and which are hidden. `who` is a user id, or "@me" for your
+    // own, which is how the official client asks.
+    void fetchUserBadges(const QString &who, ObjectHandler onOk, ErrorHandler onError);
+    void fetchUserBadge(const QString &who, int badgeId, ObjectHandler onOk, ErrorHandler onError);
+    void updateBadgeSettings(const QList<int> &displayOrder, const QList<int> &hiddenBadges, ObjectHandler onOk,
+                             ErrorHandler onError);
+
     // POST /channels/{id}/invites - makes a share link for a channel.
     void createInvite(const QString &channelId, ObjectHandler onOk, ErrorHandler onError);
 

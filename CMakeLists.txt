@@ -58,6 +58,8 @@ qt_add_executable(Singularity WIN32
     src/core/MessageStore.cpp
     src/core/SettingsProto.h
     src/core/SettingsProto.cpp
+    src/core/DiscordAppCache.h
+    src/core/DiscordAppCache.cpp
     src/core/AppCommands.h
     src/core/AppCommands.cpp
 
@@ -86,6 +88,10 @@ qt_add_executable(Singularity WIN32
     src/plugin/builtin/BigFilesPlugin.cpp
     src/plugin/builtin/FakeNitroPlugin.h
     src/plugin/builtin/FakeNitroPlugin.cpp
+    src/plugin/builtin/ServerCategories.h
+    src/plugin/builtin/ServerCategories.cpp
+    src/plugin/builtin/ServerOrganizerPlugin.h
+    src/plugin/builtin/ServerOrganizerPlugin.cpp
     src/core/InstallTidy.h
     src/core/InstallTidy.cpp
     src/core/CrashLog.h
@@ -162,6 +168,8 @@ qt_add_executable(Singularity WIN32
     src/ui/FriendsPage.cpp
     src/ui/RailLayout.h
     src/ui/RailLayout.cpp
+    src/ui/BadgesDialog.h
+    src/ui/BadgesDialog.cpp
     src/ui/ProfileDialog.h
     src/ui/ProfileDialog.cpp
     src/ui/ShareDialog.h
@@ -419,3 +427,18 @@ set_target_properties(Singularity PROPERTIES
 add_executable(test_permissions tools/test_permissions.cpp)
 target_include_directories(test_permissions PRIVATE src)
 target_link_libraries(test_permissions PRIVATE Qt6::Core)
+
+# The server rail's drags, the organizer's sorting and the reader for the
+# Discord app's cached folders: a closed folder once emptied on every drag.
+add_executable(test_rail
+    tools/test_rail.cpp
+    src/ui/RailLayout.cpp
+    src/core/AppConfig.cpp
+    src/core/TokenStore.cpp
+    src/core/Logger.cpp
+    src/core/SettingsProto.cpp
+    src/core/DiscordAppCache.cpp
+    src/plugin/builtin/ServerCategories.cpp
+)
+target_include_directories(test_rail PRIVATE src)
+target_link_libraries(test_rail PRIVATE Qt6::Core crypt32)
