@@ -12,6 +12,9 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QLocale>
 #include <QMediaDevices>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -33,6 +36,68 @@ constexpr float DiscordVolume = 0.4f;
 // A sound fetched this long after it was asked for belongs to a moment that
 // has passed. A loop is different: a ring is still ringing.
 constexpr qint64 StaleAfterMs = 2500;
+
+// Discord's holiday sound experiments, from its web client (build 643186).
+// Each is a user experiment: variant 1 turns its pack on for the account,
+// between these two moments, on desktop. Halloween 2026 is the one Discord
+// ships now. A holiday not listed here is left to the calendar.
+struct HolidayExperiment
+{
+    const char *name;
+    const char *pack;
+    qint64 startMs;
+    qint64 endMs;
+};
+
+const QList<HolidayExperiment> &holidayExperiments()
+{
+    static const QList<HolidayExperiment> experiments{
+        {"2026-09-halloween-holiday", "halloween", 1791388800000LL, 1793638800000LL},
+    };
+    return experiments;
+}
+
+// An Apex assignment flag: the assignment only says who may be in the
+// experiment, and the default config applies.
+constexpr int ApexUseAsEligibility = 8;
+
+// MurmurHash3, x86 32 bit, seed 0: how Discord names an experiment in its
+// assignments (murmurhash's v3, unsigned).
+quint32 murmurHash3(const QByteArray &key)
+{
+    constexpr quint32 c1 = 0xcc9e2d51;
+    constexpr quint32 c2 = 0x1b873593;
+    const auto rotl = [](quint32 x, int r) { return (x << r) | (x >> (32 - r)); };
+    const auto *data = reinterpret_cast<const uchar *>(key.constData());
+    const int blocks = int(key.size()) / 4;
+
+    quint32 h = 0;
+    for (int i = 0; i < blocks; ++i) {
+        quint32 k = qFromLittleEndian<quint32>(data + i * 4);
+        k = rotl(k * c1, 15) * c2;
+        h = rotl(h ^ k, 13) * 5 + 0xe6546b64;
+    }
+    const uchar *tail = data + blocks * 4;
+    quint32 k = 0;
+    switch (key.size() & 3) {
+    case 3:
+        k ^= quint32(tail[2]) << 16;
+        [[fallthrough]];
+    case 2:
+        k ^= quint32(tail[1]) << 8;
+        [[fallthrough]];
+    case 1:
+        k ^= tail[0];
+        h ^= rotl(k * c1, 15) * c2;
+    }
+    h ^= quint32(key.size());
+    h ^= h >> 16;
+    h *= 0x85ebca6b;
+    h ^= h >> 13;
+    h *= 0xc2b2ae35;
+    h ^= h >> 16;
+    return h;
+}
 
 // Discord's file for each sound, from its web client in October 2026.
 // discover() replaces any that Discord has since changed.
@@ -265,11 +330,94 @@ QString Sounds::activePack() const
     // Discord moves only people on Classic onto a holiday's pack; anybody who
     // picked another keeps it.
     if (chosen == QLatin1String("classic") && config.value(QStringLiteral("sounds/holidays"), true).toBool()) {
-        const QString holiday = holidayOn(QDate::currentDate());
+        const QString holiday = holidayNow();
         if (!holiday.isEmpty())
             return holiday;
     }
     return chosen;
+}
+
+QString Sounds::holidayNow() const
+{
+    // Discord's word, where it has given one: the holiday's experiment says
+    // whether this account gets the pack, and its own start and end.
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    for (const DiscordHoliday &holiday : m_discordHolidays) {
+        if (now >= holiday.startMs && now <= holiday.endMs)
+            return holiday.on ? holiday.pack : QString();
+    }
+    // The calendar otherwise, except for a holiday Discord has spoken about:
+    // outside its own window, that one is over.
+    const QString byDate = holidayOn(QDate::currentDate());
+    for (const DiscordHoliday &holiday : m_discordHolidays) {
+        if (holiday.pack == byDate)
+            return {};
+    }
+    return byDate;
+}
+
+QString Sounds::holidayStatus() const
+{
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    for (const DiscordHoliday &holiday : m_discordHolidays) {
+        if (now < holiday.startMs || now > holiday.endMs)
+            continue;
+        const QString name = holiday.pack == QLatin1String("halloween") ? QStringLiteral("Halloween")
+                                                                        : QStringLiteral("holiday");
+        const QString until = QLocale().toString(QDateTime::fromMSecsSinceEpoch(holiday.endMs).date(),
+                                                 QStringLiteral("d MMMM"));
+        return holiday.on
+            ? QStringLiteral("Discord has given your account its %1 sounds, until %2.").arg(name, until)
+            : QStringLiteral("Discord has not given your account its %1 sounds this year, so Classic plays, as "
+                             "it does in Discord's own app.")
+                  .arg(name);
+    }
+    return {};
+}
+
+bool Sounds::readDiscordExperiments(const QJsonObject &apex, const QString &userId)
+{
+    // { "assignments": { "1": { "<user id>": { "assignments": [ [hash,
+    //   variant, flags, revision, tracked variant, config], ... ] } } } }
+    // Unit 1 is the account. Nothing for it means nothing was said.
+    const QJsonObject mine = apex.value(QStringLiteral("assignments"))
+                                 .toObject()
+                                 .value(QStringLiteral("1"))
+                                 .toObject()
+                                 .value(userId)
+                                 .toObject();
+    if (userId.isEmpty() || !mine.contains(QStringLiteral("assignments")))
+        return false;
+
+    QHash<quint32, QJsonArray> byHash;
+    for (const QJsonValue &value : mine.value(QStringLiteral("assignments")).toArray()) {
+        const QJsonArray entry = value.toArray();
+        if (entry.size() >= 2)
+            byHash.insert(quint32(qint64(entry.at(0).toDouble())), entry);
+    }
+
+    m_discordHolidays.clear();
+    for (const HolidayExperiment &experiment : holidayExperiments()) {
+        DiscordHoliday holiday;
+        holiday.pack = QLatin1String(experiment.pack);
+        holiday.startMs = experiment.startMs;
+        holiday.endMs = experiment.endMs;
+        // Discord's rule: variant 1 is on; no assignment, any other variant,
+        // or an assignment only used for eligibility is the default, off.
+        const auto found = byHash.constFind(murmurHash3(QByteArray(experiment.name)));
+        if (found != byHash.constEnd()) {
+            const int flags = found->size() > 2 ? found->at(2).toInt() : 0;
+            holiday.on = found->at(1).toInt() == 1 && !(flags & ApexUseAsEligibility);
+        }
+        m_discordHolidays.append(holiday);
+        wlog(QStringLiteral("sounds"),
+             QStringLiteral("Discord's %1 sounds (%2): %3 for this account")
+                 .arg(holiday.pack, QLatin1String(experiment.name),
+                      found == byHash.constEnd() ? QStringLiteral("not assigned, so off")
+                      : holiday.on                ? QStringLiteral("on")
+                                                  : QStringLiteral("off")));
+    }
+    return true;
 }
 
 QString Sounds::resolve(const QString &name, const QString &pack) const
@@ -355,8 +503,15 @@ QSoundEffect *Sounds::effectFor(const QString &wav)
 
 void Sounds::play(const QString &name)
 {
-    if (!allowed(name))
+    // Every sound but the message one is said in the log, so a sound somebody
+    // did not hear can be traced: asked for or not, played or why not, and
+    // on which speakers.
+    const bool say = name != QLatin1String("message1");
+    if (!allowed(name)) {
+        if (say)
+            wlog(QStringLiteral("sounds"), QStringLiteral("%1: switched off in Settings").arg(name));
         return;
+    }
     const QString file = resolve(name, activePack());
 
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -366,11 +521,20 @@ void Sounds::play(const QString &name)
 
     QElapsedTimer asked;
     asked.start();
-    whenReady(file, [this, asked](const QString &wav) {
-        if (asked.elapsed() > StaleAfterMs)
+    whenReady(file, [this, asked, name, file, say](const QString &wav) {
+        if (asked.elapsed() > StaleAfterMs) {
+            if (say)
+                wlog(QStringLiteral("sounds"), QStringLiteral("%1: arrived too late to play").arg(name));
             return;
+        }
         QSoundEffect *effect = effectFor(wav);
         effect->setLoopCount(1);
+        if (say)
+            wlog(QStringLiteral("sounds"), QStringLiteral("%1: playing %2 on %3%4")
+                                               .arg(name, file, m_device.description(),
+                                                    effect->status() == QSoundEffect::Error
+                                                        ? QStringLiteral(" (the player reports an error)")
+                                                        : QString()));
         if (effect->isLoaded()) {
             effect->play();
             return;

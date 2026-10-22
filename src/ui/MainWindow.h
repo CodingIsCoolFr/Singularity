@@ -167,6 +167,17 @@ private:
     int othersInCall() const;
     // Join or leave, by how the count moved. See the definition for the rule.
     void soundCallChange(const QString &callBefore, int before);
+    // Discord's join and leave sounds as its client plays them now
+    // (rtcConnectionJoinSounds): from the voice server's own word on who is
+    // connected to the call, op 11 and op 13. See onPeopleConnected.
+    void noteCallConnected(bool connected);
+    void onPeopleConnected(const QStringList &userIds);
+    void onPersonDisconnected(const QString &userId);
+    void startCallRoster();
+    QString m_rosterChannel;          // the call the roster below is for
+    QSet<QString> m_callRoster;       // connected to the call's voice, us aside
+    QSet<QString> m_alreadyThere;     // in the channel when our voice came up
+    bool m_callConnected = false;     // our voice is up in m_rosterChannel
     // The call our own join sound was played for, so a reconnect is quiet.
     QString m_joinSoundFor;
     // Who was watching our stream, for the viewer sounds.

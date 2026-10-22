@@ -1438,9 +1438,14 @@ QWidget *SettingsDialog::buildNotificationsPage()
            QStringLiteral("Holiday sounds: Halloween and winter packs at their time of year"), true);
     QString season = QStringLiteral("Like Discord, they take over only while you are on Classic, and go back after: "
                                     "Halloween from 7 October to 2 November, Winter Holiday from 1 December to "
-                                    "6 January.");
-    const QString holiday = Sounds::holidayOn(QDate::currentDate());
-    if (holiday == QLatin1String("halloween"))
+                                    "6 January. Discord gives a holiday's sounds only to the accounts in that "
+                                    "holiday's experiment, and Singularity asks it which yours is.");
+    // Discord's own answer for this account, once it has given one.
+    const QString status = Sounds::instance().holidayStatus();
+    const QString holiday = Sounds::instance().holidayNow();
+    if (!status.isEmpty())
+        season += QLatin1Char(' ') + status;
+    else if (holiday == QLatin1String("halloween"))
         season += QStringLiteral(" It is Halloween now.");
     else if (holiday == QLatin1String("winter_holiday"))
         season += QStringLiteral(" It is the winter holiday now.");

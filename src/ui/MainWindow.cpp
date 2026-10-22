@@ -960,6 +960,13 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
                 m_callView->refresh();
             });
 
+    // Who is connected to the call, for the join and leave sounds.
+    connect(m_voice, &VoiceConnection::stateChanged, this, [this](VoiceConnection::State state) {
+        noteCallConnected(state == VoiceConnection::State::Connected);
+    });
+    connect(m_voice, &VoiceConnection::peopleConnected, this, &MainWindow::onPeopleConnected);
+    connect(m_voice, &VoiceConnection::personDisconnected, this, &MainWindow::onPersonDisconnected);
+
     connect(m_voice, &VoiceConnection::stateChanged, this, [this](VoiceConnection::State state) {
         if (!m_voiceState)
             return;
@@ -2461,6 +2468,26 @@ void MainWindow::onGatewayReady(const QJsonObject &payload)
                           /*storeOnDiscord*/ false);
     }
     ensureClientActivity();
+
+    // Whether this account gets the holiday's sounds is Discord's call, made
+    // by an experiment. READY usually carries the answer; asked for if not.
+    if (!Sounds::instance().readDiscordExperiments(payload.value(QStringLiteral("apex_experiments")).toObject(),
+                                                   m_selfUserId)) {
+        const QString self = m_selfUserId;
+        m_rest->fetchApexExperiments(
+            [self](const QJsonObject &body) {
+                if (Sounds::instance().readDiscordExperiments(body, self))
+                    Sounds::instance().prefetch();
+                else
+                    wlog(QStringLiteral("sounds"),
+                         QStringLiteral("Discord said nothing about this account's holiday sounds; the calendar decides"));
+            },
+            [](const RestClient::Error &error) {
+                wlog(QStringLiteral("sounds"),
+                     QStringLiteral("could not ask Discord about holiday sounds: HTTP %1; the calendar decides")
+                         .arg(error.httpStatus));
+            });
+    }
 
     // Discord's sounds for the pack in use, fetched now so the first one is
     // not late. Kept after the first time, so this is usually nothing.
@@ -12132,8 +12159,10 @@ void MainWindow::updateCallButton()
 
 void MainWindow::playSound(const QString &name)
 {
-    if (m_quietSounds > 0)
+    if (m_quietSounds > 0) {
+        wlog(QStringLiteral("sounds"), QStringLiteral("%1: held back, another sound speaks for this moment").arg(name));
         return;
+    }
     Sounds::instance().play(name);
 }
 
@@ -12149,17 +12178,116 @@ int MainWindow::othersInCall() const
 
 void MainWindow::soundCallChange(const QString &callBefore, int before)
 {
-    // Discord's rule, from its client: in the call you are in, more people
-    // than a moment ago is a join and fewer is a leave, so long as there were
-    // no more than 25. Someone moving in or out counts the same way, and a
-    // batch of changes is one sound, not one each.
-    if (before < 0 || before > 25 || callBefore != m_voiceChannelId)
+    // Discord's older rule, from its client: in the call you are in, more
+    // people than a moment ago is a join and fewer is a leave, so long as
+    // there were no more than 25. Someone moving in or out counts the same
+    // way, and a batch of changes is one sound, not one each.
+    //
+    // Only while our voice is not up. Once it is, the voice server's own
+    // word decides (onPeopleConnected), as in Discord's client today; both
+    // at once would play every join twice.
+    if (m_callConnected || before < 0 || before > 25 || callBefore != m_voiceChannelId)
         return;
     const int after = othersInCall();
-    if (after > before)
-        playSound(QStringLiteral("user_join"));
-    else if (after < before)
-        playSound(QStringLiteral("user_leave"));
+    if (after == before)
+        return;
+    wlog(QStringLiteral("sounds"), QStringLiteral("%1: %2 others in the call, now %3 (voice states)")
+                                       .arg(after > before ? QStringLiteral("user_join") : QStringLiteral("user_leave"))
+                                       .arg(before)
+                                       .arg(after));
+    playSound(after > before ? QStringLiteral("user_join") : QStringLiteral("user_leave"));
+}
+
+void MainWindow::startCallRoster()
+{
+    // A call in another channel starts its roster afresh. This runs as the
+    // connection starts, not once it is up: the voice server names everyone
+    // already there in its first op 11, which can come before the connection
+    // counts as up, and those names have to stay.
+    if (m_rosterChannel == m_voiceChannelId)
+        return;
+    m_rosterChannel = m_voiceChannelId;
+    m_callRoster.clear();
+    m_alreadyThere.clear();
+    m_callConnected = false;
+}
+
+void MainWindow::noteCallConnected(bool connected)
+{
+    startCallRoster();
+    connected = connected && !m_voiceChannelId.isEmpty();
+    if (connected == m_callConnected)
+        return;
+    m_callConnected = connected;
+    if (!connected)
+        return;
+    // Discord's rule as the voice comes up: whoever is already in the channel
+    // is not a join when the voice server gets round to naming them.
+    m_alreadyThere.clear();
+    if (m_store) {
+        for (const QString &id : m_store->voiceMembers(m_voiceChannelId)) {
+            if (id != m_selfUserId && !m_callRoster.contains(id))
+                m_alreadyThere.insert(id);
+        }
+    }
+}
+
+void MainWindow::onPeopleConnected(const QStringList &userIds)
+{
+    // Discord's client plays its join and leave sounds from this today
+    // (rtcConnectionJoinSounds): somebody new on the voice server's list is a
+    // join, while our voice is up and there were no more than 25. It does not
+    // hang on the main connection reporting the voice state, which in a big
+    // server can come late, grouped, or not at all.
+    startCallRoster();
+    if (m_voiceChannelId.isEmpty())
+        return;
+    const int before = int(m_callRoster.size());
+    QStringList arrived;
+    for (const QString &id : userIds) {
+        if (id == m_selfUserId || m_callRoster.contains(id))
+            continue;
+        m_callRoster.insert(id);
+        if (!m_alreadyThere.remove(id))
+            arrived.append(id);
+    }
+    if (arrived.isEmpty() || !m_callConnected)
+        return;
+    QStringList names;
+    for (const QString &id : std::as_const(arrived))
+        names.append(m_store ? m_store->userName(id) : id);
+    if (before > 25) {
+        wlog(QStringLiteral("sounds"), QStringLiteral("user_join: %1 joined, but more than 25 were in the call, "
+                                                      "so no sound, as in Discord")
+                                           .arg(names.join(QStringLiteral(", "))));
+        return;
+    }
+    wlog(QStringLiteral("sounds"), QStringLiteral("user_join: %1 connected to the call (%2 others, now %3)")
+                                       .arg(names.join(QStringLiteral(", ")))
+                                       .arg(before)
+                                       .arg(m_callRoster.size()));
+    playSound(QStringLiteral("user_join"));
+}
+
+void MainWindow::onPersonDisconnected(const QString &userId)
+{
+    startCallRoster();
+    m_alreadyThere.remove(userId);
+    const int before = int(m_callRoster.size());
+    if (userId == m_selfUserId || !m_callRoster.remove(userId) || !m_callConnected)
+        return;
+    const QString name = m_store ? m_store->userName(userId) : userId;
+    if (before > 25) {
+        wlog(QStringLiteral("sounds"), QStringLiteral("user_leave: %1 left, but more than 25 were in the call, "
+                                                       "so no sound, as in Discord")
+                                           .arg(name));
+        return;
+    }
+    wlog(QStringLiteral("sounds"), QStringLiteral("user_leave: %1 disconnected from the call (%2 others, now %3)")
+                                       .arg(name)
+                                       .arg(before)
+                                       .arg(m_callRoster.size()));
+    playSound(QStringLiteral("user_leave"));
 }
 
 void MainWindow::updateOutgoingRing()

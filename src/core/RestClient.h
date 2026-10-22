@@ -199,6 +199,11 @@ public:
     // own, which is how the official client asks.
     void fetchUserBadges(const QString &who, ObjectHandler onOk, ErrorHandler onError);
     void fetchUserBadge(const QString &who, int badgeId, ObjectHandler onOk, ErrorHandler onError);
+
+    // GET /apex/experiments?surface=2: which variant of each of Discord's
+    // newer experiments this account and install are in, asked as the
+    // desktop app asks when READY did not carry them.
+    void fetchApexExperiments(ObjectHandler onOk, ErrorHandler onError);
     void updateBadgeSettings(const QList<int> &displayOrder, const QList<int> &hiddenBadges, ObjectHandler onOk,
                              ErrorHandler onError);
 

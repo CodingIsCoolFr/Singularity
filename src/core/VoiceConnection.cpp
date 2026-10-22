@@ -1070,6 +1070,7 @@ void VoiceConnection::onTextMessage(const QString &message)
         if (!userId.isEmpty()) {
             emit speakingChanged(userId, false);
             m_roster.remove(userId);
+            emit personDisconnected(userId);
         }
         break;
     }
@@ -1167,11 +1168,16 @@ void VoiceConnection::onTextMessage(const QString &message)
     case OpClientsConnect: {
         // The key group needs everyone in the call by name.
         const QJsonArray ids = data.value(QStringLiteral("user_ids")).toArray();
+        QStringList connected;
         for (const QJsonValue &value : ids) {
             const QString userId = value.toString();
-            if (!userId.isEmpty())
+            if (!userId.isEmpty()) {
                 m_roster.insert(userId);
+                connected.append(userId);
+            }
         }
+        if (!connected.isEmpty())
+            emit peopleConnected(connected);
         break;
     }
 

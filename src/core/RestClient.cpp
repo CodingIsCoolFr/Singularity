@@ -549,6 +549,13 @@ void RestClient::fetchUserBadges(const QString &who, ObjectHandler onOk, ErrorHa
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+void RestClient::fetchApexExperiments(ObjectHandler onOk, ErrorHandler onError)
+{
+    // Surface 2 is APP, the value Discord's client sends.
+    QNetworkReply *reply = m_network.get(buildRequest(QStringLiteral("/apex/experiments?surface=2")));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::fetchUserBadge(const QString &who, int badgeId, ObjectHandler onOk, ErrorHandler onError)
 {
     QNetworkReply *reply = m_network.get(buildRequest(QStringLiteral("/users/%1/badges/%2").arg(who).arg(badgeId)));

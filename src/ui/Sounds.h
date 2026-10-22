@@ -5,6 +5,7 @@
 #include <QDate>
 #include <QElapsedTimer>
 #include <QHash>
+#include <QJsonObject>
 #include <QList>
 #include <QNetworkAccessManager>
 #include <QObject>
@@ -66,6 +67,20 @@ public:
     // "halloween" or "winter_holiday" on the days they run, empty otherwise.
     static QString holidayOn(const QDate &day);
 
+    // The holiday pack in force now, or empty. Discord gives a holiday's
+    // sounds to the accounts in that holiday's experiment, not to everybody,
+    // so once Discord has said, its word decides; the calendar until then.
+    QString holidayNow() const;
+
+    // Reads the holiday experiments out of Discord's Apex assignments:
+    // READY's apex_experiments, or GET /apex/experiments. False when they hold
+    // nothing for this account, and the calendar goes on deciding.
+    bool readDiscordExperiments(const QJsonObject &apex, const QString &userId);
+
+    // What Discord said about the holiday running now, in words for
+    // Settings. Empty when it has not said.
+    QString holidayStatus() const;
+
     // Discodo, from clicking Home sixteen times. Returns the new state.
     bool toggleDiscodo();
 
@@ -125,6 +140,16 @@ private:
     QHash<QString, QSoundEffect *> m_loops;          // "call_ringing" -> what is ringing
 
     QAudioDevice m_device;
+
+    // Discord's holiday experiments as read for this account.
+    struct DiscordHoliday
+    {
+        QString pack;
+        bool on = false;
+        qint64 startMs = 0;
+        qint64 endMs = 0;
+    };
+    QList<DiscordHoliday> m_discordHolidays;
 
     // The same sound twice within a moment is one sound: five people joining
     // at once is a join, not five.

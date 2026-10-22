@@ -183,6 +183,13 @@ signals:
     void speakingChanged(const QString &userId, bool speaking);
     void failed(const QString &reason);
 
+    // The voice server's word on who is connected to the call: op 11 names
+    // people whose voice connected (everyone already there, too, just after
+    // we connect), op 13 somebody whose voice went. Discord's join and leave
+    // sounds come from these.
+    void peopleConnected(const QStringList &userIds);
+    void personDisconnected(const QString &userId);
+
     // One decoded picture from somebody's camera or shared screen.
     void videoFrame(const QString &userId, const QImage &image);
 
