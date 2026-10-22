@@ -74,6 +74,8 @@ private:
     // when it did not. A badge opens the badges window on itself.
     void rebuildBadges(const QJsonArray &badges, int publicFlags);
     void refreshBadgeIcons();
+    // The pictures plugins put after the badges (NameIcons).
+    void refreshPlatformIcons();
     void openBadges(int badgeId);
     void rebuildRoles();
 

@@ -2,6 +2,7 @@
 
 #include "core/AppConfig.h"
 #include "core/MessageStore.h"
+#include "ui/NameIcons.h"
 #include "ui/RailLayout.h"
 
 #include <QJsonObject>
@@ -53,6 +54,11 @@ public:
     // Replaces the arrangement, here and on every device. Servers you are not
     // in are dropped and ones missing are added at the end. `why` is logged.
     void setServerRail(const QList<RailLayout::Entry> &entries, const QString &why);
+
+    // What this plugin puts beside someone's name has changed: the lists,
+    // chat and profile window ask again (Plugin::nameIcons). Empty for
+    // everyone.
+    void refreshNames(const QString &userId = QString()) const;
 
 private:
     QString m_pluginId;
@@ -156,6 +162,18 @@ public:
     // short. Return an empty string to add nothing.
     virtual QString decorateMessageGutter(const MessageInfo &message) {
         Q_UNUSED(message)
+        return {};
+    }
+
+    // Small pictures beside a person's name: after it in the member list,
+    // direct messages, friends list and chat headers, after their badges in
+    // the profile window, or - for NamePlace::Avatar - in place of the status
+    // dot on their picture (the first one only). Each may be at most `size`
+    // pixels tall, at `ratio` device pixels per pixel. Asked every time a row
+    // is painted, so keep it quick; call context()->refreshNames() when the
+    // answer changes. Return nothing to add nothing.
+    virtual QList<NameIcon> nameIcons(const QString &userId, NamePlace place, int size, qreal ratio) {
+        Q_UNUSED(userId) Q_UNUSED(place) Q_UNUSED(size) Q_UNUSED(ratio)
         return {};
     }
 

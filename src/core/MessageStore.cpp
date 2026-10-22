@@ -341,6 +341,13 @@ void MessageStore::setPresence(const QString &userId, const QJsonObject &rawPres
     PresenceInfo info;
     info.status = rawPresence.value(QStringLiteral("status")).toString();
 
+    const QJsonObject clients = rawPresence.value(QStringLiteral("client_status")).toObject();
+    for (auto it = clients.constBegin(); it != clients.constEnd(); ++it) {
+        const QString status = it.value().toString();
+        if (!status.isEmpty())
+            info.clientStatus.insert(it.key(), status);
+    }
+
     const QJsonArray activities = rawPresence.value(QStringLiteral("activities")).toArray();
     for (const QJsonValue &value : activities) {
         const ActivityInfo activity = parseActivity(value.toObject());

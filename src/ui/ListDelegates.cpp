@@ -12,6 +12,7 @@
 #include <QRadialGradient>
 #include <QTimer>
 #include <QToolTip>
+#include <QtMath>
 
 #include <cmath>
 
@@ -267,7 +268,105 @@ AnimatedDelegate::AnimatedDelegate(QAbstractItemView *view, QObject *parent)
             if (m_view)
                 m_view->viewport()->update();
         });
+        // So did something a plugin puts beside names.
+        connect(&NameIcons::instance(), &NameIcons::changed, this, [this]() {
+            if (m_view)
+                m_view->viewport()->update();
+        });
     }
+}
+
+AnimatedDelegate::NameTrail AnimatedDelegate::nameTrail(const QString &userId, const Cosmetics::GuildTag &tag,
+                                                        NamePlace place, int room, qreal ratio) const
+{
+    NameTrail trail;
+    const int tagSpace = tag.isSet() ? LookPainter::instance().tagWidth(tag) + 4 : 0;
+    if (tagSpace > 0 && room - tagSpace >= 40) {
+        trail.tag = tag;
+        trail.tagSpace = tagSpace;
+    }
+    trail.icons = NameIcons::instance().icons(userId, place, 16, ratio);
+    const int iconSpace = trail.icons.isEmpty() ? 0 : NameIcons::width(trail.icons) + 4;
+    if (iconSpace > 0 && room - trail.tagSpace - iconSpace >= 40)
+        trail.iconSpace = iconSpace;
+    else
+        trail.icons.clear();
+    return trail;
+}
+
+void AnimatedDelegate::paintNameTrail(QPainter *painter, int row, const NameTrail &trail, int x, int middle) const
+{
+    if (trail.tagSpace > 0) {
+        LookPainter::instance().paintTag(painter, QPoint(x + 4, middle), trail.tag);
+        x += trail.tagSpace;
+    }
+    QList<QPair<QRect, QString>> tips;
+    if (trail.iconSpace > 0) {
+        const QList<QRect> placed = NameIcons::paint(painter, x + 4, middle, trail.icons);
+        for (int i = 0; i < placed.size() && i < trail.icons.size(); ++i)
+            tips.append({placed.at(i), trail.icons.at(i).tooltip});
+    }
+    m_nameTips.insert(row, tips);
+}
+
+bool AnimatedDelegate::paintAvatarIcon(QPainter *painter, int row, const QRect &avatar, const QString &userId,
+                                       const QColor &backdrop) const
+{
+    const int bubble = qMax(10, avatar.width() / 3);
+    const qreal ratio = painter->device() ? painter->device()->devicePixelRatioF() : 1.0;
+    const QList<NameIcon> icons = NameIcons::instance().icons(userId, NamePlace::Avatar, qRound(bubble * 1.4), ratio);
+    if (icons.isEmpty() || icons.first().image.isNull()) {
+        m_avatarTips.remove(row);
+        return false;
+    }
+
+    // Hugging the picture's corner where the dot goes, cut out of the picture
+    // by its own outline in the row's colour, as BetterDiscord's does.
+    const NameIcon &icon = icons.first();
+    const QSizeF size = QSizeF(icon.image.size()) / icon.image.devicePixelRatio();
+    const QRectF area(avatar.right() + 2 - size.width(), avatar.bottom() + 2 - size.height(), size.width(),
+                      size.height());
+    QImage outline(icon.image.size(), QImage::Format_ARGB32_Premultiplied);
+    outline.fill(Qt::transparent);
+    {
+        QPainter tint(&outline);
+        tint.drawImage(0, 0, icon.image);
+        tint.setCompositionMode(QPainter::CompositionMode_SourceIn);
+        tint.fillRect(outline.rect(), backdrop);
+    }
+    outline.setDevicePixelRatio(icon.image.devicePixelRatio());
+    painter->save();
+    painter->setRenderHint(QPainter::SmoothPixmapTransform, true);
+    const qreal reach = 2.0;
+    for (int step = 0; step < 8; ++step) {
+        const qreal angle = step * M_PI / 4;
+        painter->drawImage(area.translated(reach * std::cos(angle), reach * std::sin(angle)), outline);
+    }
+    painter->drawImage(area, icon.image);
+    painter->restore();
+
+    m_avatarTips.insert(row, {area.toAlignedRect(), icon.tooltip});
+    return true;
+}
+
+bool AnimatedDelegate::helpEvent(QHelpEvent *event, QAbstractItemView *view, const QStyleOptionViewItem &option,
+                                 const QModelIndex &index)
+{
+    if (event && event->type() == QEvent::ToolTip && index.isValid()) {
+        const int row = index.row();
+        for (const auto &[rect, text] : m_nameTips.value(row)) {
+            if (rect.contains(event->pos()) && !text.isEmpty()) {
+                QToolTip::showText(event->globalPos(), text, view, rect);
+                return true;
+            }
+        }
+        const auto avatar = m_avatarTips.constFind(row);
+        if (avatar != m_avatarTips.constEnd() && avatar->first.contains(event->pos()) && !avatar->second.isEmpty()) {
+            QToolTip::showText(event->globalPos(), avatar->second, view, avatar->first);
+            return true;
+        }
+    }
+    return QStyledItemDelegate::helpEvent(event, view, option, index);
 }
 
 void AnimatedDelegate::scheduleRepaint() const
@@ -636,14 +735,14 @@ void MemberDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
         drawn.roleColour = colour.value<QColor>().rgb() & 0xffffff;
     drawn.animateRole = hovered;
 
-    // The tag needs its room; a name too long for both gives way first, and
-    // the tag only when the row is too narrow to hold it at all.
-    const int tagSpace = look.guildTag.isSet() ? looks.tagWidth(look.guildTag) + 4 : 0;
-    const bool showTag = tagSpace > 0 && textWidth - tagSpace >= 40;
-    const int nameRoom = showTag ? textWidth - tagSpace : textWidth;
+    // The tag and any plugin's pictures need their room; a name too long for
+    // them gives way first.
+    const qreal ratio = painter->device() ? painter->device()->devicePixelRatioF() : 1.0;
+    const NameTrail trail = nameTrail(userId, look.guildTag, NamePlace::MemberList, textWidth, ratio);
+    const int nameRoom = textWidth - trail.width();
     const int nameUsed = qMin(nameRoom, looks.nameWidth(drawn));
 
-    looks.paintNameplate(painter, panel, look.nameplate, textLeft - panel.left() + nameUsed + (showTag ? tagSpace : 0),
+    looks.paintNameplate(painter, panel, look.nameplate, textLeft - panel.left() + nameUsed + trail.width(),
                          LookPainter::Placement::MemberList, hovered, selected);
 
     if (hoverAmount > 0.01) {
@@ -657,15 +756,15 @@ void MemberDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
         icon.paint(painter, avatarRect, Qt::AlignCenter);
     looks.paintDecoration(painter, avatarRect, look.decoration, hovered);
 
-    drawStatusBubble(painter, avatarRect, index.data(SingularityRoles::Status).toString(),
-                     QColor(Theme::SurfaceSidebar));
+    if (!paintAvatarIcon(painter, index.row(), avatarRect, userId, QColor(Theme::SurfaceSidebar)))
+        drawStatusBubble(painter, avatarRect, index.data(SingularityRoles::Status).toString(),
+                         QColor(Theme::SurfaceSidebar));
 
     const QRect nameBox = subtitle.isEmpty()
         ? QRect(textLeft, cell.top(), nameRoom, cell.height())
         : QRect(textLeft, cell.top() + 5, nameRoom, 17);
     const int nameWidth = looks.paintName(painter, nameBox, drawn);
-    if (showTag)
-        looks.paintTag(painter, QPoint(textLeft + nameWidth + 4, nameBox.center().y() + 1), look.guildTag);
+    paintNameTrail(painter, index.row(), trail, textLeft + nameWidth, nameBox.center().y() + 1);
 
     if (hovered && (LookPainter::moving(drawn) || look.nameplate.isSet() || look.decoration.isSet()))
         requestFrame();
@@ -700,7 +799,8 @@ void FriendDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     // server tag after it (Discord's FriendListRow); a request's name is in
     // its font only. Neither moves on hover.
     LookPainter &looks = LookPainter::instance();
-    const PersonLook look = looks.look(index.data(SingularityRoles::Id).toString());
+    const QString userId = index.data(SingularityRoles::Id).toString();
+    const PersonLook look = looks.look(userId);
     const bool isFriend = index.data(SingularityRoles::Relationship).toInt() == 1;
     const QRect avatarRect(cell.left() + 20, cell.center().y() - FriendAvatar / 2,
                            FriendAvatar, FriendAvatar);
@@ -711,12 +811,18 @@ void FriendDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
         looks.nameFor(index.data(Qt::DisplayRole).toString(), nameFont, look,
                       isFriend ? LookPainter::EffectMode::Static : LookPainter::EffectMode::Plain,
                       QColor(Theme::TextPrimary));
-    const int tagSpace = isFriend && look.guildTag.isSet() ? looks.tagWidth(look.guildTag) + 4 : 0;
+    // The tag, and any plugin's pictures, after the name. The room is what is
+    // left beside the buttons, which a request always shows.
+    const qreal ratio = painter->device() ? painter->device()->devicePixelRatioF() : 1.0;
+    const int roomBeside = qMax(40, cell.right() - (avatarRect.right() + 12)
+                                        - (isFriend ? 20 : int(buttonsFor(index).size()) * (FriendButton + 6) + 22));
+    const NameTrail trail = nameTrail(userId, isFriend ? look.guildTag : Cosmetics::GuildTag(),
+                                      NamePlace::FriendsList, roomBeside, ratio);
 
     // Background.
     const QRectF panel = QRectF(cell).adjusted(8, 2, -8, -2);
     looks.paintNameplate(painter, panel.toRect(), look.nameplate,
-                         avatarRect.right() + 12 - int(panel.left()) + looks.nameWidth(drawn) + tagSpace,
+                         avatarRect.right() + 12 - int(panel.left()) + looks.nameWidth(drawn) + trail.width(),
                          LookPainter::Placement::FriendsList, hovered, false, 8);
     if (hoverAmount > 0.01) {
         const qreal dim = look.nameplate.isSet() ? 0.5 : 1.0;
@@ -736,8 +842,9 @@ void FriendDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     if (hovered && (look.nameplate.isSet() || look.decoration.isSet()))
         requestFrame();
 
-    drawStatusBubble(painter, avatarRect, index.data(SingularityRoles::Status).toString(),
-                     QColor(Theme::SurfaceChat));
+    if (!paintAvatarIcon(painter, row, avatarRect, userId, QColor(Theme::SurfaceChat)))
+        drawStatusBubble(painter, avatarRect, index.data(SingularityRoles::Status).toString(),
+                         QColor(Theme::SurfaceChat));
 
     // A friend's buttons appear on hover, the way the real client does it. A
     // request's buttons are always there: they are the whole point of the row.
@@ -783,12 +890,9 @@ void FriendDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     const int textLeft = avatarRect.right() + 12;
     const int textWidth = qMax(40, cell.right() - textLeft - textRight);
 
-    // The tag gives way first when the row is too narrow for both.
-    const bool showTag = tagSpace > 0 && textWidth - tagSpace >= 40;
-    const QRect nameBox(textLeft, cell.top() + 7, showTag ? textWidth - tagSpace : textWidth, 18);
+    const QRect nameBox(textLeft, cell.top() + 7, qMax(30, textWidth - trail.width()), 18);
     const int nameWidth = looks.paintName(painter, nameBox, drawn);
-    if (showTag)
-        looks.paintTag(painter, QPoint(textLeft + nameWidth + 4, nameBox.center().y() + 1), look.guildTag);
+    paintNameTrail(painter, row, trail, textLeft + nameWidth, nameBox.center().y() + 1);
 
     const QString subtitle = index.data(SingularityRoles::Subtitle).toString();
     if (!subtitle.isEmpty()) {
@@ -1156,13 +1260,14 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
             text, nameFont, look,
             hovered || selected ? LookPainter::EffectMode::Animated : LookPainter::EffectMode::Plain,
             QColor(selectAmount > 0.5 || hoverAmount > 0.3 ? Theme::TextPrimary : Theme::TextMuted));
-        const int tagSpace = look.guildTag.isSet() ? looks.tagWidth(look.guildTag) + 4 : 0;
-        const bool showTag = tagSpace > 0 && textWidth - tagSpace >= 40;
-        const int nameRoom = showTag ? textWidth - tagSpace : textWidth;
+        const qreal ratio = painter->device() ? painter->device()->devicePixelRatioF() : 1.0;
+        const NameTrail trail = userId.isEmpty()
+            ? NameTrail()
+            : nameTrail(userId, look.guildTag, NamePlace::DirectMessages, textWidth, ratio);
+        const int nameRoom = textWidth - trail.width();
         const int nameUsed = qMin(nameRoom, looks.nameWidth(drawn));
 
-        looks.paintNameplate(painter, panelRect, look.nameplate,
-                             textLeft - panelRect.left() + nameUsed + (showTag ? tagSpace : 0),
+        looks.paintNameplate(painter, panelRect, look.nameplate, textLeft - panelRect.left() + nameUsed + trail.width(),
                              LookPainter::Placement::Channel, hovered, selected);
 
         const qreal backdrop = qMax(selectAmount, hoverAmount * 0.65) * (look.nameplate.isSet() ? 0.5 : 1.0);
@@ -1177,16 +1282,16 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
             icon.paint(painter, avatarRect, Qt::AlignCenter);
         looks.paintDecoration(painter, avatarRect, look.decoration, hovered);
 
-        drawStatusBubble(painter, avatarRect, index.data(SingularityRoles::Status).toString(),
-                         QColor(Theme::SurfaceSidebar));
+        if (userId.isEmpty() || !paintAvatarIcon(painter, index.row(), avatarRect, userId, QColor(Theme::SurfaceSidebar)))
+            drawStatusBubble(painter, avatarRect, index.data(SingularityRoles::Status).toString(),
+                             QColor(Theme::SurfaceSidebar));
 
         // With no second line the name sits in the middle instead.
         const QRect nameRect = subtitle.isEmpty()
             ? QRect(textLeft, cell.top(), nameRoom, cell.height())
             : QRect(textLeft, cell.top() + 5, nameRoom, cell.height() / 2);
         const int nameWidth = looks.paintName(painter, nameRect, drawn);
-        if (showTag)
-            looks.paintTag(painter, QPoint(textLeft + nameWidth + 4, nameRect.center().y() + 1), look.guildTag);
+        paintNameTrail(painter, index.row(), trail, textLeft + nameWidth, nameRect.center().y() + 1);
         if ((hovered || selected) && (LookPainter::moving(drawn) || look.nameplate.isSet() || look.decoration.isSet()))
             requestFrame();
 

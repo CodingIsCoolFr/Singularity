@@ -76,6 +76,8 @@ qt_add_executable(Singularity WIN32
     src/plugin/builtin/TimestampsPlugin.cpp
     src/plugin/builtin/QuickTextPlugin.h
     src/plugin/builtin/QuickTextPlugin.cpp
+    src/plugin/builtin/PlatformIndicatorsPlugin.h
+    src/plugin/builtin/PlatformIndicatorsPlugin.cpp
     src/plugin/builtin/PresenceHintsPlugin.h
     src/plugin/builtin/PresenceHintsPlugin.cpp
     src/plugin/builtin/AnonymousPlugin.h
@@ -165,6 +167,8 @@ qt_add_executable(Singularity WIN32
     src/ui/Sounds.cpp
     src/ui/LookPainter.h
     src/ui/LookPainter.cpp
+    src/ui/NameIcons.h
+    src/ui/NameIcons.cpp
     src/ui/ProfileArt.h
     src/ui/ProfileArt.cpp
     src/ui/Speech.h

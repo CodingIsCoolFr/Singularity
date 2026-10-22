@@ -74,6 +74,10 @@ struct PresenceInfo
     QString status;   // online, idle, dnd, offline
     QList<ActivityInfo> activities;
 
+    // Each device they are on and their status there: Discord's
+    // client_status, keyed desktop, mobile, web, embedded (a console) or vr.
+    QHash<QString, QString> clientStatus;
+
     bool isOnline() const { return !status.isEmpty() && status != QLatin1String("offline"); }
 };
 

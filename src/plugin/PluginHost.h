@@ -46,6 +46,8 @@ public:
     bool runBeforeMessageDelete(const QString &channelId, const QString &messageId);
     QString runDecorateHeader(const MessageInfo &message);
     QString runDecorateGutter(const MessageInfo &message);
+    // Every enabled plugin's pictures for one name, in plugin order.
+    QList<NameIcon> runNameIcons(const QString &userId, NamePlace place, int size, qreal ratio);
 
     // False when no enabled plugin will carry the file.
     bool runOversizedFile(const QString &path, Plugin::UploadProgress progress, Plugin::UploadDone done);
@@ -71,6 +73,8 @@ signals:
                                const QString &channelId);
     void pluginToggled(const QString &pluginId, bool enabled);
     void repaintRequested();
+    // The pictures beside someone's name changed; empty for everyone's.
+    void nameIconsChanged(const QString &userId);
 
 private:
     friend class PluginContext;

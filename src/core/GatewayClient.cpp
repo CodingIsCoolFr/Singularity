@@ -479,7 +479,12 @@ void GatewayClient::onTextMessage(const QString &message)
         const qint64 sequence = static_cast<qint64>(packet.value(QStringLiteral("s")).toDouble(-1));
         if (sequence >= 0)
             m_lastSequence = sequence;
-        handleDispatch(packet.value(QStringLiteral("t")).toString(), data, sequence);
+        // A few events carry a list rather than an object - SESSIONS_REPLACE,
+        // your own sessions on every device, is one. It is handed on as
+        // {"list": [...]} so it is not lost.
+        const QJsonValue body = packet.value(QStringLiteral("d"));
+        handleDispatch(packet.value(QStringLiteral("t")).toString(),
+                       body.isArray() ? QJsonObject{{QStringLiteral("list"), body}} : data, sequence);
         break;
     }
 

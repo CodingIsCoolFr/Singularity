@@ -34,6 +34,7 @@
 #include "ui/ListDelegates.h"
 #include "ui/LookPainter.h"
 #include "ui/LogDialog.h"
+#include "ui/NameIcons.h"
 #include "ui/MediaCache.h"
 #include "ui/MediaCache.h"
 #include "ui/PluginsDialog.h"
@@ -501,6 +502,34 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
             m_selfName->update();
         if (m_channelTitle)
             m_channelTitle->update();
+    });
+
+    // The pictures plugins put beside names (Platform indicators) come from
+    // the plugin host; the lists, the chat and the profile window ask for
+    // them through NameIcons.
+    if (m_plugins) {
+        NameIcons::instance().setProvider([this](const QString &userId, NamePlace place, int size, qreal ratio) {
+            return m_plugins ? m_plugins->runNameIcons(userId, place, size, ratio) : QList<NameIcon>();
+        });
+        connect(m_plugins, &PluginHost::nameIconsChanged, &NameIcons::instance(), &NameIcons::announceChange);
+    }
+    // The chat writes them into its page, so it is drawn again - once a
+    // burst is over - when one of the people on it changes.
+    connect(&NameIcons::instance(), &NameIcons::changed, this, [this](const QString &userId) {
+        if (m_currentChannelId.isEmpty() || !m_store->hasHistory(m_currentChannelId))
+            return;
+        if (!userId.isEmpty()) {
+            bool onPage = false;
+            for (const MessageInfo &message : m_store->messages(m_currentChannelId)) {
+                if (message.authorId == userId) {
+                    onPage = true;
+                    break;
+                }
+            }
+            if (!onPage)
+                return;
+        }
+        m_mentionRefresh.start();
     });
 
     buildUi();
@@ -4945,9 +4974,11 @@ void MainWindow::startMediaThread()
 
 MainWindow::~MainWindow()
 {
-    // The plugins outlive this window, so they lose its rail with it.
+    // The plugins outlive this window, so they lose its rail with it, and
+    // nothing asks this window for their pictures any more.
     if (m_plugins)
         m_plugins->setRailHooks({});
+    NameIcons::instance().setProvider({});
 
     // Each connection is deleted on the thread it lives on - its sockets and
     // timers belong to that thread and cannot be torn down from this one -
@@ -5818,6 +5849,19 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
         chip.setQuery(query);
         tagHtml = QStringLiteral("&#160;<img src=\"%1\" style=\"vertical-align: middle;\" alt=\"%2\">")
                       .arg(chip.toString(QUrl::FullyEncoded).toHtmlEscaped(), look.guildTag.tag.toHtmlEscaped());
+    }
+
+    // Pictures plugins put after the name: Platform indicators' devices.
+    // Each is asked for by its id, so a change is a new picture.
+    for (const NameIcon &icon :
+         NameIcons::instance().icons(message.authorId, NamePlace::Chat, 16, devicePixelRatioF())) {
+        QUrl picture(QStringLiteral("singularity-icon:chat"));
+        QUrlQuery query;
+        query.addQueryItem(QStringLiteral("u"), message.authorId);
+        query.addQueryItem(QStringLiteral("i"), icon.id);
+        picture.setQuery(query);
+        tagHtml += QStringLiteral("&#160;<img src=\"%1\" title=\"%2\" style=\"vertical-align: middle;\">")
+                       .arg(picture.toString(QUrl::FullyEncoded).toHtmlEscaped(), icon.tooltip.toHtmlEscaped());
     }
 
     return oneFrame(QStringLiteral(

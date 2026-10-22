@@ -1,8 +1,13 @@
 #pragma once
 
+#include "core/Cosmetics.h"
+#include "ui/NameIcons.h"
+
 #include <QElapsedTimer>
 #include <QHash>
 #include <QList>
+#include <QPair>
+#include <QRect>
 #include <QSet>
 #include <QStyledItemDelegate>
 
@@ -77,6 +82,10 @@ class AnimatedDelegate : public QStyledItemDelegate
 public:
     explicit AnimatedDelegate(QAbstractItemView *view, QObject *parent = nullptr);
 
+    // Tooltips for the pictures plugins put on a row; the row's own otherwise.
+    bool helpEvent(QHelpEvent *event, QAbstractItemView *view, const QStyleOptionViewItem &option,
+                   const QModelIndex &index) override;
+
 protected:
     // Returns the eased value for this row and schedules a repaint if it is
     // still settling.
@@ -86,6 +95,29 @@ protected:
     // or decoration playing, a name effect, a gradient role sliding.
     void requestFrame() const { scheduleRepaint(); }
 
+    // What follows a name in a row: the server tag, then the pictures plugins
+    // put there (NameIcons). Worked out before the name is drawn, because the
+    // name gives way to them, then the pictures to the tag, and nothing to a
+    // name squeezed under 40 pixels.
+    struct NameTrail
+    {
+        Cosmetics::GuildTag tag;
+        QList<NameIcon> icons;
+        int tagSpace = 0;    // with its gap; 0 when it is not shown
+        int iconSpace = 0;
+        int width() const { return tagSpace + iconSpace; }
+    };
+    NameTrail nameTrail(const QString &userId, const Cosmetics::GuildTag &tag, NamePlace place, int room,
+                        qreal ratio) const;
+    // Draws it after a name ending at `x`, centred on `middle`.
+    void paintNameTrail(QPainter *painter, int row, const NameTrail &trail, int x, int middle) const;
+
+    // A plugin's picture in place of the status dot (NamePlace::Avatar),
+    // cut out of the picture by an outline of `backdrop`. False when there is
+    // none, for the dot to be drawn instead.
+    bool paintAvatarIcon(QPainter *painter, int row, const QRect &avatar, const QString &userId,
+                         const QColor &backdrop) const;
+
     QAbstractItemView *m_view = nullptr;
 
 private:
@@ -93,6 +125,10 @@ private:
 
     mutable bool m_repaintQueued = false;
     mutable QHash<const void *, QHash<int, qreal>> m_velocity;
+
+    // Where each row's plugin pictures were drawn, and what they say.
+    mutable QHash<int, QList<QPair<QRect, QString>>> m_nameTips;
+    mutable QHash<int, QPair<QRect, QString>> m_avatarTips;
 };
 
 // The server rail on the far left.

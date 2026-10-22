@@ -4,6 +4,7 @@
 #include "ui/ClipPlayer.h"
 #include "ui/LookPainter.h"
 #include "ui/MediaCache.h"
+#include "ui/NameIcons.h"
 #include "core/Logger.h"
 
 #include "ui/Theme.h"
@@ -743,6 +744,21 @@ QVariant ChatView::loadResource(int type, const QUrl &name)
 
     if (name.scheme() == QLatin1String("singularity-look"))
         return lookPicture(name);
+
+    // A picture a plugin puts after an author's name, asked for by its id.
+    if (name.scheme() == QLatin1String("singularity-icon")) {
+        const QUrlQuery query(name);
+        const QString id = query.queryItemValue(QStringLiteral("i"));
+        const qreal ratio = qMax<qreal>(1.0, devicePixelRatioF());
+        for (const NameIcon &icon :
+             NameIcons::instance().icons(query.queryItemValue(QStringLiteral("u")), NamePlace::Chat, 16, ratio)) {
+            if (icon.id == id && !icon.image.isNull())
+                return QPixmap::fromImage(icon.image);
+        }
+        QImage none(QSize(1, 1), QImage::Format_ARGB32_Premultiplied);
+        none.fill(Qt::transparent);
+        return QPixmap::fromImage(none);
+    }
 
     // The reply hook. Rich text cannot draw that curve, so it is a picture.
     if (name.scheme() == QLatin1String("singularity-spine")) {

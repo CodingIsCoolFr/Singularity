@@ -7,6 +7,7 @@
 #include "plugin/builtin/FakeNitroPlugin.h"
 #include "plugin/builtin/MicShaperPlugin.h"
 #include "plugin/builtin/NitroWatchPlugin.h"
+#include "plugin/builtin/PlatformIndicatorsPlugin.h"
 #include "plugin/builtin/PresenceHintsPlugin.h"
 #include "plugin/builtin/QuickTextPlugin.h"
 #include "plugin/builtin/RelationshipNotifierPlugin.h"
@@ -59,6 +60,12 @@ void PluginContext::setServerRail(const QList<RailLayout::Entry> &entries, const
     m_host->m_railHooks.replace(entries, QStringLiteral("[%1] %2").arg(m_pluginId, why));
 }
 
+void PluginContext::refreshNames(const QString &userId) const
+{
+    if (m_host)
+        emit m_host->nameIconsChanged(userId);
+}
+
 // ---------------------------------------------------------------------------
 // PluginHost
 // ---------------------------------------------------------------------------
@@ -95,6 +102,7 @@ void PluginHost::registerBuiltins()
     add(std::make_unique<BigFilesPlugin>());
     add(std::make_unique<FakeNitroPlugin>());
     add(std::make_unique<ServerOrganizerPlugin>());
+    add(std::make_unique<PlatformIndicatorsPlugin>());
 }
 
 void PluginHost::add(std::unique_ptr<Plugin> plugin)
@@ -159,6 +167,8 @@ void PluginHost::setEnabled(const QString &pluginId, bool enabled)
 
     emit pluginToggled(pluginId, enabled);
     emit repaintRequested();
+    // Whatever it put beside names comes or goes with it.
+    emit nameIconsChanged(QString());
 }
 
 void PluginHost::dispatchGatewayEvent(const QString &eventType, const QJsonObject &data)
@@ -251,6 +261,16 @@ void PluginHost::runServerRail(const QStringList &joinedGuildIds)
         if (entry->enabled)
             entry->plugin->onServerRail(joinedGuildIds);
     }
+}
+
+QList<NameIcon> PluginHost::runNameIcons(const QString &userId, NamePlace place, int size, qreal ratio)
+{
+    QList<NameIcon> result;
+    for (Entry *entry : m_entries) {
+        if (entry->enabled)
+            result += entry->plugin->nameIcons(userId, place, size, ratio);
+    }
+    return result;
 }
 
 QString PluginHost::runDecorateGutter(const MessageInfo &message)

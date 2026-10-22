@@ -8,6 +8,7 @@
 #include "ui/FlowLayout.h"
 #include "ui/LookPainter.h"
 #include "ui/MediaCache.h"
+#include "ui/NameIcons.h"
 #include "ui/ProfileArt.h"
 #include "ui/Theme.h"
 
@@ -34,8 +35,10 @@
 #include <QToolButton>
 #include <QToolTip>
 #include <QVBoxLayout>
+#include <QtMath>
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <utility>
 
@@ -351,6 +354,14 @@ public:
         update();
     }
 
+    // A plugin's picture in place of the status bubble (Platform indicators'
+    // device); none for the bubble.
+    void setStatusIcon(const QImage &icon)
+    {
+        m_statusIcon = icon;
+        update();
+    }
+
 protected:
     void paintEvent(QPaintEvent *) override
     {
@@ -386,6 +397,29 @@ protected:
         const int bubble = qMax(18, inner / 4);
         const int ring = qMax(3, size / 34);
         const QRect area(offset + inner - bubble, offset + inner - bubble, bubble, bubble);
+
+        // Or a plugin's picture there, cut out of the avatar by its own
+        // outline in the card colour.
+        if (!m_statusIcon.isNull()) {
+            const QSizeF iconSize = QSizeF(m_statusIcon.size()) / m_statusIcon.devicePixelRatio();
+            const QRectF spot(area.right() + 3 - iconSize.width(), area.bottom() + 3 - iconSize.height(),
+                              iconSize.width(), iconSize.height());
+            QImage outline(m_statusIcon.size(), QImage::Format_ARGB32_Premultiplied);
+            outline.fill(Qt::transparent);
+            {
+                QPainter tint(&outline);
+                tint.drawImage(0, 0, m_statusIcon);
+                tint.setCompositionMode(QPainter::CompositionMode_SourceIn);
+                tint.fillRect(outline.rect(), QColor(Theme::SurfaceSidebar));
+            }
+            outline.setDevicePixelRatio(m_statusIcon.devicePixelRatio());
+            for (int step = 0; step < 12; ++step) {
+                const qreal angle = step * M_PI / 6;
+                painter.drawImage(spot.translated(ring * std::cos(angle), ring * std::sin(angle)), outline);
+            }
+            painter.drawImage(spot, m_statusIcon);
+            return;
+        }
 
         // A ring in the card colour separates the bubble from the picture.
         painter.setPen(Qt::NoPen);
@@ -428,6 +462,7 @@ private:
     QImage m_decorationStill;
     QString m_fallbackName;
     QString m_status;
+    QImage m_statusIcon;
 };
 
 } // namespace
@@ -480,6 +515,18 @@ ProfileDialog::ProfileDialog(MessageStore *store, RestClient *rest, QWidget *par
     root->addWidget(buildRightPane(), 1);
     m_frameBack = new ProfileFrameView(leftCard, shell, false);
     m_frameFront = new ProfileFrameView(leftCard, shell, true);
+
+    // A plugin's pictures for this person changed (Platform indicators: a
+    // device came or went). Plugins hear of a presence before the store
+    // takes it, so this waits for the event to finish.
+    connect(&NameIcons::instance(), &NameIcons::changed, this, [this](const QString &userId) {
+        if (!isVisible() || (!userId.isEmpty() && userId != m_userId))
+            return;
+        QTimer::singleShot(0, this, [this]() {
+            refreshPlatformIcons();
+            refreshArtwork();
+        });
+    });
 
     // Close button, floating over the top right corner.
     auto *close = new QPushButton(QStringLiteral("✕"), this);
@@ -1156,6 +1203,10 @@ void ProfileDialog::refreshArtwork()
     const QString bubble = m_store->presenceBubble(m_userId);
     avatarView->setStatus(bubble);
     avatarView->setToolTip(statusWord(bubble));
+    const QList<NameIcon> device = NameIcons::instance().icons(m_userId, NamePlace::Avatar, 30, devicePixelRatioF());
+    avatarView->setStatusIcon(device.isEmpty() ? QImage() : device.first().image);
+    if (!device.isEmpty())
+        avatarView->setToolTip(device.first().tooltip);
 
     // Banner: the picture if there is one, otherwise the accent colour.
     const QUrl bannerUrl = MediaCache::bannerUrl(m_userId, m_bannerHash, 600);
@@ -1295,7 +1346,40 @@ void ProfileDialog::rebuildBadges(const QJsonArray &badges, int publicFlags)
     }
 
     refreshBadgeIcons();
-    m_badgeHost->setVisible(shown > 0);
+    refreshPlatformIcons();
+}
+
+void ProfileDialog::refreshPlatformIcons()
+{
+    // What a plugin puts after the badges - Platform indicators' devices -
+    // behind a short rule when there are badges, as BetterDiscord sets them.
+    for (QWidget *old : m_badgeHost->findChildren<QWidget *>(QStringLiteral("NameIcon"), Qt::FindDirectChildrenOnly)) {
+        m_badgeFlow->removeWidget(old);
+        old->hide();
+        old->deleteLater();
+    }
+
+    const QList<NameIcon> icons = m_userId.isEmpty()
+        ? QList<NameIcon>()
+        : NameIcons::instance().icons(m_userId, NamePlace::ProfileBadges, 18, devicePixelRatioF());
+    if (!icons.isEmpty() && m_badgeFlow->count() > 0) {
+        auto *rule = new QFrame(m_badgeHost);
+        rule->setObjectName(QStringLiteral("NameIcon"));
+        rule->setFixedSize(6, BadgeIconPixels + 4);
+        rule->setStyleSheet(QStringLiteral("QFrame { border: none; border-left: 2px solid rgba(255, 255, 255, 40); "
+                                           "margin: 7px 2px 7px 2px; }"));
+        m_badgeFlow->addWidget(rule);
+    }
+    for (const NameIcon &icon : icons) {
+        auto *label = new QLabel(m_badgeHost);
+        label->setObjectName(QStringLiteral("NameIcon"));
+        label->setPixmap(QPixmap::fromImage(icon.image));
+        label->setAlignment(Qt::AlignCenter);
+        label->setFixedSize(BadgeIconPixels + 2, BadgeIconPixels + 4);
+        label->setToolTip(icon.tooltip);
+        m_badgeFlow->addWidget(label);
+    }
+    m_badgeHost->setVisible(m_badgeFlow->count() > 0);
     m_badgeHost->updateGeometry();
 }
 
