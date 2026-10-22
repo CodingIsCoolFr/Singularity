@@ -55,6 +55,13 @@ constexpr int FolderColor = Qt::UserRole + 19;
 // Friends list only: Discord's relationship type. 1 friend, 2 blocked,
 // 3 a request sent to you, 4 a request you sent.
 constexpr int Relationship = Qt::UserRole + 20;
+
+// The person a row is about, and the server it is seen in, for what they
+// are dressed in there: nameplate, decoration, server tag, name style and
+// role colours (LookPainter). A direct message row's Id is the channel, so
+// this carries the person; the server is empty outside one.
+constexpr int UserId = Qt::UserRole + 21;
+constexpr int GuildId = Qt::UserRole + 22;
 } // namespace SingularityRoles
 
 // Shared easing used by both delegates below.
@@ -74,6 +81,10 @@ protected:
     // Returns the eased value for this row and schedules a repaint if it is
     // still settling.
     qreal progress(QHash<int, qreal> &store, int row, bool on) const;
+
+    // Another frame soon, for something on a row that is moving: a nameplate
+    // or decoration playing, a name effect, a gradient role sliding.
+    void requestFrame() const { scheduleRepaint(); }
 
     QAbstractItemView *m_view = nullptr;
 

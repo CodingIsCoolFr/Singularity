@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/Cosmetics.h"
 #include "core/DiscordPermissions.h"
 
 #include <QDateTime>
@@ -22,6 +23,7 @@ struct RoleInfo
     int position = 0;
     quint64 permissions = 0;   // Discord's permission bits
     bool managed = false;      // a bot's or an integration's role: nobody can hand it out
+    Cosmetics::RoleColours colours;   // a gradient's second and third colours, when set
 
     bool hasColour() const { return colour != 0; }
 };
@@ -111,6 +113,13 @@ struct UserInfo
     // 4 you asked them. 0 means no link.
     int relationship = 0;
     QDateTime friendsSince;
+
+    // The account's own cosmetics. A server member may set its own for
+    // that server: see MessageStore::look.
+    Cosmetics::Decoration decoration;
+    Cosmetics::Nameplate nameplate;
+    Cosmetics::GuildTag guildTag;
+    Cosmetics::NameStyle nameStyle;
 
     QString displayName() const { return globalName.isEmpty() ? username : globalName; }
     bool isFriend() const { return relationship == 1; }
@@ -426,6 +435,35 @@ struct MessageInfo
     QDateTime callEnded;
 };
 
+// A person as one server sees them: what their member object there sets for
+// that server alone, and the roles that colour their name.
+struct MemberLook
+{
+    bool known = false;               // a member object for this server has been seen
+    QStringList roles;
+    QString nickname;
+    bool hasDecoration = false;       // the member sets its own; otherwise the account's
+    Cosmetics::Decoration decoration;
+    bool hasNameplate = false;
+    Cosmetics::Nameplate nameplate;
+    bool hasNameStyle = false;
+    Cosmetics::NameStyle nameStyle;
+};
+
+// Everything a person's row and name are dressed in where they are seen:
+// the server's member settings over the account's, and the colours of their
+// top coloured role there. Outside a server, the account's alone.
+struct PersonLook
+{
+    Cosmetics::Decoration decoration;
+    Cosmetics::Nameplate nameplate;
+    Cosmetics::GuildTag guildTag;
+    Cosmetics::NameStyle nameStyle;
+    quint32 roleColour = 0;           // 0: no coloured role
+    Cosmetics::RoleColours roleColours;
+    bool roleGradient = false;        // drawn as a gradient: the server allows it and the role has two
+};
+
 // In-memory mirror of everything the UI needs to draw. The store is
 // deliberately dumb: it holds state and reports changes, and decides nothing.
 class MessageStore : public QObject
@@ -590,6 +628,19 @@ public:
     // Roles, newest first by rank, for the ids a member carries.
     QList<RoleInfo> resolveRoles(const QString &guildId, const QStringList &roleIds) const;
 
+    // A server member object, from wherever one turns up: the member list,
+    // a member chunk, a member update, a message's author. Its user part is
+    // remembered too.
+    void rememberMember(const QString &guildId, const QJsonObject &member);
+    MemberLook memberLook(const QString &guildId, const QString &userId) const;
+
+    // How a person is dressed where they are seen. See PersonLook.
+    PersonLook look(const QString &userId, const QString &guildId = QString()) const;
+
+    // Discord's rule for the role that colours a name: the highest one that
+    // sets a colour. Empty when none does.
+    QString colourRoleId(const QString &guildId, const QStringList &roleIds) const;
+
     // Who is online and what they are doing.
     PresenceInfo presence(const QString &userId) const;
     void setPresence(const QString &userId, const QJsonObject &rawPresence);
@@ -685,6 +736,7 @@ private:
     // Channel ids, least recently touched first.
     QList<QString> m_historyOrder;
     QHash<QString, UserInfo> m_users;
+    QHash<QString, QHash<QString, MemberLook>> m_memberLooks;   // guild -> user -> look there
     QHash<QString, PresenceInfo> m_presences;
     QHash<QString, QDateTime> m_lastSeenActive;
     QHash<QString, VoiceStateInfo> m_voiceStates;

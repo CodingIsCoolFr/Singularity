@@ -118,4 +118,13 @@ private:
 
     QTimer m_animationTimer;
     bool m_animationsEnabled = true;
+
+    // What people are dressed in, drawn as pictures because rich text cannot
+    // draw them: a name in its font or gradient, a server tag chip, a picture
+    // with its decoration. Addresses are singularity-look:<kind>?...
+    // Each is drawn again when something it is made from arrives.
+    QPixmap lookPicture(const QUrl &url);
+    void redrawLooks(const QSet<QString> &which);
+    QSet<QString> m_looks;                          // looks in the document
+    QHash<QString, QSet<QString>> m_lookParts;      // a picture's address -> looks made from it
 };

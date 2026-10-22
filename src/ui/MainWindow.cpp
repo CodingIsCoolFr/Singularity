@@ -32,6 +32,7 @@
 #include "ui/CallView.h"
 #include "ui/ChangelogDialog.h"
 #include "ui/ListDelegates.h"
+#include "ui/LookPainter.h"
 #include "ui/LogDialog.h"
 #include "ui/MediaCache.h"
 #include "ui/MediaCache.h"
@@ -93,6 +94,8 @@
 #include <QEnterEvent>
 #include <QPlainTextEdit>
 #include <QPointer>
+#include <QStyle>
+#include <QStyleOption>
 #include <QUrlQuery>
 #include <QToolTip>
 #include <QKeyEvent>
@@ -486,6 +489,12 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     // be dragged and a snap has somewhere to land. The caption bar itself is
     // pulled up in WM_NCCALCSIZE so the buttons are not left under an empty strip.
     setWindowFlags(Qt::Window | Qt::CustomizeWindowHint);
+
+    // Nameplates, decorations, server tags and name styles are drawn from
+    // what the store knows about each person.
+    LookPainter::instance().setStore(m_store);
+    // A decoration or nameplate picture arriving redraws your own panel.
+    connect(&LookPainter::instance(), &LookPainter::changed, this, [this]() { updateUserPanel(); });
 
     buildUi();
     buildMenu();
@@ -2402,6 +2411,9 @@ void MainWindow::onGatewayReady(const QJsonObject &payload)
         m_gateway->games()->start(m_rest);
     m_selfPremiumType = user.value(QStringLiteral("premium_type")).toInt();
     m_selfAvatarHash = user.value(QStringLiteral("avatar")).toString();
+    // Your own account as the store knows everybody else: your decoration,
+    // nameplate, server tag and name style are drawn from it.
+    m_store->rememberUser(user);
     m_selfDisplayName = user.value(QStringLiteral("global_name")).toString();
     if (m_selfDisplayName.isEmpty())
         m_selfDisplayName = user.value(QStringLiteral("username")).toString();
@@ -2760,6 +2772,11 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
         m_store->setSelfRoles(data.value(QStringLiteral("guild_id")).toString(), roles);
         // Fall through: anything else that wants member updates still gets it.
     }
+    // Anyone's roles, nickname or server look changing.
+    if (eventType == QLatin1String("GUILD_MEMBER_UPDATE") || eventType == QLatin1String("GUILD_MEMBER_ADD")) {
+        m_store->rememberMember(data.value(QStringLiteral("guild_id")).toString(), data);
+        scheduleLookRefresh();
+    }
 
     // Left, kicked or banned - from here or any other device. "unavailable"
     // means an outage instead, and the server comes back by itself.
@@ -2804,6 +2821,17 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
 
     if (eventType == QLatin1String("GUILD_MEMBER_LIST_UPDATE")) {
         m_store->ingestMemberListUpdate(data);
+        return;
+    }
+
+    // Your own account changed, from here or another device: a new
+    // decoration, nameplate, tag, name style or picture.
+    if (eventType == QLatin1String("USER_UPDATE")) {
+        m_store->rememberUser(data);
+        if (data.value(QStringLiteral("id")).toString() == m_selfUserId && data.contains(QStringLiteral("avatar")))
+            m_selfAvatarHash = data.value(QStringLiteral("avatar")).toString();
+        updateUserPanel();
+        scheduleLookRefresh();
         return;
     }
 
@@ -3230,9 +3258,12 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
         const bool forMention = data.value(QStringLiteral("nonce")).toString() == QLatin1String("s-mention");
         if (forMention)
             m_mentionSearchHits.clear();
+        const QString chunkGuild = data.value(QStringLiteral("guild_id")).toString();
         for (const QJsonValue &value : members) {
             const QJsonObject member = value.toObject();
-            m_store->rememberUser(member.value(QStringLiteral("user")).toObject());
+            // The whole member, not just the user: their roles colour their
+            // name, and their server look dresses it.
+            m_store->rememberMember(chunkGuild, member);
             if (forMention) {
                 const QJsonObject user = member.value(QStringLiteral("user")).toObject();
                 const QString id = user.value(QStringLiteral("id")).toString();
@@ -3251,7 +3282,7 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
                                                          : QString()));
         if (!m_voiceRefreshTimer.isActive())
             m_voiceRefreshTimer.start(400);
-        m_mentionRefresh.start();
+        scheduleLookRefresh();
         if (forMention && m_mentionPopup && m_mentionPopup->isVisible())
             updateMentionPopup();
         return;
@@ -4122,6 +4153,7 @@ void MainWindow::populateChannelList(bool autoSelectFirst)
         // A one to one chat follows that person. A group has no single owner.
         const bool oneToOne = channel.type == 1 && channel.recipientIds.size() == 1;
         const QString otherId = oneToOne ? channel.recipientIds.first() : QString();
+        item->setData(SingularityRoles::UserId, otherId);
 
         QImage picture;
         if (oneToOne) {
@@ -4186,9 +4218,12 @@ void MainWindow::populateChannelList(bool autoSelectFirst)
 
             const QString name = info.displayName().isEmpty() ? memberId : info.displayName();
 
-            auto *memberItem = new QListWidgetItem(name);
+            // Their server nickname, as Discord's voice list shows them.
+            const QString nickname = m_store->memberLook(m_currentGuildId, memberId).nickname;
+            auto *memberItem = new QListWidgetItem(nickname.isEmpty() ? name : nickname);
             memberItem->setData(IdRole, memberId);
             memberItem->setData(KindRole, QStringLiteral("voicemember"));
+            memberItem->setData(SingularityRoles::GuildId, m_currentGuildId);
             memberItem->setFlags(Qt::ItemIsEnabled);
 
             const VoiceStateInfo state = m_store->voiceState(memberId);
@@ -5609,10 +5644,25 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
                            .arg(authorId, avatar.toString().toHtmlEscaped());
             }
         }
-        const QString name = authorName.isEmpty()
+        // In a server, Discord writes the replied-to name as the header
+        // does: their nickname there, in their top coloured role's colour.
+        QString replyName = authorName;
+        QString replyColour;
+        const QString replyGuild = m_store->channel(message.channelId).guildId;
+        if (!replyGuild.isEmpty() && !authorId.isEmpty()) {
+            const MemberLook member = m_store->memberLook(replyGuild, authorId);
+            if (!member.nickname.isEmpty())
+                replyName = member.nickname;
+            if (!member.known)
+                requestMemberLook(authorId, replyGuild);
+            const quint32 colour = m_store->look(authorId, replyGuild).roleColour;
+            if (colour != 0)
+                replyColour = QStringLiteral(" style=\"color: #%1;\"").arg(colour & 0xffffff, 6, 16, QLatin1Char('0'));
+        }
+        const QString name = replyName.isEmpty()
                                  ? QString()
-                                 : QStringLiteral("<a class=\"reply-name\" href=\"singularity-user:%1\">%2</a> ")
-                                       .arg(authorId, authorName.toHtmlEscaped());
+                                 : QStringLiteral("<a class=\"reply-name\" href=\"singularity-user:%1\"%3>%2</a> ")
+                                       .arg(authorId, replyName.toHtmlEscaped(), replyColour);
         replyHtml = QStringLiteral(
                         "<table class=\"reply\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\"><tr>"
                         "<td width=\"56\" align=\"right\" valign=\"middle\">%4"
@@ -5669,8 +5719,25 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
     }
 
     // Header ---------------------------------------------------------------
-    const QString displayName = message.authorName.isEmpty() ? QStringLiteral("Unknown")
-                                                             : message.authorName.toHtmlEscaped();
+    // Discord's message header: in a server the name is their nickname
+    // there, in their top coloured role's colour - its gradient, where the
+    // server has enhanced role colours - and in their chosen font; their
+    // server tag follows; their picture wears its decoration.
+    const QString guildId = m_store->channel(message.channelId).guildId;
+    const PersonLook look = m_store->look(message.authorId, guildId);
+    QString shownName = message.authorName;
+    if (!guildId.isEmpty() && !message.authorId.isEmpty()) {
+        const MemberLook member = m_store->memberLook(guildId, message.authorId);
+        if (!member.nickname.isEmpty())
+            shownName = member.nickname;
+        // Chat history comes with no member objects. Ask for the authors, the
+        // way Discord's client does, so their roles and looks can be drawn.
+        if (!member.known)
+            requestMemberLook(message.authorId, guildId);
+    }
+    if (shownName.isEmpty())
+        shownName = QStringLiteral("Unknown");
+    const QString displayName = shownName.toHtmlEscaped();
     const QString authorClass = isSelf ? QStringLiteral("author author-self") : QStringLiteral("author");
 
     // Both the picture and the name open the profile card.
@@ -5679,10 +5746,53 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
     QString avatarCell;
     if (!grouped) {
         const QUrl avatar = MediaCache::avatarUrl(message.authorId, message.authorAvatar, 80);
-        if (!avatar.isEmpty()) {
+        if (look.decoration.isSet()) {
+            QUrl face(QStringLiteral("singularity-look:face"));
+            QUrlQuery query;
+            query.addQueryItem(QStringLiteral("u"), message.authorId);
+            query.addQueryItem(QStringLiteral("g"), guildId);
+            query.addQueryItem(QStringLiteral("a"), QString::fromLatin1(QUrl::toPercentEncoding(avatar.toString())));
+            face.setQuery(query);
+            avatarCell = QStringLiteral("<a href=\"%1\"><img src=\"%2\" width=\"48\" height=\"48\"></a>")
+                             .arg(profileLink, face.toString(QUrl::FullyEncoded).toHtmlEscaped());
+        } else if (!avatar.isEmpty()) {
             avatarCell = QStringLiteral("<a href=\"%1\"><img src=\"%2\"></a>")
                              .arg(profileLink, avatar.toString().toHtmlEscaped());
         }
+    }
+
+    // The name. A custom font or a gradient is a picture, which rich text
+    // can show where it cannot draw them; a plain role colour stays text.
+    const bool customFont = look.nameStyle.fontId != 0 && look.nameStyle.fontId != 11;
+    QString nameHtml;
+    if (customFont || (!guildId.isEmpty() && look.roleGradient)) {
+        const QColor plain(isSelf ? Theme::Accent : Theme::LightGray);
+        QUrl picture(QStringLiteral("singularity-look:name"));
+        QUrlQuery query;
+        query.addQueryItem(QStringLiteral("u"), message.authorId);
+        query.addQueryItem(QStringLiteral("g"), guildId);
+        query.addQueryItem(QStringLiteral("t"), QString::fromLatin1(QUrl::toPercentEncoding(shownName)));
+        query.addQueryItem(QStringLiteral("c"), plain.name().mid(1));
+        picture.setQuery(query);
+        nameHtml = QStringLiteral("<img src=\"%1\" style=\"vertical-align: middle;\" alt=\"%2\">")
+                       .arg(picture.toString(QUrl::FullyEncoded).toHtmlEscaped(), displayName);
+    } else if (!guildId.isEmpty() && look.roleColour != 0) {
+        nameHtml = QStringLiteral("<span class=\"%1\" style=\"color: #%2;\">%3</span>")
+                       .arg(authorClass)
+                       .arg(look.roleColour & 0xffffff, 6, 16, QLatin1Char('0'))
+                       .arg(displayName);
+    } else {
+        nameHtml = QStringLiteral("<span class=\"%1\">%2</span>").arg(authorClass, displayName);
+    }
+
+    QString tagHtml;
+    if (look.guildTag.isSet()) {
+        QUrl chip(QStringLiteral("singularity-look:tag"));
+        QUrlQuery query;
+        query.addQueryItem(QStringLiteral("u"), message.authorId);
+        chip.setQuery(query);
+        tagHtml = QStringLiteral("&#160;<img src=\"%1\" style=\"vertical-align: middle;\" alt=\"%2\">")
+                      .arg(chip.toString(QUrl::FullyEncoded).toHtmlEscaped(), look.guildTag.tag.toHtmlEscaped());
     }
 
     return oneFrame(QStringLiteral(
@@ -5690,10 +5800,10 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
                "<tr>"
                "<td width=\"56\" valign=\"top\" class=\"ava\">%1</td>"
                "<td valign=\"top\"><div class=\"hdr\">"
-               "<a class=\"namelink\" href=\"%2\"><span class=\"%3\">%4</span></a>%5</div>"
+               "<a class=\"namelink\" href=\"%2\">%3</a>%4%5</div>"
                "<div class=\"%6\">%7</div></td>"
                "</tr></table>")
-        .arg(idTag + avatarCell, profileLink, authorClass, displayName, decorations, bodyClass, body));
+        .arg(idTag + avatarCell, profileLink, nameHtml, tagHtml, decorations, bodyClass, body));
 }
 
 // A Components V2 text block is markdown with a little more than a message
@@ -7104,11 +7214,32 @@ void MainWindow::updateUserPanel()
 
     const QUrl url = MediaCache::avatarUrl(m_selfUserId, m_selfAvatarHash, 80);
     const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
+    const QPixmap face = !picture.isNull() ? MediaCache::circular(picture, 32)
+                                           : MediaCache::initialsAvatar(m_selfDisplayName, 32);
 
-    if (!picture.isNull())
-        m_selfAvatar->setPixmap(MediaCache::circular(picture, 32));
-    else
-        m_selfAvatar->setPixmap(MediaCache::initialsAvatar(m_selfDisplayName, 32));
+    // Your decoration round your picture, as Discord's panel wears it. It
+    // reaches past the picture, so the picture sits inside a slightly larger
+    // square when there is one.
+    const Cosmetics::Decoration decoration = m_store->look(m_selfUserId).decoration;
+    if (decoration.isSet()) {
+        const qreal ratio = devicePixelRatioF();
+        QImage framed(QSize(40, 40) * ratio, QImage::Format_ARGB32_Premultiplied);
+        framed.setDevicePixelRatio(ratio);
+        framed.fill(Qt::transparent);
+        QPainter painter(&framed);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform);
+        painter.drawPixmap(QRect(4, 4, 32, 32), face);
+        LookPainter::instance().paintDecoration(&painter, QRect(4, 4, 32, 32), decoration, false);
+        painter.end();
+        m_selfAvatar->setFixedSize(40, 40);
+        m_selfAvatar->setPixmap(QPixmap::fromImage(framed));
+    } else {
+        m_selfAvatar->setFixedSize(32, 32);
+        m_selfAvatar->setPixmap(face);
+    }
+    if (m_userPanel)
+        m_userPanel->update();
 }
 
 void MainWindow::setTypingHint(const QString &text)
@@ -11101,6 +11232,28 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         }
     }
 
+    // Your nameplate behind your panel (Discord's "account" placement): the
+    // panel's own background first, then the plate, then its contents.
+    if (watched == m_userPanel && event->type() == QEvent::Paint && m_store) {
+        const Cosmetics::Nameplate plate = m_store->look(m_selfUserId).nameplate;
+        if (plate.isSet()) {
+            QPainter painter(m_userPanel);
+            QStyleOption option;
+            option.initFrom(m_userPanel);
+            m_userPanel->style()->drawPrimitive(QStyle::PE_Widget, &option, &painter, m_userPanel);
+            const int contentRight = m_selfName ? m_selfName->geometry().right() : m_userPanel->width() / 2;
+            LookPainter::instance().paintNameplate(&painter, m_userPanel->rect(), plate, contentRight,
+                                                   LookPainter::Placement::Account, m_userPanel->underMouse(),
+                                                   false, 0);
+            // It plays while the pointer is over the panel.
+            if (m_userPanel->underMouse())
+                QTimer::singleShot(33, m_userPanel, qOverload<>(&QWidget::update));
+            return true;
+        }
+    }
+    if (watched == m_userPanel && (event->type() == QEvent::Enter || event->type() == QEvent::Leave))
+        m_userPanel->update();
+
     if (watched == m_userPanel && event->type() == QEvent::MouseButtonRelease) {
         auto *mouseEvent = static_cast<QMouseEvent *>(event);
         if (mouseEvent->button() == Qt::LeftButton && !m_selfUserId.isEmpty()) {
@@ -11874,6 +12027,28 @@ void MainWindow::loadOlderMessages()
                                              .arg(error.httpStatus));
         },
         oldest);
+}
+
+void MainWindow::requestMemberLook(const QString &userId, const QString &guildId)
+{
+    const QString key = guildId + QLatin1Char(':') + userId;
+    if (userId.isEmpty() || guildId.isEmpty() || m_looksRequested.contains(key))
+        return;
+    m_looksRequested.insert(key);
+    m_pendingMemberLookups[guildId].insert(userId);
+    if (!m_memberLookupTimer.isActive())
+        m_memberLookupTimer.start();
+}
+
+void MainWindow::scheduleLookRefresh()
+{
+    // The chat once the burst is over; the lists draw from the store as
+    // they paint.
+    m_mentionRefresh.start();
+    if (m_channelList)
+        m_channelList->viewport()->update();
+    if (m_members)
+        m_members->refresh();
 }
 
 void MainWindow::requestUnknownName(const QString &userId, const QString &guildId)

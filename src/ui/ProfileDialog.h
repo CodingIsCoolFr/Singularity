@@ -12,6 +12,7 @@
 class RestClient;
 
 class FlowLayout;
+class ProfileNameView;
 class QLabel;
 class QLineEdit;
 class QPushButton;
@@ -96,7 +97,7 @@ private:
     // Both are custom painters declared inside the .cpp file.
     QWidget *m_banner = nullptr;
     QWidget *m_avatar = nullptr;
-    QLabel *m_displayName = nullptr;
+    ProfileNameView *m_displayName = nullptr;
     QLabel *m_handle = nullptr;
 
     // One green line, shown only when the Presence hints plugin has something

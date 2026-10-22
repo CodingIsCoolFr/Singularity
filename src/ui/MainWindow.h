@@ -530,6 +530,12 @@ private:
     void requestUnknownName(const QString &userId, const QString &guildId = QString());
     void flushMemberLookups();
     QSet<QString> m_namesRequested;
+    // A server member's roles and look, asked of the gateway in a batch like
+    // names, once each per server.
+    void requestMemberLook(const QString &userId, const QString &guildId);
+    QSet<QString> m_looksRequested;   // "guild:user"
+    // Lists and chat drawn again once people's looks have changed.
+    void scheduleLookRefresh();
     QHash<QString, QSet<QString>> m_pendingMemberLookups;   // guild -> users
     QTimer m_memberLookupTimer;
 

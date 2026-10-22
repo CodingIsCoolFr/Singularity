@@ -1,5 +1,6 @@
 #include "ui/ListDelegates.h"
 
+#include "ui/LookPainter.h"
 #include "ui/Theme.h"
 
 #include <QAbstractItemView>
@@ -259,8 +260,14 @@ AnimatedDelegate::AnimatedDelegate(QAbstractItemView *view, QObject *parent)
     : QStyledItemDelegate(parent)
     , m_view(view)
 {
-    if (m_view)
+    if (m_view) {
         m_view->viewport()->setMouseTracking(true);
+        // A font, badge, nameplate or decoration arrived: draw again.
+        connect(&LookPainter::instance(), &LookPainter::changed, this, [this]() {
+            if (m_view)
+                m_view->viewport()->update();
+        });
+    }
 }
 
 void AnimatedDelegate::scheduleRepaint() const
@@ -591,23 +598,22 @@ void MemberDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
         return;
     }
 
-    const qreal hoverAmount = progress(m_hover, index.row(), option.state & QStyle::State_MouseOver);
+    const bool hovered = option.state & QStyle::State_MouseOver;
+    const bool selected = option.state & QStyle::State_Selected;
+    const qreal hoverAmount = progress(m_hover, index.row(), hovered);
 
-    if (hoverAmount > 0.01) {
-        painter->setPen(Qt::NoPen);
-        painter->setBrush(withAlpha(Theme::SurfaceHover, hoverAmount * 0.9));
-        painter->drawRoundedRect(QRectF(cell).adjusted(6, 2, -6, -2), 7, 7);
-    }
+    // What they are dressed in here: Discord's member row draws the
+    // nameplate behind, the decoration round the picture, the name in the
+    // person's font and role colour (in a server; their full effect in a
+    // group call), and their server tag after it.
+    LookPainter &looks = LookPainter::instance();
+    const QString userId = index.data(SingularityRoles::Id).toString();
+    const QString guildId = index.data(SingularityRoles::GuildId).toString();
+    const PersonLook look = looks.look(userId, guildId);
+    const QRect panel = cell.adjusted(6, 2, -6, -2);
 
     const QRect avatarRect(cell.left() + 14, cell.center().y() - MemberAvatar / 2,
                            MemberAvatar, MemberAvatar);
-    const QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
-    if (!icon.isNull())
-        icon.paint(painter, avatarRect, Qt::AlignCenter);
-
-    drawStatusBubble(painter, avatarRect, index.data(SingularityRoles::Status).toString(),
-                     QColor(Theme::SurfaceSidebar));
-
     const QString subtitle = index.data(SingularityRoles::Subtitle).toString();
     const int textLeft = avatarRect.right() + 10;
     const int textWidth = qMax(30, cell.right() - textLeft - 12);
@@ -615,22 +621,54 @@ void MemberDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     QFont nameFont = option.font;
     nameFont.setPixelSize(13.5);
     nameFont.setWeight(QFont::DemiBold);
-    painter->setFont(nameFont);
 
     // A role colour when they have one, ordinary text when they do not. This
     // is the one place in the client where a colour is not the theme's to
     // choose: it is the server's, and people recognise each other by it.
-    const QVariant colour = index.data(SingularityRoles::NameColour);
-    painter->setPen(colour.isValid() && colour.value<QColor>().isValid()
-                        ? colour.value<QColor>()
-                        : QColor(Theme::TextMuted));
-
     const QString name = index.data(Qt::DisplayRole).toString();
+    LookPainter::Name drawn = looks.nameFor(
+        name, nameFont, look,
+        guildId.isEmpty() ? (hovered ? LookPainter::EffectMode::Animated : LookPainter::EffectMode::Static)
+                          : LookPainter::EffectMode::FontOnly,
+        QColor(Theme::TextMuted));
+    const QVariant colour = index.data(SingularityRoles::NameColour);
+    if (drawn.roleColour == 0 && colour.isValid() && colour.value<QColor>().isValid())
+        drawn.roleColour = colour.value<QColor>().rgb() & 0xffffff;
+    drawn.animateRole = hovered;
+
+    // The tag needs its room; a name too long for both gives way first, and
+    // the tag only when the row is too narrow to hold it at all.
+    const int tagSpace = look.guildTag.isSet() ? looks.tagWidth(look.guildTag) + 4 : 0;
+    const bool showTag = tagSpace > 0 && textWidth - tagSpace >= 40;
+    const int nameRoom = showTag ? textWidth - tagSpace : textWidth;
+    const int nameUsed = qMin(nameRoom, looks.nameWidth(drawn));
+
+    looks.paintNameplate(painter, panel, look.nameplate, textLeft - panel.left() + nameUsed + (showTag ? tagSpace : 0),
+                         LookPainter::Placement::MemberList, hovered, selected);
+
+    if (hoverAmount > 0.01) {
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(withAlpha(Theme::SurfaceHover, hoverAmount * (look.nameplate.isSet() ? 0.45 : 0.9)));
+        painter->drawRoundedRect(QRectF(panel), 7, 7);
+    }
+
+    const QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
+    if (!icon.isNull())
+        icon.paint(painter, avatarRect, Qt::AlignCenter);
+    looks.paintDecoration(painter, avatarRect, look.decoration, hovered);
+
+    drawStatusBubble(painter, avatarRect, index.data(SingularityRoles::Status).toString(),
+                     QColor(Theme::SurfaceSidebar));
+
     const QRect nameBox = subtitle.isEmpty()
-        ? QRect(textLeft, cell.top(), textWidth, cell.height())
-        : QRect(textLeft, cell.top() + 5, textWidth, 17);
-    painter->drawText(nameBox, Qt::AlignLeft | Qt::AlignVCenter,
-                      painter->fontMetrics().elidedText(name, Qt::ElideRight, textWidth));
+        ? QRect(textLeft, cell.top(), nameRoom, cell.height())
+        : QRect(textLeft, cell.top() + 5, nameRoom, 17);
+    const int nameWidth = looks.paintName(painter, nameBox, drawn);
+    if (showTag)
+        looks.paintTag(painter, QPoint(textLeft + nameWidth + 4, nameBox.center().y() + 1), look.guildTag);
+
+    if (hovered && (LookPainter::moving(drawn) || look.nameplate.isSet() || look.decoration.isSet()))
+        requestFrame();
 
     if (!subtitle.isEmpty()) {
         QFont small = option.font;
@@ -654,25 +692,45 @@ void FriendDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
 
     const QRect cell = option.rect;
     const int row = index.row();
-    const qreal hoverAmount = progress(m_hover, row, option.state & QStyle::State_MouseOver);
+    const bool hovered = option.state & QStyle::State_MouseOver;
+    const qreal hoverAmount = progress(m_hover, row, hovered);
+
+    // Discord's friends list rows wear the person's nameplate and
+    // decoration, and their name in its font, its effect playing on hover.
+    LookPainter &looks = LookPainter::instance();
+    const PersonLook look = looks.look(index.data(SingularityRoles::Id).toString());
+    const QRect avatarRect(cell.left() + 20, cell.center().y() - FriendAvatar / 2,
+                           FriendAvatar, FriendAvatar);
+    QFont nameFont = option.font;
+    nameFont.setPixelSize(14);
+    nameFont.setWeight(QFont::DemiBold);
+    const LookPainter::Name drawn =
+        looks.nameFor(index.data(Qt::DisplayRole).toString(), nameFont, look,
+                      hovered ? LookPainter::EffectMode::Animated : LookPainter::EffectMode::Plain,
+                      QColor(Theme::TextPrimary));
 
     // Background.
     const QRectF panel = QRectF(cell).adjusted(8, 2, -8, -2);
+    looks.paintNameplate(painter, panel.toRect(), look.nameplate,
+                         avatarRect.right() + 12 - int(panel.left()) + looks.nameWidth(drawn),
+                         LookPainter::Placement::FriendsList, hovered, false, 8);
     if (hoverAmount > 0.01) {
+        const qreal dim = look.nameplate.isSet() ? 0.5 : 1.0;
         painter->setPen(Qt::NoPen);
-        painter->setBrush(withAlpha(Theme::SurfaceHover, hoverAmount * 0.9));
+        painter->setBrush(withAlpha(Theme::SurfaceHover, hoverAmount * 0.9 * dim));
         painter->drawRoundedRect(panel, 8, 8);
-        painter->setBrush(withAlpha(Theme::Accent, 0.10 * qBound(0.0, hoverAmount, 1.0)));
+        painter->setBrush(withAlpha(Theme::Accent, 0.10 * dim * qBound(0.0, hoverAmount, 1.0)));
         painter->drawRoundedRect(panel, 8, 8);
     }
 
     // Picture, with the online bubble drawn on top rather than baked into it,
     // so nothing has to be composed per row.
-    const QRect avatarRect(cell.left() + 20, cell.center().y() - FriendAvatar / 2,
-                           FriendAvatar, FriendAvatar);
     const QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
     if (!icon.isNull())
         icon.paint(painter, avatarRect, Qt::AlignCenter);
+    looks.paintDecoration(painter, avatarRect, look.decoration, hovered);
+    if (hovered && (LookPainter::moving(drawn) || look.nameplate.isSet() || look.decoration.isSet()))
+        requestFrame();
 
     drawStatusBubble(painter, avatarRect, index.data(SingularityRoles::Status).toString(),
                      QColor(Theme::SurfaceChat));
@@ -721,15 +779,7 @@ void FriendDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     const int textLeft = avatarRect.right() + 12;
     const int textWidth = qMax(40, cell.right() - textLeft - textRight);
 
-    QFont nameFont = option.font;
-    nameFont.setPixelSize(14);
-    nameFont.setWeight(QFont::DemiBold);
-    painter->setFont(nameFont);
-    painter->setPen(QColor(Theme::TextPrimary));
-
-    const QString name = index.data(Qt::DisplayRole).toString();
-    painter->drawText(QRect(textLeft, cell.top() + 7, textWidth, 18), Qt::AlignLeft | Qt::AlignVCenter,
-                      painter->fontMetrics().elidedText(name, Qt::ElideRight, textWidth));
+    looks.paintName(painter, QRect(textLeft, cell.top() + 7, textWidth, 18), drawn);
 
     const QString subtitle = index.data(SingularityRoles::Subtitle).toString();
     if (!subtitle.isEmpty()) {
@@ -1041,10 +1091,24 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
         painter->setFont(font);
         painter->setPen(QColor(talking ? Theme::TextPrimary : Theme::TextMuted));
 
-        const QRect textRect(avatarRect.right() + 8, cell.top(),
-                             qMax(0, rightEdge - avatarRect.right() - 10), cell.height());
+        // Their server tag after the name, as Discord's voice row has it; a
+        // long name gives way to it.
+        LookPainter &looks = LookPainter::instance();
+        const Cosmetics::GuildTag tag =
+            looks.look(index.data(SingularityRoles::Id).toString(), index.data(SingularityRoles::GuildId).toString())
+                .guildTag;
+        const int room = qMax(0, rightEdge - avatarRect.right() - 10);
+        const int tagSpace = tag.isSet() ? looks.tagWidth(tag, 12) + 4 : 0;
+        const bool showTag = tagSpace > 0 && room - tagSpace >= 40;
+
+        const QRect textRect(avatarRect.right() + 8, cell.top(), showTag ? room - tagSpace : room, cell.height());
         const QString elided = painter->fontMetrics().elidedText(text, Qt::ElideRight, textRect.width());
         painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter, elided);
+        if (showTag)
+            looks.paintTag(painter,
+                           QPoint(textRect.left() + painter->fontMetrics().horizontalAdvance(elided) + 4,
+                                  cell.center().y()),
+                           tag, 12);
 
         painter->restore();
         return;
@@ -1056,24 +1120,22 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
 
     // A direct message row: picture, name, and what they are doing under it.
     if (kind == QLatin1String("dm")) {
-        const QRectF panel = QRectF(cell).adjusted(6, 1, -6, -1);
-        const qreal backdrop = qMax(selectAmount, hoverAmount * 0.65);
-        if (backdrop > 0.01) {
-            painter->setPen(Qt::NoPen);
-            painter->setBrush(withAlpha(Theme::SurfaceHover, backdrop));
-            painter->drawRoundedRect(panel, 7, 7);
-        }
+        const bool hovered = option.state & QStyle::State_MouseOver;
+        const bool selected = option.state & QStyle::State_Selected;
+
+        // Discord's private channel row: the person's nameplate behind it,
+        // their decoration, their name in its font - its effect playing only
+        // while the row is hovered or open - and their server tag. A group
+        // has none of these.
+        LookPainter &looks = LookPainter::instance();
+        const QString userId = index.data(SingularityRoles::UserId).toString();
+        const PersonLook look = userId.isEmpty() ? PersonLook() : looks.look(userId);
+
+        const QRect panelRect = cell.adjusted(6, 1, -6, -1);
+        const QRectF panel(panelRect);
 
         const QRect avatarRect(cell.left() + 12, cell.center().y() - DirectAvatar / 2,
                                DirectAvatar, DirectAvatar);
-
-        const QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
-        if (!icon.isNull())
-            icon.paint(painter, avatarRect, Qt::AlignCenter);
-
-        drawStatusBubble(painter, avatarRect, index.data(SingularityRoles::Status).toString(),
-                         QColor(Theme::SurfaceSidebar));
-
         const QString subtitle = index.data(SingularityRoles::Subtitle).toString();
         const int textLeft = avatarRect.right() + 10;
         const int textWidth = cell.right() - textLeft - 10;
@@ -1081,16 +1143,43 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
         QFont nameFont = option.font;
         nameFont.setPixelSize(13);
         nameFont.setWeight(selectAmount > 0.5 ? QFont::DemiBold : QFont::Normal);
-        painter->setFont(nameFont);
-        painter->setPen(QColor(selectAmount > 0.5 || hoverAmount > 0.3 ? Theme::TextPrimary
-                                                                       : Theme::TextMuted));
+        LookPainter::Name drawn = looks.nameFor(
+            text, nameFont, look,
+            hovered || selected ? LookPainter::EffectMode::Animated : LookPainter::EffectMode::Plain,
+            QColor(selectAmount > 0.5 || hoverAmount > 0.3 ? Theme::TextPrimary : Theme::TextMuted));
+        const int tagSpace = look.guildTag.isSet() ? looks.tagWidth(look.guildTag) + 4 : 0;
+        const bool showTag = tagSpace > 0 && textWidth - tagSpace >= 40;
+        const int nameRoom = showTag ? textWidth - tagSpace : textWidth;
+        const int nameUsed = qMin(nameRoom, looks.nameWidth(drawn));
+
+        looks.paintNameplate(painter, panelRect, look.nameplate,
+                             textLeft - panelRect.left() + nameUsed + (showTag ? tagSpace : 0),
+                             LookPainter::Placement::Channel, hovered, selected);
+
+        const qreal backdrop = qMax(selectAmount, hoverAmount * 0.65) * (look.nameplate.isSet() ? 0.5 : 1.0);
+        if (backdrop > 0.01) {
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(withAlpha(Theme::SurfaceHover, backdrop));
+            painter->drawRoundedRect(panel, 7, 7);
+        }
+
+        const QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
+        if (!icon.isNull())
+            icon.paint(painter, avatarRect, Qt::AlignCenter);
+        looks.paintDecoration(painter, avatarRect, look.decoration, hovered);
+
+        drawStatusBubble(painter, avatarRect, index.data(SingularityRoles::Status).toString(),
+                         QColor(Theme::SurfaceSidebar));
 
         // With no second line the name sits in the middle instead.
         const QRect nameRect = subtitle.isEmpty()
-            ? QRect(textLeft, cell.top(), textWidth, cell.height())
-            : QRect(textLeft, cell.top() + 5, textWidth, cell.height() / 2);
-        painter->drawText(nameRect, Qt::AlignLeft | Qt::AlignVCenter,
-                          painter->fontMetrics().elidedText(text, Qt::ElideRight, textWidth));
+            ? QRect(textLeft, cell.top(), nameRoom, cell.height())
+            : QRect(textLeft, cell.top() + 5, nameRoom, cell.height() / 2);
+        const int nameWidth = looks.paintName(painter, nameRect, drawn);
+        if (showTag)
+            looks.paintTag(painter, QPoint(textLeft + nameWidth + 4, nameRect.center().y() + 1), look.guildTag);
+        if ((hovered || selected) && (LookPainter::moving(drawn) || look.nameplate.isSet() || look.decoration.isSet()))
+            requestFrame();
 
         if (!subtitle.isEmpty()) {
             QFont subFont = option.font;

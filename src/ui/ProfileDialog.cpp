@@ -6,6 +6,7 @@
 #include "ui/AnimatedImage.h"
 #include "ui/BadgesDialog.h"
 #include "ui/FlowLayout.h"
+#include "ui/LookPainter.h"
 #include "ui/MediaCache.h"
 #include "ui/Theme.h"
 
@@ -35,6 +36,64 @@
 #include <algorithm>
 #include <functional>
 #include <utility>
+
+// The name at the top of a profile, as Discord's profile writes it: in the
+// person's display name font and effect, the effect moving while the pointer
+// is over it, and their server tag beside it.
+class ProfileNameView : public QWidget
+{
+public:
+    explicit ProfileNameView(QWidget *parent)
+        : QWidget(parent)
+    {
+        setMinimumHeight(36);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        m_frames.setInterval(33);
+        connect(&m_frames, &QTimer::timeout, this, qOverload<>(&QWidget::update));
+        connect(&LookPainter::instance(), &LookPainter::changed, this, qOverload<>(&QWidget::update));
+    }
+
+    void set(const QString &text, const PersonLook &look)
+    {
+        m_text = text;
+        m_look = look;
+        setToolTip(text);
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        LookPainter &looks = LookPainter::instance();
+        QFont font = this->font();
+        font.setPixelSize(23);
+        font.setWeight(QFont::Bold);
+        const LookPainter::Name name = looks.nameFor(
+            m_text, font, m_look, underMouse() ? LookPainter::EffectMode::Animated : LookPainter::EffectMode::Static,
+            QColor(Theme::TextPrimary));
+        const int tagSpace = m_look.guildTag.isSet() ? looks.tagWidth(m_look.guildTag, 16) + 8 : 0;
+        // The effects' outlines and glows reach a few pixels past the letters.
+        const int drawn = looks.paintName(&painter, QRect(4, 0, qMax(40, width() - tagSpace - 8), height()), name);
+        if (tagSpace)
+            looks.paintTag(&painter, QPoint(4 + drawn + 8, height() / 2 + 1), m_look.guildTag, 16);
+    }
+    void enterEvent(QEnterEvent *) override
+    {
+        m_frames.start();
+        update();
+    }
+    void leaveEvent(QEvent *) override
+    {
+        m_frames.stop();
+        update();
+    }
+
+private:
+    QString m_text;
+    PersonLook m_look;
+    QTimer m_frames;
+};
 
 namespace {
 
@@ -505,10 +564,7 @@ QWidget *ProfileDialog::buildLeftCard()
             placeAvatar();
     }));
 
-    m_displayName = new QLabel(body);
-    m_displayName->setWordWrap(true);
-    m_displayName->setStyleSheet(QStringLiteral("color: %1; font-size: 23px; font-weight: 700;")
-                                     .arg(QLatin1String(Theme::TextPrimary)));
+    m_displayName = new ProfileNameView(body);
     layout->addWidget(m_displayName);
 
     // Handle and badges share one line.
@@ -871,7 +927,8 @@ void ProfileDialog::applyLocalData()
 {
     const UserInfo info = m_store->user(m_userId);
 
-    m_displayName->setText(info.displayName().isEmpty() ? QStringLiteral("Unknown") : info.displayName());
+    m_displayName->set(info.displayName().isEmpty() ? QStringLiteral("Unknown") : info.displayName(),
+                       m_store->look(m_userId, m_guildId));
     m_handle->setText(info.username.isEmpty() ? QStringLiteral("id %1").arg(m_userId)
                                               : info.username);
 
@@ -915,6 +972,13 @@ void ProfileDialog::applyProfilePayload(const QJsonObject &payload)
 
     const QJsonObject user = payload.value(QStringLiteral("user")).toObject();
     m_store->rememberUser(user);
+    // Their member object in this server: roles, nickname, and any look set
+    // for this server alone.
+    QJsonObject guildMember = payload.value(QStringLiteral("guild_member")).toObject();
+    if (!m_guildId.isEmpty() && !guildMember.isEmpty()) {
+        guildMember.insert(QStringLiteral("user"), user);
+        m_store->rememberMember(m_guildId, guildMember);
+    }
 
     // The profile block wins, because it holds the per-server overrides.
     const QJsonObject userProfile = payload.value(QStringLiteral("user_profile")).toObject();

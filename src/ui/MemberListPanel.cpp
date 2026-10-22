@@ -367,6 +367,7 @@ void MemberListPanel::rebuild()
             const QString name = info.displayName().isEmpty() ? userId : info.displayName();
             auto *item = new QListWidgetItem(name, m_list);
             item->setData(SingularityRoles::Id, userId);
+            item->setData(SingularityRoles::GuildId, m_guildId);
             item->setData(SingularityRoles::Status, m_store->presenceBubble(userId));
             item->setData(SingularityRoles::Subtitle, doingNow(*m_store, userId));
             setFace(item, userId, name, info.avatarHash);
@@ -448,6 +449,7 @@ void MemberListPanel::rebuild()
         const QString name = row.nickname.isEmpty() ? info.displayName() : row.nickname;
 
         item->setData(SingularityRoles::Id, row.userId);
+        item->setData(SingularityRoles::GuildId, m_guildId);
         item->setText(name);
         item->setData(SingularityRoles::Status, m_store->presenceBubble(row.userId));
 

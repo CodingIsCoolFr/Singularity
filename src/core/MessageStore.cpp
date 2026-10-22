@@ -106,10 +106,118 @@ void MessageStore::rememberUser(const QJsonObject &rawUser)
     if (rawUser.contains(QStringLiteral("bot")))
         info.bot = rawUser.value(QStringLiteral("bot")).toBool();
 
+    // The cosmetics, each only when the payload carries the field: null
+    // clears it, absent says nothing.
+    if (rawUser.contains(QStringLiteral("avatar_decoration_data")))
+        info.decoration = Cosmetics::decoration(rawUser.value(QStringLiteral("avatar_decoration_data")));
+    if (rawUser.contains(QStringLiteral("collectibles")))
+        info.nameplate = Cosmetics::nameplate(rawUser.value(QStringLiteral("collectibles")));
+    if (rawUser.contains(QStringLiteral("primary_guild")))
+        info.guildTag = Cosmetics::guildTag(rawUser.value(QStringLiteral("primary_guild")));
+    else if (rawUser.contains(QStringLiteral("clan")))
+        info.guildTag = Cosmetics::guildTag(rawUser.value(QStringLiteral("clan")));
+    if (rawUser.contains(QStringLiteral("display_name_styles")))
+        info.nameStyle = Cosmetics::nameStyle(rawUser.value(QStringLiteral("display_name_styles")));
+
     if (info.username.isEmpty() && info.globalName.isEmpty())
         return;
 
     m_users.insert(id, info);
+}
+
+void MessageStore::rememberMember(const QString &guildId, const QJsonObject &member)
+{
+    const QJsonObject user = member.value(QStringLiteral("user")).toObject();
+    QString userId = user.value(QStringLiteral("id")).toString();
+    if (userId.isEmpty())
+        userId = member.value(QStringLiteral("user_id")).toString();
+    if (!user.isEmpty())
+        rememberUser(user);
+    if (guildId.isEmpty() || userId.isEmpty())
+        return;
+
+    MemberLook &look = m_memberLooks[guildId][userId];
+    look.known = true;
+    if (member.contains(QStringLiteral("roles"))) {
+        look.roles.clear();
+        for (const QJsonValue &role : member.value(QStringLiteral("roles")).toArray()) {
+            const QString id = snowflake(role);
+            if (!id.isEmpty())
+                look.roles.append(id);
+        }
+    }
+    if (member.contains(QStringLiteral("nick")))
+        look.nickname = member.value(QStringLiteral("nick")).toString();
+
+    // A member's own setting stands for this server; null hands it back to
+    // the account's.
+    if (member.contains(QStringLiteral("avatar_decoration_data"))) {
+        look.decoration = Cosmetics::decoration(member.value(QStringLiteral("avatar_decoration_data")));
+        look.hasDecoration = look.decoration.isSet();
+    }
+    if (member.contains(QStringLiteral("collectibles"))) {
+        look.nameplate = Cosmetics::nameplate(member.value(QStringLiteral("collectibles")));
+        look.hasNameplate = look.nameplate.isSet();
+    }
+    if (member.contains(QStringLiteral("display_name_styles"))) {
+        look.nameStyle = Cosmetics::nameStyle(member.value(QStringLiteral("display_name_styles")));
+        look.hasNameStyle = !member.value(QStringLiteral("display_name_styles")).isNull();
+    }
+}
+
+MemberLook MessageStore::memberLook(const QString &guildId, const QString &userId) const
+{
+    return m_memberLooks.value(guildId).value(userId);
+}
+
+QString MessageStore::colourRoleId(const QString &guildId, const QStringList &roleIds) const
+{
+    const GuildInfo guild = m_guilds.value(guildId);
+    QString best;
+    int bestPosition = -1;
+    for (const QString &id : roleIds) {
+        const RoleInfo role = guild.roles.value(id);
+        if (role.id.isEmpty() || (!role.hasColour() && role.colours.primary == 0))
+            continue;
+        if (role.position > bestPosition) {
+            bestPosition = role.position;
+            best = id;
+        }
+    }
+    return best;
+}
+
+PersonLook MessageStore::look(const QString &userId, const QString &guildId) const
+{
+    const UserInfo user = m_users.value(userId);
+    PersonLook out;
+    out.decoration = user.decoration;
+    out.nameplate = user.nameplate;
+    out.guildTag = user.guildTag;
+    out.nameStyle = user.nameStyle;
+    if (guildId.isEmpty())
+        return out;
+
+    const MemberLook member = m_memberLooks.value(guildId).value(userId);
+    if (member.hasDecoration)
+        out.decoration = member.decoration;
+    if (member.hasNameplate)
+        out.nameplate = member.nameplate;
+    if (member.hasNameStyle)
+        out.nameStyle = member.nameStyle;
+
+    const GuildInfo guild = m_guilds.value(guildId);
+    const QString colourRole = colourRoleId(guildId, member.roles);
+    if (!colourRole.isEmpty()) {
+        const RoleInfo role = guild.roles.value(colourRole);
+        out.roleColours = role.colours;
+        out.roleColour = role.colours.primary != 0 ? role.colours.primary : quint32(role.colour);
+        // Discord draws the gradient only where the server has enhanced role
+        // colours, and only for a role with two colours.
+        out.roleGradient = role.colours.hasSecondary
+            && guild.features.contains(QStringLiteral("ENHANCED_ROLE_COLORS"));
+    }
+    return out;
 }
 
 void MessageStore::setRelationship(const QString &userId, int type, const QDateTime &since)
@@ -737,7 +845,7 @@ void MessageStore::ingestMemberListUpdate(const QJsonObject &payload)
     // The payload is a list of edits to a list. Each edit carries items that
     // are either a group heading or a member, and a member brings a user and
     // their status with it.
-    const auto readItem = [this, &learned](const QJsonValue &value) -> MemberRow {
+    const auto readItem = [this, &learned, &guildId](const QJsonValue &value) -> MemberRow {
         const QJsonObject item = value.toObject();
 
         const QJsonObject group = item.value(QStringLiteral("group")).toObject();
@@ -758,7 +866,7 @@ void MessageStore::ingestMemberListUpdate(const QJsonObject &payload)
         if (userId.isEmpty())
             return {};
 
-        rememberUser(user);
+        rememberMember(guildId, member);
 
         const QJsonObject presence = member.value(QStringLiteral("presence")).toObject();
         if (!presence.isEmpty()) {
@@ -771,12 +879,10 @@ void MessageStore::ingestMemberListUpdate(const QJsonObject &payload)
         row.nickname = member.value(QStringLiteral("nick")).toString();
 
         // Which role decides their colour is not sent, only the roles they
-        // hold. Discord's rule is the highest-ranked role that sets one, and
-        // the ranking lives on the guild - so the ids are kept and the answer
-        // worked out when it is drawn, where the guild is to hand.
-        const QJsonArray roles = member.value(QStringLiteral("roles")).toArray();
-        if (!roles.isEmpty())
-            row.colourRoleId = roles.first().toString();
+        // hold. Discord's rule is the highest-ranked role that sets one. The
+        // first role in the list used to be taken instead, which is in no
+        // particular order, so plenty of names wore the wrong colour.
+        row.colourRoleId = colourRoleId(guildId, memberLook(guildId, userId).roles);
 
         return row;
     };
@@ -958,6 +1064,7 @@ void MessageStore::ingestGuild(const QJsonObject &rawGuild)
         // A string, because the bits do not fit in a JSON number.
         role.permissions = rawRole.value(QStringLiteral("permissions")).toString().toULongLong();
         role.managed = rawRole.value(QStringLiteral("managed")).toBool();
+        role.colours = Cosmetics::roleColours(rawRole);
         guild.roles.insert(role.id, role);
     }
 
@@ -2108,6 +2215,14 @@ void MessageStore::clearReactions(const QJsonObject &data)
 int MessageStore::appendMessage(const QJsonObject &rawMessage)
 {
     rememberUser(rawMessage.value(QStringLiteral("author")).toObject());
+    // A new message in a server carries its author's member object, minus
+    // the user: their roles, nickname and server look, for free.
+    const QString guildId = rawMessage.value(QStringLiteral("guild_id")).toString();
+    QJsonObject member = rawMessage.value(QStringLiteral("member")).toObject();
+    if (!guildId.isEmpty() && !member.isEmpty()) {
+        member.insert(QStringLiteral("user"), rawMessage.value(QStringLiteral("author")));
+        rememberMember(guildId, member);
+    }
     const MessageInfo message = parseMessage(rawMessage);
     if (message.channelId.isEmpty() || message.id.isEmpty())
         return -1;

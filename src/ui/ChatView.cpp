@@ -2,6 +2,7 @@
 
 #include "ui/AnimatedImage.h"
 #include "ui/ClipPlayer.h"
+#include "ui/LookPainter.h"
 #include "ui/MediaCache.h"
 #include "core/Logger.h"
 
@@ -15,6 +16,7 @@
 #include <QScrollBar>
 #include <QTextDocument>
 #include <QTimer>
+#include <QUrlQuery>
 
 #include <exception>
 #include <utility>
@@ -128,8 +130,15 @@ ChatView::ChatView(QWidget *parent)
     m_arrivalTimer.setInterval(90);
     connect(&m_arrivalTimer, &QTimer::timeout, this, &ChatView::flushArrivals);
 
+    // A name font, a tag badge or a decoration arrived: every look drawn from
+    // nothing is drawn again.
+    connect(&LookPainter::instance(), &LookPainter::changed, this, [this]() { redrawLooks(m_looks); });
+
     connect(&MediaCache::instance(), &MediaCache::ready, this, [this](const QUrl &url) {
         const QString key = url.toString();
+        const auto parts = m_lookParts.constFind(key);
+        if (parts != m_lookParts.constEnd())
+            redrawLooks(parts.value());
         if (!m_wanted.contains(key))
             return;
 
@@ -154,6 +163,12 @@ void ChatView::flushArrivals()
 
     for (const QString &key : std::as_const(m_arrived)) {
         const QUrl url(key);
+
+        // A look, drawn again now that a part of it has come.
+        if (url.scheme() == QLatin1String("singularity-look")) {
+            document()->addResource(QTextDocument::ImageResource, url, lookPicture(url));
+            continue;
+        }
 
         // A video's still picture: drawn in the video's place until it plays.
         const QString video = m_posterOf.value(key);
@@ -266,8 +281,77 @@ void ChatView::dropAnimations()
     m_animationsDropped.clear();
 }
 
+void ChatView::redrawLooks(const QSet<QString> &which)
+{
+    bool any = false;
+    for (const QString &key : which) {
+        if (!m_looks.contains(key))
+            continue;
+        m_arrived.insert(key);
+        any = true;
+    }
+    if (any && !m_arrivalTimer.isActive())
+        m_arrivalTimer.start();
+}
+
+QPixmap ChatView::lookPicture(const QUrl &url)
+{
+    LookPainter &looks = LookPainter::instance();
+    const QUrlQuery query(url);
+    const QString kind = url.path();
+    const QString userId = query.queryItemValue(QStringLiteral("u"));
+    const QString guildId = query.queryItemValue(QStringLiteral("g"));
+    const PersonLook look = looks.look(userId, guildId);
+    const qreal ratio = qMax<qreal>(1.0, devicePixelRatioF());
+    const QString key = url.toString();
+    m_looks.insert(key);
+
+    QImage image;
+    if (kind == QLatin1String("name")) {
+        // The author's name in the chat's own type, with their font and
+        // their role's gradient, the way the header would have written it.
+        QFont font;
+        font.setFamilies({QStringLiteral("Poppins"), QStringLiteral("Segoe UI")});
+        font.setPixelSize(13);
+        font.setWeight(QFont::DemiBold);
+        const QString text = query.queryItemValue(QStringLiteral("t"), QUrl::FullyDecoded);
+        const QColor fallback(QStringLiteral("#") + query.queryItemValue(QStringLiteral("c")));
+        const LookPainter::Name name = looks.nameFor(
+            text, font, look, guildId.isEmpty() ? LookPainter::EffectMode::Plain : LookPainter::EffectMode::FontOnly,
+            fallback.isValid() ? fallback : QColor(Theme::LightGray));
+        image = looks.renderName(name, ratio, 1);
+    } else if (kind == QLatin1String("tag")) {
+        image = looks.renderTag(look.guildTag, 14, ratio);
+    } else if (kind == QLatin1String("face")) {
+        // The picture at its usual 40 with the decoration round it, 1.2
+        // times as wide.
+        const QUrl avatar(query.queryItemValue(QStringLiteral("a"), QUrl::FullyDecoded));
+        if (!avatar.isEmpty())
+            m_lookParts[avatar.toString()].insert(key);
+        const QImage face = avatar.isEmpty() ? QImage() : MediaCache::instance().image(avatar);
+        const int inset = (48 - AvatarPixels) / 2;
+        image = QImage(QSize(48, 48) * ratio, QImage::Format_ARGB32_Premultiplied);
+        image.setDevicePixelRatio(ratio);
+        image.fill(Qt::transparent);
+        QPainter painter(&image);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform);
+        if (!face.isNull())
+            painter.drawPixmap(QRect(inset, inset, AvatarPixels, AvatarPixels),
+                               MediaCache::circular(face, int(AvatarPixels * ratio)));
+        looks.paintDecoration(&painter, QRect(inset, inset, AvatarPixels, AvatarPixels), look.decoration, false);
+    }
+    if (image.isNull()) {
+        image = QImage(QSize(1, 1), QImage::Format_ARGB32_Premultiplied);
+        image.fill(Qt::transparent);
+    }
+    return QPixmap::fromImage(image);
+}
+
 void ChatView::clearImageCache()
 {
+    m_looks.clear();
+    m_lookParts.clear();
     m_wanted.clear();
     m_frameSize.clear();
     m_prepared.clear();
@@ -581,6 +665,9 @@ QVariant ChatView::loadResource(int type, const QUrl &name)
 {
     if (type != QTextDocument::ImageResource)
         return QTextBrowser::loadResource(type, name);
+
+    if (name.scheme() == QLatin1String("singularity-look"))
+        return lookPicture(name);
 
     // The reply hook. Rich text cannot draw that curve, so it is a picture.
     if (name.scheme() == QLatin1String("singularity-spine")) {

@@ -56,6 +56,8 @@ qt_add_executable(Singularity WIN32
     src/core/DaveSession.cpp
     src/core/MessageStore.h
     src/core/MessageStore.cpp
+    src/core/Cosmetics.h
+    src/core/Cosmetics.cpp
     src/core/SettingsProto.h
     src/core/SettingsProto.cpp
     src/core/DiscordAppCache.h
@@ -161,6 +163,8 @@ qt_add_executable(Singularity WIN32
     src/ui/ImageViewer.cpp
     src/ui/Sounds.h
     src/ui/Sounds.cpp
+    src/ui/LookPainter.h
+    src/ui/LookPainter.cpp
     src/ui/Speech.h
     src/ui/Speech.cpp
     src/core/sherpa/c-api.h
@@ -344,6 +348,8 @@ target_link_libraries(Singularity PRIVATE
     Dbghelp
     # Dwmapi colours the title bar, which belongs to Windows rather than Qt.
     Dwmapi
+    # DirectWrite unpacks Discord's WOFF2 name fonts, which Qt cannot read.
+    Dwrite
     # Avrt puts the media thread in the "Pro Audio" scheduling class, the
     # same request Discord's own voice engine makes.
     Avrt
