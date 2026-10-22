@@ -181,8 +181,31 @@ FriendsPage::FriendsPage(MessageStore *store, RestClient *rest, QWidget *parent)
         m_list->verticalScrollBar()->setValue(scroll);
     });
 
-    connect(&MediaCache::instance(), &MediaCache::ready, this, [this](const QUrl &) {
-        if (isVisible())
+    connect(&MediaCache::instance(), &MediaCache::ready, this, [this](const QUrl &url) {
+        if (!isVisible())
+            return;
+
+        // A face goes straight onto its rows, while it is certainly in the
+        // cache. Waiting for the redraw below lost it: that timer was put
+        // back every time any picture anywhere arrived, so with a busy chat
+        // open it hardly ever ran, and by the time it did the cache - full,
+        // and taking in a picture every few moments - had let the face go
+        // again. A friend request sat on its placeholder for good.
+        const QString path = url.path();
+        if (path.startsWith(QLatin1String("/avatars/")) || path.startsWith(QLatin1String("/embed/avatars/"))) {
+            const QImage face = MediaCache::instance().image(url);
+            for (int i = 0; !face.isNull() && i < m_list->count(); ++i) {
+                QListWidgetItem *item = m_list->item(i);
+                const UserInfo person = m_store->user(item->data(SingularityRoles::Id).toString());
+                if (MediaCache::avatarUrl(person.id, person.avatarHash, 80) == url)
+                    item->setIcon(MediaCache::circular(face, AvatarPixels));
+            }
+        }
+
+        // The rest, the Active Now panel among it, a quarter of a second after
+        // the first arrival however many follow, rather than waiting for a
+        // pause that a busy chat never gives.
+        if (!m_artworkTimer.isActive())
             m_artworkTimer.start();
     });
 

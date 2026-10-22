@@ -12,7 +12,10 @@
 #include <QNetworkReply>
 #include <QPainter>
 #include <QPainterPath>
+#include <QTimer>
 #include <QUrlQuery>
+
+#include <iterator>
 
 namespace {
 
@@ -60,6 +63,18 @@ constexpr qint64 MaxOriginalBytes = 48 * 1024 * 1024;
 // what is on screen right now would only make it be fetched again at once.
 constexpr int KeepNewest = 64;
 
+// Nor is anything that arrived this recently, whoever has not collected it.
+constexpr qint64 ArrivalGraceMs = 5000;
+
+// A picture request that has not finished in this long has stalled. Without
+// a limit it never finished at all, and that picture was never asked for
+// again for the rest of the session.
+constexpr int TransferTimeoutMs = 30000;
+
+// Fetched again by itself after a failure that can pass, this long after
+// each try, then left alone.
+constexpr int RetryDelaysMs[] = {3000, 15000, 60000};
+
 // Nothing kept for drawing is larger than this on its long edge.
 //
 // The message column shows pictures at 340 across, and the member list and
@@ -93,6 +108,13 @@ MediaCache::MediaCache()
     // Two is enough to keep up with a channel full of pictures, and leaves the
     // rest of the processor to the game the user is probably also running.
     m_decoders.setMaxThreadCount(2);
+    m_clock.start();
+}
+
+bool MediaCache::justArrived(const QString &key) const
+{
+    const auto when = m_arrivedAt.constFind(key);
+    return when != m_arrivedAt.constEnd() && m_clock.elapsed() - when.value() < ArrivalGraceMs;
 }
 
 MediaCache &MediaCache::instance()
@@ -199,10 +221,20 @@ void MediaCache::evictIfNeeded()
     // screen was fetched again, threw out something else, and so on: Settings
     // flashed every picture on it, your own avatar too, over and over
     // (2026-10-21: 690 pictures down to 64 each time it opened).
+    //
+    // Whatever arrived in the last few seconds stays too, collected or not
+    // (ArrivalGraceMs).
+    for (auto it = m_arrivedAt.begin(); it != m_arrivedAt.end();) {
+        if (m_clock.elapsed() - it.value() >= ArrivalGraceMs)
+            it = m_arrivedAt.erase(it);
+        else
+            ++it;
+    }
+
     for (int i = 0; m_originalBytes > MaxOriginalBytes && m_order.size() - i > KeepNewest; ++i) {
         const QString &key = m_order.at(i);
         const auto original = m_originals.constFind(key);
-        if (original == m_originals.constEnd())
+        if (original == m_originals.constEnd() || justArrived(key))
             continue;
         m_originalBytes -= original.value().size();
         m_originals.erase(original);
@@ -214,6 +246,10 @@ void MediaCache::evictIfNeeded()
         const QString key = m_order.at(i);
         if (!m_images.contains(key) && !m_originals.contains(key)) {
             m_order.removeAt(i);
+            continue;
+        }
+        if (justArrived(key)) {
+            ++i;
             continue;
         }
         forget(key);
@@ -311,6 +347,7 @@ void MediaCache::fetch(const QUrl &url)
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::UserAgentHeader, DiscordIdentity::userAgent());
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    request.setTransferTimeout(TransferTimeoutMs);
 
     QNetworkReply *reply = m_network.get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply, url, key]() {
@@ -418,12 +455,29 @@ void MediaCache::recordFailure(const QString &key, int status, const QString &er
     if (permanent)
         m_failed.insert(key);
 
-    wlog(QStringLiteral("media"), QStringLiteral("failed %1: HTTP %2 %3 (%4 bytes,%5 retryable)")
+    // Anything else is tried again without waiting to be asked, so whatever
+    // was waiting for it gets it (`ready`) instead of a placeholder for good.
+    QString again;
+    if (!permanent) {
+        const int attempt = m_retries.value(key, 0);
+        if (attempt < int(std::size(RetryDelaysMs))) {
+            m_retries.insert(key, attempt + 1);
+            const int delay = RetryDelaysMs[attempt];
+            again = QStringLiteral(", trying again in %1 s").arg(delay / 1000);
+            QTimer::singleShot(delay, this, [this, key]() {
+                if (m_images.contains(key) || m_inFlight.contains(key) || m_failed.contains(key))
+                    return;
+                fetch(QUrl(key));
+            });
+        }
+    }
+
+    wlog(QStringLiteral("media"), QStringLiteral("failed %1: HTTP %2 %3 (%4 bytes,%5 retryable%6)")
                                       .arg(key)
                                       .arg(status)
                                       .arg(error)
                                       .arg(bytes)
-                                      .arg(permanent ? QStringLiteral(" not") : QString()));
+                                      .arg(permanent ? QStringLiteral(" not") : QString(), again));
 }
 
 void MediaCache::finishDecode(const QUrl &url, const QString &key, const QByteArray &payload, int status,
@@ -463,6 +517,8 @@ void MediaCache::finishDecode(const QUrl &url, const QString &key, const QByteAr
     }
 
     touch(key);
+    m_arrivedAt.insert(key, m_clock.elapsed());
+    m_retries.remove(key);
     evictIfNeeded();
 
     emit ready(url);
@@ -498,17 +554,23 @@ QPixmap MediaCache::initialsAvatar(const QString &name, int size)
     if (size <= 0)
         return {};
 
+    // Styled letters - "𝖠𝖫𝖵𝖠", "ＡＬＶＡ" - fold to the plain ones first, and
+    // letters outside the basic plane are read whole: both used to fall
+    // through to "#".
     QString initials;
-    const QStringList parts = name.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    int letters = 0;
+    const QStringList parts =
+        name.normalized(QString::NormalizationForm_KC).split(QLatin1Char(' '), Qt::SkipEmptyParts);
     for (const QString &part : parts) {
         // Skip leading emoji and punctuation so the letter is a real letter.
-        for (const QChar ch : part) {
-            if (ch.isLetterOrNumber()) {
-                initials += ch.toUpper();
+        for (const char32_t ch : part.toUcs4()) {
+            if (QChar::isLetterOrNumber(ch)) {
+                initials += QString::fromUcs4(&ch, 1).toUpper();
+                ++letters;
                 break;
             }
         }
-        if (initials.size() >= 2)
+        if (letters >= 2)
             break;
     }
     if (initials.isEmpty())

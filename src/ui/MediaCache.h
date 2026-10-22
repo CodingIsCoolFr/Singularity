@@ -90,6 +90,21 @@ private:
     QSet<QString> m_inFlight;
     QSet<QString> m_failed;
 
+    // A picture that failed for a reason that can pass - a dropped
+    // connection, a stalled one, a rate limit - is fetched again by itself, a
+    // few times, further apart each time. Waiting for somebody to ask again
+    // left a face blank for as long as nothing on screen happened to redraw.
+    QHash<QString, int> m_retries;
+
+    // When each picture arrived. One that arrived moments ago is kept
+    // whatever the budget says, because whoever asked for it may not have
+    // come to collect it yet: a burst of arrivals - a busy channel opening -
+    // used to push it out first, and the list waiting for it drew a grey
+    // circle and asked again, in a loop.
+    QHash<QString, qint64> m_arrivedAt;
+    QElapsedTimer m_clock;
+    bool justArrived(const QString &key) const;
+
     // Least recently used first. Kept so a full cache drops only the oldest
     // pictures instead of wiping every one, which used to make avatars all
     // over the window fall back to grey circles at once.
