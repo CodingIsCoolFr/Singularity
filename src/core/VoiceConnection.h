@@ -318,6 +318,17 @@ private:
         int hungry = 0;
         int rotation = 0;
 
+        // A picture was lost. Every picture after it is described as changes
+        // from it, so decoding them paints those changes over an older one:
+        // the shared screen flashed back to a still of a few seconds before.
+        // Nothing more goes to the decoder until a keyframe, which needs no
+        // earlier picture, the way Discord's client waits; the last good
+        // picture stays up meanwhile.
+        bool needKeyframe = false;
+        int heldBack = 0;         // pictures not decoded while waiting, since the last report
+        int heldBackRun = 0;      // in the current wait
+        qint64 heldSinceMs = 0;   // when the current wait began
+
         // Lost packets we have asked to have sent again, and when we last
         // asked. A hole is waited on for a while before the picture is given
         // up, because the copy is usually on its way.
@@ -385,6 +396,8 @@ private:
     // Asks the sender for a keyframe so a stream we joined in the middle can
     // actually produce a picture, rather than waiting for the next one.
     void sendPictureLossIndication(quint32 mediaSsrc);
+    // Whether a picture (Annex B) holds a keyframe, one needing no other.
+    static bool containsKeyframe(const QByteArray &annexB);
 
     // The other direction: somebody asked us for one.
     void handleIncomingRtcp(const QByteArray &packet);

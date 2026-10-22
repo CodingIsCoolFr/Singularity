@@ -2041,8 +2041,10 @@ void VoiceConnection::reportAudioStats()
     // connection carrying a Go Live stream opens no microphone and plays no
     // sound, so every one of the counts below stayed at zero and this
     // returned without printing. The one line that would have said what was
-    // happening was suppressed by the one case it was needed for.
-    const int video = m_statVideoSent + m_statVideoSealFailed;
+    // happening was suppressed by the one case it was needed for. Pictures we
+    // received count too: watching a stream sends nothing and plays nothing
+    // here either, and its five-second line stopped after the first.
+    const int video = m_statVideoSent + m_statVideoSealFailed + m_statVideoPackets;
 
     if (m_statSent == 0 && m_statPlayed == 0 && lost == 0 && video == 0) {
         m_statCaptured = 0;
@@ -2165,16 +2167,19 @@ void VoiceConnection::reportAudioStats()
             continue;
 
         wlog(QStringLiteral("video"),
-             QStringLiteral("%1: %2 packets, %3 pictures, %4 incomplete, %5 waiting on a keyframe")
+             QStringLiteral("%1: %2 packets, %3 pictures, %4 incomplete, %5 waiting on a keyframe, "
+                            "%6 held back after a loss")
                  .arg(m_videoSsrcToUser.value(it.key(), QStringLiteral("unknown sender")))
                  .arg(stream->packets)
                  .arg(stream->frames)
                  .arg(stream->dropped)
-                 .arg(stream->hungry));
+                 .arg(stream->hungry)
+                 .arg(stream->heldBack));
 
         stream->packets = 0;
         stream->frames = 0;
         stream->dropped = 0;
+        stream->heldBack = 0;
     }
 
     m_statSent = 0;
@@ -2386,6 +2391,7 @@ void VoiceConnection::handleVideoPacket(quint32 ssrc, const QByteArray &payload,
     if (dist < 0x8000) {
         // Jumped far ahead: a burst was lost, not reordered.
         stream.gap = true;
+        stream.needKeyframe = true;
         stream.held.clear();
         stream.nacked.clear();
         stream.nackTries.clear();
@@ -2418,6 +2424,9 @@ void VoiceConnection::skipLostVideo(VideoStream &stream, quint32 ssrc, const QSt
         return;
     if (!stream.assembling.isEmpty())
         stream.gap = true;
+    // Packets given up for good: whatever picture they belonged to is gone,
+    // even one that had not started yet, and the next ones need it.
+    stream.needKeyframe = true;
 
     quint16 bestDist = 0xFFFF;
     quint16 bestSeq = stream.nextSeq;
@@ -2651,6 +2660,7 @@ void VoiceConnection::finishVideoPicture(VideoStream &stream, quint32 ssrc, cons
 
     if (gapped) {
         ++stream.dropped;
+        stream.needKeyframe = true;
         sendPictureLossIndication(ssrc);
         return;
     }
@@ -2679,6 +2689,7 @@ void VoiceConnection::finishVideoPicture(VideoStream &stream, quint32 ssrc, cons
         if (picture.isEmpty()) {
             ++m_statVideoDaveFailed;
             ++stream.dropped;
+            stream.needKeyframe = true;
             if (stream.dropped == 1 || (stream.dropped % 60) == 0) {
                 wlog(QStringLiteral("video"),
                      QStringLiteral("could not open a picture from %1 (%2 so far)")
@@ -2690,6 +2701,32 @@ void VoiceConnection::finishVideoPicture(VideoStream &stream, quint32 ssrc, cons
         }
     }
 
+    // After a loss, only a keyframe goes on; see VideoStream::needKeyframe.
+    // A sender that refreshes a little at a time and never sends a whole
+    // keyframe would leave the picture still for good, so after two seconds
+    // the pictures go on regardless, as they used to.
+    if (stream.needKeyframe) {
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (stream.heldBackRun == 0)
+            stream.heldSinceMs = now;
+        const bool keyframe = containsKeyframe(picture);
+        if (!keyframe && now - stream.heldSinceMs < 2000) {
+            ++stream.heldBack;
+            ++stream.heldBackRun;
+            sendPictureLossIndication(ssrc);
+            return;
+        }
+        if (stream.heldBackRun > 0) {
+            wlog(QStringLiteral("video"), QStringLiteral("%1: %2 after holding back %3 pictures")
+                                              .arg(userId.isEmpty() ? QString::number(ssrc) : userId,
+                                                   keyframe ? QStringLiteral("back on a keyframe")
+                                                            : QStringLiteral("no keyframe came, going on"))
+                                              .arg(stream.heldBackRun));
+        }
+        stream.needKeyframe = false;
+        stream.heldBackRun = 0;
+    }
+
     if (!m_videoWorker)
         return;
 
@@ -2697,6 +2734,23 @@ void VoiceConnection::finishVideoPicture(VideoStream &stream, quint32 ssrc, cons
     QMetaObject::invokeMethod(worker, [worker, ssrc, userId, picture]() {
         worker->submit(ssrc, userId, picture);
     }, Qt::QueuedConnection);
+}
+
+bool VoiceConnection::containsKeyframe(const QByteArray &annexB)
+{
+    // An IDR slice (NAL type 5) is a picture made from nothing earlier. Each
+    // part follows a 00 00 01 (or 00 00 00 01) marker; the byte after it says
+    // what the part is.
+    const auto *bytes = reinterpret_cast<const quint8 *>(annexB.constData());
+    const qsizetype size = annexB.size();
+    for (qsizetype i = 0; i + 3 < size; ++i) {
+        if (bytes[i] == 0 && bytes[i + 1] == 0 && bytes[i + 2] == 1) {
+            if ((bytes[i + 3] & 0x1F) == 5)
+                return true;
+            i += 2;
+        }
+    }
+    return false;
 }
 
 JitterBuffer *VoiceConnection::bufferFor(quint32 ssrc)
