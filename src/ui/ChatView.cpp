@@ -134,6 +134,10 @@ ChatView::ChatView(QWidget *parent)
     // nothing is drawn again.
     connect(&LookPainter::instance(), &LookPainter::changed, this, [this]() { redrawLooks(m_looks); });
 
+    // The hovered message's name, while its effect plays.
+    m_hoverTimer.setInterval(33);
+    connect(&m_hoverTimer, &QTimer::timeout, this, &ChatView::pumpHoveredLooks);
+
     connect(&MediaCache::instance(), &MediaCache::ready, this, [this](const QUrl &url) {
         const QString key = url.toString();
         const auto parts = m_lookParts.constFind(key);
@@ -308,38 +312,66 @@ QPixmap ChatView::lookPicture(const QUrl &url)
 
     QImage image;
     if (kind == QLatin1String("name")) {
-        // The author's name in the chat's own type, with their font and
-        // their role's gradient, the way the header would have written it.
+        // The author's name in the chat's own type, the way Discord's header
+        // writes it. In a direct message or group: their font, the effect
+        // playing while the message is hovered. In a server: their role's
+        // colour or gradient in the ordinary font, the gradient sliding on
+        // hover - Discord draws name styles in a header only outside servers.
+        // "z" is a larger size, for the top of a direct message, where the
+        // effect shows held still.
+        const int size = query.queryItemValue(QStringLiteral("z")).toInt();
         QFont font;
         font.setFamilies({QStringLiteral("Poppins"), QStringLiteral("Segoe UI")});
-        font.setPixelSize(13);
-        font.setWeight(QFont::DemiBold);
+        font.setPixelSize(size > 0 ? size : 13);
+        font.setWeight(size > 0 ? QFont::Bold : QFont::DemiBold);
         const QString text = query.queryItemValue(QStringLiteral("t"), QUrl::FullyDecoded);
         const QColor fallback(QStringLiteral("#") + query.queryItemValue(QStringLiteral("c")));
-        const LookPainter::Name name = looks.nameFor(
-            text, font, look, guildId.isEmpty() ? LookPainter::EffectMode::Plain : LookPainter::EffectMode::FontOnly,
-            fallback.isValid() ? fallback : QColor(Theme::LightGray));
-        image = looks.renderName(name, ratio, 1);
+        const QString messageId = query.queryItemValue(QStringLiteral("m"));
+        const bool hovered = !messageId.isEmpty() && messageId == m_hoveredMessage;
+
+        LookPainter::EffectMode mode = LookPainter::EffectMode::FontOnly;
+        if (guildId.isEmpty())
+            mode = hovered ? LookPainter::EffectMode::Animated
+                           : size > 0 ? LookPainter::EffectMode::Static : LookPainter::EffectMode::Plain;
+        LookPainter::Name name =
+            looks.nameFor(text, font, look, mode, fallback.isValid() ? fallback : QColor(Theme::LightGray));
+        if (!guildId.isEmpty())
+            name.style = {};
+        name.animateRole = hovered;
+
+        if (!messageId.isEmpty()) {
+            m_looksByMessage[messageId].insert(key);
+            LookPainter::Name moving = name;
+            moving.animateRole = true;
+            if (guildId.isEmpty())
+                moving.mode = LookPainter::EffectMode::Animated;
+            if (LookPainter::moving(moving))
+                m_movingLooks.insert(key);
+        }
+        // An effect's outline and glow reach past the letters.
+        image = looks.renderName(name, ratio, guildId.isEmpty() ? 3 : 1);
     } else if (kind == QLatin1String("tag")) {
         image = looks.renderTag(look.guildTag, 14, ratio);
     } else if (kind == QLatin1String("face")) {
-        // The picture at its usual 40 with the decoration round it, 1.2
-        // times as wide.
+        // The picture, at its usual 40 or the "s" given, with the decoration
+        // round it, 1.2 times as wide.
         const QUrl avatar(query.queryItemValue(QStringLiteral("a"), QUrl::FullyDecoded));
         if (!avatar.isEmpty())
             m_lookParts[avatar.toString()].insert(key);
         const QImage face = avatar.isEmpty() ? QImage() : MediaCache::instance().image(avatar);
-        const int inset = (48 - AvatarPixels) / 2;
-        image = QImage(QSize(48, 48) * ratio, QImage::Format_ARGB32_Premultiplied);
+        const int asked = query.queryItemValue(QStringLiteral("s")).toInt();
+        const int pixels = asked > 0 ? asked : AvatarPixels;
+        const int box = qRound(pixels * 1.2);
+        const int inset = (box - pixels) / 2;
+        image = QImage(QSize(box, box) * ratio, QImage::Format_ARGB32_Premultiplied);
         image.setDevicePixelRatio(ratio);
         image.fill(Qt::transparent);
         QPainter painter(&image);
         painter.setRenderHint(QPainter::Antialiasing);
         painter.setRenderHint(QPainter::SmoothPixmapTransform);
         if (!face.isNull())
-            painter.drawPixmap(QRect(inset, inset, AvatarPixels, AvatarPixels),
-                               MediaCache::circular(face, int(AvatarPixels * ratio)));
-        looks.paintDecoration(&painter, QRect(inset, inset, AvatarPixels, AvatarPixels), look.decoration, false);
+            painter.drawPixmap(QRect(inset, inset, pixels, pixels), MediaCache::circular(face, int(pixels * ratio)));
+        looks.paintDecoration(&painter, QRect(inset, inset, pixels, pixels), look.decoration, false);
     }
     if (image.isNull()) {
         image = QImage(QSize(1, 1), QImage::Format_ARGB32_Premultiplied);
@@ -348,10 +380,53 @@ QPixmap ChatView::lookPicture(const QUrl &url)
     return QPixmap::fromImage(image);
 }
 
+void ChatView::setHoveredMessage(const QString &messageId)
+{
+    if (messageId == m_hoveredMessage)
+        return;
+
+    // The name that was moving stops, the new one starts.
+    QSet<QString> redraw = m_looksByMessage.value(m_hoveredMessage);
+    m_hoveredMessage = messageId;
+    const QSet<QString> now = m_looksByMessage.value(messageId);
+    redraw.unite(now);
+    for (const QString &key : std::as_const(redraw)) {
+        if (m_looks.contains(key))
+            document()->addResource(QTextDocument::ImageResource, QUrl(key), lookPicture(QUrl(key)));
+    }
+    if (!redraw.isEmpty())
+        viewport()->update();
+
+    bool moving = false;
+    for (const QString &key : now)
+        moving = moving || m_movingLooks.contains(key);
+    if (moving && m_animationsEnabled)
+        m_hoverTimer.start();
+    else
+        m_hoverTimer.stop();
+}
+
+void ChatView::pumpHoveredLooks()
+{
+    if (!isVisible())
+        return;
+    const QSet<QString> keys = m_looksByMessage.value(m_hoveredMessage);
+    for (const QString &key : keys) {
+        if (m_looks.contains(key))
+            document()->addResource(QTextDocument::ImageResource, QUrl(key), lookPicture(QUrl(key)));
+    }
+    // The same size every frame, so only a repaint, as with the animations.
+    viewport()->update();
+}
+
 void ChatView::clearImageCache()
 {
     m_looks.clear();
     m_lookParts.clear();
+    m_looksByMessage.clear();
+    m_movingLooks.clear();
+    m_hoveredMessage.clear();
+    m_hoverTimer.stop();
     m_wanted.clear();
     m_frameSize.clear();
     m_prepared.clear();

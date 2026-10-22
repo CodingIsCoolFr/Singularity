@@ -30,6 +30,7 @@
 #include <QScrollBar>
 #include <QStackedWidget>
 #include <QStyle>
+#include <QStyleOption>
 #include <QToolButton>
 #include <QToolTip>
 #include <QVBoxLayout>
@@ -39,8 +40,8 @@
 #include <utility>
 
 // The name at the top of a profile, as Discord's profile writes it: in the
-// person's display name font and effect, the effect moving while the pointer
-// is over it, and their server tag beside it.
+// person's display name font and effect, the effect always moving, and their
+// server tag beside it.
 class ProfileNameView : public QWidget
 {
 public:
@@ -70,30 +71,96 @@ protected:
         QFont font = this->font();
         font.setPixelSize(23);
         font.setWeight(QFont::Bold);
-        const LookPainter::Name name = looks.nameFor(
-            m_text, font, m_look, underMouse() ? LookPainter::EffectMode::Animated : LookPainter::EffectMode::Static,
-            QColor(Theme::TextPrimary));
+        const LookPainter::Name name =
+            looks.nameFor(m_text, font, m_look, LookPainter::EffectMode::Animated, QColor(Theme::TextPrimary));
         const int tagSpace = m_look.guildTag.isSet() ? looks.tagWidth(m_look.guildTag, 16) + 8 : 0;
         // The effects' outlines and glows reach a few pixels past the letters.
         const int drawn = looks.paintName(&painter, QRect(4, 0, qMax(40, width() - tagSpace - 8), height()), name);
         if (tagSpace)
             looks.paintTag(&painter, QPoint(4 + drawn + 8, height() / 2 + 1), m_look.guildTag, 16);
+        if (LookPainter::moving(name) && !m_frames.isActive())
+            m_frames.start();
+        else if (!LookPainter::moving(name))
+            m_frames.stop();
     }
-    void enterEvent(QEnterEvent *) override
-    {
-        m_frames.start();
-        update();
-    }
-    void leaveEvent(QEvent *) override
-    {
-        m_frames.stop();
-        update();
-    }
+    void hideEvent(QHideEvent *) override { m_frames.stop(); }
 
 private:
     QString m_text;
     PersonLook m_look;
     QTimer m_frames;
+};
+
+// One of the friends you share, as Discord's profile lists them: their
+// picture with its decoration, their name and server tag, and their
+// nameplate behind the row while the pointer is on it.
+class MutualFriendRow : public QFrame
+{
+public:
+    MutualFriendRow(const QString &userId, const QString &name, const QUrl &avatar)
+        : m_userId(userId)
+        , m_name(name)
+        , m_avatar(avatar)
+    {
+        setObjectName(QStringLiteral("Card"));
+        setFixedHeight(48);
+        connect(&LookPainter::instance(), &LookPainter::changed, this, qOverload<>(&QWidget::update));
+        connect(&MediaCache::instance(), &MediaCache::ready, this, [this](const QUrl &url) {
+            if (url == m_avatar)
+                update();
+        });
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform);
+        QStyleOption option;
+        option.initFrom(this);
+        style()->drawPrimitive(QStyle::PE_Widget, &option, &painter, this);
+
+        LookPainter &looks = LookPainter::instance();
+        const PersonLook look = looks.look(m_userId);
+        const bool hovered = underMouse();
+        const QRect avatarRect(10, (height() - 32) / 2, 32, 32);
+        const int textLeft = avatarRect.right() + 11;
+
+        QFont font = this->font();
+        font.setPixelSize(13);
+        const QFontMetrics metrics(font);
+        const int tagSpace = look.guildTag.isSet() ? looks.tagWidth(look.guildTag) + 4 : 0;
+        const int room = qMax(30, width() - textLeft - 10 - tagSpace);
+        const QString text = metrics.elidedText(m_name, Qt::ElideRight, room);
+        const int textWidth = metrics.horizontalAdvance(text);
+
+        if (hovered)
+            looks.paintNameplate(&painter, rect(), look.nameplate, textLeft + textWidth + tagSpace,
+                                 LookPainter::Placement::FriendsList, true, false, 10);
+
+        const QImage picture = m_avatar.isEmpty() ? QImage() : MediaCache::instance().image(m_avatar);
+        painter.drawPixmap(avatarRect, picture.isNull() ? MediaCache::initialsAvatar(m_name, 32)
+                                                        : MediaCache::circular(picture, 32));
+        looks.paintDecoration(&painter, avatarRect, look.decoration, hovered);
+
+        painter.setFont(font);
+        painter.setPen(QColor(Theme::TextPrimary));
+        painter.drawText(QRect(textLeft, 0, room, height()), Qt::AlignLeft | Qt::AlignVCenter, text);
+        if (tagSpace)
+            looks.paintTag(&painter, QPoint(textLeft + textWidth + 4, height() / 2 + 1), look.guildTag);
+
+        // A nameplate or decoration plays while hovered.
+        if (hovered && (look.nameplate.isSet() || look.decoration.isSet()))
+            QTimer::singleShot(33, this, qOverload<>(&QWidget::update));
+    }
+    void enterEvent(QEnterEvent *) override { update(); }
+    void leaveEvent(QEvent *) override { update(); }
+
+private:
+    QString m_userId;
+    QString m_name;
+    QUrl m_avatar;
 };
 
 namespace {
@@ -1612,28 +1679,12 @@ void ProfileDialog::rebuildMutuals()
         const QString id = raw.value(QStringLiteral("id")).toString();
         const UserInfo info = m_store->user(id);
 
-        auto *row = new QFrame;
-        row->setObjectName(QStringLiteral("Card"));
-        auto *rowLayout = new QHBoxLayout(row);
-        rowLayout->setContentsMargins(10, 8, 10, 8);
-        rowLayout->setSpacing(10);
-
-        auto *avatar = new QLabel(row);
-        avatar->setFixedSize(32, 32);
+        // Asking for the picture also starts the download.
         const QUrl url = MediaCache::avatarUrl(id, info.avatarHash, 80);
-        const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
-        if (picture.isNull() && !url.isEmpty())
+        if (!url.isEmpty() && MediaCache::instance().image(url).isNull())
             m_mutualUrls.insert(url.toString());
-        avatar->setPixmap(picture.isNull() ? MediaCache::initialsAvatar(info.displayName(), 32)
-                                           : MediaCache::circular(picture, 32));
-        rowLayout->addWidget(avatar);
-
-        auto *name = new QLabel(info.displayName(), row);
-        name->setStyleSheet(QStringLiteral("color: %1; font-size: 13px;")
-                                .arg(QLatin1String(Theme::TextPrimary)));
-        rowLayout->addWidget(name, 1);
-
-        m_mutualFriendsLayout->insertWidget(m_mutualFriendsLayout->count() - 1, row);
+        m_mutualFriendsLayout->insertWidget(m_mutualFriendsLayout->count() - 1,
+                                            new MutualFriendRow(id, info.displayName(), url));
     }
 
     // --- mutual servers ---------------------------------------------------

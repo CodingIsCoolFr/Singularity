@@ -357,6 +357,8 @@ private:
     // Discord's "Wave to …" on a new 1:1 DM, and "Wave back" when they waved
     // first. Sends the Wumpus Wave sticker; a 👋 if Discord refuses it.
     QString emptyChannelHtml() const;
+    // Discord's header at the top of a one to one chat.
+    QString directStartHtml() const;
     QString wavePromptHtml(const QList<MessageInfo> &messages) const;
     void sendWave();
     bool isOneToOneDm() const;

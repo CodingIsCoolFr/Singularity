@@ -31,6 +31,15 @@ public:
     // Turning this off freezes every moving picture on the first frame.
     void setAnimationsEnabled(bool enabled);
 
+    // The message under the pointer. Its author's name plays its effect, or
+    // its role gradient slides, as Discord's does while a message is hovered;
+    // the one before stops. Empty for none.
+    void setHoveredMessage(const QString &messageId);
+    // Whether anything on the page changes when its message is hovered, so
+    // the window need not work out which message is under the pointer when
+    // nothing does.
+    bool hasHoverLooks() const { return !m_looksByMessage.isEmpty(); }
+
     static bool isAllowedImageHost(const QUrl &url);
 
     // The still Discord's media server makes of a video attachment, for the
@@ -127,4 +136,12 @@ private:
     void redrawLooks(const QSet<QString> &which);
     QSet<QString> m_looks;                          // looks in the document
     QHash<QString, QSet<QString>> m_lookParts;      // a picture's address -> looks made from it
+
+    // A header's name carries its message id ("m"), so hovering one message
+    // moves that name alone.
+    void pumpHoveredLooks();
+    QString m_hoveredMessage;
+    QHash<QString, QSet<QString>> m_looksByMessage; // message id -> its looks
+    QSet<QString> m_movingLooks;                    // looks that move while hovered
+    QTimer m_hoverTimer;
 };

@@ -493,8 +493,15 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     // Nameplates, decorations, server tags and name styles are drawn from
     // what the store knows about each person.
     LookPainter::instance().setStore(m_store);
-    // A decoration or nameplate picture arriving redraws your own panel.
-    connect(&LookPainter::instance(), &LookPainter::changed, this, [this]() { updateUserPanel(); });
+    // A decoration, nameplate picture or name font arriving redraws your own
+    // panel and a direct message's title.
+    connect(&LookPainter::instance(), &LookPainter::changed, this, [this]() {
+        updateUserPanel();
+        if (m_selfName)
+            m_selfName->update();
+        if (m_channelTitle)
+            m_channelTitle->update();
+    });
 
     buildUi();
     buildMenu();
@@ -1922,6 +1929,8 @@ QWidget *MainWindow::buildUserPanel(QWidget *parent)
 
     m_selfName = new ElidingLabel(QStringLiteral("Signing in..."), panel);
     m_selfName->setObjectName(QStringLiteral("SelfName"));
+    // Drawn in your name style when you have one; see eventFilter.
+    m_selfName->installEventFilter(this);
     text->addWidget(m_selfName);
 
     m_selfStatus = new ElidingLabel(QStringLiteral("connecting"), panel);
@@ -2125,6 +2134,9 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
 
     m_channelTitle = new QLabel(QStringLiteral("Pick a channel"), header);
     m_channelTitle->setObjectName(QStringLiteral("ChannelTitle"));
+    // A direct message's title is drawn in the other person's font; see
+    // eventFilter.
+    m_channelTitle->installEventFilter(this);
     auto *titleRow = new QHBoxLayout;
     titleRow->setContentsMargins(0, 0, 0, 0);
     titleRow->setSpacing(8);
@@ -4513,7 +4525,7 @@ void MainWindow::openChannel(const QString &channelId)
 
     m_rest->fetchMessages(
         channelId, limit,
-        [this, channelId, started](const QJsonArray &messages) {
+        [this, channelId, started, limit](const QJsonArray &messages) {
             const ChannelInfo info = m_store->channel(channelId);
             wlog(QStringLiteral("rest"),
                  QStringLiteral("history ok channel=%1 guild=%2 type=%3 account=%4 %5 in %6 ms (%7 messages)")
@@ -4521,6 +4533,10 @@ void MainWindow::openChannel(const QString &channelId)
                           m_store->permissionSummary(channelId))
                      .arg(started->elapsed())
                      .arg(messages.size()));
+            // Fewer than asked for is the whole conversation, so its
+            // beginning is known without asking again.
+            if (messages.size() < limit)
+                m_fullyLoaded.insert(channelId);
             m_store->setHistory(channelId, messages);
             if (channelId == m_currentChannelId) {
                 m_composer->setEnabled(true);
@@ -5151,6 +5167,10 @@ void MainWindow::renderChannel()
     QStringList drawnIds;
     drawnIds.reserve(messages.size());
 
+    // The very start of a one to one chat carries Discord's header above it.
+    if (first == 0 && m_fullyLoaded.contains(m_currentChannelId) && isOneToOneDm())
+        html += directStartHtml();
+
     MessageInfo previous;
     bool havePrevious = false;
     for (const MessageInfo &message : messages) {
@@ -5761,11 +5781,15 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
         }
     }
 
-    // The name. A custom font or a gradient is a picture, which rich text
+    // The name. A name style or a gradient is a picture, which rich text
     // can show where it cannot draw them; a plain role colour stays text.
-    const bool customFont = look.nameStyle.fontId != 0 && look.nameStyle.fontId != 11;
+    // Discord's header writes a name in its style only in direct messages
+    // and groups (it checks channel.isPrivate()); in a server it is the
+    // role's colour or gradient in the ordinary font. Either moves while its
+    // message is hovered, so the picture carries the message's id.
+    const bool styled = guildId.isEmpty() && look.nameStyle.isSet();
     QString nameHtml;
-    if (customFont || (!guildId.isEmpty() && look.roleGradient)) {
+    if (styled || (!guildId.isEmpty() && look.roleGradient)) {
         const QColor plain(isSelf ? Theme::Accent : Theme::LightGray);
         QUrl picture(QStringLiteral("singularity-look:name"));
         QUrlQuery query;
@@ -5773,6 +5797,7 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
         query.addQueryItem(QStringLiteral("g"), guildId);
         query.addQueryItem(QStringLiteral("t"), QString::fromLatin1(QUrl::toPercentEncoding(shownName)));
         query.addQueryItem(QStringLiteral("c"), plain.name().mid(1));
+        query.addQueryItem(QStringLiteral("m"), message.id);
         picture.setQuery(query);
         nameHtml = QStringLiteral("<img src=\"%1\" style=\"vertical-align: middle;\" alt=\"%2\">")
                        .arg(picture.toString(QUrl::FullyEncoded).toHtmlEscaped(), displayName);
@@ -6141,20 +6166,53 @@ bool MainWindow::isOneToOneDm() const
 
 QString MainWindow::emptyChannelHtml() const
 {
-    const QString wave = wavePromptHtml({});
-    if (!wave.isEmpty()) {
-        const ChannelInfo channel = m_store->channel(m_currentChannelId);
-        const UserInfo other = m_store->user(channel.recipientIds.first());
-        QString name = other.displayName();
-        if (name.isEmpty())
-            name = channel.name;
-        if (name.isEmpty())
-            name = QStringLiteral("them");
-        return QStringLiteral("<p class=\"system\">This is the beginning of your direct message "
-                              "history with %1.</p>%2")
-            .arg(name.toHtmlEscaped(), wave);
-    }
+    if (isOneToOneDm())
+        return directStartHtml() + wavePromptHtml({});
     return QStringLiteral("<p class=\"system\">No messages here yet.</p>");
+}
+
+QString MainWindow::directStartHtml() const
+{
+    // The top of a one to one chat, as Discord heads it: their picture with
+    // its decoration, their name in its style held still, their handle, and
+    // the line saying this is where it starts.
+    const ChannelInfo channel = m_store->channel(m_currentChannelId);
+    const QString otherId = channel.recipientIds.value(0);
+    const UserInfo other = m_store->user(otherId);
+    QString name = other.displayName();
+    if (name.isEmpty())
+        name = channel.name;
+    if (name.isEmpty())
+        name = QStringLiteral("them");
+
+    QString face;
+    const QUrl avatar = MediaCache::avatarUrl(otherId, other.avatarHash, 160);
+    if (!otherId.isEmpty()) {
+        QUrl picture(QStringLiteral("singularity-look:face"));
+        QUrlQuery query;
+        query.addQueryItem(QStringLiteral("u"), otherId);
+        query.addQueryItem(QStringLiteral("a"), QString::fromLatin1(QUrl::toPercentEncoding(avatar.toString())));
+        query.addQueryItem(QStringLiteral("s"), QStringLiteral("80"));
+        picture.setQuery(query);
+        face = QStringLiteral("<a href=\"singularity-user:%1\"><img src=\"%2\" width=\"96\" height=\"96\"></a>")
+                   .arg(otherId, picture.toString(QUrl::FullyEncoded).toHtmlEscaped());
+    }
+
+    QUrl title(QStringLiteral("singularity-look:name"));
+    QUrlQuery titleQuery;
+    titleQuery.addQueryItem(QStringLiteral("u"), otherId);
+    titleQuery.addQueryItem(QStringLiteral("t"), QString::fromLatin1(QUrl::toPercentEncoding(name)));
+    titleQuery.addQueryItem(QStringLiteral("c"), QColor(Theme::TextPrimary).name().mid(1));
+    titleQuery.addQueryItem(QStringLiteral("z"), QStringLiteral("26"));
+    title.setQuery(titleQuery);
+
+    return QStringLiteral("<div style=\"margin: 12px 0 18px 16px;\">%1"
+                          "<div style=\"margin-top: 6px;\"><img src=\"%2\" alt=\"%3\"></div>"
+                          "<div style=\"color: %4; font-family: 'Poppins', 'Segoe UI'; font-size: 18px;\">%5</div>"
+                          "<p class=\"system\">This is the beginning of your direct message history with "
+                          "<b>%3</b>.</p></div>")
+        .arg(face, title.toString(QUrl::FullyEncoded).toHtmlEscaped(), name.toHtmlEscaped(),
+             QLatin1String(Theme::TextMuted), other.username.toHtmlEscaped());
 }
 
 QString MainWindow::wavePromptHtml(const QList<MessageInfo> &messages) const
@@ -11223,6 +11281,50 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         }
     }
 
+    // The message under the pointer, for the name effects and role gradients
+    // Discord moves while a message is hovered. Worked out only when the page
+    // has any.
+    if (m_messageView && watched == m_messageView->viewport()) {
+        if (event->type() == QEvent::MouseMove && m_messageView->hasHoverLooks())
+            m_messageView->setHoveredMessage(messageIdAt(static_cast<QMouseEvent *>(event)->position().toPoint()));
+        else if (event->type() == QEvent::Leave)
+            m_messageView->setHoveredMessage({});
+    }
+
+    // Your name in your display name style, as Discord's panel writes it:
+    // held still, and moving while the pointer is on the panel.
+    if (watched == m_selfName && event->type() == QEvent::Paint && m_store) {
+        const PersonLook look = m_store->look(m_selfUserId);
+        if (look.nameStyle.isSet()) {
+            QPainter painter(m_selfName);
+            const bool hovered = m_userPanel && m_userPanel->underMouse();
+            const LookPainter::Name name = LookPainter::instance().nameFor(
+                m_selfDisplayName.isEmpty() ? QStringLiteral("Signed in") : m_selfDisplayName, m_selfName->font(), look,
+                hovered ? LookPainter::EffectMode::Animated : LookPainter::EffectMode::Static,
+                m_selfName->palette().color(QPalette::WindowText));
+            LookPainter::instance().paintName(&painter, m_selfName->contentsRect(), name);
+            if (hovered && LookPainter::moving(name))
+                QTimer::singleShot(33, m_selfName, qOverload<>(&QWidget::update));
+            return true;
+        }
+    }
+
+    // A one to one chat's title: the other person's name in their font, as
+    // Discord's channel header writes it.
+    if (watched == m_channelTitle && event->type() == QEvent::Paint && m_store && isOneToOneDm()) {
+        const ChannelInfo channel = m_store->channel(m_currentChannelId);
+        const PersonLook look = m_store->look(channel.recipientIds.value(0));
+        if (look.nameStyle.fontId != 0) {
+            QPainter painter(m_channelTitle);
+            const LookPainter::Name name =
+                LookPainter::instance().nameFor(m_channelTitle->text(), m_channelTitle->font(), look,
+                                                LookPainter::EffectMode::Plain,
+                                                m_channelTitle->palette().color(QPalette::WindowText));
+            LookPainter::instance().paintName(&painter, m_channelTitle->contentsRect(), name);
+            return true;
+        }
+    }
+
     // Clicking your own panel offers your status, and your profile under it.
     if (watched == m_voiceChannelLabel && event->type() == QEvent::MouseButtonRelease) {
         auto *mouseEvent = static_cast<QMouseEvent *>(event);
@@ -11251,8 +11353,11 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
             return true;
         }
     }
-    if (watched == m_userPanel && (event->type() == QEvent::Enter || event->type() == QEvent::Leave))
+    if (watched == m_userPanel && (event->type() == QEvent::Enter || event->type() == QEvent::Leave)) {
         m_userPanel->update();
+        if (m_selfName)
+            m_selfName->update();
+    }
 
     if (watched == m_userPanel && event->type() == QEvent::MouseButtonRelease) {
         auto *mouseEvent = static_cast<QMouseEvent *>(event);
@@ -12016,6 +12121,11 @@ void MainWindow::loadOlderMessages()
                 if (channelId == m_currentChannelId) {
                     flashStatus(QStringLiteral("That is the beginning of this channel."),
                                              4000);
+                    // A one to one chat now shows its header at the top.
+                    if (isOneToOneDm()) {
+                        captureScrollAnchor();
+                        renderChannel();
+                    }
                 }
             }
         },

@@ -696,9 +696,12 @@ void FriendDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     const qreal hoverAmount = progress(m_hover, row, hovered);
 
     // Discord's friends list rows wear the person's nameplate and
-    // decoration, and their name in its font, its effect playing on hover.
+    // decoration. A friend's name shows its style held still with their
+    // server tag after it (Discord's FriendListRow); a request's name is in
+    // its font only. Neither moves on hover.
     LookPainter &looks = LookPainter::instance();
     const PersonLook look = looks.look(index.data(SingularityRoles::Id).toString());
+    const bool isFriend = index.data(SingularityRoles::Relationship).toInt() == 1;
     const QRect avatarRect(cell.left() + 20, cell.center().y() - FriendAvatar / 2,
                            FriendAvatar, FriendAvatar);
     QFont nameFont = option.font;
@@ -706,13 +709,14 @@ void FriendDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     nameFont.setWeight(QFont::DemiBold);
     const LookPainter::Name drawn =
         looks.nameFor(index.data(Qt::DisplayRole).toString(), nameFont, look,
-                      hovered ? LookPainter::EffectMode::Animated : LookPainter::EffectMode::Plain,
+                      isFriend ? LookPainter::EffectMode::Static : LookPainter::EffectMode::Plain,
                       QColor(Theme::TextPrimary));
+    const int tagSpace = isFriend && look.guildTag.isSet() ? looks.tagWidth(look.guildTag) + 4 : 0;
 
     // Background.
     const QRectF panel = QRectF(cell).adjusted(8, 2, -8, -2);
     looks.paintNameplate(painter, panel.toRect(), look.nameplate,
-                         avatarRect.right() + 12 - int(panel.left()) + looks.nameWidth(drawn),
+                         avatarRect.right() + 12 - int(panel.left()) + looks.nameWidth(drawn) + tagSpace,
                          LookPainter::Placement::FriendsList, hovered, false, 8);
     if (hoverAmount > 0.01) {
         const qreal dim = look.nameplate.isSet() ? 0.5 : 1.0;
@@ -729,7 +733,7 @@ void FriendDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     if (!icon.isNull())
         icon.paint(painter, avatarRect, Qt::AlignCenter);
     looks.paintDecoration(painter, avatarRect, look.decoration, hovered);
-    if (hovered && (LookPainter::moving(drawn) || look.nameplate.isSet() || look.decoration.isSet()))
+    if (hovered && (look.nameplate.isSet() || look.decoration.isSet()))
         requestFrame();
 
     drawStatusBubble(painter, avatarRect, index.data(SingularityRoles::Status).toString(),
@@ -779,7 +783,12 @@ void FriendDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     const int textLeft = avatarRect.right() + 12;
     const int textWidth = qMax(40, cell.right() - textLeft - textRight);
 
-    looks.paintName(painter, QRect(textLeft, cell.top() + 7, textWidth, 18), drawn);
+    // The tag gives way first when the row is too narrow for both.
+    const bool showTag = tagSpace > 0 && textWidth - tagSpace >= 40;
+    const QRect nameBox(textLeft, cell.top() + 7, showTag ? textWidth - tagSpace : textWidth, 18);
+    const int nameWidth = looks.paintName(painter, nameBox, drawn);
+    if (showTag)
+        looks.paintTag(painter, QPoint(textLeft + nameWidth + 4, nameBox.center().y() + 1), look.guildTag);
 
     const QString subtitle = index.data(SingularityRoles::Subtitle).toString();
     if (!subtitle.isEmpty()) {
