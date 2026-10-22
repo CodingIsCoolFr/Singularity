@@ -392,6 +392,7 @@ struct MessageInfo
     QString interactionUserName;
     QString interactionUserAvatar;
     QString interactionName;
+    bool userInstalledInteraction = false;   // the app is installed to that person only
 
     // A Rich Presence / game invite. Discord sends this as `activity` plus
     // `application`, with no words and no embeds, which is why it used to
@@ -477,6 +478,8 @@ public:
     // The same bits after this channel's permission_overwrites. Direct
     // messages are every bit. Owner and Administrator still bypass overwrites.
     quint64 channelPermissions(const QString &channelId) const;
+    // Discord's rule for the Delete Message item: see the definition.
+    bool canDeleteMessage(const MessageInfo &message) const;
     // VIEW_CHANNEL, or already sitting in this voice channel.
     bool canViewChannel(const QString &channelId) const;
     // VIEW_CHANNEL and READ_MESSAGE_HISTORY. Discord returns an empty list

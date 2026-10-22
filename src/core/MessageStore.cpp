@@ -7,6 +7,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QSet>
 
 #include <algorithm>
 
@@ -1340,6 +1341,10 @@ MessageInfo MessageStore::parseMessage(const QJsonObject &raw)
         message.interactionName = metadata.value(QStringLiteral("name")).toString();
         if (message.interactionName.isEmpty())
             message.interactionName = legacy.value(QStringLiteral("name")).toString();
+        // Installed to the person who ran it and nowhere else: owners hold
+        // only "1", USER_INSTALL. Discord lets that person delete the answer.
+        const QJsonObject owners = metadata.value(QStringLiteral("authorizing_integration_owners")).toObject();
+        message.userInstalledInteraction = owners.size() == 1 && owners.contains(QStringLiteral("1"));
     }
 
     const QJsonObject call = raw.value(QStringLiteral("call")).toObject();
@@ -1815,6 +1820,39 @@ quint64 MessageStore::channelPermissions(const QString &channelId) const
     const quint64 everyone = guild.roles.value(channel.guildId).permissions;
     const quint64 base = DiscordPermissions::computeBase(owner, everyone, rolePerms);
     return DiscordPermissions::applyOverwrites(base, channel.guildId, m_selfUserId, roles, channel.overwrites);
+}
+
+bool MessageStore::canDeleteMessage(const MessageInfo &message) const
+{
+    // Discord's rule, from its client's message menu: your own message - or a
+    // user-installed app's answer to you - or anyone's where you have Manage
+    // Messages. Never a direct message of somebody else's, never the system
+    // messages Discord keeps (UNDELETABLE: people added to or removed from a
+    // group, calls, name and icon changes, a thread's starter and the like),
+    // and an AutoMod alert only with Manage Messages. Only your own used to be
+    // offered, so a server's owner could not clear a channel.
+    constexpr quint64 ManageMessages = 1ull << 13;
+    static const QSet<int> undeletable{1, 2, 3, 4, 5, 21, 35, 56, 57, 64, 68};
+    constexpr int AutoModerationAction = 24;
+
+    if (message.id.isEmpty() || undeletable.contains(message.type))
+        return false;
+
+    const ChannelInfo channel = m_channels.value(message.channelId);
+    bool manage = false;
+    if (!channel.id.isEmpty() && !channel.isDirect() && !channel.guildId.isEmpty()) {
+        // A thread has its parent's permissions.
+        const bool thread = channel.type == 10 || channel.type == 11 || channel.type == 12;
+        const QString where = thread && !channel.parentId.isEmpty() ? channel.parentId : channel.id;
+        manage = DiscordPermissions::has(channelPermissions(where), ManageMessages);
+    }
+    if (message.type == AutoModerationAction)
+        return manage;
+
+    const bool own = !m_selfUserId.isEmpty()
+        && (message.authorId == m_selfUserId
+            || (message.userInstalledInteraction && message.interactionUserId == m_selfUserId));
+    return own || manage;
 }
 
 bool MessageStore::canViewChannel(const QString &channelId) const

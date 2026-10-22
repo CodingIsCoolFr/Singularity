@@ -10465,15 +10465,6 @@ void MainWindow::showMessageMenu(const QPoint &pos)
         connect(menu.addAction(QStringLiteral("Edit")), &QAction::triggered, this, [this, messageId]() {
             beginEdit(messageId);
         });
-        connect(menu.addAction(QStringLiteral("Delete")), &QAction::triggered, this, [this, messageId]() {
-            const QString channelId = m_currentChannelId;
-            m_rest->deleteMessage(
-                channelId, messageId, [](const QJsonObject &) {},
-                [this](const RestClient::Error &error) {
-                    flashStatus(QStringLiteral("Could not delete that message (%1).").arg(error.message),
-                                5000);
-                });
-        });
     }
 
     // Apps: the commands an app hangs on a message (type 3), as in Discord's
@@ -10554,6 +10545,41 @@ void MainWindow::showMessageMenu(const QPoint &pos)
                         [url]() { QApplication::clipboard()->setText(url); });
             }
         }
+    }
+
+    // Discord's Delete Message: yours, or anyone's where you have Manage
+    // Messages (MessageStore::canDeleteMessage). It asks first, and holding
+    // Shift skips the question, as in Discord.
+    if (m_store->canDeleteMessage(message)) {
+        connect(menu.addAction(QStringLiteral("Delete Message")), &QAction::triggered, this, [this, message]() {
+            if (!(QGuiApplication::keyboardModifiers() & Qt::ShiftModifier)) {
+                QString preview = message.content.simplified();
+                if (preview.size() > 200)
+                    preview = preview.left(200) + QStringLiteral("…");
+                QMessageBox box(QMessageBox::Warning, QStringLiteral("Delete Message"),
+                                QStringLiteral("Are you sure you want to delete this message?"),
+                                QMessageBox::NoButton, this);
+                box.setInformativeText(
+                    (preview.isEmpty() ? QString() : QStringLiteral("%1: %2\n\n").arg(message.authorName, preview))
+                    + QStringLiteral("Hold Shift when clicking Delete Message to skip this question."));
+                QPushButton *confirm = box.addButton(QStringLiteral("Delete"), QMessageBox::DestructiveRole);
+                box.addButton(QStringLiteral("Cancel"), QMessageBox::RejectRole);
+                box.setDefaultButton(confirm);
+                box.exec();
+                if (box.clickedButton() != confirm)
+                    return;
+            }
+            wlog(QStringLiteral("ui"), QStringLiteral("deleting message %1 in %2 (%3)")
+                                           .arg(message.id, message.channelId,
+                                                message.authorId == m_selfUserId
+                                                    ? QStringLiteral("yours")
+                                                    : QStringLiteral("with Manage Messages")));
+            m_rest->deleteMessage(
+                message.channelId, message.id, [](const QJsonObject &) {},
+                [this](const RestClient::Error &error) {
+                    flashStatus(QStringLiteral("Could not delete that message (%1).").arg(error.message), 5000);
+                });
+        });
     }
 
     connect(menu.addAction(QStringLiteral("Copy Message ID")), &QAction::triggered, this, [messageId]() {
