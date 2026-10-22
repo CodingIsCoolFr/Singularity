@@ -1,5 +1,6 @@
 #include "ui/ListDelegates.h"
 
+#include "ui/FrameClock.h"
 #include "ui/LookPainter.h"
 #include "ui/Theme.h"
 
@@ -371,15 +372,10 @@ bool AnimatedDelegate::helpEvent(QHelpEvent *event, QAbstractItemView *view, con
 
 void AnimatedDelegate::scheduleRepaint() const
 {
-    if (m_repaintQueued || !m_view)
-        return;
-
-    m_repaintQueued = true;
-    QTimer::singleShot(FrameMs, m_view->viewport(), [this]() {
-        m_repaintQueued = false;
-        if (m_view)
-            m_view->viewport()->update();
-    });
+    // On the frame clock's next tick, with every other animation in the
+    // window: a row's nameplate, decoration and name move together.
+    if (m_view)
+        FrameClock::scheduleRepaint(m_view->viewport());
 }
 
 qreal AnimatedDelegate::progress(QHash<int, qreal> &store, int row, bool on) const

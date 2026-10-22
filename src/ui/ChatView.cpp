@@ -118,9 +118,8 @@ ChatView::ChatView(QWidget *parent)
     pal.setColor(QPalette::Window, Qt::transparent);
     setPalette(pal);
 
-    // One timer drives every animation on screen.
+    // One beat drives every animation on screen.
     m_animationTimer.setInterval(AnimationFrameMs);
-    connect(&m_animationTimer, &QTimer::timeout, this, &ChatView::pumpAnimations);
 
     // Pictures that land are collected and dealt with together.
     //
@@ -134,10 +133,6 @@ ChatView::ChatView(QWidget *parent)
     // A name font, a tag badge or a decoration arrived: every look drawn from
     // nothing is drawn again.
     connect(&LookPainter::instance(), &LookPainter::changed, this, [this]() { redrawLooks(m_looks); });
-
-    // The hovered message's name, while its effect plays.
-    m_hoverTimer.setInterval(33);
-    connect(&m_hoverTimer, &QTimer::timeout, this, &ChatView::pumpHoveredLooks);
 
     connect(&MediaCache::instance(), &MediaCache::ready, this, [this](const QUrl &url) {
         const QString key = url.toString();

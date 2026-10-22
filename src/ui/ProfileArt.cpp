@@ -3,6 +3,7 @@
 #include "core/DiscordIdentity.h"
 #include "core/Logger.h"
 #include "ui/ApngDecoder.h"
+#include "ui/FrameClock.h"
 
 #include <QApplication>
 #include <QBuffer>
@@ -164,21 +165,17 @@ ProfileEffectView::ProfileEffectView(QWidget *card)
     setAttribute(Qt::WA_TransparentForMouseEvents);
     setGeometry(card->rect());
     card->installEventFilter(this);
-
-    // Effects run at about twelve frames a second; this looks often and only
-    // paints when a frame has changed.
-    m_timer.setInterval(30);
-    connect(&m_timer, &QTimer::timeout, this, [this]() { tick(); });
 }
 
 void ProfileEffectView::setEffect(const Cosmetics::ProfileEffect &effect)
 {
     ++m_generation;
     m_layers.clear();
-    m_painted.clear();
+    m_showing.clear();
     m_running = false;
-    m_timer.stop();
+    FrameClock::cancel(this);
     m_opacity = 1.0;
+    m_fadedAt = -1;
     update();
     if (!effect.isSet())
         return;
@@ -232,10 +229,10 @@ void ProfileEffectView::arrived(int generation, int index, const QList<QImage> &
 
     // Every picture is in: it begins.
     m_running = true;
-    m_clock.start();
+    m_startedAt = FrameClock::now();
+    m_showing.clear();
     if (isVisible())
-        m_timer.start();
-    update();
+        tick();
 }
 
 int ProfileEffectView::frameAt(const Layer &layer, qint64 ms) const
@@ -263,10 +260,45 @@ int ProfileEffectView::frameAt(const Layer &layer, qint64 ms) const
     return qMin(int(next - layer.ends.cbegin()), int(layer.frames.size()) - 1);
 }
 
+qint64 ProfileEffectView::nextChange(const Layer &layer, qint64 ms) const
+{
+    // frameAt, turned round: the first moment after `ms` it answers
+    // differently.
+    const Cosmetics::EffectLayer &config = layer.config;
+    if (layer.frames.isEmpty() || layer.ends.isEmpty())
+        return -1;
+    const qint64 t = ms - 500;
+    if (t < config.start)
+        return ms + (config.start - t);
+    qint64 local = t - config.start;
+    if (!config.loop && local > config.duration)
+        return -1;
+    qint64 until = -1;   // until it next shows something else
+    if (config.loop && config.loopDelay > 0) {
+        const qint64 cycle = qint64(config.duration) + config.loopDelay;
+        local %= cycle;
+        if (local > config.duration)
+            return ms + (cycle - local);
+        until = config.duration + 1 - local;
+    } else if (!config.loop) {
+        until = config.duration + 1 - local;
+    }
+    const int total = layer.ends.last();
+    if (total > 0) {
+        const int into = int(local % total);
+        const auto next = std::upper_bound(layer.ends.cbegin(), layer.ends.cend(), into);
+        const qint64 step = (next == layer.ends.cend() ? total : *next) - into;
+        until = until < 0 ? step : qMin(until, step);
+    }
+    return until < 0 ? -1 : ms + qMax<qint64>(1, until);
+}
+
 void ProfileEffectView::tick()
 {
-    if (!m_running)
+    if (!m_running || !isVisible())
         return;
+    const qint64 now = FrameClock::now();
+    const qint64 ms = now - m_startedAt;
     bool changed = false;
 
     // A third as strong while the pointer is on the card, easing there and
@@ -275,22 +307,43 @@ void ProfileEffectView::tick()
     const bool over = card && card->rect().contains(card->mapFromGlobal(QCursor::pos()));
     const qreal target = over ? 0.35 : 1.0;
     if (m_opacity != target) {
-        const qreal step = (1.0 - 0.35) * m_timer.interval() / 600.0;
-        m_opacity = m_opacity > target ? qMax(target, m_opacity - step) : qMin(target, m_opacity + step);
+        const qint64 step = m_fadedAt < 0 ? qint64(FrameClock::TickMs) : qBound(qint64(1), now - m_fadedAt, qint64(100));
+        const qreal by = (1.0 - 0.35) * step / 600.0;
+        m_opacity = m_opacity > target ? qMax(target, m_opacity - by) : qMin(target, m_opacity + by);
         changed = true;
     }
+    m_fadedAt = m_opacity != target ? now : -1;
 
-    const qint64 ms = m_clock.elapsed();
-    for (int i = 0; i < m_layers.size() && !changed; ++i)
-        changed = m_painted.value(i, -2) != frameAt(m_layers.at(i), ms);
+    // The frames due now, kept for every paint until the next tick.
+    QList<int> frames;
+    frames.reserve(m_layers.size());
+    for (const Layer &layer : std::as_const(m_layers))
+        frames.append(frameAt(layer, ms));
+    if (frames != m_showing) {
+        m_showing = frames;
+        changed = true;
+    }
     if (changed)
         update();
+
+    // The next tick: the next frame due, or the next step of a fade.
+    qint64 wake = -1;
+    for (const Layer &layer : std::as_const(m_layers)) {
+        const qint64 next = nextChange(layer, ms);
+        if (next >= 0)
+            wake = wake < 0 ? next : qMin(wake, next);
+    }
+    if (m_opacity != target)
+        wake = wake < 0 ? ms + 1 : qMin(wake, ms + 1);
+    if (wake >= 0)
+        FrameClock::wakeAt(this, m_startedAt + wake, [this]() { tick(); });
+    else
+        FrameClock::cancel(this);
 }
 
 void ProfileEffectView::paintEvent(QPaintEvent *)
 {
-    m_painted.clear();
-    if (!m_running)
+    if (!m_running || m_showing.size() != m_layers.size())
         return;
 
     QPainter painter(this);
@@ -300,11 +353,10 @@ void ProfileEffectView::paintEvent(QPaintEvent *)
     clip.addRoundedRect(QRectF(rect()), CardRadius, CardRadius);
     painter.setClipPath(clip);
 
-    const qint64 ms = m_clock.elapsed();
-    for (const Layer &layer : std::as_const(m_layers)) {
-        const int index = frameAt(layer, ms);
-        m_painted.append(index);
-        if (index < 0)
+    for (int i = 0; i < m_layers.size(); ++i) {
+        const int index = m_showing.at(i);
+        const Layer &layer = m_layers.at(i);
+        if (index < 0 || index >= layer.frames.size())
             continue;
         const QImage &frame = layer.frames.at(index);
         if (frame.width() <= 0)
@@ -320,21 +372,28 @@ void ProfileEffectView::showEvent(QShowEvent *event)
     QWidget::showEvent(event);
     // Opened again: it plays from the start, as it does in Discord.
     if (m_running) {
-        m_clock.start();
-        m_timer.start();
+        m_startedAt = FrameClock::now();
+        m_showing.clear();
+        tick();
     }
 }
 
 void ProfileEffectView::hideEvent(QHideEvent *event)
 {
-    m_timer.stop();
+    FrameClock::cancel(this);
     QWidget::hideEvent(event);
 }
 
 bool ProfileEffectView::eventFilter(QObject *watched, QEvent *event)
 {
-    if (watched == parentWidget() && event->type() == QEvent::Resize)
-        setGeometry(parentWidget()->rect());
+    if (watched == parentWidget()) {
+        if (event->type() == QEvent::Resize)
+            setGeometry(parentWidget()->rect());
+        // The pointer coming or going starts the fade straight away, even
+        // when no frame is due for a while.
+        else if ((event->type() == QEvent::Enter || event->type() == QEvent::Leave) && m_running)
+            tick();
+    }
     return QWidget::eventFilter(watched, event);
 }
 

@@ -1,5 +1,7 @@
 #include "ui/UiTime.h"
 
+#include "ui/FrameClock.h"
+
 #include <QAbstractScrollArea>
 #include <QAbstractSpinBox>
 #include <QComboBox>
@@ -70,16 +72,22 @@ qint64 s_lastInputMs = -100000;   // when a person last did something
 int s_redraws = 0;                // window redraws since the last report
 int s_held = 0;                   // redraw requests folded into a later one
 
-// Per window: when it last redrew, and whether a held redraw is booked.
+// Per window: when it last redrew, whether a held redraw is booked, and
+// until when its redraws go out at once because animation frames are due.
 struct Pace
 {
     qint64 lastMs = -100000;
     bool booked = false;
+    qint64 freeUntilMs = -100000;
 };
 QHash<const QObject *, Pace> s_pace;
 
 // How long after a person's input redraws go out at once.
 constexpr qint64 InputGraceMs = 250;
+
+// How long after a frame clock tick its redraws go out at once. They are
+// asked for during the tick and arrive straight after it.
+constexpr qint64 FrameGraceMs = 8;
 
 bool isInput(QEvent::Type type)
 {
@@ -214,8 +222,9 @@ bool SingularityApplication::notify(QObject *receiver, QEvent *event)
         }
         Pace &pace = s_pace[receiver];
         const bool someoneActing = nowMs - s_lastInputMs < InputGraceMs;
+        const bool framesDue = nowMs <= pace.freeUntilMs;
         const qint64 due = pace.lastMs + s_paceMs;
-        if (s_paceMs > 0 && !someoneActing && nowMs < due) {
+        if (s_paceMs > 0 && !someoneActing && !framesDue && nowMs < due) {
             ++s_held;
             if (!pace.booked) {
                 pace.booked = true;
@@ -247,8 +256,16 @@ bool SingularityApplication::notify(QObject *receiver, QEvent *event)
     }
     key.type = owner->metaObject();
 
+    // Animation time holds still through a redraw, so every piece of it
+    // shows the same moment (see FrameClock).
+    const bool painting = event->type() == QEvent::UpdateRequest || event->type() == QEvent::Paint;
+    if (painting)
+        FrameClock::holdBegin();
+
     s_stack.append({uiClock().nsecsElapsed(), 0});
     const bool handled = QApplication::notify(receiver, event);
+    if (painting)
+        FrameClock::holdEnd();
     const Frame frame = s_stack.takeLast();
     const qint64 total = uiClock().nsecsElapsed() - frame.start;
     if (!s_stack.isEmpty())
@@ -313,4 +330,18 @@ void SingularityApplication::setFramePace(int ms)
 int SingularityApplication::framePace()
 {
     return s_paceMs;
+}
+
+void SingularityApplication::framesDue()
+{
+    if (s_paceMs <= 0)
+        return;
+    const qint64 nowMs = uiClock().elapsed();
+    for (auto it = s_pace.begin(); it != s_pace.end(); ++it) {
+        it->freeUntilMs = nowMs + FrameGraceMs;
+        // A window whose redraw is being held gets no new request from Qt
+        // until the held one is delivered, so one is sent now.
+        if (it->booked)
+            QCoreApplication::postEvent(const_cast<QObject *>(it.key()), new QEvent(QEvent::UpdateRequest));
+    }
 }

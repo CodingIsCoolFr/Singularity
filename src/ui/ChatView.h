@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ui/FrameClock.h"
+
 #include <QHash>
 #include <QImage>
 #include <QPixmap>
@@ -125,7 +127,9 @@ private:
     QSet<QString> m_arrived;
     QTimer m_arrivalTimer;
 
-    QTimer m_animationTimer;
+    // On the frame clock (ui/FrameClock.h), so pictures in the conversation
+    // change on the same ticks as everything else that moves.
+    FramePulse m_animationTimer{66, [this]() { pumpAnimations(); }};
     bool m_animationsEnabled = true;
 
     // What people are dressed in, drawn as pictures because rich text cannot
@@ -143,5 +147,5 @@ private:
     QString m_hoveredMessage;
     QHash<QString, QSet<QString>> m_looksByMessage; // message id -> its looks
     QSet<QString> m_movingLooks;                    // looks that move while hovered
-    QTimer m_hoverTimer;
+    FramePulse m_hoverTimer{33, [this]() { pumpHoveredLooks(); }};
 };

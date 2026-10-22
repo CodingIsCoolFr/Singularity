@@ -42,4 +42,10 @@ public:
     // scrolling are never held back. 0 turns it off.
     static void setFramePace(int ms);
     static int framePace();
+
+    // Animation frames have just become due (a FrameClock tick): the
+    // redraws they ask for go out now rather than at the next beat. Frames
+    // held back to the beat came anywhere up to a beat late, so a steady
+    // animation looked uneven.
+    static void framesDue();
 };

@@ -2,9 +2,9 @@
 
 #include "core/Cosmetics.h"
 #include "core/MessageStore.h"
+#include "ui/FrameClock.h"
 
 #include <QColor>
-#include <QElapsedTimer>
 #include <QFont>
 #include <QHash>
 #include <QImage>
@@ -97,8 +97,9 @@ public:
     // animation that is playing.
     static bool moving(const Name &name);
 
-    // A shared clock for every animation, so rows move together.
-    qint64 now() const { return m_clock.elapsed(); }
+    // The frame clock's time (ui/FrameClock.h), held still through a paint,
+    // so every row and every piece of a split paint shows the same moment.
+    qint64 now() const { return FrameClock::now(); }
 
     // A name the way Discord writes it into a member row or a message: the
     // look's font and colours, in the mode that place uses.
@@ -133,7 +134,6 @@ private:
                      const QString &text);
 
     MessageStore *m_store = nullptr;
-    QElapsedTimer m_clock;
 
     mutable QNetworkAccessManager m_network;
     mutable QSet<int> m_fontsAsked;

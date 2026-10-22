@@ -123,7 +123,6 @@ protected:
 private:
     void scheduleRepaint() const;
 
-    mutable bool m_repaintQueued = false;
     mutable QHash<const void *, QHash<int, qreal>> m_velocity;
 
     // Where each row's plugin pictures were drawn, and what they say.

@@ -125,7 +125,7 @@ QList<quint32> defaultColours(int effect)
 {
     switch (effect) {
     case Cosmetics::Gradient:
-    case Cosmetics::Glow: return {0x2aaea6, 0xffc390};
+    case Cosmetics::Glow: return {0x2aaea6, 0xffc490};
     case Cosmetics::Gummy: return {0xe9a9d5, 0xa9ddf0, 0xb9a7ee, 0xb9eacb};
     case Cosmetics::Prism: return {0xfe9242, 0x35ed7e, 0xffe047, 0xff4cd2, 0x5865f2};
     case Cosmetics::Toon: return {0xf42098};
@@ -315,7 +315,6 @@ LookPainter &LookPainter::instance()
 
 LookPainter::LookPainter()
 {
-    m_clock.start();
     connect(&MediaCache::instance(), &MediaCache::ready, this, [this](const QUrl &url) {
         const QString host = url.host();
         const QString path = url.path();

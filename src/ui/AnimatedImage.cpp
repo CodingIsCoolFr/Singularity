@@ -1,6 +1,7 @@
 #include "ui/AnimatedImage.h"
 
 #include "ui/ApngDecoder.h"
+#include "ui/FrameClock.h"
 
 #include <QImageReader>
 #include <QMovie>
@@ -61,14 +62,44 @@ QObject &relay()
 AnimatedImage::AnimatedImage(QObject *parent)
     : QObject(parent)
 {
-    m_apngTimer.setSingleShot(true);
-    connect(&m_apngTimer, &QTimer::timeout, this, [this]() {
-        if (m_apngFrames.size() < 2)
-            return;
-        m_apngIndex = (m_apngIndex + 1) % int(m_apngFrames.size());
-        m_apngTimer.start(m_apngDelays.value(m_apngIndex, 100));
+}
+
+int AnimatedImage::apngDelay(int index) const
+{
+    return qMax(10, m_apngDelays.value(index, 100));
+}
+
+void AnimatedImage::stepApng()
+{
+    const int count = int(m_apngFrames.size());
+    if (count < 2 || !m_playing)
+        return;
+    // Every frame whose time has come, each due when the last one ended, so
+    // a frame shows for its own delay and the animation never drifts. More
+    // than a whole loop behind (the window was busy) it carries on from now.
+    const qint64 now = FrameClock::now();
+    int index = m_apngIndex;
+    qint64 due = m_apngDueAt;
+    for (int steps = 0; due <= now + 1 && steps < count; ++steps) {
+        index = (index + 1) % count;
+        due += apngDelay(index);
+    }
+    if (due <= now + 1)
+        due = now + apngDelay(index);
+    m_apngDueAt = due;
+    FrameClock::wakeAt(this, m_apngDueAt, [this]() { stepApng(); });
+    if (index != m_apngIndex) {
+        m_apngIndex = index;
         emit frameChanged();
-    });
+    }
+}
+
+void AnimatedImage::takeMovieFrame()
+{
+    if (!m_movie)
+        return;
+    m_movieFrame = m_movie->currentImage();
+    emit frameChanged();
 }
 
 AnimatedImage::~AnimatedImage()
@@ -85,7 +116,9 @@ void AnimatedImage::teardown()
     }
     if (m_buffer.isOpen())
         m_buffer.close();
-    m_apngTimer.stop();
+    FrameClock::cancel(this);
+    m_movieFrame = QImage();
+    m_apngLeft = -1;
     m_apngFrames.clear();
     m_apngDelays.clear();
     m_apngIndex = 0;
@@ -195,8 +228,14 @@ bool AnimatedImage::setData(const QByteArray &bytes)
         m_movie = new QMovie(&m_buffer, QByteArray(), this);
         if (m_movie->isValid()) {
             m_movie->setCacheMode(QMovie::CacheAll);
-            connect(m_movie, &QMovie::frameChanged, this, [this](int) { emit frameChanged(); });
+            // QMovie reads frames on its own timer; each is shown from the
+            // next tick, with everything else that changes then.
+            connect(m_movie, &QMovie::frameChanged, this, [this](int) {
+                if (!FrameClock::booked(this))
+                    FrameClock::wakeAt(this, FrameClock::now() + 1, [this]() { takeMovieFrame(); });
+            });
             m_movie->start();
+            m_movieFrame = m_movie->currentImage();
             emit frameChanged();
             return true;
         }
@@ -219,8 +258,10 @@ void AnimatedImage::showApng(const QList<QImage> &frames, const QList<int> &dela
     m_apngFrames = frames;
     m_apngDelays = delays;
     m_apngIndex = 0;
+    m_apngLeft = -1;
+    m_apngDueAt = FrameClock::now() + apngDelay(0);
     if (m_playing && m_apngFrames.size() > 1)
-        m_apngTimer.start(m_apngDelays.value(0, 100));
+        FrameClock::wakeAt(this, m_apngDueAt, [this]() { stepApng(); });
     emit frameChanged();
 }
 
@@ -266,7 +307,7 @@ void AnimatedImage::apngDecoded(const QByteArray &bytes, const QList<QImage> &fr
 QImage AnimatedImage::currentFrame() const
 {
     if (m_movie)
-        return m_movie->currentImage();
+        return m_movieFrame.isNull() ? m_movie->currentImage() : m_movieFrame;
     if (!m_apngFrames.isEmpty())
         return m_apngFrames.at(m_apngIndex);
     return m_still;
@@ -283,10 +324,17 @@ void AnimatedImage::setPlaying(bool playing)
 {
     m_playing = playing;
     if (m_apngFrames.size() > 1) {
-        if (playing && !m_apngTimer.isActive())
-            m_apngTimer.start(m_apngDelays.value(m_apngIndex, 100));
-        else if (!playing)
-            m_apngTimer.stop();
+        // Asked for on every paint, so cheap when nothing changes. Paused,
+        // the frame on show keeps the time it had left.
+        const bool running = FrameClock::booked(this);
+        if (playing && !running) {
+            m_apngDueAt = FrameClock::now() + (m_apngLeft >= 0 ? m_apngLeft : apngDelay(m_apngIndex));
+            m_apngLeft = -1;
+            FrameClock::wakeAt(this, m_apngDueAt, [this]() { stepApng(); });
+        } else if (!playing && running) {
+            m_apngLeft = qMax<qint64>(0, m_apngDueAt - FrameClock::now());
+            FrameClock::cancel(this);
+        }
         return;
     }
     if (!m_movie)

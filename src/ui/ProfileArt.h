@@ -2,13 +2,11 @@
 
 #include "core/Cosmetics.h"
 
-#include <QElapsedTimer>
 #include <QHash>
 #include <QImage>
 #include <QList>
 #include <QMargins>
 #include <QPointer>
-#include <QTimer>
 #include <QWidget>
 
 // Profile effects and profile frames, the cosmetics worn on a profile itself,
@@ -25,6 +23,12 @@
 // letting every click through. Like Discord's it starts half a second after
 // every picture is in, and fades to a third while the pointer is on the card
 // so what is under it can be read.
+//
+// It runs on the frame clock (ui/FrameClock.h): each tick picks the frames
+// due and books the next tick for when the next frame is, and every paint
+// draws the frames that tick picked. Widgets under the effect repaint their
+// own parts on their own beat, and each such repaint paints the effect over
+// that part too, so it has to be the same frame as the rest of the card.
 class ProfileEffectView : public QWidget
 {
 public:
@@ -49,17 +53,21 @@ private:
     };
 
     void arrived(int generation, int index, const QList<QImage> &frames, const QList<int> &delays);
+    // On the frame clock: picks the frames due and the fade, and books the
+    // next tick.
     void tick();
     // The frame of a layer showing `ms` after the effect began, -1 for none.
     int frameAt(const Layer &layer, qint64 ms) const;
+    // When, after the effect began, that changes next; -1 for never.
+    qint64 nextChange(const Layer &layer, qint64 ms) const;
 
     QList<Layer> m_layers;
     int m_generation = 0;
     bool m_running = false;
-    QElapsedTimer m_clock;
-    QTimer m_timer;
+    qint64 m_startedAt = 0;      // frame clock time it began
     qreal m_opacity = 1.0;
-    QList<int> m_painted;        // the frame each layer showed when last painted
+    qint64 m_fadedAt = -1;       // frame clock time of the last fade step, -1 while still
+    QList<int> m_showing;        // the frame each layer shows, picked at the last tick
 };
 
 // A profile frame round a card. Two of these share one frame: one behind the

@@ -9,6 +9,7 @@
 #include "plugin/PluginHost.h"
 #include "ui/ChatView.h"
 #include "ui/FriendsPage.h"
+#include "ui/FrameClock.h"
 #include "ui/ImageViewer.h"
 #include "ui/Backdrop.h"
 #include "ui/CaptchaDialog.h"
@@ -11348,7 +11349,7 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
                 m_selfName->palette().color(QPalette::WindowText));
             LookPainter::instance().paintName(&painter, m_selfName->contentsRect(), name);
             if (hovered && LookPainter::moving(name))
-                QTimer::singleShot(33, m_selfName, qOverload<>(&QWidget::update));
+                FrameClock::scheduleRepaint(m_selfName, 33);
             return true;
         }
     }

@@ -73,6 +73,17 @@ jobs:
       - name: Build
         run: .\build.ps1 -Installer
 
+      # Animations keep the frame clock's rules (src/ui/FrameClock.h). A
+      # profile effect once drew a band across the card and dropped half its
+      # frames; nothing that does that again goes out.
+      - name: Test
+        run: |
+          $env:PATH = "$env:QT_ROOT_DIR\bin;$env:PATH"
+          $env:QT_PLUGIN_PATH = "$env:QT_ROOT_DIR\plugins"
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          & .\build\Release\test_frames.exe
+          if ($LASTEXITCODE -ne 0) { throw "test_frames failed" }
+
       # A missing piece here is a broken update for everyone, so say what is
       # in the folder and stop on anything a shipped build has always had.
       - name: Check

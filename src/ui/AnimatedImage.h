@@ -5,7 +5,6 @@
 #include <QImage>
 #include <QList>
 #include <QObject>
-#include <QTimer>
 
 class QMovie;
 
@@ -15,6 +14,11 @@ class QMovie;
 // banners showed up frozen. This wraps QMovie when the bytes are an animation
 // and falls back to a plain QImage when they are not, so callers just ask for
 // `currentFrame()` and redraw whenever `frameChanged` fires.
+//
+// Frames change only on the frame clock's ticks (ui/FrameClock.h): an
+// animated PNG is stepped by it, and a GIF's or WebP's next frame is taken up
+// at the tick after QMovie reads it. So currentFrame() is the same picture
+// for every paint between two ticks, however a window splits its painting.
 class AnimatedImage : public QObject
 {
     Q_OBJECT
@@ -58,12 +62,20 @@ private:
     QImage m_still;
 
     // Animated PNG (Discord's avatar decorations), which QMovie cannot play:
-    // decoded by Apng::decode off the window's thread and stepped by a timer.
-    // Until the frames arrive the first one stands in, as a still.
+    // decoded by Apng::decode off the window's thread and stepped by the
+    // frame clock. Until the frames arrive the first one stands in, as a
+    // still.
+    void stepApng();
+    int apngDelay(int index) const;
     QList<QImage> m_apngFrames;
     QList<int> m_apngDelays;
     int m_apngIndex = 0;
-    QTimer m_apngTimer;
+    qint64 m_apngDueAt = 0;     // frame clock time the next frame is due
+    qint64 m_apngLeft = -1;     // while paused, how long the frame on show had left
     bool m_apngPending = false;
     bool m_playing = true;
+
+    // A GIF's or WebP's frame as of the last tick.
+    void takeMovieFrame();
+    QImage m_movieFrame;
 };

@@ -126,6 +126,8 @@ qt_add_executable(Singularity WIN32
     src/ui/ClipPlayer.cpp
     src/ui/UiTime.h
     src/ui/UiTime.cpp
+    src/ui/FrameClock.h
+    src/ui/FrameClock.cpp
     src/ui/CallView.h
     src/ui/CallView.cpp
     src/core/VideoDecoder.h
@@ -456,3 +458,23 @@ add_executable(test_rail
 )
 target_include_directories(test_rail PRIVATE src)
 target_link_libraries(test_rail PRIVATE Qt6::Core crypt32)
+
+# Animations keep the frame clock's rules: a paint shows the last tick's
+# frame, every frame comes in order and on time, and a tick's redraw is not
+# held back. A profile effect once drew a band through the card and dropped
+# half its frames. The release build runs this one (see build.yml).
+add_executable(test_frames
+    tools/test_frames.cpp
+    src/ui/FrameClock.cpp
+    src/ui/UiTime.cpp
+    src/ui/ProfileArt.cpp
+    src/ui/AnimatedImage.cpp
+    src/ui/ApngDecoder.cpp
+    src/core/Cosmetics.cpp
+    src/core/DiscordIdentity.cpp
+    src/core/AppConfig.cpp
+    src/core/TokenStore.cpp
+    src/core/Logger.cpp
+)
+target_include_directories(test_frames PRIVATE src)
+target_link_libraries(test_frames PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network crypt32 dwmapi)

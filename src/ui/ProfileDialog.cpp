@@ -6,6 +6,7 @@
 #include "ui/AnimatedImage.h"
 #include "ui/BadgesDialog.h"
 #include "ui/FlowLayout.h"
+#include "ui/FrameClock.h"
 #include "ui/LookPainter.h"
 #include "ui/MediaCache.h"
 #include "ui/NameIcons.h"
@@ -53,8 +54,6 @@ public:
     {
         setMinimumHeight(36);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        m_frames.setInterval(33);
-        connect(&m_frames, &QTimer::timeout, this, qOverload<>(&QWidget::update));
         connect(&LookPainter::instance(), &LookPainter::changed, this, qOverload<>(&QWidget::update));
     }
 
@@ -91,7 +90,9 @@ protected:
 private:
     QString m_text;
     PersonLook m_look;
-    QTimer m_frames;
+    // On the frame clock, so the name moves on the same ticks as the effect
+    // over it and the decoration beside it.
+    FramePulse m_frames{33, [this]() { update(); }};
 };
 
 // One of the friends you share, as Discord's profile lists them: their
