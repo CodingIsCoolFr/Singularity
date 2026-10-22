@@ -12,6 +12,8 @@
 class RestClient;
 
 class FlowLayout;
+class ProfileEffectView;
+class ProfileFrameView;
 class ProfileNameView;
 class QLabel;
 class QLineEdit;
@@ -62,6 +64,11 @@ private:
     void requestProfile(const QString &userId, const QString &guildId, int request);
     void refreshArtwork();
 
+    // The profile effect and frame named by these SKUs, once the shop says
+    // what they are made of. Empty SKUs clear them.
+    void showProfileArt(const QString &effectSku, const QString &frameSku);
+    void setProfileFrame(const Cosmetics::ProfileFrame &frame);
+
     // The profile's own badge list when Discord sent one - pictures for every
     // badge, the 2026 levelled ones included - or words from the public flags
     // when it did not. A badge opens the badges window on itself.
@@ -99,6 +106,14 @@ private:
     QWidget *m_avatar = nullptr;
     ProfileNameView *m_displayName = nullptr;
     QLabel *m_handle = nullptr;
+
+    // The profile effect over the card, and the frame round it: one view
+    // behind the card and one in front. The holder is the card's room, which
+    // grows by what the frame reaches past it.
+    ProfileEffectView *m_effectView = nullptr;
+    ProfileFrameView *m_frameBack = nullptr;
+    ProfileFrameView *m_frameFront = nullptr;
+    QWidget *m_cardHolder = nullptr;
 
     // One green line, shown only when the Presence hints plugin has something
     // to say about someone Discord reports as offline.

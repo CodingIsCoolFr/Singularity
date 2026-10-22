@@ -4,6 +4,7 @@
 #include <QJsonValue>
 #include <QList>
 #include <QString>
+#include <QStringList>
 
 // What Discord dresses a person in beyond their name and picture: the avatar
 // decoration, the nameplate behind their row, the server tag beside their
@@ -69,10 +70,78 @@ struct RoleColours
     bool hasTertiary = false;
 };
 
+// The two cosmetics worn on a profile itself rather than on a name. A profile
+// names them by SKU only (user_profile.collectibles: { sku_id, type }, type 1
+// an effect and 3 a frame); what they are made of is the shop's item for
+// that SKU, GET /collectibles-products/{sku}, whose effect items keep
+// Discord's camelCase names.
+
+// One picture of a profile effect: an animation laid over the profile, shown
+// from `start` for `duration` milliseconds after the effect begins and, when
+// it loops, again every duration + loopDelay.
+struct EffectLayer
+{
+    QString src;
+    QStringList randomSources;   // one is picked, the same one for every layer
+    bool loop = false;
+    int start = 0;
+    int duration = 0;
+    int loopDelay = 0;
+    int x = 0;                   // where it sits on the profile, in pixels
+    int y = 0;
+    int zIndex = 0;
+};
+
+struct ProfileEffect
+{
+    QString skuId;
+    QString label;               // Discord's description of it, for a tooltip
+    QList<EffectLayer> layers;   // lowest first
+    bool isSet() const { return !layers.isEmpty(); }
+};
+
+// One picture of a profile frame. A "staple" is drawn whole, at the top or
+// bottom of the card; a "rail" fills the card's height, its picture held
+// against the anchor; a "border" is its picture repeated down the card. A
+// responsive rail shows only on a card at least 480 tall for 300 across.
+struct FrameLayer
+{
+    QString id;                  // collectibles-shop/<sku>/<id>/static
+    QString type;
+    bool front = true;           // over the card; otherwise behind it
+    QString anchor;              // "top", "bottom" or "center"
+    bool responsive = false;
+};
+
+// Every layer is as wide as the card plus overflowHorizontal each side, at a
+// scale of card width / innerWidth, and the frame reaches overflowTop above
+// the card and overflowBottom below it.
+struct ProfileFrame
+{
+    QString skuId;
+    QString label;
+    int innerWidth = 0;
+    int overflowTop = 0;
+    int overflowBottom = 0;
+    int overflowHorizontal = 0;
+    QList<FrameLayer> layers;
+    bool isSet() const { return innerWidth > 0 && !layers.isEmpty(); }
+};
+
 Decoration decoration(const QJsonValue &value);
 Nameplate nameplate(const QJsonValue &collectibles);
 GuildTag guildTag(const QJsonValue &primaryGuild);
 NameStyle nameStyle(const QJsonValue &value);
 RoleColours roleColours(const QJsonObject &role);
+
+// The SKU of the effect or frame a profile block (user_profile,
+// guild_member_profile) wears. Empty for none.
+QString profileEffectSku(const QJsonObject &profile);
+QString profileFrameSku(const QJsonObject &profile);
+
+// The effect or frame a /collectibles-products/{sku} reply describes. Not
+// set when the reply is for something else.
+ProfileEffect profileEffect(const QJsonObject &product);
+ProfileFrame profileFrame(const QJsonObject &product);
 
 } // namespace Cosmetics

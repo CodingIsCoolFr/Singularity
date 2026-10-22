@@ -2,6 +2,8 @@
 
 #include <QJsonArray>
 
+#include <algorithm>
+
 namespace Cosmetics {
 
 namespace {
@@ -14,6 +16,35 @@ QString idOf(const QJsonValue &value)
     if (value.isDouble())
         return QString::number(qint64(value.toDouble()));
     return {};
+}
+
+// Discord's collectible item types.
+constexpr int ProfileEffectType = 1;
+constexpr int ProfileFrameType = 3;
+
+QString collectibleSku(const QJsonObject &profile, int type)
+{
+    for (const QJsonValue &value : profile.value(QStringLiteral("collectibles")).toArray()) {
+        const QJsonObject item = value.toObject();
+        if (item.value(QStringLiteral("type")).toInt(-1) == type)
+            return idOf(item.value(QStringLiteral("sku_id")));
+    }
+    return {};
+}
+
+QJsonObject productItem(const QJsonObject &product, int type)
+{
+    for (const QJsonValue &value : product.value(QStringLiteral("items")).toArray()) {
+        const QJsonObject item = value.toObject();
+        if (item.value(QStringLiteral("type")).toInt(-1) == type)
+            return item;
+    }
+    return {};
+}
+
+int number(const QJsonObject &object, const QString &key)
+{
+    return qRound(object.value(key).toDouble());
 }
 
 } // namespace
@@ -79,6 +110,89 @@ RoleColours roleColours(const QJsonObject &role)
     out.hasTertiary = tertiary.isDouble();
     out.secondary = quint32(qint64(secondary.toDouble()));
     out.tertiary = quint32(qint64(tertiary.toDouble()));
+    return out;
+}
+
+QString profileEffectSku(const QJsonObject &profile)
+{
+    const QString sku = collectibleSku(profile, ProfileEffectType);
+    if (!sku.isEmpty())
+        return sku;
+    // The field the API used before collectibles: { id, expires_at }, the id
+    // being the SKU.
+    const QJsonObject older = profile.value(QStringLiteral("profile_effect")).toObject();
+    const QString skuId = idOf(older.value(QStringLiteral("sku_id")));
+    return skuId.isEmpty() ? idOf(older.value(QStringLiteral("id"))) : skuId;
+}
+
+QString profileFrameSku(const QJsonObject &profile)
+{
+    return collectibleSku(profile, ProfileFrameType);
+}
+
+ProfileEffect profileEffect(const QJsonObject &product)
+{
+    const QJsonObject item = productItem(product, ProfileEffectType);
+    ProfileEffect out;
+    if (item.isEmpty())
+        return out;
+    out.skuId = idOf(item.value(QStringLiteral("sku_id")));
+    if (out.skuId.isEmpty())
+        out.skuId = idOf(product.value(QStringLiteral("sku_id")));
+    out.label = item.value(QStringLiteral("accessibilityLabel")).toString();
+
+    for (const QJsonValue &value : item.value(QStringLiteral("effects")).toArray()) {
+        const QJsonObject effect = value.toObject();
+        EffectLayer layer;
+        layer.src = effect.value(QStringLiteral("src")).toString();
+        for (const QJsonValue &source : effect.value(QStringLiteral("randomizedSources")).toArray()) {
+            const QString src = source.toObject().value(QStringLiteral("src")).toString();
+            if (!src.isEmpty())
+                layer.randomSources.append(src);
+        }
+        if (layer.src.isEmpty() && layer.randomSources.isEmpty())
+            continue;
+        layer.loop = effect.value(QStringLiteral("loop")).toBool();
+        layer.start = number(effect, QStringLiteral("start"));
+        layer.duration = number(effect, QStringLiteral("duration"));
+        layer.loopDelay = number(effect, QStringLiteral("loopDelay"));
+        const QJsonObject position = effect.value(QStringLiteral("position")).toObject();
+        layer.x = number(position, QStringLiteral("x"));
+        layer.y = number(position, QStringLiteral("y"));
+        layer.zIndex = number(effect, QStringLiteral("zIndex"));
+        out.layers.append(layer);
+    }
+    std::stable_sort(out.layers.begin(), out.layers.end(),
+                     [](const EffectLayer &a, const EffectLayer &b) { return a.zIndex < b.zIndex; });
+    return out;
+}
+
+ProfileFrame profileFrame(const QJsonObject &product)
+{
+    const QJsonObject item = productItem(product, ProfileFrameType);
+    ProfileFrame out;
+    if (item.isEmpty())
+        return out;
+    out.skuId = idOf(item.value(QStringLiteral("sku_id")));
+    if (out.skuId.isEmpty())
+        out.skuId = idOf(product.value(QStringLiteral("sku_id")));
+    out.label = item.value(QStringLiteral("label")).toString();
+    out.innerWidth = number(item, QStringLiteral("inner_width"));
+    out.overflowTop = number(item, QStringLiteral("overflow_top"));
+    out.overflowBottom = number(item, QStringLiteral("overflow_bottom"));
+    out.overflowHorizontal = number(item, QStringLiteral("overflow_horizontal"));
+
+    for (const QJsonValue &value : item.value(QStringLiteral("layers")).toArray()) {
+        const QJsonObject raw = value.toObject();
+        FrameLayer layer;
+        layer.id = idOf(raw.value(QStringLiteral("id")));
+        layer.type = raw.value(QStringLiteral("type")).toString();
+        layer.front = raw.value(QStringLiteral("order")).toString() != QLatin1String("back");
+        layer.anchor = raw.value(QStringLiteral("anchor")).toString();
+        layer.responsive = raw.value(QStringLiteral("responsive")).toBool();
+        if (!layer.id.isEmpty())
+            out.layers.append(layer);
+    }
     return out;
 }
 

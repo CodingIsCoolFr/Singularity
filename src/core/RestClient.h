@@ -187,6 +187,11 @@ public:
     void fetchUserProfile(const QString &userId, const QString &guildId, ObjectHandler onOk,
                           ErrorHandler onError);
 
+    // GET /collectibles-products/{sku} - one item of Discord's shop. A profile
+    // names its profile effect and frame by SKU only; this says what they are
+    // made of. See Cosmetics::profileEffect and profileFrame.
+    void fetchCollectiblesProduct(const QString &skuId, ObjectHandler onOk, ErrorHandler onError);
+
     // Discord's badge directory (2026): every badge there is, which ones this
     // person owns, the tier each is at and how far it is to the next. Read
     // from Discord's own web client, not from documentation:

@@ -8,6 +8,7 @@
 #include "ui/FlowLayout.h"
 #include "ui/LookPainter.h"
 #include "ui/MediaCache.h"
+#include "ui/ProfileArt.h"
 #include "ui/Theme.h"
 
 #include <QAction>
@@ -401,8 +402,17 @@ ProfileDialog::ProfileDialog(MessageStore *store, RestClient *rest, QWidget *par
     root->setContentsMargins(16, 16, 16, 16);
     root->setSpacing(14);
 
-    root->addWidget(buildLeftCard());
+    // The card stands in a holder of its own, which a profile frame widens
+    // to make room for what reaches past the card.
+    QWidget *leftCard = buildLeftCard();
+    m_cardHolder = new QWidget(shell);
+    auto *holder = new QVBoxLayout(m_cardHolder);
+    holder->setContentsMargins(0, 0, 0, 0);
+    holder->addWidget(leftCard);
+    root->addWidget(m_cardHolder);
     root->addWidget(buildRightPane(), 1);
+    m_frameBack = new ProfileFrameView(leftCard, shell, false);
+    m_frameFront = new ProfileFrameView(leftCard, shell, true);
 
     // Close button, floating over the top right corner.
     auto *close = new QPushButton(QStringLiteral("✕"), this);
@@ -699,6 +709,12 @@ QWidget *ProfileDialog::buildLeftCard()
     scroll->setWidget(body);
     outer->addWidget(scroll, 1);
 
+    // The profile effect, over everything on the card but the picture, which
+    // raises itself whenever it moves.
+    m_effectView = new ProfileEffectView(card);
+    m_effectView->raise();
+    m_avatar->raise();
+
     return card;
 }
 
@@ -798,6 +814,10 @@ void ProfileDialog::hideEvent(QHideEvent *event)
     // has been eaten, then let go.
     if (!m_swallowRelease)
         qApp->removeEventFilter(this);
+    // A profile effect's frames are tens of megabytes. The window is kept for
+    // the next profile, so they go now; the next one fetches its own from
+    // the disk cache.
+    showProfileArt({}, {});
     QDialog::hideEvent(event);
 }
 
@@ -872,6 +892,7 @@ void ProfileDialog::showFor(const QString &userId, const QString &guildId, bool 
     m_bioSection->setVisible(false);
     rebuildBadges({}, 0);
     rebuildConnections({});
+    showProfileArt({}, {});
 
     applyLocalData();
     rebuildActivity();
@@ -994,6 +1015,15 @@ void ProfileDialog::applyProfilePayload(const QJsonObject &payload)
     if (m_accentColour == 0)
         m_accentColour = user.value(QStringLiteral("accent_color")).toInt();
 
+    // The profile effect and frame: this server's, or else the account's.
+    QString effectSku = Cosmetics::profileEffectSku(memberProfile);
+    if (effectSku.isEmpty())
+        effectSku = Cosmetics::profileEffectSku(userProfile);
+    QString frameSku = Cosmetics::profileFrameSku(memberProfile);
+    if (frameSku.isEmpty())
+        frameSku = Cosmetics::profileFrameSku(userProfile);
+    showProfileArt(effectSku, frameSku);
+
     // The decoration can be hung off the user, the profile, or the per-server
     // member record, so try each in turn.
     const QJsonObject member = payload.value(QStringLiteral("guild_member")).toObject();
@@ -1073,6 +1103,58 @@ void ProfileDialog::refreshArtwork()
         if (!url.isEmpty())
             m_artworkUrls.insert(url.toString());
     }
+}
+
+void ProfileDialog::showProfileArt(const QString &effectSku, const QString &frameSku)
+{
+    m_effectView->setEffect({});
+    setProfileFrame({});
+
+    // What each SKU is made of, asked of the shop once a run.
+    static QHash<QString, QJsonObject> shop;
+    const auto apply = [this](const QJsonObject &product) {
+        const Cosmetics::ProfileEffect effect = Cosmetics::profileEffect(product);
+        if (effect.isSet())
+            m_effectView->setEffect(effect);
+        const Cosmetics::ProfileFrame frame = Cosmetics::profileFrame(product);
+        if (frame.isSet())
+            setProfileFrame(frame);
+    };
+    const int request = m_profileRequest;
+    for (const QString &sku : {effectSku, frameSku}) {
+        if (sku.isEmpty())
+            continue;
+        const auto known = shop.constFind(sku);
+        if (known != shop.constEnd()) {
+            apply(known.value());
+            continue;
+        }
+        m_rest->fetchCollectiblesProduct(
+            sku,
+            [this, sku, request, apply](const QJsonObject &product) {
+                shop.insert(sku, product);
+                if (request == m_profileRequest && isVisible())
+                    apply(product);
+            },
+            [sku](const RestClient::Error &error) {
+                wlog(QStringLiteral("profile"), QStringLiteral("shop item %1 could not be fetched: HTTP %2 %3")
+                                                    .arg(sku)
+                                                    .arg(error.httpStatus)
+                                                    .arg(error.message));
+            });
+    }
+}
+
+void ProfileDialog::setProfileFrame(const Cosmetics::ProfileFrame &frame)
+{
+    // The frame reaches past the card. The shell's own padding (16) and the
+    // gap to the right pane (14) take some of it; the card stands back by the
+    // rest.
+    const QMargins out = ProfileFrameView::overflow(frame, LeftCardWidth);
+    m_cardHolder->layout()->setContentsMargins(qMax(0, out.left() - 16), qMax(0, out.top() - 16),
+                                               qMax(0, out.right() - 14), qMax(0, out.bottom() - 16));
+    m_frameBack->setFrame(frame);
+    m_frameFront->setFrame(frame);
 }
 
 QWidget *ProfileDialog::makePill(const QString &text, const QColor &dot, QWidget *parent)

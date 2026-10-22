@@ -543,6 +543,14 @@ void RestClient::fetchUserProfile(const QString &userId, const QString &guildId,
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+void RestClient::fetchCollectiblesProduct(const QString &skuId, ObjectHandler onOk, ErrorHandler onError)
+{
+    // The locale is what Discord's client sends; the names come back in it.
+    QNetworkReply *reply = m_network.get(
+        buildRequest(QStringLiteral("/collectibles-products/%1?locale=en-US").arg(skuId)));
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::fetchUserBadges(const QString &who, ObjectHandler onOk, ErrorHandler onError)
 {
     QNetworkReply *reply = m_network.get(buildRequest(QStringLiteral("/users/%1/badges").arg(who)));

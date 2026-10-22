@@ -165,6 +165,8 @@ qt_add_executable(Singularity WIN32
     src/ui/Sounds.cpp
     src/ui/LookPainter.h
     src/ui/LookPainter.cpp
+    src/ui/ProfileArt.h
+    src/ui/ProfileArt.cpp
     src/ui/Speech.h
     src/ui/Speech.cpp
     src/core/sherpa/c-api.h
