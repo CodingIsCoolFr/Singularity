@@ -39,6 +39,8 @@
 #include "ui/MediaCache.h"
 #include "ui/MediaCache.h"
 #include "ui/PluginsDialog.h"
+#include "ui/PollCard.h"
+#include "ui/PollDialog.h"
 #include "ui/ProfileDialog.h"
 #include "ui/SettingsDialog.h"
 #include "ui/Theme.h"
@@ -2267,15 +2269,18 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
     row->setSpacing(4);
 
     auto *attach = new QPushButton(QStringLiteral("Attach"), composerBox);
+    auto *poll = new QPushButton(QStringLiteral("Poll"), composerBox);
     auto *emoji = new QPushButton(QStringLiteral("Emoji"), composerBox);
-    for (QPushButton *button : {attach, emoji}) {
+    for (QPushButton *button : {attach, poll, emoji}) {
         button->setObjectName(QStringLiteral("ComposerTool"));
         button->setFixedHeight(28);
         button->setCursor(Qt::PointingHandCursor);
     }
     attach->setToolTip(QStringLiteral("Add a file or a picture"));
+    poll->setToolTip(QStringLiteral("Create a poll"));
     emoji->setToolTip(QStringLiteral("Insert an emoji"));
     connect(attach, &QPushButton::clicked, this, &MainWindow::chooseAttachment);
+    connect(poll, &QPushButton::clicked, this, &MainWindow::createPoll);
     connect(emoji, &QPushButton::clicked, this, &MainWindow::showEmojiMenu);
 
     m_composer = new QTextEdit(composerBox);
@@ -2311,6 +2316,7 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
 
     // The buttons stay beside the first line as the box grows, as in Discord.
     row->addWidget(attach, 0, Qt::AlignTop);
+    row->addWidget(poll, 0, Qt::AlignTop);
     row->addWidget(m_composer, 1);
     m_stopEdit = new QPushButton(QStringLiteral("Stop"), composerBox);
     m_stopEdit->setObjectName(QStringLiteral("ComposerTool"));
@@ -3362,6 +3368,17 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
     if (eventType == QLatin1String("MESSAGE_REACTION_REMOVE_ALL")
         || eventType == QLatin1String("MESSAGE_REACTION_REMOVE_EMOJI")) {
         m_store->clearReactions(data);
+        return;
+    }
+
+    if (eventType == QLatin1String("MESSAGE_POLL_VOTE_ADD")
+        || eventType == QLatin1String("MESSAGE_POLL_VOTE_ADD_MANY")) {
+        m_store->applyPollVote(data, true, m_selfUserId);
+        return;
+    }
+
+    if (eventType == QLatin1String("MESSAGE_POLL_VOTE_REMOVE")) {
+        m_store->applyPollVote(data, false, m_selfUserId);
         return;
     }
 
@@ -4750,8 +4767,9 @@ bool MainWindow::shouldGroup(const MessageInfo &previous, const MessageInfo &cur
 {
     if (previous.authorId.isEmpty() || previous.authorId != current.authorId)
         return false;
-    // A call line stands on its own, the way Discord draws the phone.
-    if (current.type == 3 || previous.type == 3)
+    // A call line stands on its own, the way Discord draws the phone, and
+    // so does a poll's closing notice.
+    if (current.type == 3 || previous.type == 3 || current.type == 46 || previous.type == 46)
         return false;
     // A reply always stands on its own. Grouping it hides the line that says
     // who it answered.
@@ -5513,6 +5531,8 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
 {
     if (message.type == 3)
         return callMessageHtml(message);
+    if (message.type == 46 && message.pollResult.isSet)
+        return PollCard::resultHtml(message.pollResult, message.authorName, message.id, message.timestamp);
     const QString decorations = m_plugins->runDecorateHeader(message);
     const bool isSelf = !m_selfUserId.isEmpty() && message.authorId == m_selfUserId;
 
@@ -5592,6 +5612,8 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
         inner += attachmentsHtml(snapshot.attachments);
         inner += stickersHtml(snapshot);
         inner += embedsHtml(snapshot);
+        // A forwarded poll is a copy to read; the votes are on the original.
+        inner += PollCard::html(snapshot.poll, QString(), QDateTime::currentDateTime());
         inner += componentsHtml(snapshot.components, message.id, message.applicationId, message.flags);
 
         // Where it came from: the channel, when we know it, and when it was
@@ -5618,6 +5640,7 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
 
     body += stickersHtml(message);
     body += embedsHtml(message);
+    body += PollCard::html(message.poll, message.id, QDateTime::currentDateTime());
     // The bot a press goes to. A bot's own message - not a reply to a slash
     // command - carries no application id, and Discord's client then sends
     // the press to its author (applicationId ?? author.id), which for a bot
@@ -7442,6 +7465,12 @@ void MainWindow::handleAnchor(const QUrl &url)
         return;
     }
 
+    if (url.scheme() == QLatin1String("singularity-poll")) {
+        const QUrlQuery query(url);
+        votePoll(query.queryItemValue(QStringLiteral("m")), query.queryItemValue(QStringLiteral("a")).toInt());
+        return;
+    }
+
     // A game invite's Launch Game. Discord would start the installed copy;
     // we open the application's page, which is what we can do without its
     // launcher.
@@ -7739,6 +7768,71 @@ void MainWindow::toggleReaction(const QString &messageId, const QString &emoji)
         m_rest->removeReaction(m_currentChannelId, messageId, emoji, onOk, onError);
     else
         m_rest->addReaction(m_currentChannelId, messageId, emoji, onOk, onError);
+}
+
+void MainWindow::votePoll(const QString &messageId, int answerId)
+{
+    const QString channelId = m_currentChannelId;
+    if (messageId.isEmpty() || answerId <= 0 || channelId.isEmpty())
+        return;
+
+    PollInfo poll;
+    for (const MessageInfo &message : m_store->messages(channelId)) {
+        if (message.id == messageId) {
+            poll = message.poll;
+            break;
+        }
+    }
+    if (!poll.isSet() || poll.isClosed(QDateTime::currentDateTime()))
+        return;
+
+    const QList<int> before = poll.myAnswers();
+    const QList<int> after = poll.selectionAfterClick(answerId);
+    if (after == before)
+        return;
+
+    // Shown at once, as Discord's client does; the gateway's echo of our own
+    // vote then finds it already counted. A refusal puts the old vote back.
+    m_store->setPollVotes(channelId, messageId, after);
+    QStringList ids;
+    for (const int id : after)
+        ids.append(QString::number(id));
+    m_rest->votePoll(
+        channelId, messageId, ids, [](const QJsonObject &) {},
+        [this, channelId, messageId, before](const RestClient::Error &error) {
+            m_store->setPollVotes(channelId, messageId, before);
+            flashStatus(error.message.isEmpty() ? QStringLiteral("Discord refused that vote.") : error.message, 4000);
+        });
+}
+
+void MainWindow::createPoll()
+{
+    const QString channelId = m_currentChannelId;
+    if (channelId.isEmpty() || !m_composer->isEnabled())
+        return;
+
+    PollDialog dialog(this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    // The poll comes back as MESSAGE_CREATE, like any message.
+    const QJsonObject poll = dialog.poll();
+    const auto fail = [this](const RestClient::Error &error) {
+        flashStatus(error.message.isEmpty() ? QStringLiteral("Discord refused that poll.") : error.message, 5000);
+    };
+    m_rest->sendPoll(channelId, poll, [](const QJsonObject &) {},
+                     [this, channelId, poll, fail](const RestClient::Error &error) {
+                         if (!CaptchaDialog::isDemand(error.body)) {
+                             fail(error);
+                             return;
+                         }
+                         RestClient::CaptchaProof proof;
+                         if (!takeCaptcha(error, &proof)) {
+                             flashStatus(QStringLiteral("Discord asked for a check, and it was not finished."), 5000);
+                             return;
+                         }
+                         m_rest->sendPoll(channelId, poll, [](const QJsonObject &) {}, fail, proof);
+                     });
 }
 
 void MainWindow::showInteractionModal(const QJsonObject &data)

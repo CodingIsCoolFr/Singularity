@@ -108,6 +108,20 @@ public:
     void removeReaction(const QString &channelId, const QString &messageId, const QString &emoji,
                         ObjectHandler onOk, ErrorHandler onError);
 
+    // PUT /channels/{id}/polls/{message}/answers/@me {"answer_ids": [...]} -
+    // your whole vote on a poll, as Discord's client sends it: every answer
+    // you now choose, by id as text. An empty list takes your vote back.
+    // Discord answers 204 and sends MESSAGE_POLL_VOTE_ADD / _REMOVE.
+    void votePoll(const QString &channelId, const QString &messageId, const QStringList &answerIds,
+                  ObjectHandler onOk, ErrorHandler onError);
+
+    // POST /channels/{id}/messages with no words and a `poll`: {question:
+    // {text}, answers: [{poll_media: {text, emoji}}], allow_multiselect,
+    // duration in hours, layout_type 1}. How Discord's client posts one.
+    // `captcha` is set only on the retry after the person finished the check.
+    void sendPoll(const QString &channelId, const QJsonObject &poll, ObjectHandler onOk, ErrorHandler onError,
+                  const CaptchaProof &captcha = {});
+
     // Tells Discord you have seen up to this message, which is what clears the
     // unread mark on every other client too.
     void ackMessage(const QString &channelId, const QString &messageId);
@@ -371,6 +385,13 @@ public:
     // for our own action looks exactly like somebody else's, and a notifier
     // must not tell you about something you just did.
     bool removedByUs(const QString &id, qint64 withinMs = 60000) const;
+
+protected:
+    // One request with a JSON body (`verb` PUT, POST...), answered the way
+    // dispatch answers. A poll vote and a new poll go through here so
+    // tools/test_polls can see what would be sent without sending it.
+    virtual void sendJson(const QByteArray &verb, const QString &path, const QByteArray &json,
+                          const CaptchaProof &captcha, ObjectHandler onOk, ErrorHandler onError);
 
 signals:
     void unauthorized();

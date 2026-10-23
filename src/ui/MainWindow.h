@@ -348,6 +348,11 @@ private:
     void pressMessageSelect(const QString &messageId, const QString &applicationId, int messageFlags,
                             const QString &customId);
     void toggleReaction(const QString &messageId, const QString &emoji);
+    // A click on a poll's answer: votes for it, moves a one-answer vote to
+    // it, or takes it back when it is already yours.
+    void votePoll(const QString &messageId, int answerId);
+    // The composer's Poll: asks for one and posts it to the open channel.
+    void createPoll();
     void showInteractionModal(const QJsonObject &data);
     QString textDisplayHtml(const QString &markdown);
     QString inviteCardsHtml(const MessageInfo &message);

@@ -7,6 +7,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QPair>
 #include <QSet>
 
 #include <algorithm>
@@ -37,7 +38,165 @@ int overwriteTypeFromJson(const QJsonValue &value)
     return value.toInt();
 }
 
+// Discord sends answer ids as numbers. A string is read too, in case.
+int answerIdFrom(const QJsonValue &value)
+{
+    return value.isString() ? value.toString().toInt() : value.toInt();
+}
+
+PollInfo parsePoll(const QJsonObject &raw)
+{
+    PollInfo poll;
+    // Only text: Discord takes no emoji on the question.
+    poll.question = raw.value(QStringLiteral("question")).toObject().value(QStringLiteral("text")).toString();
+    poll.allowMultiselect = raw.value(QStringLiteral("allow_multiselect")).toBool();
+
+    // Null for a poll that never closes, which Discord allows for but does
+    // not make yet.
+    const QString expiry = raw.value(QStringLiteral("expiry")).toString();
+    if (!expiry.isEmpty()) {
+        poll.expiry = QDateTime::fromString(expiry, Qt::ISODateWithMs);
+        if (!poll.expiry.isValid())
+            poll.expiry = QDateTime::fromString(expiry, Qt::ISODate);
+        if (poll.expiry.isValid())
+            poll.expiry = poll.expiry.toLocalTime();
+    }
+
+    for (const QJsonValue &value : raw.value(QStringLiteral("answers")).toArray()) {
+        const QJsonObject rawAnswer = value.toObject();
+        const QJsonObject media = rawAnswer.value(QStringLiteral("poll_media")).toObject();
+        PollInfo::Answer answer;
+        // Discord numbers the answers from 1 in order, and leaves the number
+        // out only where it is not the one answering.
+        answer.id = rawAnswer.contains(QStringLiteral("answer_id"))
+            ? answerIdFrom(rawAnswer.value(QStringLiteral("answer_id")))
+            : int(poll.answers.size()) + 1;
+        answer.text = media.value(QStringLiteral("text")).toString();
+        const QJsonObject emoji = media.value(QStringLiteral("emoji")).toObject();
+        answer.emojiId = MessageStore::snowflake(emoji.value(QStringLiteral("id")));
+        answer.emojiName = emoji.value(QStringLiteral("name")).toString();
+        answer.emojiAnimated = emoji.value(QStringLiteral("animated")).toBool();
+        if (answer.id > 0)
+            poll.answers.append(answer);
+    }
+
+    const QJsonValue results = raw.value(QStringLiteral("results"));
+    if (results.isObject()) {
+        poll.resultsSent = true;
+        const QJsonObject object = results.toObject();
+        poll.finalized = object.value(QStringLiteral("is_finalized")).toBool();
+        for (const QJsonValue &value : object.value(QStringLiteral("answer_counts")).toArray()) {
+            const QJsonObject count = value.toObject();
+            const int id = answerIdFrom(count.value(QStringLiteral("id")));
+            for (PollInfo::Answer &answer : poll.answers) {
+                if (answer.id != id)
+                    continue;
+                answer.count = qMax(0, count.value(QStringLiteral("count")).toInt());
+                answer.mine = count.value(QStringLiteral("me_voted")).toBool();
+                break;
+            }
+        }
+    }
+    return poll;
+}
+
+// The "poll_result" embed on a poll's closing notice. Every field is named
+// data with its value as text: poll_question_text, victor_answer_text,
+// victor_answer_votes, total_votes, and the winner's id and emoji.
+PollResultInfo parsePollResult(const QJsonObject &embed)
+{
+    PollResultInfo result;
+    result.isSet = true;
+    for (const QJsonValue &value : embed.value(QStringLiteral("fields")).toArray()) {
+        const QJsonObject field = value.toObject();
+        const QString name = field.value(QStringLiteral("name")).toString();
+        const QString text = field.value(QStringLiteral("value")).toString();
+        if (name == QLatin1String("poll_question_text"))
+            result.question = text;
+        else if (name == QLatin1String("victor_answer_text"))
+            result.winnerText = text;
+        else if (name == QLatin1String("victor_answer_votes"))
+            result.winnerVotes = text.toInt();
+        else if (name == QLatin1String("total_votes"))
+            result.totalVotes = text.toInt();
+        else if (name == QLatin1String("victor_answer_id"))
+            result.hasWinner = !text.isEmpty();
+        else if (name == QLatin1String("victor_answer_emoji_id"))
+            result.winnerEmojiId = text;
+        else if (name == QLatin1String("victor_answer_emoji_name"))
+            result.winnerEmojiName = text;
+        else if (name == QLatin1String("victor_answer_emoji_animated"))
+            result.winnerEmojiAnimated = text == QLatin1String("true");
+    }
+    return result;
+}
+
 } // namespace
+
+int PollInfo::totalVotes() const
+{
+    int total = 0;
+    for (const Answer &answer : answers)
+        total += answer.count;
+    return total;
+}
+
+QList<int> PollInfo::myAnswers() const
+{
+    QList<int> ids;
+    for (const Answer &answer : answers) {
+        if (answer.mine)
+            ids.append(answer.id);
+    }
+    return ids;
+}
+
+QList<int> PollInfo::selectionAfterClick(int answerId) const
+{
+    QList<int> chosen = myAnswers();
+    const bool known = std::any_of(answers.cbegin(), answers.cend(),
+                                   [answerId](const Answer &answer) { return answer.id == answerId; });
+    if (!known)
+        return chosen;
+    if (chosen.contains(answerId))
+        chosen.removeAll(answerId);
+    else if (allowMultiselect)
+        chosen.append(answerId);
+    else
+        chosen = {answerId};
+    std::sort(chosen.begin(), chosen.end());
+    return chosen;
+}
+
+bool PollInfo::applyVote(int answerId, bool added, bool mine)
+{
+    for (Answer &answer : answers) {
+        if (answer.id != answerId)
+            continue;
+        if (mine) {
+            if (answer.mine == added)
+                return false;
+            answer.mine = added;
+        }
+        answer.count = qMax(0, answer.count + (added ? 1 : -1));
+        return true;
+    }
+    return false;
+}
+
+bool PollInfo::setMine(const QList<int> &answerIds)
+{
+    bool changed = false;
+    for (Answer &answer : answers) {
+        const bool wanted = answerIds.contains(answer.id);
+        if (answer.mine == wanted)
+            continue;
+        answer.mine = wanted;
+        answer.count = qMax(0, answer.count + (wanted ? 1 : -1));
+        changed = true;
+    }
+    return changed;
+}
 
 QString MessageStore::snowflake(const QJsonValue &value)
 {
@@ -1502,6 +1661,12 @@ MessageInfo MessageStore::parseMessage(const QJsonObject &raw)
     for (const QJsonValue &value : embeds) {
         const QJsonObject rawEmbed = value.toObject();
 
+        // A poll's closing notice. Its card is data to read, not to draw.
+        if (rawEmbed.value(QStringLiteral("type")).toString() == QLatin1String("poll_result")) {
+            message.pollResult = parsePollResult(rawEmbed);
+            continue;
+        }
+
         EmbedInfo embed;
         embed.type = rawEmbed.value(QStringLiteral("type")).toString();
         embed.url = rawEmbed.value(QStringLiteral("url")).toString();
@@ -1606,6 +1771,11 @@ MessageInfo MessageStore::parseMessage(const QJsonObject &raw)
         if (reaction.count > 0 && (!reaction.name.isEmpty() || !reaction.id.isEmpty()))
             message.reactions.append(reaction);
     }
+
+    // --- poll -------------------------------------------------------------
+    const QJsonObject poll = raw.value(QStringLiteral("poll")).toObject();
+    if (!poll.isEmpty())
+        message.poll = parsePoll(poll);
 
     message.components = raw.value(QStringLiteral("components")).toArray();
 
@@ -2219,6 +2389,59 @@ void MessageStore::clearReactions(const QJsonObject &data)
     emit messageChanged(channelId, messageId);
 }
 
+void MessageStore::applyPollVote(const QJsonObject &data, bool added, const QString &selfUserId)
+{
+    const QString channelId = data.value(QStringLiteral("channel_id")).toString();
+    const QString messageId = data.value(QStringLiteral("message_id")).toString();
+    if (channelId.isEmpty() || messageId.isEmpty() || !m_messages.contains(channelId))
+        return;
+
+    QList<MessageInfo> &list = m_messages[channelId];
+    const auto target = std::find_if(list.begin(), list.end(), [&messageId](const MessageInfo &item) {
+        return item.id == messageId;
+    });
+    // As with reactions, a vote on a poll we never loaded has nowhere to go.
+    if (target == list.end() || !target->poll.isSet())
+        return;
+
+    // (answer, who) for each vote. A batch names each answer once, with
+    // everyone who chose it.
+    QList<QPair<int, QString>> votes;
+    const QJsonValue batch = data.value(QStringLiteral("votes"));
+    if (batch.isArray()) {
+        for (const QJsonValue &value : batch.toArray()) {
+            const QJsonObject vote = value.toObject();
+            const int answerId = answerIdFrom(vote.value(QStringLiteral("answer_id")));
+            for (const QJsonValue &user : vote.value(QStringLiteral("users")).toArray())
+                votes.append({answerId, snowflake(user)});
+        }
+    } else {
+        votes.append({answerIdFrom(data.value(QStringLiteral("answer_id"))),
+                      snowflake(data.value(QStringLiteral("user_id")))});
+    }
+
+    bool changed = false;
+    for (const QPair<int, QString> &vote : std::as_const(votes)) {
+        const bool mine = !selfUserId.isEmpty() && vote.second == selfUserId;
+        changed = target->poll.applyVote(vote.first, added, mine) || changed;
+    }
+    if (changed)
+        emit messageChanged(channelId, messageId);
+}
+
+void MessageStore::setPollVotes(const QString &channelId, const QString &messageId, const QList<int> &answerIds)
+{
+    if (!m_messages.contains(channelId))
+        return;
+    for (MessageInfo &item : m_messages[channelId]) {
+        if (item.id != messageId)
+            continue;
+        if (item.poll.setMine(answerIds))
+            emit messageChanged(channelId, messageId);
+        return;
+    }
+}
+
 int MessageStore::appendMessage(const QJsonObject &rawMessage)
 {
     rememberUser(rawMessage.value(QStringLiteral("author")).toObject());
@@ -2292,6 +2515,24 @@ void MessageStore::updateMessage(const QJsonObject &rawMessage)
             item.embeds = parsed.embeds;
             wlog(QStringLiteral("ui"),
                  QStringLiteral("link preview on %1: %2").arg(messageId).arg(item.embeds.size()));
+        }
+        // A poll closing: Discord sends it again, finalized, with the last
+        // count. One sent without results keeps the count already held.
+        if (rawMessage.contains(QStringLiteral("poll"))) {
+            PollInfo poll = parsePoll(rawMessage.value(QStringLiteral("poll")).toObject());
+            if (!poll.resultsSent) {
+                for (PollInfo::Answer &answer : poll.answers) {
+                    for (const PollInfo::Answer &held : std::as_const(item.poll.answers)) {
+                        if (held.id != answer.id)
+                            continue;
+                        answer.count = held.count;
+                        answer.mine = held.mine;
+                        break;
+                    }
+                }
+                poll.finalized = item.poll.finalized;
+            }
+            item.poll = poll;
         }
         if (rawMessage.contains(QStringLiteral("edited_timestamp")))
             item.edited = !rawMessage.value(QStringLiteral("edited_timestamp")).isNull();

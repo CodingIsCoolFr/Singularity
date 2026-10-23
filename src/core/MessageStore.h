@@ -362,6 +362,71 @@ struct ReactionInfo
     }
 };
 
+// A poll on a message (Discord's `poll`), with its running count.
+//
+// Like reactions, the results are a count per answer and whether you are one
+// of them; who voted for what is a separate request. An answer missing from
+// the counts has no votes, and so does every answer of a poll sent without
+// results, which is how Discord's own client reads that too.
+struct PollInfo
+{
+    struct Answer
+    {
+        int id = 0;                // answer_id: 1, 2, 3... in the poll's order
+        QString text;
+        QString emojiId;           // set only for a custom emoji, which has a picture
+        QString emojiName;         // the character itself, or a custom emoji's name
+        bool emojiAnimated = false;
+        int count = 0;
+        bool mine = false;
+
+        bool hasEmoji() const { return !emojiId.isEmpty() || !emojiName.isEmpty(); }
+    };
+
+    QString question;
+    QList<Answer> answers;
+    bool allowMultiselect = false;
+    QDateTime expiry;              // invalid: it never closes
+    bool finalized = false;        // results.is_finalized: closed, and every vote counted
+    bool resultsSent = false;      // the message carried `results`; an update without them keeps ours
+
+    bool isSet() const { return !answers.isEmpty(); }
+    bool isClosed(const QDateTime &now) const { return finalized || (expiry.isValid() && expiry <= now); }
+    int totalVotes() const;
+    QList<int> myAnswers() const;
+
+    // The answers you vote for after a click on one, by Discord's rule: in a
+    // one-answer poll a click moves your vote there and a second click on the
+    // same answer takes it back; in a multi-answer poll each click toggles
+    // that answer alone.
+    QList<int> selectionAfterClick(int answerId) const;
+
+    // One vote coming or going (MESSAGE_POLL_VOTE_ADD / _REMOVE). Your own
+    // vote is already counted from the click, so its echo changes nothing;
+    // returns false then, and for an answer the poll does not have.
+    bool applyVote(int answerId, bool added, bool mine);
+
+    // Your votes set to exactly these answers, the counts moved to match.
+    // Returns false when that is how they already were.
+    bool setMine(const QList<int> &answerIds);
+};
+
+// A poll's closing notice (message type 46), which Discord posts under the
+// poll when it ends. Its "poll_result" embed carries the outcome as named
+// fields rather than words, so it is read here instead of drawn as a card.
+struct PollResultInfo
+{
+    QString question;
+    QString winnerText;
+    QString winnerEmojiId;
+    QString winnerEmojiName;
+    bool winnerEmojiAnimated = false;
+    int winnerVotes = 0;
+    int totalVotes = 0;
+    bool hasWinner = false;   // victor_answer_id; without it nobody voted, or it was a tie
+    bool isSet = false;
+};
+
 struct MessageInfo
 {
     QString id;
@@ -378,6 +443,9 @@ struct MessageInfo
     QList<EmbedInfo> embeds;
     QList<StickerInfo> stickers;
     QList<ReactionInfo> reactions;
+    // A poll message has no words of its own: this is all of it.
+    PollInfo poll;
+    PollResultInfo pollResult;
     bool edited = false;
     bool deleted = false;   // set by the MessageLogger plugin
     bool pendingLocal = false;
@@ -604,6 +672,15 @@ public:
 
     // MESSAGE_REACTION_REMOVE_ALL, and REMOVE_EMOJI when an emoji is given.
     void clearReactions(const QJsonObject &data);
+
+    // MESSAGE_POLL_VOTE_ADD and MESSAGE_POLL_VOTE_REMOVE: one person's vote
+    // for one answer. MESSAGE_POLL_VOTE_ADD_MANY, a batch of
+    // "votes": [{answer_id, users: [...]}], comes through here as well.
+    void applyPollVote(const QJsonObject &data, bool added, const QString &selfUserId);
+
+    // Your own votes on a poll, set to exactly these answers: shown the moment
+    // you click, before Discord answers, and put back if it refuses.
+    void setPollVotes(const QString &channelId, const QString &messageId, const QList<int> &answerIds);
     // Adds one message. Returns how many older messages were dropped to keep
     // the channel under its cap, or -1 when this message was already stored.
     int appendMessage(const QJsonObject &rawMessage);

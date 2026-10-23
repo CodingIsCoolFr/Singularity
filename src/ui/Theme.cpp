@@ -1091,6 +1091,59 @@ table.embed-fields { margin: 4px 0 0 0; }
     font-size: 10px;
     margin-top: 6px;
 }
+/* A poll: the question, then each answer as a row over a thin bar of its
+   share, yours tinted. */
+table.poll { margin: 6px 0 4px 0; }
+.poll-inner {
+    background-color: @input220;
+    padding: 12px 14px;
+}
+.poll-question {
+    color: @text;
+    font-family: "Poppins", "Segoe UI", sans-serif;
+    font-size: 15px;
+    font-weight: 600;
+}
+.poll-hint {
+    color: @faint;
+    font-family: "Poppins", "Segoe UI", sans-serif;
+    font-size: 11px;
+    margin-bottom: 4px;
+}
+table.poll-answer { margin: 6px 0 0 0; }
+.poll-row {
+    background-color: @hover;
+    padding: 8px 10px 7px 10px;
+}
+.poll-row-mine {
+    background-color: @accent22;
+    padding: 8px 10px 7px 10px;
+}
+a.poll-pick, .poll-pick { color: @text; text-decoration: none; }
+.poll-count {
+    color: @muted;
+    font-family: "Poppins", "Segoe UI", sans-serif;
+    font-size: 12px;
+}
+.poll-share {
+    color: @muted;
+    font-family: "Poppins", "Segoe UI", sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+}
+.poll-share-won {
+    color: @text;
+    font-family: "Poppins", "Segoe UI", sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+}
+table.poll-bar { margin: 5px 0 0 0; }
+.poll-foot {
+    color: @faint;
+    font-family: "Poppins", "Segoe UI", sans-serif;
+    font-size: 11px;
+    margin-top: 10px;
+}
 .file {
     margin: 4px 0 2px 0;
     font-family: "Poppins", "Segoe UI", sans-serif;

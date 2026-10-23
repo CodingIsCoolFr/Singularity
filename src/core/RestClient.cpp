@@ -304,6 +304,47 @@ void RestClient::removeReaction(const QString &channelId, const QString &message
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
 }
 
+void RestClient::votePoll(const QString &channelId, const QString &messageId, const QStringList &answerIds,
+                          ObjectHandler onOk, ErrorHandler onError)
+{
+    const QJsonObject body{{QStringLiteral("answer_ids"), QJsonArray::fromStringList(answerIds)}};
+    const QString path = QStringLiteral("/channels/%1/polls/%2/answers/@me").arg(channelId, messageId);
+    sendJson(QByteArrayLiteral("PUT"), path, QJsonDocument(body).toJson(QJsonDocument::Compact), {},
+             std::move(onOk), std::move(onError));
+}
+
+void RestClient::sendPoll(const QString &channelId, const QJsonObject &poll, ObjectHandler onOk,
+                          ErrorHandler onError, const CaptchaProof &captcha)
+{
+    // The same nonce as sendMessage's: a snowflake-sized number.
+    const qint64 nonce = QDateTime::currentMSecsSinceEpoch() * 1000
+        + QRandomGenerator::global()->bounded(1000);
+    const QJsonObject body{
+        {QStringLiteral("content"), QString()},
+        {QStringLiteral("nonce"), QString::number(nonce)},
+        {QStringLiteral("tts"), false},
+        {QStringLiteral("flags"), 0},
+        {QStringLiteral("poll"), poll},
+    };
+    sendJson(QByteArrayLiteral("POST"), QStringLiteral("/channels/%1/messages").arg(channelId),
+             QJsonDocument(body).toJson(QJsonDocument::Compact), captcha, std::move(onOk), std::move(onError));
+}
+
+void RestClient::sendJson(const QByteArray &verb, const QString &path, const QByteArray &json,
+                          const CaptchaProof &captcha, ObjectHandler onOk, ErrorHandler onError)
+{
+    QNetworkRequest request = buildRequest(path);
+    if (!captcha.key.isEmpty()) {
+        request.setRawHeader("X-Captcha-Key", captcha.key.toUtf8());
+        if (!captcha.rqtoken.isEmpty())
+            request.setRawHeader("X-Captcha-Rqtoken", captcha.rqtoken.toUtf8());
+        if (!captcha.sessionId.isEmpty())
+            request.setRawHeader("X-Captcha-Session-Id", captcha.sessionId.toUtf8());
+    }
+    QNetworkReply *reply = m_network.sendCustomRequest(request, verb, json);
+    dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
 void RestClient::ackMessage(const QString &channelId, const QString &messageId)
 {
     if (channelId.isEmpty() || messageId.isEmpty())

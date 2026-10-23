@@ -156,6 +156,10 @@ qt_add_executable(Singularity WIN32
     src/ui/ListDelegates.cpp
     src/ui/CommandPicker.h
     src/ui/CommandPicker.cpp
+    src/ui/PollCard.h
+    src/ui/PollCard.cpp
+    src/ui/PollDialog.h
+    src/ui/PollDialog.cpp
     src/ui/AnimatedImage.h
     src/ui/AnimatedImage.cpp
     src/ui/AudioMeter.h
@@ -480,3 +484,22 @@ add_executable(test_frames
 )
 target_include_directories(test_frames PRIVATE src)
 target_link_libraries(test_frames PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network crypt32 dwmapi)
+
+# Polls against Discord's own shapes: a poll message, the vote events, the
+# closing notice, the card drawn from them, and the vote request, which is
+# caught before it leaves. The release build runs this one too.
+add_executable(test_polls
+    tools/test_polls.cpp
+    src/ui/PollCard.cpp
+    src/ui/PollDialog.cpp
+    src/ui/Theme.cpp
+    src/core/MessageStore.cpp
+    src/core/Cosmetics.cpp
+    src/core/RestClient.cpp
+    src/core/DiscordIdentity.cpp
+    src/core/AppConfig.cpp
+    src/core/TokenStore.cpp
+    src/core/Logger.cpp
+)
+target_include_directories(test_polls PRIVATE src)
+target_link_libraries(test_polls PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network crypt32 dwmapi)
