@@ -11,6 +11,7 @@
 #include "plugin/builtin/PresenceHintsPlugin.h"
 #include "plugin/builtin/QuickTextPlugin.h"
 #include "plugin/builtin/RelationshipNotifierPlugin.h"
+#include "plugin/builtin/KeywordAlertsPlugin.h"
 #include "plugin/builtin/ServerOrganizerPlugin.h"
 #include "plugin/builtin/SilentTypingPlugin.h"
 #include "plugin/builtin/TimestampsPlugin.h"
@@ -97,6 +98,7 @@ void PluginHost::registerBuiltins()
     add(std::make_unique<PresenceHintsPlugin>());
     add(std::make_unique<AnonymousPlugin>());
     add(std::make_unique<NitroWatchPlugin>());
+    add(std::make_unique<KeywordAlertsPlugin>());
     add(std::make_unique<MicShaperPlugin>());
     add(std::make_unique<RelationshipNotifierPlugin>());
     add(std::make_unique<BigFilesPlugin>());

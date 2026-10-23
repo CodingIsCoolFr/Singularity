@@ -88,6 +88,8 @@ qt_add_executable(Singularity WIN32
     src/plugin/builtin/MicShaperPlugin.cpp
     src/plugin/builtin/RelationshipNotifierPlugin.h
     src/plugin/builtin/RelationshipNotifierPlugin.cpp
+    src/plugin/builtin/KeywordAlertsPlugin.h
+    src/plugin/builtin/KeywordAlertsPlugin.cpp
     src/plugin/builtin/BigFilesPlugin.h
     src/plugin/builtin/BigFilesPlugin.cpp
     src/plugin/builtin/FakeNitroPlugin.h
