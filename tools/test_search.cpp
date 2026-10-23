@@ -11,6 +11,7 @@
 //
 // Settings and the log go to a temporary folder, never the real ones.
 
+#include "core/MemberRoster.h"
 #include "core/MessageStore.h"
 #include "core/RestClient.h"
 #include "core/SearchQuery.h"
@@ -38,6 +39,7 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QTemporaryDir>
+#include <QTimeZone>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -569,6 +571,121 @@ void memberListTests()
     expect(list.rows.value(154).heading, "its heading stays, from the groups");
 }
 
+// --- everyone in a server: Discord's Members page ---------------------------
+
+// A server whose @everyone role carries `permissions`.
+QJsonObject rosterGuild(const QString &id, const QString &permissions)
+{
+    return QJsonObject{{QStringLiteral("id"), id},
+                       {QStringLiteral("name"), QStringLiteral("Roster")},
+                       {QStringLiteral("roles"), QJsonArray{QJsonObject{{QStringLiteral("id"), id},
+                                                                        {QStringLiteral("name"), QStringLiteral("@everyone")},
+                                                                        {QStringLiteral("permissions"), permissions}}}}};
+}
+
+// A page of members-search: `count` people, the newest joined first.
+QJsonObject searchPage(int from, int count, int total)
+{
+    QJsonArray members;
+    for (int n = from; n < from + count; ++n) {
+        const QDateTime joined = QDateTime(QDate(2025, 1, 1), QTime(0, 0), QTimeZone::UTC).addSecs(-60LL * n);
+        members.append(QJsonObject{
+            {QStringLiteral("member"),
+             QJsonObject{{QStringLiteral("user"), QJsonObject{{QStringLiteral("id"), listMemberId(n)},
+                                                              {QStringLiteral("username"), QStringLiteral("person%1").arg(n)}}},
+                         {QStringLiteral("roles"), QJsonArray{}},
+                         {QStringLiteral("joined_at"), joined.toString(Qt::ISODateWithMs)}}},
+            {QStringLiteral("source_invite_code"), QJsonValue::Null},
+            {QStringLiteral("join_source_type"), 1},
+        });
+    }
+    return QJsonObject{{QStringLiteral("guild_id"), Guild},
+                       {QStringLiteral("members"), members},
+                       {QStringLiteral("page_result_count"), count},
+                       {QStringLiteral("total_result_count"), total}};
+}
+
+void rosterTests()
+{
+    // Discord's MOD_DASH permissions open its Members page; nothing else does.
+    expect(MemberRoster::canSearch(1ull << 3) && MemberRoster::canSearch(1ull << 27)
+               && MemberRoster::canSearch(1ull << 40),
+           "Administrator, Manage Nicknames or Timeout Members may list everyone");
+    expect(!MemberRoster::canSearch((1ull << 10) | (1ull << 11)), "View Channel and Send Messages may not");
+
+    const QJsonObject cursor = MemberRoster::cursorAfter(QJsonObject{
+        {QStringLiteral("user"), QJsonObject{{QStringLiteral("id"), Alex}}},
+        {QStringLiteral("joined_at"), QStringLiteral("2024-05-01T10:00:00.500000+00:00")}});
+    expect(cursor.value(QStringLiteral("user_id")).toString() == Alex
+               && qint64(cursor.value(QStringLiteral("guild_joined_at")).toDouble()) == 1714557600500LL,
+           "the next page starts after the last person: join time in milliseconds and their id");
+
+    // A server you moderate: everyone, 250 at a time, then the short last page.
+    {
+        StandInRest rest;
+        MessageStore store;
+        store.applyGuild(rosterGuild(Guild, QStringLiteral("8")));
+        MemberRoster roster(&rest, &store);
+        int grew = 0;
+        QObject::connect(&roster, &MemberRoster::grew, [&grew](const QString &) { ++grew; });
+
+        const QString path = QStringLiteral("/guilds/%1/members-search").arg(Guild);
+        rest.reply(path, 200, searchPage(0, 250, 253));
+        rest.reply(path, 200, searchPage(250, 3, 253));
+        roster.want(Guild);
+        expect(rest.posted.value(0)
+                   == QStringLiteral("POST %1 {\"and_query\":{},\"limit\":250,\"or_query\":{},\"sort\":1}").arg(path),
+               "the first page is asked for with the Members page's own body");
+        expect(waitFor([&roster]() { return roster.complete(Guild); }, 4000),
+               "and the list carries on to its end");
+        expect(rest.posted.size() == 2 && rest.posted.value(1).contains(QStringLiteral("\"after\":{\"guild_joined_at\":"))
+                   && rest.posted.value(1).contains(listMemberId(249)),
+               "the second page starts after the last of the first");
+        expect(store.knownMemberCount(Guild) == 253 && grew == 2, "every one of them is known");
+        roster.want(Guild, true);
+        expect(rest.posted.size() == 2, "a finished list is not asked for again");
+    }
+
+    // A server you only chat in: no search, just which friends are there.
+    {
+        StandInRest rest;
+        MessageStore store;
+        store.applyGuild(rosterGuild(Guild, QStringLiteral("3072")));
+        store.setRelationship(Alex, 1);
+        store.setRelationship(Sam, 1);
+        store.setRelationship(Robin, 2);   // blocked, not a friend
+        MemberRoster roster(&rest, &store);
+        QStringList asked;
+        QObject::connect(&roster, &MemberRoster::membersWanted,
+                         [&asked](const QString &, const QStringList &ids) { asked += ids; });
+        roster.want(Guild);
+        roster.want(Guild);
+        QStringList sorted = asked;
+        sorted.sort();
+        expect(rest.posted.isEmpty(), "without moderator permissions the Members page is not asked");
+        expect(sorted == QStringList({Alex, Sam}), "friends, and only friends, are looked for, once");
+
+        asked.clear();
+        roster.checkPresences(Guild, {Alex, Robin});
+        expect(asked == QStringList({Robin}), "a status is asked for once per person");
+    }
+
+    // Refused after all: not asked again this run.
+    {
+        StandInRest rest;
+        MessageStore store;
+        store.applyGuild(rosterGuild(Guild, QStringLiteral("2")));   // Kick Members
+        MemberRoster roster(&rest, &store);
+        rest.reply(QStringLiteral("/guilds/%1/members-search").arg(Guild), 403,
+                   QJsonObject{{QStringLiteral("message"), QStringLiteral("Missing Permissions")},
+                               {QStringLiteral("code"), 50013}});
+        roster.want(Guild);
+        waitFor([&roster]() { return !roster.loading(Guild); });
+        roster.want(Guild, true);
+        expect(rest.posted.size() == 1, "a refused search is not tried again");
+    }
+}
+
 // --- the calls ---------------------------------------------------------------
 
 void restTests()
@@ -1032,6 +1149,7 @@ int main(int argc, char **argv)
     queryTests();
     storeTests();
     memberListTests();
+    rosterTests();
     restTests();
     panelTests(shot);
 

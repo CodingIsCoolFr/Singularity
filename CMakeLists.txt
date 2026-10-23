@@ -56,6 +56,8 @@ qt_add_executable(Singularity WIN32
     src/core/DaveSession.cpp
     src/core/MessageStore.h
     src/core/MessageStore.cpp
+    src/core/MemberRoster.h
+    src/core/MemberRoster.cpp
     src/core/Cosmetics.h
     src/core/Cosmetics.cpp
     src/core/SettingsProto.h
@@ -478,6 +480,7 @@ add_executable(test_search
     src/core/SearchQuery.cpp
     src/core/RestClient.cpp
     src/core/MessageStore.cpp
+    src/core/MemberRoster.cpp
     src/core/Cosmetics.cpp
     src/core/DiscordIdentity.cpp
     src/core/AppConfig.cpp

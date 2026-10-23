@@ -1,6 +1,7 @@
 #include "ui/MemberListPanel.h"
 
 #include "core/AppConfig.h"
+#include "core/MemberRoster.h"
 #include "core/MessageStore.h"
 #include "ui/ListDelegates.h"
 #include "ui/MediaCache.h"
@@ -13,8 +14,11 @@
 #include <QListView>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QSet>
 #include <QTimer>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 namespace {
 
@@ -67,17 +71,20 @@ QString headingName(const QString &groupId, const GuildInfo &guild, int count)
 }
 
 const QString CallGroup = QStringLiteral("call");
+// The line of small print after the Offline group (SingularityRoles::Note).
+const QString NoteGroup = QStringLiteral("singularity:note");
 
 } // namespace
 
 // The rows the list draws, worked out when they are drawn rather than made up
 // front.
 //
-// A server can have tens of thousands of people online. Discord's list is
-// virtual: it draws the forty on screen and fetches only their pictures, and
-// so does this. Every row used to be a QListWidgetItem built on each change,
-// with its picture asked for there and then, which was fine for the hundred
-// rows that were all that ever arrived and is not for the whole list.
+// A server can have tens of thousands of people. Discord's list is virtual:
+// it draws the forty on screen and fetches only their pictures, and so does
+// this. A change redraws only the rows on screen that it changed; 0.9.6
+// redrew the whole list and worked every face out again on each of the many
+// member updates a minute from every server, which is what made the window
+// lag.
 class MemberRowsModel : public QAbstractListModel
 {
 public:
@@ -106,6 +113,13 @@ public:
             return {};
         const MemberRow &row = m_rows.at(index.row());
 
+        if (row.heading && row.groupId == NoteGroup) {
+            if (role == SingularityRoles::Note)
+                return true;
+            if (role == Qt::DisplayRole)
+                return m_note;
+            return {};
+        }
         if (role == SingularityRoles::Heading)
             return row.heading;
         if (row.heading) {
@@ -130,6 +144,8 @@ public:
             return row.userId;
         case SingularityRoles::GuildId:
             return m_guildId;
+        case SingularityRoles::Faded:
+            return m_offlineFrom >= 0 && index.row() > m_offlineFrom;
         default:
             break;
         }
@@ -139,7 +155,7 @@ public:
         case Qt::DisplayRole:
             return shown.name;
         case Qt::DecorationRole:
-            return shown.face;
+            return faceFor(row.userId, shown);
         case SingularityRoles::Status:
             return shown.status;
         case SingularityRoles::Subtitle:
@@ -154,15 +170,15 @@ public:
     }
 
     // New rows. True when the list changed shape and was reset; false when
-    // the same people sit in the same places, where only a repaint is needed
-    // - a status tick does not change who is listed, and rebuilding faces
-    // for one bubble is what stalled the black hole for a moment.
+    // the same people sit in the same places, where refreshRows says which
+    // rows on screen need drawing again.
     bool show(const QString &guildId, const QList<MemberRow> &rows, const QHash<QString, int> &groupCounts,
-              const GuildInfo &guild)
+              const GuildInfo &guild, const QString &note)
     {
-        m_shown.clear();
+        m_countsChanged = groupCounts != m_groupCounts || note != m_note;
         m_groupCounts = groupCounts;
         m_guild = guild;
+        m_note = note;
         if (guildId == m_guildId && sameShape(rows)) {
             m_rows = rows;
             return false;
@@ -170,13 +186,83 @@ public:
         beginResetModel();
         m_guildId = guildId;
         m_rows = rows;
+        m_shown.clear();
+        m_offlineFrom = -1;
+        for (int i = 0; i < m_rows.size(); ++i) {
+            if (m_rows.at(i).heading && m_rows.at(i).groupId == QLatin1String("offline")) {
+                m_offlineFrom = i;
+                break;
+            }
+        }
         endResetModel();
         return true;
     }
 
-    // A picture arrived for this person. True when they were on screen and
-    // the list wants painting again.
-    bool forgetFace(const QString &userId) { return m_shown.remove(userId); }
+    // After a show() that kept the shape: the rows from `first` to `last`
+    // (those on screen) whose name, status, activity, colour or picture
+    // changed, worked out afresh. Everyone else is forgotten and worked out
+    // when next drawn.
+    QList<int> refreshRows(int first, int last)
+    {
+        QList<int> changed;
+        QHash<QString, Shown> kept;
+        for (int i = qMax(0, first); i <= last && i < m_rows.size(); ++i) {
+            const MemberRow &row = m_rows.at(i);
+            if (row.heading) {
+                if (m_countsChanged)
+                    changed.append(i);
+                continue;
+            }
+            if (row.userId.isEmpty())
+                continue;
+            const Shown fresh = work(row);
+            const auto old = m_shown.constFind(row.userId);
+            if (old == m_shown.constEnd() || !(old.value() == fresh))
+                changed.append(i);
+            kept.insert(row.userId, fresh);
+        }
+        m_shown = kept;
+        return changed;
+    }
+
+    // A picture arrived for this person. True when their row was showing a
+    // stand-in for it, which is the only case that needs drawing again.
+    bool forgetFace(const QString &userId)
+    {
+        const auto face = m_faces.constFind(userId);
+        if (face == m_faces.constEnd() || face->real)
+            return false;
+        m_faces.erase(face);
+        return true;
+    }
+
+    // Where this person is between rows `first` and `last`, or -1.
+    int rowOf(const QString &userId, int first, int last) const
+    {
+        for (int i = qMax(0, first); i <= last && i < m_rows.size(); ++i) {
+            if (!m_rows.at(i).heading && m_rows.at(i).userId == userId)
+                return i;
+        }
+        return -1;
+    }
+
+    // The people between rows `first` and `last` in the Offline group.
+    QStringList offlineIn(int first, int last) const
+    {
+        QStringList ids;
+        if (m_offlineFrom < 0)
+            return ids;
+        for (int i = qMax(m_offlineFrom + 1, first); i <= last && i < m_rows.size(); ++i) {
+            if (!m_rows.at(i).heading && !m_rows.at(i).userId.isEmpty())
+                ids.append(m_rows.at(i).userId);
+        }
+        return ids;
+    }
+
+    bool isNote(int row) const
+    {
+        return row >= 0 && row < m_rows.size() && m_rows.at(row).heading && m_rows.at(row).groupId == NoteGroup;
+    }
 
 private:
     struct Shown
@@ -184,9 +270,21 @@ private:
         QString name;
         QString status;
         QString subtitle;
+        QString avatarHash;
         QString avatarUrl;
         QVariant colour;
-        QIcon face;
+        bool operator==(const Shown &other) const
+        {
+            return name == other.name && status == other.status && subtitle == other.subtitle
+                && avatarHash == other.avatarHash && avatarUrl == other.avatarUrl && colour == other.colour;
+        }
+    };
+
+    struct Face
+    {
+        QString hash;
+        QIcon icon;
+        bool real = false;   // the picture itself, not initials standing in
     };
 
     bool sameShape(const QList<MemberRow> &rows) const
@@ -202,14 +300,9 @@ private:
         return true;
     }
 
-    // Everything a row shows about its person, read from the store the first
-    // time the row is drawn after a change.
-    const Shown &shownFor(const MemberRow &row) const
+    // Everything a row shows about its person, read from the store.
+    Shown work(const MemberRow &row) const
     {
-        const auto found = m_shown.constFind(row.userId);
-        if (found != m_shown.constEnd())
-            return found.value();
-
         const UserInfo info = m_store->user(row.userId);
         Shown shown;
         shown.name = row.nickname.isEmpty() ? info.displayName() : row.nickname;
@@ -217,6 +310,7 @@ private:
             shown.name = row.userId;
         shown.status = m_store->presenceBubble(row.userId);
         shown.subtitle = doingNow(*m_store, row.userId);
+        shown.avatarHash = info.avatarHash;
 
         // The colour their top role gives them. Zero means the role sets no
         // colour, which is different from black.
@@ -224,15 +318,40 @@ private:
         if (role.hasColour())
             shown.colour = QColor(QRgb(role.colour));
 
-        // Asked for here, so only the people drawn have theirs fetched.
-        const QUrl url = MediaCache::avatarUrl(row.userId, info.avatarHash, 64);
-        const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
-        shown.face = picture.isNull() ? QIcon(MediaCache::initialsAvatar(shown.name, 32))
-                                      : QIcon(MediaCache::circular(picture, 32));
         if (info.avatarHash.startsWith(QLatin1String("a_")))
-            shown.avatarUrl = url.toString();
+            shown.avatarUrl = MediaCache::avatarUrl(row.userId, info.avatarHash, 64).toString();
+        return shown;
+    }
 
-        return *m_shown.insert(row.userId, shown);
+    const Shown &shownFor(const MemberRow &row) const
+    {
+        const auto found = m_shown.constFind(row.userId);
+        if (found != m_shown.constEnd())
+            return found.value();
+        return *m_shown.insert(row.userId, work(row));
+    }
+
+    // The picture, kept while it is the same picture: changes in the list
+    // never cost a face again, and only the people drawn have theirs fetched.
+    QIcon faceFor(const QString &userId, const Shown &shown) const
+    {
+        const auto found = m_faces.constFind(userId);
+        if (found != m_faces.constEnd() && found->hash == shown.avatarHash)
+            return found->icon;
+
+        // Bounded: a long scroll through a big server meets thousands.
+        if (m_faces.size() > 3000)
+            m_faces.clear();
+
+        const QUrl url = MediaCache::avatarUrl(userId, shown.avatarHash, 64);
+        const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
+        Face face;
+        face.hash = shown.avatarHash;
+        face.real = !picture.isNull();
+        face.icon = face.real ? QIcon(MediaCache::circular(picture, 32))
+                              : QIcon(MediaCache::initialsAvatar(shown.name, 32));
+        m_faces.insert(userId, face);
+        return face.icon;
     }
 
     MessageStore *m_store = nullptr;
@@ -240,7 +359,11 @@ private:
     GuildInfo m_guild;
     QList<MemberRow> m_rows;
     QHash<QString, int> m_groupCounts;
+    QString m_note;
+    bool m_countsChanged = false;
+    int m_offlineFrom = -1;   // the Offline heading's row
     mutable QHash<QString, Shown> m_shown;
+    mutable QHash<QString, Face> m_faces;
 };
 
 MemberListPanel::MemberListPanel(MessageStore *store, QWidget *parent)
@@ -396,6 +519,17 @@ MemberListPanel::MemberListPanel(MessageStore *store, QWidget *parent)
                      .toBool());
 }
 
+void MemberListPanel::setRoster(MemberRoster *roster)
+{
+    m_roster = roster;
+    if (!m_roster)
+        return;
+    connect(m_roster, &MemberRoster::grew, this, [this](const QString &guildId) {
+        if (guildId == m_guildId && !m_rebuildTimer->isActive())
+            m_rebuildTimer->start();
+    });
+}
+
 void MemberListPanel::setGuild(const QString &guildId)
 {
     // A direct message and the friends page have no members to list, so the
@@ -468,34 +602,144 @@ void MemberListPanel::setCollapsed(bool collapsed)
 
 void MemberListPanel::refresh()
 {
-    rebuild();
+    // Called on every member update in every server, many a minute. It
+    // rebuilt the list on the spot in 0.9.6, every time. A member update may
+    // be a new nickname, so the Offline group is put in order again.
+    m_offlineStale = true;
+    if (!m_rebuildTimer->isActive())
+        m_rebuildTimer->start();
+}
+
+QPair<int, int> MemberListPanel::visibleRows() const
+{
+    const int count = m_model->rowCount();
+    if (count <= 0)
+        return {-1, -1};
+    const QModelIndex top = m_list->indexAt(QPoint(8, 1));
+    const QModelIndex bottom = m_list->indexAt(QPoint(8, m_list->viewport()->height() - 2));
+    return {top.isValid() ? top.row() : 0, bottom.isValid() ? bottom.row() : count - 1};
 }
 
 void MemberListPanel::refreshAvatar(const QString &userId)
 {
     if (userId.isEmpty() || m_collapsed || m_guildId.isEmpty())
         return;
-    // Only a face that was drawn needs drawing again; pictures arrive for the
-    // whole window, not just this list.
-    if (m_model->forgetFace(userId))
-        m_list->viewport()->update();
+    // Only a face that was standing in for a picture needs drawing again;
+    // pictures arrive for the whole window, not just this list.
+    if (!m_model->forgetFace(userId))
+        return;
+    const auto [first, last] = visibleRows();
+    const int row = m_model->rowOf(userId, first, last);
+    if (row >= 0)
+        m_list->update(m_model->index(row));
 }
 
 void MemberListPanel::askForVisibleRows()
 {
     if (m_guildId.isEmpty() || m_collapsed || m_focusIsVoice || !isVisible())
         return;
-    const int count = m_model->rowCount();
-    if (count <= 0)
+    const auto [first, last] = visibleRows();
+    if (first < 0)
         return;
-
-    const QModelIndex top = m_list->indexAt(QPoint(8, 1));
-    const QModelIndex bottom = m_list->indexAt(QPoint(8, m_list->viewport()->height() - 2));
-    const int first = top.isValid() ? top.row() : 0;
-    const int last = bottom.isValid() ? bottom.row() : count - 1;
-
     m_sinceRangeAsk.start();
-    emit rangesWanted(m_guildId, memberListPages(first, last));
+
+    // Discord's own rows: ask for their pages. Only theirs; the Offline group
+    // after them is not Discord's list.
+    if (m_discordRows > 0 && first < m_discordRows)
+        emit rangesWanted(m_guildId, memberListPages(first, qMin(last, m_discordRows - 1)));
+
+    if (!m_roster)
+        return;
+    // The offline people on screen: whether they are really offline, or
+    // online and not yet reached in Discord's list.
+    m_roster->checkPresences(m_guildId, m_model->offlineIn(first, last));
+    // The end of what has been listed: list more.
+    if (m_model->isNote(last) || m_model->isNote(last + 1))
+        m_roster->want(m_guildId, true);
+}
+
+void MemberListPanel::addOfflineSection(const MemberList &list, QList<MemberRow> &rows, QString &note)
+{
+    // Discord lists the offline itself in a server of 1,000 or fewer, as a
+    // group of its own; nothing to add there.
+    const int offline = qMax(0, list.memberCount - list.onlineCount);
+    if (rows.isEmpty() || offline == 0 || list.groupCounts.contains(QStringLiteral("offline")))
+        return;
+    if (m_roster)
+        m_roster->want(m_guildId);
+
+    QSet<QString> listed;
+    for (const MemberRow &row : rows) {
+        if (!row.heading && !row.userId.isEmpty())
+            listed.insert(row.userId);
+    }
+
+    // Everyone known in the server, by name as Discord orders its Offline
+    // group, sorted again only when that changes.
+    const int known = m_store->knownMemberCount(m_guildId);
+    if (m_offlineStale || m_offlineGuild != m_guildId || m_offlineKnown != known) {
+        struct Person
+        {
+            QString key;
+            MemberRow row;
+        };
+        QList<Person> people;
+        people.reserve(known);
+        for (const QString &userId : m_store->knownMembers(m_guildId)) {
+            const MemberLook look = m_store->memberLook(m_guildId, userId);
+            MemberRow row;
+            row.userId = userId;
+            row.nickname = look.nickname;
+            row.colourRoleId = m_store->colourRoleId(m_guildId, look.roles);
+            const QString name = look.nickname.isEmpty() ? m_store->user(userId).displayName() : look.nickname;
+            people.append({name.toCaseFolded(), row});
+        }
+        std::sort(people.begin(), people.end(), [](const Person &a, const Person &b) {
+            return a.key != b.key ? a.key < b.key : a.row.userId < b.row.userId;
+        });
+        m_offlineSorted.clear();
+        m_offlineSorted.reserve(people.size());
+        for (const Person &person : people)
+            m_offlineSorted.append(person.row);
+        m_offlineGuild = m_guildId;
+        m_offlineKnown = known;
+        m_offlineStale = false;
+    }
+
+    MemberRow title;
+    title.heading = true;
+    title.groupId = QStringLiteral("offline");
+    title.groupCount = offline;
+    rows.append(title);
+
+    // Of them, whoever is not on Discord's list and not known to be online.
+    // Somebody online further down than has been sent is in here until
+    // checkPresences hears otherwise.
+    int shown = 0;
+    for (const MemberRow &row : m_offlineSorted) {
+        if (listed.contains(row.userId) || m_store->presence(row.userId).isOnline())
+            continue;
+        rows.append(row);
+        ++shown;
+    }
+
+    const int missing = offline - shown;
+    if (missing <= 0)
+        return;
+    MemberRow more;
+    more.heading = true;
+    more.groupId = NoteGroup;
+    rows.append(more);
+
+    const bool searching = m_roster && MemberRoster::canSearch(m_store->selfPermissions(m_guildId));
+    if (searching && m_roster->loading(m_guildId))
+        note = QStringLiteral("Listing %1 more…").arg(missing);
+    else if (searching && !m_roster->complete(m_guildId))
+        note = QStringLiteral("%1 more, listed as you scroll").arg(missing);
+    else if (searching)
+        note = QStringLiteral("%1 more").arg(missing);
+    else
+        note = QStringLiteral("%1 more. Discord lists them only to moderators here").arg(missing);
 }
 
 void MemberListPanel::rebuild()
@@ -509,6 +753,7 @@ void MemberListPanel::rebuild()
     const GuildInfo guild = m_store->guild(m_guildId);
     QList<MemberRow> rows;
     QHash<QString, int> groupCounts;
+    QString note;
 
     // A voice channel's people are the call, not the hundred members of
     // whichever text channel was asked about first. That other list is why
@@ -530,6 +775,7 @@ void MemberListPanel::rebuild()
             person.userId = userId;
             rows.append(person);
         }
+        m_discordRows = 0;
     } else {
         const MemberList list = m_store->memberList(m_guildId);
         m_counts->setText(
@@ -541,16 +787,22 @@ void MemberListPanel::rebuild()
                 .arg(list.memberCount));
         rows = list.rows;
         groupCounts = list.groupCounts;
+        m_discordRows = int(rows.size());
+        addOfflineSection(list, rows, note);
     }
 
     // Keeping the scroll position. A list that jumps back to the top every
     // few seconds is unusable.
     const int scroll = m_list->verticalScrollBar()->value();
-    if (m_model->show(m_guildId, rows, groupCounts, guild)) {
+    if (m_model->show(m_guildId, rows, groupCounts, guild, note)) {
         m_list->doItemsLayout();
         m_list->verticalScrollBar()->setValue(scroll);
+        m_list->viewport()->update();
+    } else {
+        const auto [first, last] = visibleRows();
+        for (int row : m_model->refreshRows(first, last))
+            m_list->update(m_model->index(row));
     }
-    m_list->viewport()->update();
 
     // A list that changed may have new places on screen, a new channel's
     // list above all: its pages are asked for afresh.

@@ -45,8 +45,10 @@ public:
     void stop();
 
     // Asks who these people are in one server; the answer arrives as
-    // GUILD_MEMBERS_CHUNK. Sent in batches of 100, Discord's limit.
-    void requestGuildMembers(const QString &guildId, const QStringList &userIds);
+    // GUILD_MEMBERS_CHUNK. Sent in batches of 100, Discord's limit. With
+    // `presences` the chunk says who of them is online too, as Discord's
+    // requestMembersById asks by default.
+    void requestGuildMembers(const QString &guildId, const QStringList &userIds, bool presences = false);
 
     // Opcode 8 with a name query. Used by the @ picker so someone who is not
     // on the first page of the member list can still be found.

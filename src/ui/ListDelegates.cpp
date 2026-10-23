@@ -799,6 +799,17 @@ void MemberDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
         return;
     }
 
+    if (index.data(SingularityRoles::Note).toBool()) {
+        QFont small = option.font;
+        small.setPixelSize(11);
+        painter->setFont(small);
+        painter->setPen(QColor(Theme::TextFaint));
+        painter->drawText(cell.adjusted(14, 2, -12, -2), Qt::AlignLeft | Qt::AlignVCenter | Qt::TextWordWrap,
+                          index.data(Qt::DisplayRole).toString());
+        painter->restore();
+        return;
+    }
+
     // A place Discord has not sent yet, until scrolling to it asks for it:
     // a faint circle and bar, as Discord draws, the bar's length varying from
     // row to row so a run of them does not read as a table.
@@ -816,6 +827,11 @@ void MemberDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     const bool hovered = option.state & QStyle::State_MouseOver;
     const bool selected = option.state & QStyle::State_Selected;
     const qreal hoverAmount = progress(m_hover, index.row(), hovered);
+
+    // Somebody in the Offline group is drawn faded until hovered, as Discord
+    // draws its offline members.
+    if (!hovered && index.data(SingularityRoles::Faded).toBool())
+        painter->setOpacity(0.35);
 
     // What they are dressed in here: Discord's member row draws the
     // nameplate behind, the decoration round the picture, the name in the

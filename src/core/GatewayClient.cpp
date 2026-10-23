@@ -1024,7 +1024,7 @@ void GatewayClient::keepGuildSubscribed(const QString &guildId)
 // message covers up to 100 people (docs.discord.food, Request Guild Members);
 // asking for them one REST call at a time instead got 360 of 360 refused with
 // 429 in a busy server, and those people stayed numbers for good.
-void GatewayClient::requestGuildMembers(const QString &guildId, const QStringList &userIds)
+void GatewayClient::requestGuildMembers(const QString &guildId, const QStringList &userIds, bool presences)
 {
     if (guildId.isEmpty() || userIds.isEmpty())
         return;
@@ -1043,7 +1043,7 @@ void GatewayClient::requestGuildMembers(const QString &guildId, const QStringLis
              QJsonObject{
                  {QStringLiteral("guild_id"), guildId},
                  {QStringLiteral("user_ids"), ids},
-                 {QStringLiteral("presences"), false},
+                 {QStringLiteral("presences"), presences},
              }},
         });
     }

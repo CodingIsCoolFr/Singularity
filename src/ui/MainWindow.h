@@ -496,6 +496,7 @@ private:
     class LoadingOverlay *m_loading = nullptr;
 
     class MemberListPanel *m_members = nullptr;
+    class MemberRoster *m_roster = nullptr;
     QStackedWidget *m_chatStack = nullptr;
     QWidget *m_chatPage = nullptr;
     QWidget *m_chatHeader = nullptr;   // the channel's bar along the top: title, topic, Call, search

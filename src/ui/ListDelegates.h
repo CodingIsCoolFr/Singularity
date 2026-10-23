@@ -72,6 +72,12 @@ constexpr int GuildId = Qt::UserRole + 22;
 // first frame; while the row is hovered or open it plays, as Discord's lists
 // do. Empty for a still one.
 constexpr int AvatarUrl = Qt::UserRole + 23;
+
+// Member list only: a line of small print instead of a person, saying who is
+// not listed and why. Its words are the row's DisplayRole.
+constexpr int Note = Qt::UserRole + 24;
+// Member list only: a person in the Offline group, drawn faded.
+constexpr int Faded = Qt::UserRole + 25;
 } // namespace SingularityRoles
 
 // Shared easing used by both delegates below.

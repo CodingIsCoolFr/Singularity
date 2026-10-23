@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/MessageStore.h"
+
 #include <QElapsedTimer>
 #include <QList>
 #include <QPair>
@@ -9,7 +11,7 @@
 
 class QTimer;
 
-class MessageStore;
+class MemberRoster;
 class MemberRowsModel;
 class QLabel;
 class QListView;
@@ -28,6 +30,12 @@ class QPushButton;
 // yet drawn as placeholders, and scrolling asks for the pages on screen the
 // way Discord's own client does (rangesWanted). Until 0.9.6 only rows 0 to 99
 // were ever asked for, so a big server's list simply stopped there.
+//
+// Over 1,000 members Discord's list holds only who is online. Under it this
+// one carries on with an Offline group of its own: everyone MemberRoster has
+// found (all of them where Discord's Members page is open to you, your
+// friends and people seen everywhere else), faded as Discord draws offline
+// people, and a line saying how many more there are.
 class MemberListPanel : public QWidget
 {
     Q_OBJECT
@@ -48,7 +56,12 @@ public:
     void setCollapsed(bool collapsed);
     bool isCollapsed() const { return m_collapsed; }
 
+    // Draw again soon with whatever changed. Batched with the gateway's own
+    // changes: this is called for every member update in every server.
     void refresh();
+
+    // Where the Offline group's people come from.
+    void setRoster(MemberRoster *roster);
 
 signals:
     void profileRequested(const QString &userId);
@@ -63,6 +76,11 @@ signals:
 private:
     void rebuild();
     void askForVisibleRows();
+    // Discord's rows, then the people it leaves out (see the class comment).
+    // `note` is the line after them; empty when nobody is missing.
+    void addOfflineSection(const MemberList &list, QList<MemberRow> &rows, QString &note);
+    // The first and last rows on screen, -1 when there are none.
+    QPair<int, int> visibleRows() const;
 
     // Batches rebuilds triggered by the gateway. See the constructor.
     QTimer *m_rebuildTimer = nullptr;
@@ -71,6 +89,16 @@ private:
     void refreshAvatar(const QString &userId);
 
     MessageStore *m_store = nullptr;
+    MemberRoster *m_roster = nullptr;
+    // Everyone known in the server, by name, for the Offline group: sorted
+    // again only when who is known changes (m_offlineKnown counts them) or a
+    // member update says names may have, not on every status change.
+    QList<MemberRow> m_offlineSorted;
+    QString m_offlineGuild;
+    int m_offlineKnown = -1;
+    bool m_offlineStale = true;
+    // How many of the rows are Discord's; the rest are the Offline group.
+    int m_discordRows = 0;
     QString m_guildId;
     QString m_focusChannel;
     bool m_focusIsVoice = false;

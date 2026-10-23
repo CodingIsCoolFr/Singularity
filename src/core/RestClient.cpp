@@ -211,6 +211,62 @@ void RestClient::searchSend(const QString &path, const QByteArray &json, int ser
         sendJson(QByteArrayLiteral("POST"), path, json, {}, std::move(answer), std::move(waitOrFail));
 }
 
+void RestClient::searchGuildMembers(const QString &guildId, const QJsonObject &after, int limit, ObjectHandler onOk,
+                                    ErrorHandler onError, int waits)
+{
+    // Discord's own body for its Members page with no filter set: two empty
+    // queries, its default order (ORDER_BY_GUILD_JOINED_AT_DESC = 1), a page
+    // of `limit`, and the cursor of the last person seen.
+    QJsonObject body{
+        {QStringLiteral("or_query"), QJsonObject{}},
+        {QStringLiteral("and_query"), QJsonObject{}},
+        {QStringLiteral("sort"), 1},
+        {QStringLiteral("limit"), limit},
+    };
+    if (!after.isEmpty())
+        body.insert(QStringLiteral("after"), after);
+    const QString path = QStringLiteral("/guilds/%1/members-search").arg(guildId);
+    const QByteArray json = QJsonDocument(body).toJson(QJsonDocument::Compact);
+
+    // Discord gives up after three tries, and so does this.
+    constexpr int MostWaits = 3;
+    const auto again = [this, guildId, after, limit, onOk, onError, waits](double seconds) {
+        const int ms = qBound(500, int(seconds * 1000) + 250, 30000);
+        wlog(QStringLiteral("members"), QStringLiteral("Discord asked to wait %1 ms before listing members again").arg(ms));
+        QTimer::singleShot(ms, this, [this, guildId, after, limit, onOk, onError, waits]() {
+            searchGuildMembers(guildId, after, limit, onOk, onError, waits + 1);
+        });
+    };
+
+    sendJson(QByteArrayLiteral("POST"), path, json, {},
+             [onOk, onError, again, waits](const QJsonObject &reply) {
+                 if (reply.contains(QStringLiteral("members"))) {
+                     if (onOk)
+                         onOk(reply);
+                     return;
+                 }
+                 // The 202: still indexing, with how long to wait.
+                 if (waits < MostWaits && reply.contains(QStringLiteral("retry_after"))) {
+                     again(reply.value(QStringLiteral("retry_after")).toDouble(2.0));
+                     return;
+                 }
+                 Error error;
+                 error.httpStatus = 202;
+                 error.body = reply;
+                 error.message = QStringLiteral("Discord is still getting the member list ready.");
+                 if (onError)
+                     onError(error);
+             },
+             [onError, again, waits](const Error &error) {
+                 if (error.httpStatus == 429 && waits < MostWaits) {
+                     again(error.body.value(QStringLiteral("retry_after")).toDouble(1.0));
+                     return;
+                 }
+                 if (onError)
+                     onError(error);
+             });
+}
+
 void RestClient::leaveGuild(const QString &guildId, ObjectHandler onOk, ErrorHandler onError)
 {
     // The official client's Leave Server: DELETE with {"lurking": false}.

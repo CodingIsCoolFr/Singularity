@@ -753,6 +753,11 @@ public:
     // remembered too.
     void rememberMember(const QString &guildId, const QJsonObject &member);
     MemberLook memberLook(const QString &guildId, const QString &userId) const;
+    // Everyone this client has seen as a member of the server, online or not.
+    QStringList knownMembers(const QString &guildId) const;
+    int knownMemberCount(const QString &guildId) const;
+    // GUILD_MEMBER_REMOVE: they left, or were kicked or banned.
+    void forgetMember(const QString &guildId, const QString &userId);
 
     // How a person is dressed where they are seen. See PersonLook.
     PersonLook look(const QString &userId, const QString &guildId = QString()) const;

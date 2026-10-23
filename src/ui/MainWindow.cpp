@@ -4,6 +4,7 @@
 #include "core/DiscordAppCache.h"
 #include "core/GameActivity.h"
 #include "core/Logger.h"
+#include "core/MemberRoster.h"
 #include "core/RestClient.h"
 #include "core/TokenStore.h"
 #include "plugin/PluginHost.h"
@@ -1642,6 +1643,13 @@ void MainWindow::buildUi()
                 if (m_gateway)
                     m_gateway->requestMemberRanges(guildId, ranges);
             });
+    // And for the people Discord's list leaves out: see MemberRoster.
+    m_roster = new MemberRoster(m_rest, m_store, this);
+    m_members->setRoster(m_roster);
+    connect(m_roster, &MemberRoster::membersWanted, this, [this](const QString &guildId, const QStringList &userIds) {
+        if (m_gateway)
+            m_gateway->requestGuildMembers(guildId, userIds, true);
+    });
     contentRow->addWidget(m_members);
 
     // Search results take the member list's place while a search is open,
@@ -3004,6 +3012,13 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
         return;
     }
 
+    // Left, kicked or banned: no longer one of the server's people.
+    if (eventType == QLatin1String("GUILD_MEMBER_REMOVE")) {
+        m_store->forgetMember(data.value(QStringLiteral("guild_id")).toString(),
+                              data.value(QStringLiteral("user")).toObject().value(QStringLiteral("id")).toString());
+        return;
+    }
+
     // Your own account changed, from here or another device: a new
     // decoration, nameplate, tag, name style or picture.
     if (eventType == QLatin1String("USER_UPDATE")) {
@@ -3475,6 +3490,25 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
                     label = m_store->userName(id);
                 if (!id.isEmpty() && !label.isEmpty())
                     m_mentionSearchHits.append({id, label});
+            }
+        }
+        // Asked with presences: the chunk lists who of them is online, so
+        // everyone else in it is offline, whatever was last heard of them.
+        if (data.contains(QStringLiteral("presences"))) {
+            QSet<QString> online;
+            for (const QJsonValue &value : data.value(QStringLiteral("presences")).toArray()) {
+                const QJsonObject presence = value.toObject();
+                const QString id = presence.value(QStringLiteral("user")).toObject().value(QStringLiteral("id")).toString();
+                if (id.isEmpty())
+                    continue;
+                online.insert(id);
+                m_store->setPresence(id, presence);
+            }
+            for (const QJsonValue &value : members) {
+                const QString id =
+                    value.toObject().value(QStringLiteral("user")).toObject().value(QStringLiteral("id")).toString();
+                if (!id.isEmpty() && !online.contains(id))
+                    m_store->setPresence(id, QJsonObject{{QStringLiteral("status"), QStringLiteral("offline")}});
             }
         }
         const int missing = data.value(QStringLiteral("not_found")).toArray().size();

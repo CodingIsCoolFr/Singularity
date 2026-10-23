@@ -329,6 +329,25 @@ MemberLook MessageStore::memberLook(const QString &guildId, const QString &userI
     return m_memberLooks.value(guildId).value(userId);
 }
 
+QStringList MessageStore::knownMembers(const QString &guildId) const
+{
+    return m_memberLooks.value(guildId).keys();
+}
+
+int MessageStore::knownMemberCount(const QString &guildId) const
+{
+    const auto guild = m_memberLooks.constFind(guildId);
+    return guild == m_memberLooks.constEnd() ? 0 : int(guild->size());
+}
+
+void MessageStore::forgetMember(const QString &guildId, const QString &userId)
+{
+    const auto guild = m_memberLooks.find(guildId);
+    if (guild == m_memberLooks.end() || !guild->remove(userId))
+        return;
+    emit memberListChanged(guildId);
+}
+
 QString MessageStore::colourRoleId(const QString &guildId, const QStringList &roleIds) const
 {
     const GuildInfo guild = m_guilds.value(guildId);

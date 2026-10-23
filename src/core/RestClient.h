@@ -79,6 +79,18 @@ public:
     // are waited out as above.
     void searchAllDirect(const QJsonObject &body, ObjectHandler onOk, ErrorHandler onError);
 
+    // A page of a server's members, everyone whether online or not, as
+    // Discord's Members page (Server Settings, for moderators) lists them:
+    // POST /guilds/{id}/members-search with
+    //   {"or_query": {}, "and_query": {}, "sort": 1, "limit": n, "after": cursor}
+    // newest to join first. `after` is the last person of the page before,
+    // {"guild_joined_at": ms, "user_id": id}, empty for the first page. The
+    // answer is {"members": [{"member": {...}, ...}], "total_result_count"}.
+    // Discord answers 202 with retry_after while it builds the index, which
+    // is waited out here up to its own three times, and so is a 429.
+    void searchGuildMembers(const QString &guildId, const QJsonObject &after, int limit, ObjectHandler onOk,
+                            ErrorHandler onError, int waits = 0);
+
     // What Discord hands back when it wants a person to finish a check, and
     // what we hand back after they have.
     struct CaptchaProof
