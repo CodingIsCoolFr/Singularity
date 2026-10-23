@@ -1327,7 +1327,7 @@ void ProfileDialog::rebuildBadges(const QJsonArray &badges, int publicFlags)
         button->setProperty("badgeIcon", BadgesDialog::profileBadgeIconUrl(icon));
         button->setStyleSheet(QStringLiteral("QToolButton { background: transparent; border: none; padding: 0; }"));
         const int badgeId = BadgesDialog::badgeIdFromProfile(badge.value(QStringLiteral("id")).toString());
-        connect(button, &QToolButton::clicked, this, [this, badgeId]() { openBadges(badgeId); });
+        connect(button, &QToolButton::clicked, this, [this, badgeId, icon]() { openBadges(badgeId, icon); });
         m_badgeFlow->addWidget(button);
         ++shown;
     }
@@ -1398,7 +1398,7 @@ void ProfileDialog::refreshBadgeIcons()
     }
 }
 
-void ProfileDialog::openBadges(int badgeId)
+void ProfileDialog::openBadges(int badgeId, const QString &iconHash)
 {
     // This card closes at any click outside it, which the new window would
     // be, so it goes first.
@@ -1407,7 +1407,7 @@ void ProfileDialog::openBadges(int badgeId)
     const QString name = m_store->user(userId).displayName();
     QWidget *owner = parentWidget();
     accept();
-    BadgesDialog::open(m_rest, userId, name, self, badgeId, owner);
+    BadgesDialog::open(m_rest, userId, name, self, badgeId, owner, iconHash);
 }
 
 void ProfileDialog::rebuildRoles()

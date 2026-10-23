@@ -34,9 +34,11 @@ class BadgesDialog : public QDialog
 
 public:
     // Opens the window for one person, on `initialBadgeId` when it is not 0.
+    // A badge clicked on a profile that badgeIdFromProfile does not know - one
+    // Discord has added since - is opened on by its picture, `iconHash`.
     // Closes itself when done.
     static void open(RestClient *rest, const QString &userId, const QString &name, bool isSelf, int initialBadgeId,
-                     QWidget *parent);
+                     QWidget *parent, const QString &iconHash = QString());
 
     // The directory's number for the id a badge has on a profile ("premium",
     // "guild_booster_lvl3", "account_age", ...), or 0 for one it does not know.
@@ -65,6 +67,7 @@ public:
 private:
     BadgesDialog(RestClient *rest, const QString &userId, const QString &name, bool isSelf, int initialBadgeId,
                  QWidget *parent);
+    QString m_initialIcon;   // the picture to open on, for a badge known only by it
 
     // Asks Discord for the directory. `notice` replaces the loading line once
     // it is in, so "Saved" survives the reload a save causes.

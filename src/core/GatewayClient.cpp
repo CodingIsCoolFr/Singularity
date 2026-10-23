@@ -912,9 +912,11 @@ void GatewayClient::publishPresence()
         {QStringLiteral("afk"), idle},
     };
 
-    wlog(QStringLiteral("gateway"),
-         QStringLiteral("telling Discord %1")
-             .arg(QString::fromUtf8(QJsonDocument(body).toJson(QJsonDocument::Compact))));
+    const QByteArray compact = QJsonDocument(body).toJson(QJsonDocument::Compact);
+    if (compact == m_lastPresence)
+        return;
+    m_lastPresence = compact;
+    wlog(QStringLiteral("gateway"), QStringLiteral("telling Discord %1").arg(QString::fromUtf8(compact)));
 
     sendJson(QJsonObject{
         {QStringLiteral("op"), OpPresenceUpdate},
@@ -1166,6 +1168,8 @@ void GatewayClient::handleDispatch(const QString &type, const QJsonObject &data,
         m_subscribedGuilds.clear();
         m_subscribedChannels.clear();
         setState(State::Ready);
+        // A new session has been told nothing yet.
+        m_lastPresence.clear();
         publishPresence();
         emit logLine(QStringLiteral("ready as %1").arg(m_currentUser.value(QStringLiteral("username")).toString()));
         wlog(QStringLiteral("gateway"),
@@ -1177,6 +1181,7 @@ void GatewayClient::handleDispatch(const QString &type, const QJsonObject &data,
     } else if (type == QLatin1String("RESUMED")) {
         m_reconnectAttempts = 0;
         setState(State::Ready);
+        m_lastPresence.clear();
         publishPresence();
         emit logLine(QStringLiteral("session resumed"));
     }

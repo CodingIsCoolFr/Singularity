@@ -76,7 +76,7 @@ private:
     void refreshBadgeIcons();
     // The pictures plugins put after the badges (NameIcons).
     void refreshPlatformIcons();
-    void openBadges(int badgeId);
+    void openBadges(int badgeId, const QString &iconHash = QString());
     void rebuildRoles();
 
     // Give or take away a role, when you have Manage Roles and the role is

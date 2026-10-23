@@ -6,6 +6,7 @@
 #include <QElapsedTimer>
 #include <QHash>
 #include <QPointer>
+#include <QRegion>
 #include <QTimer>
 #include <QWidget>
 
@@ -26,7 +27,7 @@ struct Repaint
     QPointer<QWidget> widget;
     qint64 atMs = 0;
     bool whole = false;
-    QRect area;
+    QRegion area;   // pieces far apart stay apart
 };
 
 qint64 g_manual = -1;    // a test's time, or -1 for the real clock
@@ -193,7 +194,7 @@ void FrameClock::scheduleRepaint(QWidget *widget, int inMs, const QRect &area)
     const qint64 at = inMs > 0 ? now() + inMs : tickAfter(now());
     Repaint &repaint = g_repaints[widget];
     if (!repaint.widget) {
-        repaint = Repaint{QPointer<QWidget>(widget), at, false, QRect()};
+        repaint = Repaint{QPointer<QWidget>(widget), at, false, QRegion()};
     } else {
         repaint.atMs = qMin(repaint.atMs, at);
     }

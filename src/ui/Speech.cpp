@@ -179,6 +179,16 @@ public:
             m_destroy(m_tts);
     }
 
+    // Frees the voice; the next request loads it again.
+    void release()
+    {
+        if (!m_tts || !m_destroy)
+            return;
+        m_destroy(m_tts);
+        m_tts = nullptr;
+        wlog(QStringLiteral("speech"), QStringLiteral("natural voice put away after a while unused"));
+    }
+
     void say(int request, const QByteArray &utf8, int speaker, float speed, const QString &engineDir,
              const QString &modelDir, const QString &lexicon)
     {
@@ -367,6 +377,13 @@ Speech::Speech()
 
     m_state = naturalInstalled() ? Natural::Ready : Natural::Missing;
 
+    m_putAway.setSingleShot(true);
+    m_putAway.setInterval(5 * 60 * 1000);
+    connect(&m_putAway, &QTimer::timeout, this, [this]() {
+        SpeechWorker *worker = m_worker;
+        QMetaObject::invokeMethod(worker, [worker]() { worker->release(); }, Qt::QueuedConnection);
+    });
+
     connect(qApp, &QCoreApplication::aboutToQuit, this, [this]() {
         stop();
         if (m_reply)
@@ -467,11 +484,13 @@ void Speech::startNext()
 {
     if (m_queue.isEmpty()) {
         m_busy = false;
+        m_putAway.start();
         emit changed();
         return;
     }
     const QString text = m_queue.takeFirst();
     m_busy = true;
+    m_putAway.stop();
     const int request = ++m_request;
     m_worker->current.store(request);
     if (m_pcm)

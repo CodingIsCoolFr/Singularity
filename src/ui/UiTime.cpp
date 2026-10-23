@@ -8,6 +8,7 @@
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QEvent>
+#include <QByteArray>
 #include <QHash>
 #include <QList>
 #include <QMetaObject>
@@ -16,6 +17,8 @@
 #include <QTimer>
 #include <QWheelEvent>
 #include <QWidget>
+
+#include <typeinfo>
 
 #include <algorithm>
 
@@ -32,7 +35,7 @@ namespace {
 // event. A QTimer's own class says nothing, so its time goes to its owner.
 struct Key
 {
-    const QMetaObject *type = nullptr;
+    const char *type = nullptr;   // a name that lives as long as the program
     int event = 0;
     bool timer = false;
     bool operator==(const Key &other) const
@@ -44,6 +47,37 @@ struct Key
 size_t qHash(const Key &key, size_t seed = 0)
 {
     return ::qHash(reinterpret_cast<quintptr>(key.type), seed) ^ (size_t(key.event) << 1) ^ size_t(key.timer);
+}
+
+// The object's own C++ class. Qt's name for a class without Q_OBJECT is its
+// nearest Qt base, and the report said "QWidget paint 82%" for what was the
+// chat's own drawing surface: a scroll area's bare viewport, now named after
+// the area ("ChatView viewport").
+const char *typeName(const QObject *owner)
+{
+    if (owner->metaObject() == &QWidget::staticMetaObject) {
+        const auto *area = qobject_cast<const QAbstractScrollArea *>(owner->parent());
+        if (area && area->viewport() == owner) {
+            static QHash<const std::type_info *, QByteArray> viewports;
+            const std::type_info &kind = typeid(*area);
+            auto it = viewports.find(&kind);
+            if (it == viewports.end())
+                it = viewports.insert(&kind, QByteArray(kind.name()) + " viewport");
+            return it->constData();
+        }
+    }
+    return typeid(*owner).name();
+}
+
+// "class ProfileNameView" as "ProfileNameView".
+QString readableType(const char *name)
+{
+    QString text = QString::fromLatin1(name ? name : "?");
+    for (const QLatin1String prefix : {QLatin1String("class "), QLatin1String("struct ")}) {
+        if (text.startsWith(prefix))
+            text.remove(0, prefix.size());
+    }
+    return text;
 }
 
 struct Frame
@@ -254,7 +288,7 @@ bool SingularityApplication::notify(QObject *receiver, QEvent *event)
         owner = receiver->parent();
         key.timer = true;
     }
-    key.type = owner->metaObject();
+    key.type = typeName(owner);
 
     // Animation time holds still through a redraw, so every piece of it
     // shows the same moment (see FrameClock).
@@ -293,7 +327,7 @@ QString SingularityApplication::takeReport()
     QStringList parts;
     for (int i = 0; i < biggest.size() && i < 7; ++i) {
         const Key &key = biggest.at(i).second;
-        QString name = QString::fromLatin1(key.type ? key.type->className() : "?");
+        QString name = readableType(key.type);
         name += key.timer ? QStringLiteral(" timer") : QLatin1Char(' ') + eventName(key.event);
         parts << QStringLiteral("%1 %2%").arg(name, share(biggest.at(i).first));
     }

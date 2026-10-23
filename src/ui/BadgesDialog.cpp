@@ -109,6 +109,28 @@ bool isNewTiered(int badgeId)
            || badgeId == BadgesDialog::GameTime || badgeId == BadgesDialog::GameVariety;
 }
 
+// The directory badge that wears this picture, at any tier; 0 for none.
+// Discord's directory and the profile name the same files.
+int badgeWithIcon(const QHash<int, QJsonObject> &badges, const QString &iconHash)
+{
+    if (iconHash.isEmpty())
+        return 0;
+    static const char *const keys[] = {"icon", "simple_icon_url", "simple_icon_raster_url", "complex_icon_static_url",
+                                       "complex_icon_animated_url"};
+    for (auto it = badges.constBegin(); it != badges.constEnd(); ++it) {
+        QList<QJsonObject> sources{it.value()};
+        for (const QJsonValue &tier : it.value().value(QStringLiteral("tiers")).toArray())
+            sources.append(tier.toObject());
+        for (const QJsonObject &source : std::as_const(sources)) {
+            for (const char *key : keys) {
+                if (source.value(QLatin1String(key)).toString().contains(iconHash))
+                    return it.key();
+            }
+        }
+    }
+    return 0;
+}
+
 QPixmap fitted(const QImage &image, int size, bool dim)
 {
     QPixmap out(size, size);
@@ -203,9 +225,11 @@ QString BadgesDialog::directoryName(const QJsonObject &badge)
 // ---------------------------------------------------------------------------
 
 void BadgesDialog::open(RestClient *rest, const QString &userId, const QString &name, bool isSelf,
-                        int initialBadgeId, QWidget *parent)
+                        int initialBadgeId, QWidget *parent, const QString &iconHash)
 {
     auto *dialog = new BadgesDialog(rest, userId, name, isSelf, initialBadgeId, parent);
+    if (initialBadgeId == 0)
+        dialog->m_initialIcon = iconHash;
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->show();
     dialog->raise();
@@ -432,6 +456,11 @@ void BadgesDialog::load(const QString &notice)
             }
             m_badges = fresh;
             m_loaded = true;
+            // Opened from a profile badge the table does not know yet.
+            if (m_selected == 0 && !m_initialIcon.isEmpty()) {
+                m_selected = badgeWithIcon(m_badges, m_initialIcon);
+                m_initialIcon.clear();
+            }
             wlog(QStringLiteral("badges"), QStringLiteral("badge directory for %1: %2 badges")
                                                .arg(m_isSelf ? QStringLiteral("you") : m_userId)
                                                .arg(m_order.size()));

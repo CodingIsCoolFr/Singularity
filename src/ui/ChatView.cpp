@@ -15,7 +15,10 @@
 #include <QtMath>
 #include <QPalette>
 #include <QScrollBar>
+#include <QTextBlock>
+#include <QTextCursor>
 #include <QTextDocument>
+#include <QTextFragment>
 #include <QTimer>
 #include <QUrlQuery>
 
@@ -112,6 +115,8 @@ ChatView::ChatView(QWidget *parent)
     // that landed, all of it held for the life of the window. There is nothing
     // to undo, so there is nothing to keep.
     document()->setUndoRedoEnabled(false);
+    // Pictures are found again after the messages change (repaintPicture).
+    connect(document(), &QTextDocument::contentsChanged, this, [this]() { m_picturePositionsStale = true; });
     viewport()->setAutoFillBackground(false);
     QPalette pal = palette();
     pal.setColor(QPalette::Base, Qt::transparent);
@@ -275,6 +280,7 @@ void ChatView::dropAnimations()
 {
     qDeleteAll(m_animations);
     m_animations.clear();
+    m_shownFrame.clear();
     m_animationOrder.clear();
     m_animationPixels.clear();
     m_animationPixelTotal = 0;
@@ -408,11 +414,57 @@ void ChatView::pumpHoveredLooks()
         return;
     const QSet<QString> keys = m_looksByMessage.value(m_hoveredMessage);
     for (const QString &key : keys) {
-        if (m_looks.contains(key))
-            document()->addResource(QTextDocument::ImageResource, QUrl(key), lookPicture(QUrl(key)));
+        if (!m_looks.contains(key))
+            continue;
+        document()->addResource(QTextDocument::ImageResource, QUrl(key), lookPicture(QUrl(key)));
+        // The same size every frame, so only a repaint, as with the animations.
+        repaintPicture(key);
     }
-    // The same size every frame, so only a repaint, as with the animations.
-    viewport()->update();
+}
+
+void ChatView::repaintPicture(const QString &key)
+{
+    // Every picture's place, found once per change of the document. A
+    // picture is one character; neighbours that are the same picture share
+    // a fragment.
+    if (m_picturePositionsStale) {
+        m_picturePositions.clear();
+        for (QTextBlock block = document()->begin(); block.isValid(); block = block.next()) {
+            for (auto it = block.begin(); !it.atEnd(); ++it) {
+                const QTextFragment fragment = it.fragment();
+                const QTextCharFormat format = fragment.charFormat();
+                if (!format.isImageFormat())
+                    continue;
+                const QTextImageFormat image = format.toImageFormat();
+                QList<PicturePlace> &places = m_picturePositions[image.name()];
+                for (int i = 0; i < fragment.length(); ++i)
+                    places.append({fragment.position() + i, qCeil(image.width())});
+            }
+        }
+        m_picturePositionsStale = false;
+    }
+
+    const auto found = m_picturePositions.constFind(key);
+    if (found == m_picturePositions.constEnd()) {
+        // Not found by its address: the whole view, as it always was.
+        FrameClock::scheduleRepaint(viewport());
+        return;
+    }
+    // Drawn at the width the page gives it, or else at the picture's own.
+    const QPixmap picture = document()->resource(QTextDocument::ImageResource, QUrl(key)).value<QPixmap>();
+    const int ownWidth = picture.isNull() ? viewport()->width()
+                                          : qCeil(picture.width() / qMax<qreal>(1.0, picture.devicePixelRatio()));
+    const QRect view = viewport()->rect();
+    for (const PicturePlace &place : found.value()) {
+        QTextCursor cursor(document());
+        cursor.setPosition(place.position);
+        const int width = place.width > 0 ? place.width : ownWidth;
+        // The line it sits on, as tall as the picture, from its left edge.
+        const QRect line = cursorRect(cursor);
+        const QRect area(line.left() - 2, line.top() - 2, width + 4, line.height() + 4);
+        if (area.intersects(view))
+            FrameClock::scheduleRepaint(viewport(), 0, area);
+    }
 }
 
 void ChatView::clearImageCache()
@@ -638,7 +690,7 @@ void ChatView::showVideoFrame(const QUrl &url, const QImage &frame)
         // only change pixels, so the page does not get laid out again.
         document()->markContentsDirty(0, document()->characterCount());
     } else {
-        viewport()->update();
+        repaintPicture(key);
     }
 }
 
@@ -705,31 +757,28 @@ void ChatView::pumpAnimations()
     if (!isVisible())
         return;
 
-    bool changed = false;
     for (auto it = m_animations.constBegin(); it != m_animations.constEnd(); ++it) {
+        // A picture still on the frame it was on last beat is not scaled
+        // again, nor repainted.
+        const QImage current = it.value()->currentFrame();
+        if (current.isNull() || m_shownFrame.value(it.key()) == current.cacheKey())
+            continue;
         const QUrl url(it.key());
-        const QPixmap frame = scaleForDocument(url, it.value()->currentFrame());
+        const QPixmap frame = scaleForDocument(url, current);
         if (frame.isNull())
             continue;
+        m_shownFrame.insert(it.key(), current.cacheKey());
         document()->addResource(QTextDocument::ImageResource, url, frame);
-        changed = true;
+
+        // Repaint only, and only that picture. No layout.
+        //
+        // This used to mark the whole document dirty, which laid the entire
+        // conversation out again - fifteen times a second, for as long as a
+        // single animated emoji was on screen. Nothing about the page moves:
+        // every frame is drawn at the size the first frame settled on, which
+        // m_frameSize exists to guarantee.
+        repaintPicture(it.key());
     }
-
-    if (!changed)
-        return;
-
-    // Repaint only. No layout.
-    //
-    // This used to mark the whole document dirty, which laid the entire
-    // conversation out again - fifteen times a second, for as long as a single
-    // animated emoji was on screen. In a server that uses them that is every
-    // second of every channel, and it was the worst of the stutter.
-    //
-    // Nothing about the page has actually moved: every frame is drawn at the
-    // size the first frame settled on, which m_frameSize exists to guarantee.
-    // Only the pixels differ, and painting picks those up straight from the
-    // document's resources.
-    viewport()->update();
 }
 
 QVariant ChatView::loadResource(int type, const QUrl &name)

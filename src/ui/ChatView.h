@@ -70,6 +70,24 @@ private:
     void adoptAnimation(const QUrl &url);
     void adoptVideo(const QUrl &url);
     void showVideoFrame(const QUrl &url, const QImage &frame);
+
+    // Repaints just the picture named `key` where it is on screen, at the
+    // frame clock's next tick, or nothing when it is scrolled out of view.
+    //
+    // A clip's or animated emoji's new frame used to repaint the whole chat:
+    // every message, table and link preview in view, about 60 ms each time.
+    // Four clips playing kept the window's thread at 85% of a core
+    // (2026-10-22, 20:37 to 20:46), and a clip scrolled out of sight cost the
+    // same as one in view.
+    void repaintPicture(const QString &key);
+    struct PicturePlace
+    {
+        int position = 0;   // its character in the document
+        int width = 0;      // as drawn there, 0 when the page does not say
+    };
+    QHash<QString, QList<PicturePlace>> m_picturePositions;   // address -> where it is in the document
+    bool m_picturePositionsStale = true;
+    QHash<QString, qint64> m_shownFrame;              // address -> the frame last put in the document
     QPixmap prepare(const QUrl &url) const;
     QPixmap scaleForDocument(const QUrl &url, const QImage &source) const;
     QSize boxFor(const QUrl &url) const;

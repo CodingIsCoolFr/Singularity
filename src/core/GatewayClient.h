@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QByteArray>
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -272,6 +273,11 @@ private:
 
     // When the current idle began, in ms since the epoch; 0 when not idle.
     qint64 m_idleSinceMs = 0;
+    // What Discord was last told this session. A game's rich presence is
+    // reported again every few seconds whether it changed or not (VRChat's,
+    // every five), and each report used to send the whole status again: 79
+    // identical updates in half an hour (2026-10-22).
+    QByteArray m_lastPresence;
     QString m_activityApplicationId;
     QString m_activityImageKey;
     bool m_activityShared = true;

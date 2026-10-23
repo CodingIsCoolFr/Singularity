@@ -9,6 +9,7 @@
 #include <QString>
 #include <QStringList>
 #include <QThread>
+#include <QTimer>
 
 #include <memory>
 
@@ -115,4 +116,10 @@ private:
     QString m_current;   // what is being said, for the system's voice if this one fails
     int m_request = 0;
     bool m_busy = false;
+
+    // The natural voice is about 500 MB once loaded (2026-10-22: 742 MB in
+    // use before the first message was read aloud, 1264 MB after), and it
+    // stayed for the rest of the session. It is put away after this long
+    // with nothing said, and loaded again - about a second - the next time.
+    QTimer m_putAway;
 };
