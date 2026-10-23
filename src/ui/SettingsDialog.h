@@ -1,10 +1,16 @@
 #pragma once
 
+#include "core/Cosmetics.h"
 #include "core/RestClient.h"
 
 #include <QDialog>
+#include <QHash>
+#include <QIcon>
+#include <QJsonArray>
 #include <QJsonObject>
+#include <QPair>
 #include <QPixmap>
+#include <QSet>
 #include <QVariantMap>
 
 #include <functional>
@@ -27,6 +33,7 @@ class QPlainTextEdit;
 class QPushButton;
 class QSlider;
 class QStackedWidget;
+class QVBoxLayout;
 
 // The settings window, laid out like Discord's: a list of sections on the
 // left, one page at a time on the right.
@@ -91,6 +98,30 @@ private:
     bool profileDirty() const;
     void updateSaveBar();
     void saveProfile();
+
+    // Discord's Edit Profile beyond the picture and the words: the name's
+    // font, effect and colours, the nameplate, the profile effect, the
+    // profile theme and the server tag. Picked here, shown on both cards and
+    // in the pickers at once, sent with Save Changes.
+    void addNameStyleEditor(QWidget *page, QVBoxLayout *left);
+    void addNameplatePicker(QWidget *page, QVBoxLayout *left);
+    void addEffectPicker(QWidget *page, QVBoxLayout *left);
+    void addThemeEditor(QWidget *page, QVBoxLayout *left);
+    void addTagPicker(QWidget *page, QVBoxLayout *left);
+    void fillLookEditors();
+    void fillTagPick();
+    void loadServerTags();
+    void showEffectDetails(const QString &sku);
+    QIcon effectTileIcon(const QString &thumbnail) const;
+    void setPendingNameStyle(const Cosmetics::NameStyle &style);
+    void setPendingTheme(int primary, int accent);
+    // What is picked now: the unsaved choice, or what Discord has.
+    Cosmetics::NameStyle shownNameStyle() const;
+    QString shownNameplateSku() const;
+    QString shownEffectSku() const;
+    QString shownTagGuildId() const;
+    Cosmetics::GuildTag shownTag() const;
+    QPair<int, int> shownTheme() const;
     void setStatus(QLabel *label, bool ok, const QString &text);
     void setProfileStatus(bool ok, const QString &text);
     void setAccountStatus(bool ok, const QString &text);
@@ -154,6 +185,13 @@ private:
         QString decorationSku;
         QString decorationAsset;
         int accent = -1;
+        Cosmetics::NameStyle nameStyle;
+        Cosmetics::Nameplate nameplate;
+        Cosmetics::GuildTag tag;          // the server tag worn, if any
+        QString effectSku;
+        QJsonArray collectibles;          // user_profile.collectibles: {sku_id, type}
+        int themePrimary = -1;            // theme_colors, -1 for none
+        int themeAccent = -1;
     };
     // Changes picked but not saved. Text fields are compared to LoadedProfile
     // directly; pictures, colour and decoration are held here.
@@ -169,6 +207,17 @@ private:
         int accent = -1;
         bool decorationTouched = false;
         QVariantMap decoration;    // {id, sku, asset}; empty = none
+        bool nameStyleTouched = false;
+        Cosmetics::NameStyle nameStyle;   // not set = none
+        bool nameplateTouched = false;
+        QVariantMap nameplate;     // {sku, palette, label}; empty = none
+        bool effectTouched = false;
+        QString effectSku;         // empty = none
+        bool themeTouched = false;
+        int themePrimary = -1;     // both -1 = none
+        int themeAccent = -1;
+        bool tagTouched = false;
+        QString tagGuildId;        // empty = none
     };
     LoadedProfile m_loaded;
     PendingProfile m_pending;
@@ -196,6 +245,24 @@ private:
     QLineEdit *m_nickname = nullptr;
     QFrame *m_saveBar = nullptr;
     QPushButton *m_saveButton = nullptr;
+
+    // The look editors.
+    QComboBox *m_nameFont = nullptr;
+    QComboBox *m_nameEffect = nullptr;
+    QList<QPushButton *> m_nameColours;     // one per colour the effect takes
+    QList<QPushButton *> m_namePresets;     // Discord's palettes for the effect
+    QPushButton *m_removeNameStyle = nullptr;
+    QListWidget *m_nameplates = nullptr;
+    QLabel *m_nameplateHint = nullptr;
+    QListWidget *m_effects = nullptr;
+    QLabel *m_effectHint = nullptr;
+    QPushButton *m_themePrimaryButton = nullptr;
+    QPushButton *m_themeAccentButton = nullptr;
+    QComboBox *m_tagPick = nullptr;
+    bool m_fillingLooks = false;
+    QHash<QString, Cosmetics::ProfileEffect> m_effectDetails;   // sku -> what it is made of
+    QSet<QString> m_effectsAsked;
+    QHash<QString, Cosmetics::GuildTag> m_serverTags;           // guild id -> its tag ({} while asked)
 
     // The one decoration tile that plays: hovered, or else the picked one.
     class AnimatedImage *m_tileAnimation = nullptr;

@@ -11,6 +11,8 @@
 #include "ui/BadgeCustomizer.h"
 #include "ui/BadgesDialog.h"
 #include "ui/CaptchaDialog.h"
+#include "ui/FrameClock.h"
+#include "ui/LookPainter.h"
 #include "ui/MediaCache.h"
 #include "ui/ProfilePreview.h"
 #include "ui/Sounds.h"
@@ -44,6 +46,7 @@
 #include <functional>
 #include <QMovie>
 #include <QPainter>
+#include <QPainterPath>
 #include <QRadioButton>
 #include <QStandardPaths>
 #include <QGridLayout>
@@ -56,6 +59,7 @@
 #include <QSlider>
 #include <QSpinBox>
 #include <QStackedWidget>
+#include <QStyledItemDelegate>
 #include <QUrl>
 #include <QVBoxLayout>
 
@@ -350,6 +354,163 @@ QString discordReason(const RestClient::Error &error)
     return message.isEmpty() ? QStringLiteral("HTTP %1").arg(error.httpStatus) : message;
 }
 
+// --- Display name styles, as Discord's editor offers them ----------------------
+
+struct StyleChoice
+{
+    int id;
+    const char *name;
+};
+
+// Discord's fonts, in its editor's order; 11 is its ordinary one.
+constexpr StyleChoice StyleFonts[] = {
+    {11, "Default"},  {3, "Sakura"},   {4, "Jellybean"},    {6, "Modern"},     {7, "Medieval"},  {8, "8Bit"},
+    {10, "Vampyre"},  {12, "Tempo"},   {13, "Monkey Bars"}, {14, "Mainframe"}, {15, "Headbang"}, {16, "Journal"},
+};
+
+constexpr StyleChoice StyleEffects[] = {
+    {Cosmetics::Solid, "Solid"}, {Cosmetics::Gradient, "Gradient"}, {Cosmetics::Neon, "Neon"},
+    {Cosmetics::Toon, "Toon"},   {Cosmetics::Pop, "Pop"},           {Cosmetics::Glow, "Glow"},
+    {Cosmetics::Prism, "Prism"}, {Cosmetics::Gummy, "Gummy"},
+};
+
+// How many colours each effect takes; none for no style.
+int styleColourCount(int effect)
+{
+    switch (effect) {
+    case 0: return 0;
+    case Cosmetics::Gradient:
+    case Cosmetics::Glow: return 2;
+    case Cosmetics::Gummy: return 4;
+    case Cosmetics::Prism: return 5;
+    default: return 1;
+    }
+}
+
+// Discord's ready-made palettes for each effect, its default first.
+QList<QList<quint32>> stylePresets(int effect)
+{
+    switch (effect) {
+    case 0: return {};
+    case Cosmetics::Gradient:
+    case Cosmetics::Glow:
+        return {{0x2aaea6, 0xffc490}, {0xe45eff, 0x267de0}, {0xefb4aa, 0xe46ce2},
+                {0xdf4232, 0xbd8fff}, {0x26b164, 0x90eaff}, {0xf5983c, 0xe55ae7}};
+    case Cosmetics::Gummy:
+        return {{0xe9a9d5, 0xa9ddf0, 0xb9a7ee, 0xb9eacb}, {0xff6fc2, 0xf54fa8, 0xff9bd6, 0xd96ab7},
+                {0xffb57a, 0xff936f, 0xff7c78, 0xf06b8a}, {0xc4ed65, 0x98de60, 0x6ccd63, 0x45bc66},
+                {0x7cb8ff, 0x8ee0d0, 0x9d94f5, 0x66cff0}, {0xd77bff, 0xb56bff, 0xe45ce5, 0x8b6cff}};
+    case Cosmetics::Prism:
+        return {{0xfe9242, 0x35ed7e, 0xffe047, 0xff4cd2, 0x5865f2}, {0xff3d3d, 0xff8a2a, 0xffd447, 0xff4fa3, 0x7b61ff},
+                {0x7a0906, 0xc81e12, 0xf45a18, 0xff9500, 0xffd447}, {0x7ee7d8, 0x7ccbff, 0x7f8cff, 0xb56dff, 0xf38ad8},
+                {0x35d65f, 0x16d8b2, 0x20c5f5, 0x2b7cff, 0x6b4dff}, {0xa7e8a1, 0xd9f08c, 0xffe08a, 0xffc4a8, 0xf3b6d9}};
+    default:
+        return {{0x24e36d}, {0x1c98eb}, {0xc32aff}, {0xda0149}, {0xf93722}, {0xc6a615}};
+    }
+}
+
+// Colours side by side in a rounded square, for a button.
+QIcon swatchIcon(const QList<quint32> &colours, int size = 20)
+{
+    const qreal ratio = 2.0;
+    QPixmap pixmap(QSize(size, size) * ratio);
+    pixmap.setDevicePixelRatio(ratio);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    const QRectF box(0.5, 0.5, size - 1, size - 1);
+    QPainterPath round;
+    round.addRoundedRect(box, 5, 5);
+    painter.setClipPath(round);
+    const int count = qMax<int>(1, colours.size());
+    for (int i = 0; i < colours.size(); ++i)
+        painter.fillRect(QRectF(box.left() + box.width() * i / count, box.top(), box.width() / count + 0.5, box.height()),
+                         QColor::fromRgb(QRgb(colours.at(i))));
+    painter.setClipping(false);
+    painter.setPen(QColor(Theme::Border));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawPath(round);
+    return QIcon(pixmap);
+}
+
+QString skuOf(const QJsonValue &value)
+{
+    if (value.isString())
+        return value.toString();
+    if (value.isDouble())
+        return QString::number(qint64(value.toDouble()));
+    return {};
+}
+
+// A nameplate as Discord's picker shows it: your picture and your name, in
+// its style, on the plate. The one under the pointer moves.
+class NameplateDelegate : public QStyledItemDelegate
+{
+public:
+    NameplateDelegate(QListWidget *list, std::function<QPixmap()> face, std::function<LookPainter::Name()> name)
+        : QStyledItemDelegate(list)
+        , m_list(list)
+        , m_face(std::move(face))
+        , m_name(std::move(name))
+    {
+    }
+
+    QSize sizeHint(const QStyleOptionViewItem &, const QModelIndex &) const override { return {240, 50}; }
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override
+    {
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        painter->setRenderHint(QPainter::SmoothPixmapTransform, true);
+        const bool hovered = option.state & QStyle::State_MouseOver;
+        const bool picked = option.state & QStyle::State_Selected;
+        const QRect row = option.rect.adjusted(4, 3, -4, -3);
+        if (hovered || picked) {
+            painter->setPen(picked ? QPen(QColor(Theme::Accent), 2) : QPen(Qt::NoPen));
+            painter->setBrush(QColor(Theme::SurfaceHover));
+            painter->drawRoundedRect(QRectF(row).adjusted(1, 1, -1, -1), 7, 7);
+        }
+
+        const QVariantMap data = index.data(Qt::UserRole).toMap();
+        Cosmetics::Nameplate plate;
+        plate.skuId = data.value(QStringLiteral("sku")).toString();
+        plate.palette = data.value(QStringLiteral("palette")).toString();
+        LookPainter &looks = LookPainter::instance();
+        LookPainter::Name name = m_name();
+        QFont font = option.font;
+        font.setPixelSize(15);
+        font.setWeight(QFont::DemiBold);
+        name.font = font;
+        name.mode = hovered ? LookPainter::EffectMode::Animated : LookPainter::EffectMode::Static;
+        const int nameLeft = 52;
+        const int nameRoom = row.width() - nameLeft - 8;
+        const int contentRight = nameLeft + qMin(looks.nameWidth(name), nameRoom);
+        looks.paintNameplate(painter, row, plate, contentRight, LookPainter::Placement::MemberList, hovered, false);
+
+        const QPixmap face = m_face();
+        if (!face.isNull())
+            painter->drawPixmap(QRect(row.left() + 10, row.center().y() - 16, 32, 32), face);
+        looks.paintName(painter, QRect(row.left() + nameLeft, row.top(), nameRoom, row.height()), name);
+        if (!plate.isSet()) {
+            QFont small = option.font;
+            small.setPixelSize(12);
+            painter->setFont(small);
+            painter->setPen(QColor(Theme::TextMuted));
+            painter->drawText(row.adjusted(0, 0, -12, 0), Qt::AlignRight | Qt::AlignVCenter, QStringLiteral("None"));
+        }
+        painter->restore();
+
+        // The row under the pointer plays: its next frame on the clock.
+        if (hovered && (plate.isSet() || LookPainter::moving(name)))
+            FrameClock::scheduleRepaint(m_list->viewport(), 33, option.rect);
+    }
+
+private:
+    QListWidget *m_list;
+    std::function<QPixmap()> m_face;
+    std::function<LookPainter::Name()> m_name;
+};
+
 } // namespace
 
 QWidget *SettingsDialog::buildAccountPage()
@@ -499,6 +660,8 @@ QWidget *SettingsDialog::buildProfilesPage()
     m_displayName->setPlaceholderText(QStringLiteral("Empty shows your username"));
     left->addWidget(m_displayName);
 
+    addNameStyleEditor(page, left);
+
     left->addWidget(groupTitle(QStringLiteral("PRONOUNS"), page));
     m_pronouns = new QLineEdit(page);
     m_pronouns->setMaxLength(40);
@@ -570,6 +733,9 @@ QWidget *SettingsDialog::buildProfilesPage()
         animateDecorationTile(m_decorationHover);
     });
 
+    addNameplatePicker(page, left);
+    addEffectPicker(page, left);
+
     // --- Banner -------------------------------------------------------------------
     left->addWidget(groupTitle(QStringLiteral("PROFILE BANNER"), page));
     m_accentButton = new QPushButton(QStringLiteral("Banner Colour"), page);
@@ -606,6 +772,8 @@ QWidget *SettingsDialog::buildProfilesPage()
         profileEdited();
     });
 
+    addThemeEditor(page, left);
+
     // --- About me -------------------------------------------------------------------
     m_bioTitle = groupTitle(QStringLiteral("ABOUT ME"), page);
     left->addWidget(m_bioTitle);
@@ -620,6 +788,8 @@ QWidget *SettingsDialog::buildProfilesPage()
         if (!m_fillingProfile)
             profileEdited();
     });
+
+    addTagPicker(page, left);
 
     // --- Per server (saved as soon as pressed) -----------------------------------------
     left->addWidget(groupTitle(QStringLiteral("SERVER PROFILE"), page));
@@ -675,6 +845,13 @@ QWidget *SettingsDialog::buildProfilesPage()
     connect(&MediaCache::instance(), &MediaCache::ready, this, [this](const QUrl &url) {
         if (!isVisible() || !m_decorations)
             return;
+        // An effect's thumbnail, for its tile.
+        for (int row = 0; m_effects && row < m_effects->count(); ++row) {
+            QListWidgetItem *item = m_effects->item(row);
+            const QString thumbnail = item->data(Qt::UserRole).toMap().value(QStringLiteral("thumbnail")).toString();
+            if (!thumbnail.isEmpty() && QUrl(thumbnail) == url)
+                item->setIcon(effectTileIcon(thumbnail));
+        }
         const QString path = url.path();
         if (path.startsWith(QLatin1String("/avatar-decoration-presets/"))) {
             for (int row = 0; row < m_decorations->count(); ++row) {
@@ -701,6 +878,429 @@ QWidget *SettingsDialog::buildProfilesPage()
             m_profileArtTimer->start();
     });
     return page;
+}
+
+void SettingsDialog::addNameStyleEditor(QWidget *page, QVBoxLayout *left)
+{
+    left->addWidget(groupTitle(QStringLiteral("DISPLAY NAME STYLE"), page));
+    auto *choose = new QHBoxLayout;
+    choose->setSpacing(8);
+    m_nameFont = new QComboBox(page);
+    m_nameFont->setToolTip(QStringLiteral("Font"));
+    for (const StyleChoice &font : StyleFonts)
+        m_nameFont->addItem(QString::fromLatin1(font.name), font.id);
+    m_nameEffect = new QComboBox(page);
+    m_nameEffect->setToolTip(QStringLiteral("Effect"));
+    m_nameEffect->addItem(QStringLiteral("No style"), 0);
+    for (const StyleChoice &effect : StyleEffects)
+        m_nameEffect->addItem(QString::fromLatin1(effect.name), effect.id);
+    choose->addWidget(m_nameFont, 1);
+    choose->addWidget(m_nameEffect, 1);
+    left->addLayout(choose);
+
+    // The colours the effect takes, one button each, then Discord's palettes.
+    auto *colours = new QHBoxLayout;
+    colours->setSpacing(6);
+    for (int i = 0; i < 5; ++i) {
+        auto *button = new QPushButton(page);
+        button->setFixedSize(34, 30);
+        button->setIconSize(QSize(20, 20));
+        button->setToolTip(QStringLiteral("Colour %1").arg(i + 1));
+        colours->addWidget(button);
+        m_nameColours.append(button);
+        connect(button, &QPushButton::clicked, this, [this, i]() {
+            Cosmetics::NameStyle style = shownNameStyle();
+            const QList<quint32> fallback = stylePresets(style.effectId).value(0);
+            const quint32 now = style.colors.value(i, fallback.value(i, 0xffffff));
+            const QColor chosen = QColorDialog::getColor(QColor::fromRgb(QRgb(now)), this, QStringLiteral("Name colour"));
+            if (!chosen.isValid())
+                return;
+            while (style.colors.size() <= i)
+                style.colors.append(fallback.value(style.colors.size(), 0xffffff));
+            style.colors[i] = quint32(chosen.rgb() & 0xffffff);
+            setPendingNameStyle(style);
+        });
+    }
+    colours->addSpacing(12);
+    for (int i = 0; i < 6; ++i) {
+        auto *preset = new QPushButton(page);
+        preset->setFixedSize(30, 30);
+        preset->setIconSize(QSize(20, 20));
+        preset->setFlat(true);
+        preset->setToolTip(QStringLiteral("One of Discord's colour sets"));
+        colours->addWidget(preset);
+        m_namePresets.append(preset);
+        connect(preset, &QPushButton::clicked, this, [this, i]() {
+            Cosmetics::NameStyle style = shownNameStyle();
+            const QList<QList<quint32>> presets = stylePresets(style.effectId);
+            if (i >= presets.size())
+                return;
+            style.colors = presets.at(i);
+            setPendingNameStyle(style);
+        });
+    }
+    colours->addStretch(1);
+    left->addLayout(colours);
+
+    m_removeNameStyle = new QPushButton(QStringLiteral("Remove Style"), page);
+    auto *removeRow = new QHBoxLayout;
+    removeRow->addWidget(m_removeNameStyle);
+    removeRow->addStretch(1);
+    left->addLayout(removeRow);
+    left->addWidget(hint(QStringLiteral("The font and effect your name has everywhere on Discord. Needs Nitro."), page));
+
+    connect(m_nameFont, &QComboBox::currentIndexChanged, this, [this](int) {
+        if (m_fillingLooks)
+            return;
+        Cosmetics::NameStyle style = shownNameStyle();
+        style.fontId = m_nameFont->currentData().toInt();
+        // A font goes with an effect: plain, in the first colour, to start.
+        if (style.effectId == 0)
+            style.effectId = Cosmetics::Solid;
+        setPendingNameStyle(style);
+    });
+    connect(m_nameEffect, &QComboBox::currentIndexChanged, this, [this](int) {
+        if (m_fillingLooks)
+            return;
+        const int effect = m_nameEffect->currentData().toInt();
+        if (effect == 0) {
+            setPendingNameStyle({});
+            return;
+        }
+        Cosmetics::NameStyle style = shownNameStyle();
+        // Another effect with as many colours keeps them; otherwise its default.
+        if (styleColourCount(effect) != styleColourCount(style.effectId))
+            style.colors = stylePresets(effect).value(0);
+        style.effectId = effect;
+        setPendingNameStyle(style);
+    });
+    connect(m_removeNameStyle, &QPushButton::clicked, this, [this]() { setPendingNameStyle({}); });
+
+    // Each font's name in the font itself, as each arrives.
+    connect(&LookPainter::instance(), &LookPainter::changed, m_nameFont, [this]() {
+        for (int i = 0; i < m_nameFont->count(); ++i)
+            m_nameFont->setItemData(i, LookPainter::instance().fontFor(m_nameFont->font(), m_nameFont->itemData(i).toInt()),
+                                    Qt::FontRole);
+    });
+}
+
+void SettingsDialog::addNameplatePicker(QWidget *page, QVBoxLayout *left)
+{
+    left->addWidget(groupTitle(QStringLiteral("NAMEPLATE"), page));
+    m_nameplates = new QListWidget(page);
+    m_nameplates->setFixedHeight(166);
+    m_nameplates->setMouseTracking(true);
+    m_nameplates->setStyleSheet(QStringLiteral("QListWidget { background: %1; border: 1px solid %2; border-radius: 8px; "
+                                               "padding: 4px; outline: none; }")
+                                    .arg(QLatin1String(Theme::SurfaceInput), QLatin1String(Theme::Border)));
+    m_nameplates->setItemDelegate(new NameplateDelegate(
+        m_nameplates, [this]() { return m_tileFace; },
+        [this]() {
+            LookPainter::Name name;
+            const QString shown = m_displayName ? m_displayName->text().trimmed() : QString();
+            name.text = shown.isEmpty() ? m_loaded.username : shown;
+            name.style = shownNameStyle();
+            name.fallback = QColor(Theme::TextPrimary);
+            return name;
+        }));
+    left->addWidget(m_nameplates);
+    m_nameplateHint = hint(QStringLiteral("The nameplates you own, behind your name in member lists."), page);
+    left->addWidget(m_nameplateHint);
+    connect(m_nameplates, &QListWidget::currentItemChanged, this, [this](QListWidgetItem *item) {
+        if (!item || m_fillingLooks)
+            return;
+        m_pending.nameplateTouched = true;
+        m_pending.nameplate = item->data(Qt::UserRole).toMap();
+        profileEdited();
+    });
+    // Nameplate pictures and name fonts arriving.
+    connect(&LookPainter::instance(), &LookPainter::changed, m_nameplates->viewport(), qOverload<>(&QWidget::update));
+}
+
+void SettingsDialog::addEffectPicker(QWidget *page, QVBoxLayout *left)
+{
+    left->addWidget(groupTitle(QStringLiteral("PROFILE EFFECT"), page));
+    m_effects = new QListWidget(page);
+    m_effects->setViewMode(QListView::IconMode);
+    m_effects->setIconSize(QSize(72, 72));
+    m_effects->setGridSize(QSize(96, 108));
+    m_effects->setResizeMode(QListView::Adjust);
+    m_effects->setMovement(QListView::Static);
+    m_effects->setWordWrap(true);
+    m_effects->setFixedHeight(130);
+    m_effects->setStyleSheet(m_decorations->styleSheet());
+    left->addWidget(m_effects);
+    m_effectHint = hint(QStringLiteral("The profile effects you own. The preview plays the one picked."), page);
+    left->addWidget(m_effectHint);
+    connect(m_effects, &QListWidget::currentItemChanged, this, [this](QListWidgetItem *item) {
+        if (!item || m_fillingLooks)
+            return;
+        m_pending.effectTouched = true;
+        m_pending.effectSku = item->data(Qt::UserRole).toMap().value(QStringLiteral("sku")).toString();
+        profileEdited();
+    });
+}
+
+void SettingsDialog::addThemeEditor(QWidget *page, QVBoxLayout *left)
+{
+    left->addWidget(groupTitle(QStringLiteral("PROFILE THEME"), page));
+    m_themePrimaryButton = new QPushButton(QStringLiteral("Primary"), page);
+    m_themeAccentButton = new QPushButton(QStringLiteral("Accent"), page);
+    auto *reset = new QPushButton(QStringLiteral("Reset Theme"), page);
+    auto *row = new QHBoxLayout;
+    row->setSpacing(8);
+    row->addWidget(m_themePrimaryButton);
+    row->addWidget(m_themeAccentButton);
+    row->addWidget(reset);
+    row->addStretch(1);
+    left->addLayout(row);
+    left->addWidget(hint(QStringLiteral("Your profile shades from the primary colour at the top to the accent at the "
+                                        "bottom. Needs Nitro."),
+                         page));
+    const auto pick = [this](bool primary) {
+        const auto [top, bottom] = shownTheme();
+        const int now = primary ? top : bottom;
+        const QColor chosen = QColorDialog::getColor(now >= 0 ? QColor::fromRgb(QRgb(now)) : QColor(Theme::Accent), this,
+                                                     primary ? QStringLiteral("Primary colour")
+                                                             : QStringLiteral("Accent colour"));
+        if (!chosen.isValid())
+            return;
+        const int picked = int(chosen.rgb() & 0xffffff);
+        // A theme is always two colours; the other starts as this one.
+        if (primary)
+            setPendingTheme(picked, bottom >= 0 ? bottom : picked);
+        else
+            setPendingTheme(top >= 0 ? top : picked, picked);
+    };
+    connect(m_themePrimaryButton, &QPushButton::clicked, this, [pick]() { pick(true); });
+    connect(m_themeAccentButton, &QPushButton::clicked, this, [pick]() { pick(false); });
+    connect(reset, &QPushButton::clicked, this, [this]() { setPendingTheme(-1, -1); });
+}
+
+void SettingsDialog::addTagPicker(QWidget *page, QVBoxLayout *left)
+{
+    left->addWidget(groupTitle(QStringLiteral("SERVER TAG"), page));
+    m_tagPick = new QComboBox(page);
+    m_tagPick->setIconSize(QSize(64, 18));
+    m_tagPick->addItem(QStringLiteral("None"), QString());
+    left->addWidget(m_tagPick);
+    left->addWidget(hint(QStringLiteral("A server's tag, worn beside your name. The servers you are in that have made "
+                                        "one are listed."),
+                         page));
+    connect(m_tagPick, &QComboBox::currentIndexChanged, this, [this](int) {
+        if (m_fillingLooks)
+            return;
+        m_pending.tagTouched = true;
+        m_pending.tagGuildId = m_tagPick->currentData().toString();
+        profileEdited();
+    });
+}
+
+Cosmetics::NameStyle SettingsDialog::shownNameStyle() const
+{
+    return m_pending.nameStyleTouched ? m_pending.nameStyle : m_loaded.nameStyle;
+}
+
+QString SettingsDialog::shownNameplateSku() const
+{
+    return m_pending.nameplateTouched ? m_pending.nameplate.value(QStringLiteral("sku")).toString()
+                                      : m_loaded.nameplate.skuId;
+}
+
+QString SettingsDialog::shownEffectSku() const
+{
+    return m_pending.effectTouched ? m_pending.effectSku : m_loaded.effectSku;
+}
+
+QString SettingsDialog::shownTagGuildId() const
+{
+    return m_pending.tagTouched ? m_pending.tagGuildId : m_loaded.tag.guildId;
+}
+
+Cosmetics::GuildTag SettingsDialog::shownTag() const
+{
+    const QString id = shownTagGuildId();
+    if (id.isEmpty())
+        return {};
+    if (id == m_loaded.tag.guildId && m_loaded.tag.isSet())
+        return m_loaded.tag;
+    return m_serverTags.value(id);
+}
+
+QPair<int, int> SettingsDialog::shownTheme() const
+{
+    return m_pending.themeTouched ? qMakePair(m_pending.themePrimary, m_pending.themeAccent)
+                                  : qMakePair(m_loaded.themePrimary, m_loaded.themeAccent);
+}
+
+void SettingsDialog::setPendingNameStyle(const Cosmetics::NameStyle &style)
+{
+    // Whole, the way Discord keeps one: a font, an effect, and as many
+    // colours as the effect takes.
+    Cosmetics::NameStyle whole;
+    if (style.isSet()) {
+        whole = style;
+        if (whole.fontId == 0)
+            whole.fontId = StyleFonts[0].id;
+        if (whole.effectId == 0)
+            whole.effectId = Cosmetics::Solid;
+        const int count = styleColourCount(whole.effectId);
+        const QList<quint32> fallback = stylePresets(whole.effectId).value(0);
+        while (whole.colors.size() < count)
+            whole.colors.append(fallback.value(whole.colors.size(), 0xffffff));
+        while (whole.colors.size() > count)
+            whole.colors.removeLast();
+    }
+    m_pending.nameStyleTouched = true;
+    m_pending.nameStyle = whole;
+    fillLookEditors();
+    profileEdited();
+}
+
+void SettingsDialog::setPendingTheme(int primary, int accent)
+{
+    m_pending.themeTouched = true;
+    m_pending.themePrimary = primary;
+    m_pending.themeAccent = accent;
+    profileEdited();
+}
+
+void SettingsDialog::fillLookEditors()
+{
+    if (!m_nameFont)
+        return;
+    m_fillingLooks = true;
+
+    const Cosmetics::NameStyle style = shownNameStyle();
+    LookPainter &looks = LookPainter::instance();
+    for (int i = 0; i < m_nameFont->count(); ++i)
+        m_nameFont->setItemData(i, looks.fontFor(m_nameFont->font(), m_nameFont->itemData(i).toInt()), Qt::FontRole);
+    m_nameFont->setCurrentIndex(qMax(0, m_nameFont->findData(style.fontId ? style.fontId : StyleFonts[0].id)));
+    const int effect = style.isSet() ? (style.effectId ? style.effectId : int(Cosmetics::Solid)) : 0;
+    m_nameEffect->setCurrentIndex(qMax(0, m_nameEffect->findData(effect)));
+    const int count = styleColourCount(effect);
+    const QList<QList<quint32>> presets = stylePresets(effect);
+    for (int i = 0; i < m_nameColours.size(); ++i) {
+        m_nameColours.at(i)->setVisible(i < count);
+        if (i < count)
+            m_nameColours.at(i)->setIcon(swatchIcon({style.colors.value(i, presets.value(0).value(i, 0xffffff))}));
+    }
+    for (int i = 0; i < m_namePresets.size(); ++i) {
+        m_namePresets.at(i)->setVisible(i < presets.size());
+        if (i < presets.size())
+            m_namePresets.at(i)->setIcon(swatchIcon(presets.at(i)));
+    }
+    m_removeNameStyle->setEnabled(style.isSet());
+
+    const auto pickRow = [](QListWidget *list, const QString &sku) {
+        for (int row = 0; list && row < list->count(); ++row) {
+            if (list->item(row)->data(Qt::UserRole).toMap().value(QStringLiteral("sku")).toString() == sku) {
+                list->setCurrentRow(row);
+                return;
+            }
+        }
+    };
+    pickRow(m_nameplates, shownNameplateSku());
+    pickRow(m_effects, shownEffectSku());
+    m_tagPick->setCurrentIndex(qMax(0, m_tagPick->findData(shownTagGuildId())));
+
+    m_fillingLooks = false;
+}
+
+void SettingsDialog::loadServerTags()
+{
+    if (!m_tagPick || !m_rest || !m_store)
+        return;
+    // The tag you wear is known from your profile; the rest are asked of
+    // each server that can have one.
+    if (m_loaded.tag.isSet())
+        m_serverTags.insert(m_loaded.tag.guildId, m_loaded.tag);
+    for (const GuildInfo &guild : m_store->guilds()) {
+        if (!guild.features.contains(QStringLiteral("GUILD_TAGS")) || m_serverTags.contains(guild.id))
+            continue;
+        m_serverTags.insert(guild.id, {});
+        const QString id = guild.id;
+        m_rest->fetchGuildProfile(
+            id,
+            [this, id](const QJsonObject &answer) {
+                Cosmetics::GuildTag tag;
+                tag.guildId = id;
+                tag.tag = answer.value(QStringLiteral("tag")).toString();
+                tag.badge = answer.value(QStringLiteral("badge")).toString();
+                m_serverTags.insert(id, tag);
+                fillTagPick();
+            },
+            [](const RestClient::Error &) {});
+    }
+    fillTagPick();
+}
+
+void SettingsDialog::fillTagPick()
+{
+    if (!m_tagPick)
+        return;
+    QList<Cosmetics::GuildTag> tags;
+    for (const Cosmetics::GuildTag &tag : std::as_const(m_serverTags)) {
+        if (tag.isSet())
+            tags.append(tag);
+    }
+    const auto serverName = [this](const QString &id) {
+        const GuildInfo guild = m_store->guild(id);
+        return guild.name.isEmpty() ? id : guild.name;
+    };
+    std::sort(tags.begin(), tags.end(), [&serverName](const Cosmetics::GuildTag &a, const Cosmetics::GuildTag &b) {
+        return serverName(a.guildId).compare(serverName(b.guildId), Qt::CaseInsensitive) < 0;
+    });
+
+    m_fillingLooks = true;
+    m_tagPick->clear();
+    m_tagPick->addItem(QStringLiteral("None"), QString());
+    const qreal ratio = qMax<qreal>(1.0, devicePixelRatioF());
+    for (const Cosmetics::GuildTag &tag : std::as_const(tags)) {
+        QPixmap chip = QPixmap::fromImage(LookPainter::instance().renderTag(tag, 14, ratio));
+        chip.setDevicePixelRatio(ratio);
+        m_tagPick->addItem(QIcon(chip), serverName(tag.guildId), tag.guildId);
+    }
+    m_tagPick->setCurrentIndex(qMax(0, m_tagPick->findData(shownTagGuildId())));
+    m_fillingLooks = false;
+}
+
+void SettingsDialog::showEffectDetails(const QString &sku)
+{
+    if (sku.isEmpty() || m_effectDetails.contains(sku) || m_effectsAsked.contains(sku) || !m_rest)
+        return;
+    m_effectsAsked.insert(sku);
+    m_rest->fetchCollectiblesProduct(
+        sku,
+        [this, sku](const QJsonObject &product) {
+            const Cosmetics::ProfileEffect effect = Cosmetics::profileEffect(product);
+            if (!effect.isSet())
+                return;
+            m_effectDetails.insert(sku, effect);
+            refreshProfileArt();
+        },
+        [this, sku](const RestClient::Error &error) {
+            m_effectsAsked.remove(sku);
+            wlog(QStringLiteral("account"), QStringLiteral("could not load profile effect %1: HTTP %2 %3")
+                                                .arg(sku)
+                                                .arg(error.httpStatus)
+                                                .arg(error.message));
+        });
+}
+
+QIcon SettingsDialog::effectTileIcon(const QString &thumbnail) const
+{
+    const QImage picture = thumbnail.isEmpty() ? QImage() : MediaCache::instance().image(QUrl(thumbnail));
+    if (picture.isNull())
+        return {};
+    QPixmap tile(72, 72);
+    tile.fill(Qt::transparent);
+    QPainter painter(&tile);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    const QImage fitted = picture.scaled(QSize(72, 72), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    painter.drawImage(QPoint((72 - fitted.width()) / 2, (72 - fitted.height()) / 2), fitted);
+    painter.end();
+    return QIcon(tile);
 }
 
 QWidget *SettingsDialog::buildSaveBar()
@@ -786,7 +1386,8 @@ bool SettingsDialog::profileDirty() const
     return m_displayName->text().trimmed() != m_loaded.globalName
         || m_pronouns->text().trimmed() != m_loaded.pronouns || m_bio->toPlainText() != m_loaded.bio
         || m_pending.avatarTouched || m_pending.bannerTouched || m_pending.accentTouched
-        || m_pending.decorationTouched;
+        || m_pending.decorationTouched || m_pending.nameStyleTouched || m_pending.nameplateTouched
+        || m_pending.effectTouched || m_pending.themeTouched || m_pending.tagTouched;
 }
 
 void SettingsDialog::updateSaveBar()
@@ -825,6 +1426,8 @@ void SettingsDialog::fillProfileFields()
         }
     }
     m_fillingDecorations = false;
+
+    fillLookEditors();
 }
 
 void SettingsDialog::refreshProfileArt()
@@ -868,9 +1471,17 @@ void SettingsDialog::refreshProfileArt()
     const QColor bannerColour = accent >= 0 ? QColor::fromRgb(QRgb(accent)) : QColor();
 
     const QString shown = m_displayName->text().trimmed();
+    const Cosmetics::NameStyle nameStyle = shownNameStyle();
+    const Cosmetics::GuildTag tag = shownTag();
+    const auto [themeTop, themeBottom] = shownTheme();
+    const QColor themePrimary = themeTop >= 0 ? QColor::fromRgb(QRgb(themeTop)) : QColor();
+    const QColor themeAccent = themeBottom >= 0 ? QColor::fromRgb(QRgb(themeBottom)) : QColor();
     for (ProfilePreview *card : {m_preview, m_accountCard}) {
         if (!card)
             continue;
+        card->setNameStyle(nameStyle);
+        card->setGuildTag(tag);
+        card->setTheme(themePrimary, themeAccent);
         card->setAvatar(avatarBytes, avatar);
         card->setDecoration(cache.animationData(decorationUrl), decoration);
         card->setBanner(bannerBytes, banner);
@@ -894,6 +1505,19 @@ void SettingsDialog::refreshProfileArt()
     } else {
         m_accentButton->setIcon(QIcon());
     }
+
+    // The profile effect plays on the Profiles card. It is made for a card
+    // that shape; the wide one on My Account goes without, as Discord's does.
+    const QString effectSku = shownEffectSku();
+    showEffectDetails(effectSku);
+    m_preview->setProfileEffect(m_effectDetails.value(effectSku));
+    if (m_themePrimaryButton) {
+        m_themePrimaryButton->setIcon(themeTop >= 0 ? swatchIcon({quint32(themeTop)}, 16) : QIcon());
+        m_themeAccentButton->setIcon(themeBottom >= 0 ? swatchIcon({quint32(themeBottom)}, 16) : QIcon());
+    }
+    // The nameplates show your name in its style, picture and all.
+    if (m_nameplates)
+        m_nameplates->viewport()->update();
 
     // Each decoration tile shows it around your own face, as Discord's does.
     m_tileFace = avatar.isNull() ? MediaCache::initialsAvatar(m_loaded.username, 54)
@@ -1024,6 +1648,15 @@ void SettingsDialog::loadProfile(bool force)
             m_loaded.accent = accent.isDouble() ? accent.toInt() : -1;
             m_loaded.decorationSku = decoration.value(QStringLiteral("sku_id")).toString();
             m_loaded.decorationAsset = decoration.value(QStringLiteral("asset")).toString();
+            m_loaded.nameStyle = Cosmetics::nameStyle(user.value(QStringLiteral("display_name_styles")));
+            m_loaded.nameplate = Cosmetics::nameplate(user.value(QStringLiteral("collectibles")));
+            m_loaded.tag = Cosmetics::guildTag(user.value(QStringLiteral("primary_guild")));
+            m_loaded.effectSku = Cosmetics::profileEffectSku(profile);
+            m_loaded.collectibles = profile.value(QStringLiteral("collectibles")).toArray();
+            const QJsonArray theme = profile.value(QStringLiteral("theme_colors")).toArray();
+            m_loaded.themePrimary = theme.size() == 2 ? theme.at(0).toInt() : -1;
+            m_loaded.themeAccent = theme.size() == 2 ? theme.at(1).toInt() : -1;
+            loadServerTags();
 
             if (!m_userEdited) {
                 fillProfileFields();
@@ -1036,9 +1669,70 @@ void SettingsDialog::loadProfile(bool force)
                                                 .arg(error.httpStatus).arg(error.message));
         });
 
-    // The decorations you own, each as a tile.
+    loadServerTags();
+
+    // The decorations, nameplates and profile effects you own, each in its
+    // picker.
     m_rest->fetchCollectibles(
         [this](const QJsonArray &products) {
+            m_fillingLooks = true;
+            m_nameplates->clear();
+            auto *noPlate = new QListWidgetItem(QStringLiteral("None"), m_nameplates);
+            noPlate->setData(Qt::UserRole, QVariantMap{});
+            m_effects->clear();
+            auto *noEffect = new QListWidgetItem(QStringLiteral("None"), m_effects);
+            noEffect->setData(Qt::UserRole, QVariantMap{});
+            int plates = 0;
+            int effects = 0;
+            for (const QJsonValue &value : products) {
+                const QJsonObject product = value.toObject();
+                const int type = product.value(QStringLiteral("type")).toInt();
+                if (type != 1 && type != 2)
+                    continue;
+                const QString sku = skuOf(product.value(QStringLiteral("sku_id")));
+                QJsonObject item;
+                for (const QJsonValue &part : product.value(QStringLiteral("items")).toArray()) {
+                    if (part.toObject().value(QStringLiteral("type")).toInt() == type) {
+                        item = part.toObject();
+                        break;
+                    }
+                }
+                const QString name = product.value(QStringLiteral("name")).toString();
+                if (type == 2) {
+                    auto *row = new QListWidgetItem(name, m_nameplates);
+                    row->setToolTip(name);
+                    row->setData(Qt::UserRole, QVariantMap{{QStringLiteral("sku"), sku},
+                                                           {QStringLiteral("palette"),
+                                                            item.value(QStringLiteral("palette")).toString()},
+                                                           {QStringLiteral("label"), name}});
+                    ++plates;
+                } else {
+                    const QString thumbnail = item.value(QStringLiteral("thumbnailPreviewSrc")).toString();
+                    auto *tile = new QListWidgetItem(effectTileIcon(thumbnail), name, m_effects);
+                    tile->setToolTip(product.value(QStringLiteral("summary")).toString());
+                    tile->setData(Qt::UserRole, QVariantMap{{QStringLiteral("sku"), sku},
+                                                            {QStringLiteral("thumbnail"), thumbnail}});
+                    // The purchase may already say what the effect is made of.
+                    const Cosmetics::ProfileEffect effect = Cosmetics::profileEffect(product);
+                    if (effect.isSet())
+                        m_effectDetails.insert(sku, effect);
+                    ++effects;
+                }
+            }
+            m_fillingLooks = false;
+            m_nameplateHint->setText(plates == 0 ? QStringLiteral("You do not own any nameplates. They come from the "
+                                                                  "Discord shop.")
+                                                 : QStringLiteral("The %1 nameplate%2 you own, behind your name in "
+                                                                  "member lists.")
+                                                       .arg(plates)
+                                                       .arg(plates == 1 ? QString() : QStringLiteral("s")));
+            m_effectHint->setText(effects == 0 ? QStringLiteral("You do not own any profile effects. They come from "
+                                                                "the Discord shop.")
+                                               : QStringLiteral("The %1 profile effect%2 you own. The preview plays "
+                                                                "the one picked.")
+                                                     .arg(effects)
+                                                     .arg(effects == 1 ? QString() : QStringLiteral("s")));
+
             m_fillingDecorations = true;
             m_decorations->clear();
             auto *none = new QListWidgetItem(QStringLiteral("None"), m_decorations);
@@ -1123,6 +1817,29 @@ void SettingsDialog::saveProfile()
         userFields.insert(QStringLiteral("avatar_decoration_id"), id.isEmpty() ? QJsonValue() : QJsonValue(id));
         userFields.insert(QStringLiteral("avatar_decoration_sku_id"), sku.isEmpty() ? QJsonValue() : QJsonValue(sku));
     }
+    // Discord's account settings send these three together, or all null.
+    if (m_pending.nameStyleTouched) {
+        const Cosmetics::NameStyle &style = m_pending.nameStyle;
+        if (style.isSet()) {
+            QJsonArray colours;
+            for (const quint32 colour : style.colors)
+                colours.append(qint64(colour));
+            userFields.insert(QStringLiteral("display_name_font_id"), style.fontId);
+            userFields.insert(QStringLiteral("display_name_effect_id"), style.effectId);
+            userFields.insert(QStringLiteral("display_name_colors"), colours);
+        } else {
+            userFields.insert(QStringLiteral("display_name_font_id"), QJsonValue());
+            userFields.insert(QStringLiteral("display_name_effect_id"), QJsonValue());
+            userFields.insert(QStringLiteral("display_name_colors"), QJsonValue());
+        }
+    }
+    if (m_pending.nameplateTouched) {
+        const QString sku = m_pending.nameplate.value(QStringLiteral("sku")).toString();
+        userFields.insert(QStringLiteral("nameplate_sku_id"), sku.isEmpty() ? QJsonValue() : QJsonValue(sku));
+    }
+    if (m_pending.tagTouched)
+        userFields.insert(QStringLiteral("primary_guild_id"),
+                          m_pending.tagGuildId.isEmpty() ? QJsonValue() : QJsonValue(m_pending.tagGuildId));
 
     const QString pronouns = m_pronouns->text().trimmed();
     if (pronouns != m_loaded.pronouns)
@@ -1134,6 +1851,27 @@ void SettingsDialog::saveProfile()
     if (m_pending.bannerTouched)
         profileFields.insert(QStringLiteral("banner"), m_pending.bannerData.isEmpty() ? QJsonValue()
                                                                                        : QJsonValue(m_pending.bannerData));
+    if (m_pending.themeTouched) {
+        if (m_pending.themePrimary >= 0 && m_pending.themeAccent >= 0)
+            profileFields.insert(QStringLiteral("theme_colors"),
+                                 QJsonArray{m_pending.themePrimary, m_pending.themeAccent});
+        else
+            profileFields.insert(QStringLiteral("theme_colors"), QJsonValue());
+    }
+    // A profile's collectibles go as one list: whatever else it wears (a
+    // frame) stays, and the effect is swapped, as Discord's editor does.
+    if (m_pending.effectTouched) {
+        QJsonArray skus;
+        for (const QJsonValue &value : std::as_const(m_loaded.collectibles)) {
+            const QJsonObject worn = value.toObject();
+            const QString sku = skuOf(worn.value(QStringLiteral("sku_id")));
+            if (worn.value(QStringLiteral("type")).toInt() != 1 && !sku.isEmpty())
+                skus.append(sku);
+        }
+        if (!m_pending.effectSku.isEmpty())
+            skus.append(m_pending.effectSku);
+        profileFields.insert(QStringLiteral("collectibles_sku_ids"), skus);
+    }
 
     m_saveButton->setEnabled(false);
     m_saveButton->setText(QStringLiteral("Saving…"));

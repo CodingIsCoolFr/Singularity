@@ -1,7 +1,10 @@
 #include "ui/ProfilePreview.h"
 
 #include "ui/AnimatedImage.h"
+#include "ui/FrameClock.h"
+#include "ui/LookPainter.h"
 #include "ui/MediaCache.h"
+#include "ui/ProfileArt.h"
 #include "ui/Theme.h"
 
 #include <QPainter>
@@ -21,6 +24,16 @@ constexpr int BadgeIcon = 20;
 constexpr int BadgeGap = 4;
 constexpr int BadgePad = 6;
 
+// Over a profile theme Discord lays this much black, so the words stay
+// readable on any two colours.
+constexpr qreal ThemeShade = 0.6;
+
+QColor mixed(const QColor &a, const QColor &b, qreal t)
+{
+    return QColor::fromRgbF(a.redF() + (b.redF() - a.redF()) * t, a.greenF() + (b.greenF() - a.greenF()) * t,
+                            a.blueF() + (b.blueF() - a.blueF()) * t);
+}
+
 } // namespace
 
 ProfilePreview::ProfilePreview(QWidget *parent)
@@ -33,6 +46,8 @@ ProfilePreview::ProfilePreview(QWidget *parent)
     connect(m_avatar, &AnimatedImage::frameChanged, this, [this]() { update(); });
     connect(m_banner, &AnimatedImage::frameChanged, this, [this]() { update(); });
     connect(m_decoration, &AnimatedImage::frameChanged, this, [this]() { update(); });
+    // A name font arriving, or a tag's badge.
+    connect(&LookPainter::instance(), &LookPainter::changed, this, [this]() { update(); });
 }
 
 void ProfilePreview::setAvatar(const QByteArray &bytes, const QImage &still)
@@ -120,6 +135,41 @@ void ProfilePreview::setBadges(const QList<QImage> &icons)
     update();
 }
 
+void ProfilePreview::setNameStyle(const Cosmetics::NameStyle &style)
+{
+    m_nameStyle = style;
+    update();
+}
+
+void ProfilePreview::setGuildTag(const Cosmetics::GuildTag &tag)
+{
+    m_tag = tag;
+    update();
+}
+
+void ProfilePreview::setTheme(const QColor &primary, const QColor &accent)
+{
+    m_themePrimary = primary;
+    m_themeAccent = accent;
+    update();
+}
+
+void ProfilePreview::setProfileEffect(const Cosmetics::ProfileEffect &effect)
+{
+    // The same one again (the card is refreshed for every pick) keeps
+    // playing rather than starting over.
+    if (effect.isSet() && effect.skuId == m_effectSku)
+        return;
+    m_effectSku = effect.isSet() ? effect.skuId : QString();
+    if (!effect.isSet() && !m_effect)
+        return;
+    if (!m_effect) {
+        m_effect = new ProfileEffectView(this);
+        m_effect->show();
+    }
+    m_effect->setEffect(effect);
+}
+
 void ProfilePreview::paintEvent(QPaintEvent *)
 {
     QPainter painter(this);
@@ -131,7 +181,20 @@ void ProfilePreview::paintEvent(QPaintEvent *)
 
     QPainterPath shape;
     shape.addRoundedRect(whole, Radius, Radius);
-    painter.fillPath(shape, card);
+    // A theme: its two colours top to bottom, darkened for the words.
+    const bool themed = m_themePrimary.isValid() && m_themeAccent.isValid();
+    const auto themeAt = [this](qreal y) {
+        const qreal t = height() > 0 ? qBound<qreal>(0.0, y / height(), 1.0) : 0.0;
+        return mixed(mixed(m_themePrimary, m_themeAccent, t), QColor(Qt::black), ThemeShade);
+    };
+    if (themed) {
+        QLinearGradient shade(0, 0, 0, height());
+        shade.setColorAt(0, themeAt(0));
+        shade.setColorAt(1, themeAt(height()));
+        painter.fillPath(shape, shade);
+    } else {
+        painter.fillPath(shape, card);
+    }
     painter.setPen(QColor(Theme::Border));
     painter.drawPath(shape);
     painter.setClipPath(shape);
@@ -168,7 +231,7 @@ void ProfilePreview::paintEvent(QPaintEvent *)
     const QRect faceRect(frame.center().x() - face / 2 + 1, frame.center().y() - face / 2 + 1, face, face);
 
     painter.setPen(Qt::NoPen);
-    painter.setBrush(card);
+    painter.setBrush(themed ? themeAt(faceRect.center().y()) : card);
     painter.drawEllipse(faceRect.adjusted(-6, -6, 6, 6));
 
     QImage avatarFrame = m_avatar->currentFrame();
@@ -220,14 +283,25 @@ void ProfilePreview::paintEvent(QPaintEvent *)
         nameWidth = qMax(60, textWidth - stripWidth - 10);
     }
 
+    // The name in its style, always moving, and the server tag after it, as
+    // a profile shows them.
     QFont nameFont = font();
     nameFont.setPixelSize(20);
     nameFont.setWeight(QFont::Bold);
-    painter.setFont(nameFont);
-    painter.setPen(QColor(Theme::TextPrimary));
-    const QString shownName = m_displayName.isEmpty() ? m_username : m_displayName;
-    painter.drawText(QRect(left, y, nameWidth, 26), Qt::AlignLeft | Qt::AlignVCenter,
-                     QFontMetrics(nameFont).elidedText(shownName, Qt::ElideRight, nameWidth));
+    LookPainter &looks = LookPainter::instance();
+    LookPainter::Name name;
+    name.text = m_displayName.isEmpty() ? m_username : m_displayName;
+    name.font = nameFont;
+    name.style = m_nameStyle;
+    name.mode = LookPainter::EffectMode::Animated;
+    name.fallback = QColor(Theme::TextPrimary);
+    const int tagSpace = m_tag.isSet() ? looks.tagWidth(m_tag, 16) + 8 : 0;
+    const QRect nameBox(left, y, qMax(40, nameWidth - tagSpace), 26);
+    const int drawn = looks.paintName(&painter, nameBox, name);
+    if (tagSpace)
+        looks.paintTag(&painter, QPoint(left + drawn + 8, nameBox.center().y() + 1), m_tag, 16);
+    if (LookPainter::moving(name))
+        FrameClock::scheduleRepaint(this, 33, nameBox.adjusted(-6, -6, 6, 6));
     y += 26;
 
     QFont small = font();
