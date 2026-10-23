@@ -9,6 +9,9 @@
 #include <QTextBrowser>
 #include <QTimer>
 
+#include <atomic>
+#include <memory>
+
 class ClipPlayer;
 
 class AnimatedImage;
@@ -49,7 +52,20 @@ public:
     // `height` are the video's own; they ride along as "#video=WxH" so the
     // box is the right shape before the still arrives, and stays one if it
     // never does.
-    static QUrl videoStill(const QString &proxyUrl, const QString &url, int width, int height);
+    // `placeholder` is the attachment's ThumbHash, drawn blurred in the box
+    // until the still arrives.
+    static QUrl videoStill(const QString &proxyUrl, const QString &url, int width, int height,
+                           const QString &placeholder = {});
+
+    // A video attachment plays where it sits in the chat, with its sound, as
+    // in Discord: noteVideo says which still stands for which video when the
+    // message is drawn; playInline starts it, or pauses and resumes it if it
+    // is the one playing. Only one plays at a time. stopInline hands back
+    // where it had got to (ms), for the bigger viewer to carry on from.
+    void noteVideo(const QUrl &video, const QUrl &still);
+    bool canPlayInline(const QUrl &video) const { return m_stillOf.contains(video.toString()); }
+    void playInline(const QUrl &video);
+    qint64 stopInline(const QUrl &video);
 
     // How much of the last layout went on shrinking and rounding pictures,
     // and how many had to be done from scratch. Reading it clears it.
@@ -59,6 +75,10 @@ public:
     // wrong twice already.
     qint64 takePictureWorkMs();
     int takePicturesPrepared();
+
+signals:
+    // The inline player could not play it; the window opens the big viewer.
+    void inlineVideoFailed(const QUrl &video, const QString &reason);
 
 protected:
     QVariant loadResource(int type, const QUrl &name) override;
@@ -109,6 +129,21 @@ private:
 
     // gifv cards are mp4s. One player each, muted and looping.
     QHash<QString, ClipPlayer *> m_videos;
+
+    // The one video attachment playing in place, with sound.
+    QHash<QString, QUrl> m_stillOf;                 // video address -> its still
+    class QMediaPlayer *m_inlinePlayer = nullptr;
+    class QAudioOutput *m_inlineAudio = nullptr;
+    class QVideoSink *m_inlineSink = nullptr;
+    QUrl m_inlineVideo;
+    QUrl m_inlineStill;
+    QSize m_inlineBox;
+    QImage m_inlineFrame;                           // the last frame shown, for the paused picture
+    struct InlineShared;                            // what the frame thread reads: the box, and busy
+    std::shared_ptr<InlineShared> m_inlineShared;
+    void showInlineFrame(const QImage &frame);
+    void showInlinePaused();
+    void endInline();
 
     // Videos that could not be played. They stay a still picture
     // for the rest of this run instead of being started again.

@@ -110,6 +110,10 @@ private slots:
     void startBigUpload(const QString &path);
     qint64 uploadLimitBytes() const;
     bool handleFileDrop(QEvent *event);
+    // Files to attach from a drop or a paste: local files, or a picture that
+    // is only data, saved as image.png (only when `save`; asking is free).
+    QStringList filesFromMime(const class QMimeData *mime, bool save);
+    QString savePictureForUpload(const QImage &image);
     void showEmojiMenu();
     void showReactionPicker(const QString &messageId, const QPoint &globalPos);
     void refreshComposerContext();
@@ -132,6 +136,7 @@ private:
     void buildMenu();
     QWidget *buildGuildRail(QWidget *parent);
     QWidget *buildSidebar(QWidget *parent);
+    QWidget *buildChatHeader(QWidget *parent);
     QWidget *buildChatColumn(QWidget *parent);
     QWidget *buildUserPanel(QWidget *parent);
     QWidget *buildVoicePanel(QWidget *parent);
@@ -493,6 +498,7 @@ private:
     class MemberListPanel *m_members = nullptr;
     QStackedWidget *m_chatStack = nullptr;
     QWidget *m_chatPage = nullptr;
+    QWidget *m_chatHeader = nullptr;   // the channel's bar along the top: title, topic, Call, search
     FriendsPage *m_friends = nullptr;
     QWidget *m_userPanel = nullptr;
     QWidget *m_voicePanel = nullptr;
@@ -594,6 +600,7 @@ private:
 
     void startScreenShare();
     void stopScreenShare();
+    void changeShareSource();   // Discord's Change Windows, on the running stream
     void tryBeginBroadcast();
 
     class ScreenShare *m_share = nullptr;
@@ -623,6 +630,7 @@ private:
 
     // What the picker chose, held until the server answers.
     QString m_shareMonitorId;
+    QString m_sharePendingSource;   // a Change Windows choice, until the capture takes it
     int m_shareWidth = 0;
     int m_shareHeight = 0;
     int m_shareFps = 30;
@@ -651,14 +659,17 @@ private:
     void loadOlderMessages();
     bool m_loadingOlder = false;
 
-    // Discord's message search: the box in the channel header, and the
-    // results down the right in place of the member list. A search covers the
-    // server on screen, or the direct or group chat when not in a server, and
-    // ends when the box is emptied or another server is opened.
+    // Discord's message search: the box in the channel bar (or the Friends
+    // bar), and the results down the right in place of the member list. A
+    // search covers the server on screen, the direct or group chat open on
+    // the home page, or every chat when none is open, and ends when the box
+    // is emptied or another server is opened.
     void openSearch(const QString &text);
     void closeSearch();
     void updateSearchScope();
+    void placeSearchBox(bool inChannelBar);
     SearchBox *m_searchBox = nullptr;
+    class QHBoxLayout *m_chatHeaderRow = nullptr;   // the channel bar's row, which the box sits at the end of
     SearchPanel *m_searchPanel = nullptr;
 
     // Opening a channel at one message, as a search result or a link to a
@@ -725,6 +736,13 @@ private:
     // not ended, whether or not we are the one being rung.
     QHash<QString, QStringList> m_ringing;
     QSet<QString> m_activeCalls;
+    // Calls we started whose ring waits for Discord to say the call exists
+    // (CALL_CREATE), as its own client queues one (CALL_ENQUEUE_RING).
+    // Ringing first, before the call was there, is why calling somebody back
+    // after a call had ended rang nobody (0.9.3).
+    QSet<QString> m_pendingRings;
+    void ringWhoIsMissing(const QString &channelId);
+    QStringList missingFromCall(const QString &channelId) const;
     QSet<QString> m_callEvents;
     QTimer m_ringTimer;
     int m_ringBeeps = 0;
@@ -758,6 +776,7 @@ private:
     void moveVoiceMember(const QString &userId, const QString &channelId);
     QString voiceGuildOf(const QString &userId) const;
     bool canMoveVoiceMember(const QString &userId) const;
+    bool canMoveMembersIn(const QString &channelId) const;   // Move Members in that channel, overwrites and all
     QString voiceChannelAt(const QPoint &viewportPos) const;
     void startVoiceMemberDrag(const QString &userId);
     bool handleVoiceMemberDrag(QEvent *event, QObject *watched);

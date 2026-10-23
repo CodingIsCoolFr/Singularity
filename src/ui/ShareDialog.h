@@ -23,6 +23,10 @@ class ShareDialog : public QDialog
 public:
     explicit ShareDialog(QWidget *parent = nullptr);
 
+    // For switching a running share to another window or screen: no quality
+    // to choose, and a Switch button instead of Go live.
+    void setSwitching(bool switching);
+
     QString monitorId() const;
     int width() const;
     int height() const;
@@ -52,6 +56,7 @@ private:
     int m_savedSound = 1;
     QListWidget *m_list = nullptr;
     QComboBox *m_quality = nullptr;
+    class QLabel *m_qualityLabel = nullptr;
     QList<ShareAudio::App> m_apps;
     QComboBox *m_sound = nullptr;
 };

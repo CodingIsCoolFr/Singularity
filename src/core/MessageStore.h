@@ -251,6 +251,11 @@ struct Attachment
     qint64 size = 0;
     int width = 0;
     int height = 0;
+    // Discord's "placeholder": a ThumbHash, a few dozen bytes of base64 that
+    // decode to a blurred picture of the file. Discord's client draws it
+    // while the real picture (or a video's still) is on its way; a new
+    // video's still can take the media server minutes to make.
+    QString placeholder;
 
     // A film, not a picture. Discord gives a video a width and height too, so
     // this is asked first: a clip treated as a picture was a black box that

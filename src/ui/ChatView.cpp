@@ -9,7 +9,12 @@
 
 #include "ui/Theme.h"
 
+#include <QAudioOutput>
 #include <QElapsedTimer>
+#include <QFileInfo>
+#include <QMediaPlayer>
+#include <QVideoFrame>
+#include <QVideoSink>
 #include <QPainter>
 #include <QPainterPath>
 #include <QtMath>
@@ -72,7 +77,7 @@ bool looksLikeVideo(const QUrl &url)
 // picture may be. Zero when the address carries no size.
 QSize videoBox(const QUrl &still)
 {
-    const QStringList size = still.fragment().mid(6).split(QLatin1Char('x'));
+    const QStringList size = still.fragment().mid(6).section(QLatin1Char('&'), 0, 0).split(QLatin1Char('x'));
     const int width = size.value(0).toInt();
     const int height = size.value(1).toInt();
     if (width <= 0 || height <= 0)
@@ -215,7 +220,8 @@ bool ChatView::isAllowedImageHost(const QUrl &url)
     return MediaCache::isAllowedHost(url);
 }
 
-QUrl ChatView::videoStill(const QString &proxyUrl, const QString &url, int width, int height)
+QUrl ChatView::videoStill(const QString &proxyUrl, const QString &url, int width, int height,
+                          const QString &placeholder)
 {
     // Discord's media server answers a video's address with a picture of it
     // when asked for one by format - the poster its own client shows. The
@@ -237,9 +243,17 @@ QUrl ChatView::videoStill(const QString &proxyUrl, const QString &url, int width
         query.chop(1);
     if (!query.isEmpty())
         query += QLatin1Char('&');
-    query += QStringLiteral("format=webp&width=%1&height=%2").arg(asked.width()).arg(asked.height());
+    // As Discord's client asks: the size, keep_aspect_ratio, then the format.
+    query += QStringLiteral("width=%1&height=%2&keep_aspect_ratio=true&format=webp")
+                 .arg(asked.width())
+                 .arg(asked.height());
     still.setQuery(query, QUrl::StrictMode);
-    still.setFragment(QStringLiteral("video=%1x%2").arg(width).arg(height));
+    // The fragment never leaves this machine. The placeholder in it is what
+    // the box shows until the media server has made the still.
+    QString fragment = QStringLiteral("video=%1x%2").arg(width).arg(height);
+    if (!placeholder.isEmpty())
+        fragment += QStringLiteral("&ph=") + QString::fromLatin1(QUrl::toPercentEncoding(placeholder));
+    still.setFragment(fragment, QUrl::StrictMode);
     return still;
 }
 
@@ -585,10 +599,20 @@ QPixmap ChatView::prepare(const QUrl &url) const
 
         QImage face(box, QImage::Format_ARGB32_Premultiplied);
         face.fill(QColor(12, 12, 16));
-        if (!still.isNull()) {
+        // The still, or until it comes the attachment's blurred placeholder,
+        // as Discord's client shows it: a new video's still can take the
+        // media server minutes to make.
+        QImage cover = still;
+        if (cover.isNull()) {
+            const QString fragment = url.fragment(QUrl::FullyEncoded);
+            const int at = fragment.indexOf(QLatin1String("&ph="));
+            if (at >= 0)
+                cover = MediaCache::fromThumbHash(QUrl::fromPercentEncoding(fragment.mid(at + 4).toLatin1()));
+        }
+        if (!cover.isNull()) {
             QPainter painter(&face);
             painter.setRenderHint(QPainter::SmoothPixmapTransform);
-            painter.drawImage(QRect(QPoint(0, 0), box), still);
+            painter.drawImage(QRect(QPoint(0, 0), box), cover);
         }
         drawPlayButton(face);
         const QPixmap pixmap = QPixmap::fromImage(face);
@@ -660,6 +684,163 @@ void ChatView::adoptVideo(const QUrl &url)
     m_videos.insert(key, player);
 }
 
+struct ChatView::InlineShared
+{
+    std::atomic_bool busy{false};
+    std::atomic<int> width{0};
+    std::atomic<int> height{0};
+};
+
+void ChatView::noteVideo(const QUrl &video, const QUrl &still)
+{
+    if (video.isValid() && still.isValid())
+        m_stillOf.insert(video.toString(), still);
+}
+
+void ChatView::playInline(const QUrl &video)
+{
+    const QUrl still = m_stillOf.value(video.toString());
+    if (!still.isValid())
+        return;
+
+    // The one already here: a click pauses it or carries on.
+    if (m_inlinePlayer && m_inlineVideo == video) {
+        if (m_inlinePlayer->playbackState() == QMediaPlayer::PlayingState) {
+            m_inlinePlayer->pause();
+            showInlinePaused();
+        } else {
+            m_inlinePlayer->play();
+        }
+        return;
+    }
+    endInline();
+
+    if (!m_inlinePlayer) {
+        m_inlinePlayer = new QMediaPlayer(this);
+        m_inlineAudio = new QAudioOutput(this);
+        m_inlineAudio->setVolume(0.8f);
+        m_inlinePlayer->setAudioOutput(m_inlineAudio);
+        m_inlineSink = new QVideoSink(this);
+        m_inlinePlayer->setVideoSink(m_inlineSink);
+        m_inlineShared = std::make_shared<InlineShared>();
+
+        // Each frame is turned into a picture on the thread that hands it
+        // over, fitted to the box the still has in the chat, and only the
+        // finished picture comes to this thread. Converting here was the copy
+        // back from the graphics card that froze the window on AMD cards; a
+        // frame that comes while the last is still being converted is
+        // skipped rather than queued.
+        const std::shared_ptr<InlineShared> shared = m_inlineShared;
+        QVideoSink *sink = m_inlineSink;
+        connect(
+            m_inlineSink, &QVideoSink::videoFrameChanged, m_inlineSink,
+            [this, shared, sink](const QVideoFrame &frame) {
+                if (!frame.isValid() || shared->busy.exchange(true))
+                    return;
+                const QSize box(shared->width.load(), shared->height.load());
+                QImage picture = frame.toImage();
+                if (picture.isNull() || !box.isValid()) {
+                    shared->busy = false;
+                    return;
+                }
+                QImage fitted(box, QImage::Format_ARGB32_Premultiplied);
+                fitted.fill(QColor(12, 12, 16));
+                {
+                    QPainter painter(&fitted);
+                    painter.setRenderHint(QPainter::SmoothPixmapTransform);
+                    const QSize size = picture.size().scaled(box, Qt::KeepAspectRatio);
+                    painter.drawImage(QRect(QPoint((box.width() - size.width()) / 2, (box.height() - size.height()) / 2), size),
+                                      picture);
+                }
+                // Queued to the sink, which lives on this view's thread and
+                // dies with the view, so a frame never outlives either.
+                QMetaObject::invokeMethod(
+                    sink,
+                    [this, shared, fitted]() {
+                        shared->busy = false;
+                        showInlineFrame(fitted);
+                    },
+                    Qt::QueuedConnection);
+            },
+            Qt::DirectConnection);
+
+        connect(m_inlinePlayer, &QMediaPlayer::mediaStatusChanged, this, [this](QMediaPlayer::MediaStatus status) {
+            if (status == QMediaPlayer::EndOfMedia)
+                endInline();   // back to its still and play button, as Discord leaves a finished video
+        });
+        connect(m_inlinePlayer, &QMediaPlayer::errorOccurred, this, [this](QMediaPlayer::Error, const QString &reason) {
+            const QUrl failed = m_inlineVideo;
+            wlog(QStringLiteral("media"), QStringLiteral("could not play %1 in the chat: %2")
+                                              .arg(failed.toString(QUrl::RemoveQuery), reason));
+            endInline();
+            emit inlineVideoFailed(failed, reason);
+        });
+    }
+
+    QSize box = videoBox(still);
+    if (!box.isValid())
+        box = QSize(MaxPictureWidth, MaxPictureWidth * 9 / 16).boundedTo(QSize(MaxPictureWidth, MaxPictureHeight));
+    m_inlineBox = box;
+    m_inlineShared->width = box.width();
+    m_inlineShared->height = box.height();
+    m_inlineShared->busy = false;
+    m_inlineVideo = video;
+    m_inlineStill = still;
+    m_inlineFrame = QImage();
+
+    wlog(QStringLiteral("media"), QStringLiteral("playing %1 in the chat").arg(QFileInfo(video.path()).fileName()));
+    m_inlinePlayer->setSource(video);
+    m_inlinePlayer->play();
+}
+
+qint64 ChatView::stopInline(const QUrl &video)
+{
+    // An empty address stops whichever is playing (another channel opened).
+    if (!m_inlinePlayer || m_inlineVideo.isEmpty() || (!video.isEmpty() && m_inlineVideo != video))
+        return 0;
+    const qint64 at = m_inlinePlayer->position();
+    endInline();
+    return at;
+}
+
+void ChatView::showInlineFrame(const QImage &frame)
+{
+    if (m_inlineStill.isEmpty() || frame.isNull())
+        return;
+    m_inlineFrame = frame;
+    document()->addResource(QTextDocument::ImageResource, m_inlineStill, QPixmap::fromImage(frame));
+    // By the address as the page writes it, so only this picture repaints.
+    repaintPicture(m_inlineStill.toString(QUrl::FullyEncoded));
+}
+
+void ChatView::showInlinePaused()
+{
+    if (m_inlineStill.isEmpty() || m_inlineFrame.isNull())
+        return;
+    QImage paused = m_inlineFrame.copy();
+    drawPlayButton(paused);
+    document()->addResource(QTextDocument::ImageResource, m_inlineStill, QPixmap::fromImage(paused));
+    repaintPicture(m_inlineStill.toString(QUrl::FullyEncoded));
+}
+
+void ChatView::endInline()
+{
+    if (m_inlinePlayer) {
+        m_inlinePlayer->stop();
+        m_inlinePlayer->setSource(QUrl());
+    }
+    const QUrl still = m_inlineStill;
+    m_inlineVideo.clear();
+    m_inlineStill.clear();
+    m_inlineFrame = QImage();
+    if (!still.isEmpty()) {
+        const QPixmap poster = prepare(still);
+        if (!poster.isNull())
+            document()->addResource(QTextDocument::ImageResource, still, poster);
+        repaintPicture(still.toString(QUrl::FullyEncoded));
+    }
+}
+
 void ChatView::showEvent(QShowEvent *event)
 {
     QTextBrowser::showEvent(event);
@@ -673,6 +854,11 @@ void ChatView::hideEvent(QHideEvent *event)
     // Nobody sees a clip while the chat is hidden, so nothing is decoded.
     for (ClipPlayer *player : std::as_const(m_videos))
         player->setPaused(true);
+    // Nor hears a video: it waits, paused, for the chat to come back.
+    if (m_inlinePlayer && m_inlinePlayer->playbackState() == QMediaPlayer::PlayingState) {
+        m_inlinePlayer->pause();
+        showInlinePaused();
+    }
 }
 
 void ChatView::showVideoFrame(const QUrl &url, const QImage &frame)

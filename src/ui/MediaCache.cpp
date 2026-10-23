@@ -15,6 +15,7 @@
 #include <QTimer>
 #include <QUrlQuery>
 
+#include <cmath>
 #include <iterator>
 
 namespace {
@@ -75,8 +76,10 @@ constexpr qint64 ArrivalGraceMs = 5000;
 constexpr int TransferTimeoutMs = 30000;
 
 // Fetched again by itself after a failure that can pass, this long after
-// each try, then left alone.
-constexpr int RetryDelaysMs[] = {3000, 15000, 60000};
+// each try, then left alone. Long enough in all (about four minutes) for
+// Discord's media server to make a new video's still, which answers 504
+// until it has: a clip posted a moment ago stayed a black box (0.9.3).
+constexpr int RetryDelaysMs[] = {2000, 5000, 10000, 20000, 40000, 60000, 120000};
 
 // Nothing kept for drawing is larger than this on its long edge.
 //
@@ -311,8 +314,9 @@ QImage MediaCache::image(const QUrl &url)
     }
 
     // A picture that already failed is never retried, or a dead link would
-    // start a download on every repaint.
-    if (m_failed.contains(key) || m_inFlight.contains(key))
+    // start a download on every repaint; one waiting to be tried again is
+    // left to its own timer.
+    if (m_failed.contains(key) || m_inFlight.contains(key) || m_retrying.contains(key))
         return {};
 
     // Said once per host, so a picture that is skipped is never a mystery
@@ -465,13 +469,20 @@ void MediaCache::recordFailure(const QString &key, int status, const QString &er
         const int attempt = m_retries.value(key, 0);
         if (attempt < int(std::size(RetryDelaysMs))) {
             m_retries.insert(key, attempt + 1);
+            m_retrying.insert(key);
             const int delay = RetryDelaysMs[attempt];
             again = QStringLiteral(", trying again in %1 s").arg(delay / 1000);
             QTimer::singleShot(delay, this, [this, key]() {
+                m_retrying.remove(key);
                 if (m_images.contains(key) || m_inFlight.contains(key) || m_failed.contains(key))
                     return;
                 fetch(QUrl(key));
             });
+        } else {
+            // Tried for minutes: given up on until the program starts again,
+            // rather than asked for on every repaint from now on.
+            m_failed.insert(key);
+            again = QStringLiteral(", giving up");
         }
     }
 
@@ -615,6 +626,105 @@ QPixmap MediaCache::brandMark(int size)
         return initialsAvatar(QStringLiteral("W"), size);
 
     return source.scaled(size, size, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+}
+
+// ThumbHash, by Evan Wallace (github.com/evanw/thumbhash, MIT): a header of
+// average colours and scales, then 4-bit DCT coefficients for lightness, two
+// colour axes and, if present, alpha. This follows its reference decoder.
+QImage MediaCache::fromThumbHash(const QString &base64)
+{
+    const QByteArray bytes = QByteArray::fromBase64(base64.toLatin1());
+    if (bytes.size() < 5)
+        return {};
+    const auto at = [&bytes](int i) -> int { return i < bytes.size() ? static_cast<unsigned char>(bytes[i]) : 0; };
+
+    const quint32 header24 = quint32(at(0)) | (quint32(at(1)) << 8) | (quint32(at(2)) << 16);
+    const quint32 header16 = quint32(at(3)) | (quint32(at(4)) << 8);
+    const double lDc = (header24 & 63) / 63.0;
+    const double pDc = ((header24 >> 6) & 63) / 31.5 - 1.0;
+    const double qDc = ((header24 >> 12) & 63) / 31.5 - 1.0;
+    const double lScale = ((header24 >> 18) & 31) / 31.0;
+    const bool hasAlpha = (header24 >> 23) != 0;
+    const double pScale = ((header16 >> 3) & 63) / 63.0;
+    const double qScale = ((header16 >> 9) & 63) / 63.0;
+    const bool isLandscape = (header16 >> 15) != 0;
+    const int lx = qMax(3, isLandscape ? (hasAlpha ? 5 : 7) : int(header16 & 7));
+    const int ly = qMax(3, isLandscape ? int(header16 & 7) : (hasAlpha ? 5 : 7));
+    const double aDc = hasAlpha ? (at(5) & 15) / 15.0 : 1.0;
+    const double aScale = (at(5) >> 4) / 15.0;
+
+    // The varying factors, saturation boosted by 1.25 as the reference does
+    // to make up for the rounding.
+    int acStart = hasAlpha ? 6 : 5;
+    int acIndex = 0;
+    const auto channel = [&](int nx, int ny, double scale) {
+        QList<double> ac;
+        for (int cy = 0; cy < ny; ++cy) {
+            for (int cx = cy ? 0 : 1; cx * ny < nx * (ny - cy); ++cx) {
+                const int nibble = (at(acStart + (acIndex >> 1)) >> ((acIndex & 1) << 2)) & 15;
+                ++acIndex;
+                ac.append((nibble / 7.5 - 1.0) * scale);
+            }
+        }
+        return ac;
+    };
+    const QList<double> lAc = channel(lx, ly, lScale);
+    const QList<double> pAc = channel(3, 3, pScale * 1.25);
+    const QList<double> qAc = channel(3, 3, qScale * 1.25);
+    const QList<double> aAc = hasAlpha ? channel(5, 5, aScale) : QList<double>{};
+
+    // The approximate shape, from the coefficient counts.
+    const int shapeX = isLandscape ? (hasAlpha ? 5 : 7) : int(at(3) & 7);
+    const int shapeY = isLandscape ? int(at(3) & 7) : (hasAlpha ? 5 : 7);
+    if (shapeX <= 0 || shapeY <= 0)
+        return {};
+    const double ratio = double(shapeX) / shapeY;
+    const int w = qMax(1, int(std::lround(ratio > 1 ? 32.0 : 32.0 * ratio)));
+    const int h = qMax(1, int(std::lround(ratio > 1 ? 32.0 / ratio : 32.0)));
+
+    constexpr double Pi = 3.14159265358979323846;
+    QImage image(w, h, QImage::Format_ARGB32);
+    const int nx = qMax(lx, hasAlpha ? 5 : 3);
+    const int ny = qMax(ly, hasAlpha ? 5 : 3);
+    QList<double> fx(nx), fy(ny);
+    for (int y = 0; y < h; ++y) {
+        QRgb *row = reinterpret_cast<QRgb *>(image.scanLine(y));
+        for (int x = 0; x < w; ++x) {
+            double l = lDc, p = pDc, q = qDc, a = aDc;
+            for (int cx = 0; cx < nx; ++cx)
+                fx[cx] = std::cos(Pi / w * (x + 0.5) * cx);
+            for (int cy = 0; cy < ny; ++cy)
+                fy[cy] = std::cos(Pi / h * (y + 0.5) * cy);
+
+            for (int cy = 0, j = 0; cy < ly; ++cy) {
+                const double fy2 = fy[cy] * 2;
+                for (int cx = cy ? 0 : 1; cx * ly < lx * (ly - cy); ++cx, ++j)
+                    l += lAc.value(j) * fx[cx] * fy2;
+            }
+            for (int cy = 0, j = 0; cy < 3; ++cy) {
+                const double fy2 = fy[cy] * 2;
+                for (int cx = cy ? 0 : 1; cx < 3 - cy; ++cx, ++j) {
+                    const double f = fx[cx] * fy2;
+                    p += pAc.value(j) * f;
+                    q += qAc.value(j) * f;
+                }
+            }
+            if (hasAlpha) {
+                for (int cy = 0, j = 0; cy < 5; ++cy) {
+                    const double fy2 = fy[cy] * 2;
+                    for (int cx = cy ? 0 : 1; cx < 5 - cy; ++cx, ++j)
+                        a += aAc.value(j) * fx[cx] * fy2;
+                }
+            }
+
+            const double b = l - 2.0 / 3.0 * p;
+            const double r = (3.0 * l - b + q) / 2.0;
+            const double g = r - q;
+            const auto byte = [](double v) { return int(qBound(0.0, 255.0 * qMin(1.0, v), 255.0)); };
+            row[x] = qRgba(byte(r), byte(g), byte(b), byte(a));
+        }
+    }
+    return image;
 }
 
 QUrl MediaCache::avatarUrl(const QString &userId, const QString &avatarHash, int size)

@@ -1,8 +1,10 @@
 #include "core/SearchQuery.h"
 
 #include <QJsonArray>
+#include <QJsonObject>
 #include <QJsonValue>
 #include <QRegularExpression>
+#include <QSet>
 #include <QTime>
 
 #include <algorithm>
@@ -351,6 +353,49 @@ Page readPage(const QJsonObject &reply)
             page.threads.insert(id, thread);
     }
     return page;
+}
+
+QJsonObject toTabBody(const QList<QPair<QString, QString>> &query)
+{
+    static const QSet<QString> lists{QStringLiteral("author_id"), QStringLiteral("mentions"),
+                                     QStringLiteral("channel_id"), QStringLiteral("has")};
+    static const QSet<QString> numbers{QStringLiteral("offset"), QStringLiteral("limit")};
+    static const QSet<QString> flags{QStringLiteral("pinned")};
+
+    QJsonObject tab;
+    bool includeNsfw = false;
+    for (const QPair<QString, QString> &pair : query) {
+        const QString &name = pair.first;
+        if (name == QLatin1String("include_nsfw")) {
+            includeNsfw = pair.second == QLatin1String("true");
+        } else if (lists.contains(name)) {
+            QJsonArray values = tab.value(name).toArray();
+            values.append(pair.second);
+            tab.insert(name, values);
+        } else if (numbers.contains(name)) {
+            tab.insert(name, pair.second.toInt());
+        } else if (flags.contains(name)) {
+            tab.insert(name, pair.second == QLatin1String("true"));
+        } else {
+            tab.insert(name, pair.second);
+        }
+    }
+    if (!tab.contains(QStringLiteral("limit")))
+        tab.insert(QStringLiteral("limit"), PageSize);
+
+    QJsonObject body{
+        {QStringLiteral("tabs"), QJsonObject{{QStringLiteral("messages"), tab}}},
+        // Without it the count stops at 1001, and the pages are counted from it.
+        {QStringLiteral("track_exact_total_hits"), true},
+    };
+    if (includeNsfw)
+        body.insert(QStringLiteral("include_nsfw"), true);
+    return body;
+}
+
+QJsonObject messagesTab(const QJsonObject &reply)
+{
+    return reply.value(QStringLiteral("tabs")).toObject().value(QStringLiteral("messages")).toObject();
 }
 
 QStringList highlightTerms(const QString &content)

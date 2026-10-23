@@ -53,6 +53,11 @@ public:
     void setFrame(const QString &userId, const QImage &image, Surface surface);
     void dropFrames(const QString &userId, Surface surface);
 
+    // Who is watching `streamerId`'s stream, from Discord's STREAM_CREATE and
+    // STREAM_UPDATE (viewer_ids). Drawn on the stream's tile as an eye and a
+    // count, as Discord does, and named in the tile's tooltip. Empty clears.
+    void setStreamViewers(const QString &streamerId, const QStringList &viewerIds);
+
     void refresh();
 
     QSize sizeHint() const override;
@@ -150,4 +155,6 @@ private:
     QSet<QString> m_streamHidden;
     QHash<QString, QImage> m_cameraFrames;
     QHash<QString, QImage> m_shareFrames;
+    QHash<QString, QStringList> m_streamViewers;   // streamer -> who is watching
+    QString viewersText(const QString &streamerId) const;
 };

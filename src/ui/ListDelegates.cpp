@@ -1,11 +1,15 @@
 #include "ui/ListDelegates.h"
 
+#include "ui/AnimatedImage.h"
 #include "ui/FrameClock.h"
 #include "ui/LookPainter.h"
+#include "ui/MediaCache.h"
 #include "ui/Theme.h"
 
 #include <QAbstractItemView>
 #include <QCursor>
+#include <QElapsedTimer>
+#include <QPointer>
 #include <QIcon>
 #include <QMouseEvent>
 #include <QPainter>
@@ -308,6 +312,108 @@ void AnimatedDelegate::paintNameTrail(QPainter *painter, int row, const NameTrai
             tips.append({placed.at(i), trail.icons.at(i).tooltip});
     }
     m_nameTips.insert(row, tips);
+}
+
+namespace {
+
+// The animated avatars playing in the lists: a few at most, each paused as
+// soon as nothing has drawn it for a moment, so a row the pointer left costs
+// nothing. Frames are chosen on AnimatedImage's own ticks (the frame clock),
+// and a paint only draws the one it holds (CLAUDE.md).
+class MovingAvatars : public QObject
+{
+public:
+    static MovingAvatars &instance()
+    {
+        static MovingAvatars avatars;
+        return avatars;
+    }
+
+    QImage frame(const QString &url)
+    {
+        Moving &entry = m_moving[url];
+        entry.lastAsked.start();
+        if (!entry.image) {
+            const QByteArray bytes = MediaCache::instance().animationData(QUrl(url));
+            if (bytes.isEmpty()) {
+                m_moving.remove(url);
+                return {};
+            }
+            entry.image = new AnimatedImage(this);
+            if (!entry.image->setData(bytes) || !entry.image->isAnimated()) {
+                delete entry.image;
+                m_moving.remove(url);
+                return {};
+            }
+            trim();
+        }
+        entry.image->setPlaying(true);
+        if (!m_sweep.isActive())
+            m_sweep.start();
+        return entry.image->currentFrame();
+    }
+
+private:
+    struct Moving
+    {
+        QPointer<AnimatedImage> image;
+        QElapsedTimer lastAsked;
+    };
+
+    MovingAvatars()
+    {
+        m_sweep.setInterval(400);
+        connect(&m_sweep, &QTimer::timeout, this, [this]() {
+            bool anyPlaying = false;
+            for (auto it = m_moving.begin(); it != m_moving.end(); ++it) {
+                const bool wanted = it->lastAsked.isValid() && it->lastAsked.elapsed() < 300;
+                if (it->image)
+                    it->image->setPlaying(wanted);
+                anyPlaying = anyPlaying || wanted;
+            }
+            if (!anyPlaying)
+                m_sweep.stop();
+        });
+    }
+
+    // Six kept decoded; the one asked for longest ago goes first.
+    void trim()
+    {
+        while (m_moving.size() > 6) {
+            auto oldest = m_moving.begin();
+            for (auto it = m_moving.begin(); it != m_moving.end(); ++it) {
+                if (it->lastAsked.elapsed() > oldest->lastAsked.elapsed())
+                    oldest = it;
+            }
+            delete oldest->image;
+            m_moving.erase(oldest);
+        }
+    }
+
+    QHash<QString, Moving> m_moving;
+    QTimer m_sweep;
+};
+
+} // namespace
+
+void AnimatedDelegate::paintAvatar(QPainter *painter, const QRect &avatar, const QModelIndex &index, bool playing) const
+{
+    const QString moving = index.data(SingularityRoles::AvatarUrl).toString();
+    if (playing && !moving.isEmpty()) {
+        const QImage frame = MovingAvatars::instance().frame(moving);
+        if (!frame.isNull()) {
+            const qreal ratio = painter->device() ? painter->device()->devicePixelRatioF() : 1.0;
+            const int pixels = qCeil(avatar.width() * ratio);
+            QPixmap round = MediaCache::circular(frame, pixels);
+            round.setDevicePixelRatio(ratio);
+            painter->drawPixmap(avatar.topLeft(), round);
+            requestFrame();
+            return;
+        }
+    }
+    const QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
+    if (!icon.isNull())
+        icon.paint(painter, avatar, Qt::AlignCenter);
 }
 
 bool AnimatedDelegate::paintAvatarIcon(QPainter *painter, int row, const QRect &avatar, const QString &userId,
@@ -747,9 +853,7 @@ void MemberDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
         painter->drawRoundedRect(QRectF(panel), 7, 7);
     }
 
-    const QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
-    if (!icon.isNull())
-        icon.paint(painter, avatarRect, Qt::AlignCenter);
+    paintAvatar(painter, avatarRect, index, hovered);
     looks.paintDecoration(painter, avatarRect, look.decoration, hovered);
 
     if (!paintAvatarIcon(painter, index.row(), avatarRect, userId, QColor(Theme::SurfaceSidebar)))
@@ -1273,9 +1377,7 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
             painter->drawRoundedRect(panel, 7, 7);
         }
 
-        const QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
-        if (!icon.isNull())
-            icon.paint(painter, avatarRect, Qt::AlignCenter);
+        paintAvatar(painter, avatarRect, index, hovered || selected);
         looks.paintDecoration(painter, avatarRect, look.decoration, hovered);
 
         if (userId.isEmpty() || !paintAvatarIcon(painter, index.row(), avatarRect, userId, QColor(Theme::SurfaceSidebar)))

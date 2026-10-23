@@ -57,6 +57,9 @@
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QMimeData>
+#include <QDateTime>
+#include <QDir>
+#include <QStandardPaths>
 #include <QCloseEvent>
 #include <QCursor>
 #include <QDialog>
@@ -899,6 +902,28 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         stopScreenShare();
     });
 
+    // Change Windows: the same stream carries on with the new source.
+    connect(m_share, &ScreenShare::resized, this, [this](int width, int height) {
+        if (m_shareVoice)
+            m_shareVoice->updateVideoSize(width, height);
+    });
+    connect(m_share, &ScreenShare::switched, this, [this]() {
+        if (!m_sharePendingSource.isEmpty())
+            m_shareMonitorId = m_sharePendingSource;
+        m_sharePendingSource.clear();
+        flashStatus(QStringLiteral("Now sharing the new window. Everyone watching sees it without doing anything."),
+                    4000);
+        // The tile's still picture follows what is being shown now.
+        m_lastSharePicture = QImage();
+        m_streamPreviewTries = 0;
+        m_streamPreviewTimer.start(1500);
+    });
+    connect(m_share, &ScreenShare::switchFailed, this, [this](const QString &reason) {
+        m_sharePendingSource.clear();
+        wlog(QStringLiteral("share"), QStringLiteral("switch failed: %1").arg(reason));
+        flashStatus(reason, 6000);
+    });
+
     // The share's sound goes from the capture thread straight to the stream
     // connection, which takes it under a lock; the window never touches it.
     m_shareAudio = new ShareAudio(this);
@@ -1472,6 +1497,22 @@ void MainWindow::buildUi()
     rootLayout->addWidget(buildGuildRail(m_backdrop));
     rootLayout->addWidget(buildSidebar(m_backdrop));
 
+    // Discord's content area: the channel's bar across the top - its name,
+    // topic, Call, and the search box at the far right - and under it the
+    // call, the conversation, and the members or search results. The bar
+    // used to sit inside the chat column, under the call, so joining a voice
+    // channel pushed the search box half way down the window (0.9.3).
+    auto *content = new QVBoxLayout;
+    content->setContentsMargins(0, 0, 0, 0);
+    content->setSpacing(12);
+    m_chatHeader = buildChatHeader(m_backdrop);
+    content->addWidget(m_chatHeader);
+    auto *contentRow = new QHBoxLayout;
+    contentRow->setContentsMargins(0, 0, 0, 0);
+    contentRow->setSpacing(12);
+    content->addLayout(contentRow, 1);
+    rootLayout->addLayout(content, 1);
+
     auto *chatCard = new QFrame(m_backdrop);
     chatCard->setObjectName(QStringLiteral("ChatColumn"));
     chatCard->setAttribute(Qt::WA_StyledBackground, true);
@@ -1540,6 +1581,14 @@ void MainWindow::buildUi()
     connect(m_friends, &FriendsPage::statusMessage, this,
             [this](const QString &text) { flashStatus(text, 6000); });
     m_chatStack->addWidget(m_friends);
+    // Friends has a bar of its own, as in Discord, and the search box goes
+    // into it: there it searches every direct and group chat.
+    connect(m_chatStack, &QStackedWidget::currentChanged, this, [this]() {
+        const bool chat = m_chatStack->currentWidget() == m_chatPage;
+        if (m_chatHeader)
+            m_chatHeader->setVisible(chat);
+        placeSearchBox(chat);
+    });
 
     m_chatSplitter->addWidget(m_callView);
     m_chatSplitter->addWidget(m_chatStack);
@@ -1578,32 +1627,33 @@ void MainWindow::buildUi()
     chatLayout->addWidget(m_callBanner);
     chatLayout->addWidget(m_chatSplitter);
 
-    rootLayout->addWidget(chatCard, 1);
+    contentRow->addWidget(chatCard, 1);
 
-    // The people, down the right. Outside the chat card rather than inside it
-    // so it keeps its own background and full height, the way the sidebar on
+    // The people, down the right under the bar. Outside the chat card rather
+    // than inside it so it keeps its own background, the way the sidebar on
     // the left does.
     m_members = new MemberListPanel(m_store, m_backdrop);
     connect(m_members, &MemberListPanel::profileRequested, this,
             [this](const QString &userId) { showProfile(userId, QCursor::pos()); });
     connect(m_members, &MemberListPanel::volumeMenuRequested, this, &MainWindow::showPersonMenu);
-    rootLayout->addWidget(m_members);
+    contentRow->addWidget(m_members);
 
     // Search results take the member list's place while a search is open,
-    // as in Discord.
+    // as in Discord: straight under the box they came from.
     m_searchPanel = new SearchPanel(m_rest, m_store, m_backdrop);
     m_searchPanel->hide();
-    rootLayout->addWidget(m_searchPanel);
+    contentRow->addWidget(m_searchPanel);
     connect(m_searchBox, &SearchBox::searchRequested, this, &MainWindow::openSearch);
     connect(m_searchBox, &SearchBox::cleared, this, &MainWindow::closeSearch);
     connect(m_searchPanel, &SearchPanel::closeRequested, this, &MainWindow::closeSearch);
     connect(m_searchPanel, &SearchPanel::jumpRequested, this, &MainWindow::jumpToMessage);
 
-    // Ctrl+F goes to the box, as in Discord, wherever a chat is open.
+    // Ctrl+F goes to the box, as in Discord: in a chat, or on Friends, where
+    // it searches every chat.
     auto *findAction = new QAction(this);
     findAction->setShortcut(QKeySequence::Find);
     connect(findAction, &QAction::triggered, this, [this]() {
-        if (m_chatStack->currentWidget() != m_chatPage)
+        if (!m_searchBox->isVisibleTo(this))
             return;
         m_searchBox->setFocus(Qt::ShortcutFocusReason);
         m_searchBox->selectAll();
@@ -2176,25 +2226,35 @@ QWidget *MainWindow::buildVoicePanel(QWidget *parent)
     return panel;
 }
 
-QWidget *MainWindow::buildChatColumn(QWidget *parent)
+// The channel's bar along the top of the content area, as Discord's: the
+// title and topic on the left, the search box at the right, above the call,
+// the conversation and the member list alike.
+QWidget *MainWindow::buildChatHeader(QWidget *parent)
 {
-    auto *chat = new QWidget(parent);
-    auto *layout = new QVBoxLayout(chat);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
-
-    auto *header = new QWidget(chat);
-    header->setObjectName(QStringLiteral("ChatHeader"));
+    auto *header = new QWidget(parent);
+    header->setObjectName(QStringLiteral("ChannelBar"));
+    header->setAttribute(Qt::WA_StyledBackground, true);
     header->setFixedHeight(58);
-    // The title and topic on the left, the search box at the right, as
-    // Discord lays its header out.
     auto *headerRow = new QHBoxLayout(header);
+    m_chatHeaderRow = headerRow;
     headerRow->setContentsMargins(22, 10, 16, 10);
     headerRow->setSpacing(12);
     auto *headerLayout = new QVBoxLayout;
     headerLayout->setContentsMargins(0, 0, 0, 0);
     headerLayout->setSpacing(1);
     headerRow->addLayout(headerLayout, 1);
+
+    // At the right, just before the search box, where Discord keeps its
+    // call buttons in a direct message's bar.
+    m_callButton = new QPushButton(QStringLiteral("Call"), header);
+    m_callButton->setObjectName(QStringLiteral("CallButton"));
+    m_callButton->setCursor(Qt::PointingHandCursor);
+    m_callButton->setFocusPolicy(Qt::NoFocus);
+    m_callButton->setToolTip(QStringLiteral("Start a call"));
+    m_callButton->hide();
+    connect(m_callButton, &QPushButton::clicked, this, &MainWindow::startCall);
+    headerRow->addWidget(m_callButton, 0, Qt::AlignVCenter);
+
     m_searchBox = new SearchBox(m_store, m_rest, header);
     headerRow->addWidget(m_searchBox, 0, Qt::AlignVCenter);
 
@@ -2203,25 +2263,21 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
     // A direct message's title is drawn in the other person's font; see
     // eventFilter.
     m_channelTitle->installEventFilter(this);
-    auto *titleRow = new QHBoxLayout;
-    titleRow->setContentsMargins(0, 0, 0, 0);
-    titleRow->setSpacing(8);
-    titleRow->addWidget(m_channelTitle, 1);
-    m_callButton = new QPushButton(QStringLiteral("Call"), header);
-    m_callButton->setObjectName(QStringLiteral("CallButton"));
-    m_callButton->setCursor(Qt::PointingHandCursor);
-    m_callButton->setFocusPolicy(Qt::NoFocus);
-    m_callButton->setToolTip(QStringLiteral("Start a call"));
-    m_callButton->hide();
-    connect(m_callButton, &QPushButton::clicked, this, &MainWindow::startCall);
-    titleRow->addWidget(m_callButton);
-    headerLayout->addLayout(titleRow);
+    headerLayout->addWidget(m_channelTitle);
 
     m_channelTopic = new QLabel(QString(), header);
     m_channelTopic->setObjectName(QStringLiteral("ChannelTopic"));
     m_channelTopic->setVisible(false);
     headerLayout->addWidget(m_channelTopic);
-    layout->addWidget(header);
+    return header;
+}
+
+QWidget *MainWindow::buildChatColumn(QWidget *parent)
+{
+    auto *chat = new QWidget(parent);
+    auto *layout = new QVBoxLayout(chat);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
 
     m_messageView = new ChatView(chat);
     m_messageView->document()->setDefaultStyleSheet(Theme::messageViewCss(
@@ -2234,6 +2290,12 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
     m_messageView->setOpenExternalLinks(false);
     m_messageView->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_messageView, &ChatView::anchorClicked, this, &MainWindow::handleAnchor);
+    // What will not play in place gets the viewer's player instead.
+    connect(m_messageView, &ChatView::inlineVideoFailed, this, [this](const QUrl &video, const QString &) {
+        if (!m_imageViewer)
+            m_imageViewer = new ImageViewer(this);
+        m_imageViewer->showVideo(video);
+    });
     connect(m_messageView, &QWidget::customContextMenuRequested, this, &MainWindow::showMessageMenu);
     layout->addWidget(m_messageView, 1);
 
@@ -3036,6 +3098,8 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
             && data.value(QStringLiteral("self_stream")).toBool())
             playSound(QStringLiteral("stream_started"));
         updateOutgoingRing();
+        // Someone leaving or joining the open chat's call turns Ring on or off.
+        updateCallButton();
 
         // Says out loud who the main gateway thinks has a camera or a screen
         // running in the call we are in.
@@ -3211,6 +3275,26 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
 
     // Who is watching our stream. Discord's viewer sounds, for up to 25, as
     // its client plays them.
+    // Who is watching any stream, ours or someone else's: Discord sends
+    // viewer_ids on STREAM_CREATE and STREAM_UPDATE and its client shows the
+    // count and the names on the stream's tile. The key ends in the
+    // streamer's id ("guild:g:c:u", "call:c:u").
+    if (eventType == QLatin1String("STREAM_CREATE") || eventType == QLatin1String("STREAM_UPDATE")
+        || eventType == QLatin1String("STREAM_DELETE")) {
+        const QString key = data.value(QStringLiteral("stream_key")).toString();
+        const QString streamer = key.section(QLatin1Char(':'), -1);
+        QStringList viewers;
+        if (eventType != QLatin1String("STREAM_DELETE")) {
+            for (const QJsonValue &id : data.value(QStringLiteral("viewer_ids")).toArray()) {
+                const QString viewer = id.toVariant().toString();
+                if (!viewer.isEmpty() && viewer != streamer)
+                    viewers.append(viewer);
+            }
+        }
+        if (m_callView && !streamer.isEmpty())
+            m_callView->setStreamViewers(streamer, viewers);
+    }
+
     if (eventType == QLatin1String("STREAM_UPDATE")) {
         const QString key = data.value(QStringLiteral("stream_key")).toString();
         if (!m_myStreamKey.isEmpty() && key == m_myStreamKey) {
@@ -3243,6 +3327,7 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
                     playSound(QStringLiteral("stream_user_left"));
             }
             m_myStreamViewers = watching;
+            updateVoicePanel();   // the Live button names who is watching
         }
     }
 
@@ -4290,6 +4375,8 @@ void MainWindow::populateChannelList(bool autoSelectFirst)
             const QUrl url = MediaCache::avatarUrl(otherId, info.avatarHash, 64);
             if (!url.isEmpty())
                 picture = MediaCache::instance().image(url);
+            item->setData(SingularityRoles::AvatarUrl,
+                          info.avatarHash.startsWith(QLatin1String("a_")) ? url.toString() : QString());
 
             const PresenceInfo presence = m_store->presence(otherId);
             item->setData(SingularityRoles::Status, m_store->presenceBubble(otherId));
@@ -4518,6 +4605,9 @@ void MainWindow::openChannel(const QString &channelId)
     if (m_currentChannelId != channelId && m_awayFromPresent.remove(m_currentChannelId))
         m_store->forgetHistory(m_currentChannelId);
     m_jumpTarget.clear();
+    // A video playing in the chat stops with the chat it was in.
+    if (m_currentChannelId != channelId && m_messageView)
+        m_messageView->stopInline(QUrl());
 
     // The Friends row is not a channel, it swaps the whole chat area.
     if (channelId == QLatin1String("singularity:friends")) {
@@ -5651,23 +5741,30 @@ QString MainWindow::messageHtml(const MessageInfo &message, bool grouped)
     if (message.edited && !body.isEmpty())
         body += QStringLiteral("&#160;<span class=\"tag-edited\">(edited)</span>");
 
-    const auto attachmentsHtml = [](const QList<Attachment> &attachments) {
+    const auto attachmentsHtml = [this](const QList<Attachment> &attachments) {
         QString html;
         for (const Attachment &attachment : attachments) {
             const QString safeUrl = attachment.url.toHtmlEscaped();
             const QString label = attachment.filename.isEmpty() ? QStringLiteral("file")
                                                                 : attachment.filename.toHtmlEscaped();
 
-            // A video is a still with a play button, as Discord shows it, and
-            // a click plays it with its sound. It used to be handed to the
-            // chat as a picture: a silent loop at best, and a black box once
-            // four GIFs on screen had used up the moving-picture budget.
+            // A video is a still with a play button, as Discord shows it. A
+            // click plays it right there with its sound (and pauses it), and
+            // Pop out carries it on in the big viewer, as Discord's full
+            // screen button does. It used to be handed to the chat as a
+            // picture: a silent loop at best, and a black box once four GIFs
+            // on screen had used up the moving-picture budget.
             if (attachment.isVideo() && ChatView::isAllowedImageHost(QUrl(attachment.url))) {
                 const QUrl still = ChatView::videoStill(attachment.proxyUrl, attachment.url,
-                                                        attachment.width, attachment.height);
+                                                        attachment.width, attachment.height, attachment.placeholder);
+                if (m_messageView)
+                    m_messageView->noteVideo(QUrl(attachment.url), still);
                 html += QStringLiteral("<div class=\"attach\"><a href=\"singularity-video:%1\" title=\"%2\">"
-                                       "<img src=\"%3\"></a></div>")
-                            .arg(safeUrl, label, still.toString(QUrl::FullyEncoded).toHtmlEscaped());
+                                       "<img src=\"%3\"></a></div>"
+                                       "<div class=\"file\"><a href=\"singularity-video-pop:%1\">Pop out</a>"
+                                       " &#160;%2 &#160;%4</div>")
+                            .arg(safeUrl, label, still.toString(QUrl::FullyEncoded).toHtmlEscaped(),
+                                 humanSize(attachment.size));
                 continue;
             }
             if (attachment.isImage() && ChatView::isAllowedImageHost(QUrl(attachment.url))) {
@@ -7620,15 +7717,32 @@ void MainWindow::handleAnchor(const QUrl &url)
         return;
     }
 
-    // A video attachment's play button: the viewer plays it with its sound
-    // and the usual controls.
+    // A video attachment's play button: it plays where it is, with its
+    // sound, and a second click pauses it. Anything the chat cannot play in
+    // place (a video in a link preview) goes to the viewer.
     if (url.scheme() == QLatin1String("singularity-video")) {
         const QString target = whole.mid(QStringLiteral("singularity-video:").size());
         if (target.isEmpty())
             return;
+        if (m_messageView && m_messageView->canPlayInline(QUrl(target))) {
+            m_messageView->playInline(QUrl(target));
+            return;
+        }
         if (!m_imageViewer)
             m_imageViewer = new ImageViewer(this);
         m_imageViewer->showVideo(QUrl(target));
+        return;
+    }
+
+    // Pop out: the big viewer, carrying on from where it was in the chat.
+    if (url.scheme() == QLatin1String("singularity-video-pop")) {
+        const QString target = whole.mid(QStringLiteral("singularity-video-pop:").size());
+        if (target.isEmpty())
+            return;
+        const qint64 at = m_messageView ? m_messageView->stopInline(QUrl(target)) : 0;
+        if (!m_imageViewer)
+            m_imageViewer = new ImageViewer(this);
+        m_imageViewer->showVideo(QUrl(target), at);
         return;
     }
 
@@ -9870,23 +9984,57 @@ void MainWindow::startBigUpload(const QString &path)
     }
 }
 
+// A picture that is only data - a screenshot on the clipboard, a picture
+// dragged out of a browser - written to a file of its own so it can be sent
+// like any other. "image.png", the name Discord's client gives a pasted one,
+// in a folder of its own so two pastes never share a name.
+QString MainWindow::savePictureForUpload(const QImage &image)
+{
+    if (image.isNull())
+        return {};
+    const QString folder = QStandardPaths::writableLocation(QStandardPaths::TempLocation)
+        + QStringLiteral("/Singularity-pasted/") + QString::number(QDateTime::currentMSecsSinceEpoch());
+    if (!QDir().mkpath(folder))
+        return {};
+    const QString path = folder + QStringLiteral("/image.png");
+    return image.save(path, "PNG") ? path : QString();
+}
+
+// Local files from the mime data, or else a picture carried as data. A link
+// to a picture on the web with no picture data is left to be typed in as a
+// link, which is what Discord does with one.
+QStringList MainWindow::filesFromMime(const QMimeData *mime, bool save)
+{
+    QStringList files;
+    if (!mime)
+        return files;
+    if (mime->hasUrls()) {
+        for (const QUrl &url : mime->urls()) {
+            if (url.isLocalFile())
+                files.append(url.toLocalFile());
+        }
+    }
+    if (files.isEmpty() && mime->hasImage()) {
+        if (!save)
+            return {QStringLiteral("image.png")};
+        const QString saved = savePictureForUpload(qvariant_cast<QImage>(mime->imageData()));
+        if (!saved.isEmpty())
+            files.append(saved);
+    }
+    return files;
+}
+
 bool MainWindow::handleFileDrop(QEvent *event)
 {
     auto *drop = static_cast<QDropEvent *>(event);
-    const QMimeData *mime = drop->mimeData();
-    if (!mime || !mime->hasUrls())
-        return false;
-
-    QStringList files;
-    for (const QUrl &url : mime->urls()) {
-        if (url.isLocalFile())
-            files.append(url.toLocalFile());
-    }
+    const bool dropping = event->type() == QEvent::Drop;
+    // Only a drop writes a picture out; entering and moving just ask.
+    const QStringList files = filesFromMime(drop->mimeData(), dropping);
     if (files.isEmpty())
         return false;
 
     drop->acceptProposedAction();
-    if (event->type() == QEvent::Drop)
+    if (dropping)
         addAttachments(files);
     return true;
 }
@@ -11438,17 +11586,14 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         }
     }
 
-    // Ctrl+V on a file copied in Explorer attaches it, the same as a drop.
+    // Ctrl+V on a file copied in Explorer attaches it, the same as a drop, and
+    // so does a picture on the clipboard (a screenshot, an image copied from
+    // a browser), as image.png - Discord's paste. Text pastes as text.
     if (m_composer && watched == m_composer && event->type() == QEvent::KeyPress
         && static_cast<QKeyEvent *>(event)->matches(QKeySequence::Paste)) {
         const QMimeData *mime = QApplication::clipboard()->mimeData();
-        QStringList files;
-        if (mime && mime->hasUrls()) {
-            for (const QUrl &url : mime->urls()) {
-                if (url.isLocalFile())
-                    files.append(url.toLocalFile());
-            }
-        }
+        const bool textToo = mime && mime->hasText() && !mime->hasUrls() && !mime->text().trimmed().isEmpty();
+        const QStringList files = textToo ? QStringList() : filesFromMime(mime, true);
         if (!files.isEmpty()) {
             addAttachments(files);
             return true;
@@ -11857,8 +12002,20 @@ void MainWindow::startScreenShare()
         return;
     }
 
+    // Live already: Discord's two stream controls, Change Windows and Stop
+    // Streaming. Changing keeps the stream and everyone watching it.
     if (!m_myStreamKey.isEmpty()) {
-        stopScreenShare();
+        QMenu menu(this);
+        QAction *change = menu.addAction(QStringLiteral("Change window or screen..."));
+        change->setEnabled(m_share && m_share->isRunning());
+        QAction *stop = menu.addAction(QStringLiteral("Stop sharing"));
+        const QPoint at = m_shareButton ? m_shareButton->mapToGlobal(QPoint(0, m_shareButton->height()))
+                                        : QCursor::pos();
+        QAction *picked = menu.exec(at);
+        if (picked == change)
+            changeShareSource();
+        else if (picked == stop)
+            stopScreenShare();
         return;
     }
 
@@ -11894,6 +12051,39 @@ void MainWindow::startScreenShare()
     flashStatus(QStringLiteral("Starting your screen share..."), 5000);
     m_gateway->startStream(m_voiceGuildId, m_voiceChannelId);
     updateVoicePanel();
+}
+
+// Another window or screen on the stream that is running, and its sound to
+// match, as Discord's Change Windows. Nobody watching has to do anything.
+void MainWindow::changeShareSource()
+{
+    if (m_myStreamKey.isEmpty() || !m_share || !m_share->isRunning())
+        return;
+    ShareDialog dialog(this);
+    dialog.setSwitching(true);
+    if (!dialog.hasScreens() || dialog.exec() != QDialog::Accepted)
+        return;
+    const QString source = dialog.monitorId();
+    if (source.isEmpty())
+        return;
+
+    const int soundSource = int(dialog.soundSource());
+    const quint32 soundPid = dialog.soundProcessId();
+    if (m_shareAudio && (soundSource != m_shareSoundSource || soundPid != m_shareSoundPid)) {
+        m_shareAudio->stop();
+        if (ShareAudio::Source(soundSource) != ShareAudio::Source::Nothing)
+            m_shareAudio->start(ShareAudio::Source(soundSource), soundPid);
+    }
+    m_shareSoundSource = soundSource;
+    m_shareSoundPid = soundPid;
+    m_shareSoundName = dialog.soundName();
+
+    // Taken as the share's source once the switch has worked (switched); a
+    // window that would not be captured leaves the old one going.
+    if (source != m_shareMonitorId) {
+        m_sharePendingSource = source;
+        m_share->switchSource(source);
+    }
 }
 
 // The official client's stream preview, copied: fitted inside 512 x 288, a
@@ -12388,15 +12578,14 @@ void MainWindow::openSearch(const QString &text)
     if (!m_searchPanel || !m_searchBox)
         return;
 
-    // A server searches all of it; outside one, the chat that is open.
+    // A server searches all of it; outside one, the chat that is open, and
+    // with none open (Friends, the home page) every chat at once, as
+    // Discord's home page does. Until 0.9.4 the last refused.
     QString channelId;
     if (m_currentGuildId.isEmpty()) {
         const ChannelInfo channel = m_store->channel(m_currentChannelId);
-        if (!channel.isDirect()) {
-            flashStatus(QStringLiteral("Open a server or a chat to search it."), 4000);
-            return;
-        }
-        channelId = channel.id;
+        if (channel.isDirect())
+            channelId = channel.id;
     }
 
     if (m_members)
@@ -12420,8 +12609,30 @@ void MainWindow::closeSearch()
         m_members->setGuild(m_currentGuildId);
 }
 
-// The box searches where the window is: the server on screen, or the chat
-// open on the home page. A search open for anywhere else is over.
+// One search box, in whichever bar is on screen: the channel bar, or the
+// Friends page's own. Taken out of the one it is in before going into the
+// other, so neither layout keeps a stale item for it.
+void MainWindow::placeSearchBox(bool inChannelBar)
+{
+    if (!m_searchBox || !m_chatHeaderRow || !m_friends)
+        return;
+    if (inChannelBar) {
+        if (m_chatHeaderRow->indexOf(m_searchBox) >= 0)
+            return;
+        if (QWidget *holder = m_searchBox->parentWidget(); holder && holder->layout())
+            holder->layout()->removeWidget(m_searchBox);
+        m_chatHeaderRow->addWidget(m_searchBox, 0, Qt::AlignVCenter);
+        m_searchBox->show();
+        return;
+    }
+    m_chatHeaderRow->removeWidget(m_searchBox);
+    m_friends->placeInBar(m_searchBox);
+}
+
+// The box searches where the window is: the server on screen, the chat open
+// on the home page, or every chat with none open. A search open for anywhere
+// else is over - except one of every chat while you go from chat to chat on
+// the home page, which is what clicking its results does.
 void MainWindow::updateSearchScope()
 {
     if (!m_searchBox)
@@ -12433,8 +12644,12 @@ void MainWindow::updateSearchScope()
             channelId = channel.id;
     }
     m_searchBox->setScope(m_currentGuildId, channelId);
-    if (m_searchPanel && !m_searchPanel->isHidden()
-        && (m_searchPanel->guildId() != m_currentGuildId || m_searchPanel->channelId() != channelId))
+    if (!m_searchPanel || m_searchPanel->isHidden())
+        return;
+    const bool everyChat = m_searchPanel->guildId().isEmpty() && m_searchPanel->channelId().isEmpty();
+    if (everyChat && m_currentGuildId.isEmpty())
+        return;
+    if (m_searchPanel->guildId() != m_currentGuildId || m_searchPanel->channelId() != channelId)
         closeSearch();
 }
 
@@ -12886,6 +13101,11 @@ void MainWindow::declineCall(const QString &channelId)
                         });
 }
 
+// Discord's client, read from its own code: for a direct message it first
+// asks GET /channels/{id}/call whether the other person can be rung, then
+// joins the call's voice, and rings once the call exists - straight away if
+// there is one, otherwise when CALL_CREATE says it has started. Already in
+// the call, the button rings whoever is not in it, as Discord's Ring does.
 void MainWindow::startCall()
 {
     if (m_currentChannelId.isEmpty() || !m_store || !m_rest)
@@ -12893,28 +13113,95 @@ void MainWindow::startCall()
     const ChannelInfo channel = m_store->channel(m_currentChannelId);
     if (!channel.isDirect())
         return;
-    if (m_voiceChannelId == channel.id
-        && m_voice && m_voice->state() == VoiceConnection::State::Connected) {
-        flashStatus(QStringLiteral("Already in this call."), 3000);
+    const QString channelId = channel.id;
+
+    if (m_voiceChannelId == channelId && m_voice && m_voice->state() == VoiceConnection::State::Connected) {
+        if (missingFromCall(channelId).isEmpty()) {
+            flashStatus(QStringLiteral("Everyone is already in this call."), 3000);
+            return;
+        }
+        ringWhoIsMissing(channelId);
         return;
     }
 
-    QJsonArray recipients;
-    for (const QString &id : channel.recipientIds) {
-        if (id != m_selfUserId)
-            recipients.append(id);
+    const auto begin = [this, channelId](bool ring) {
+        wlog(QStringLiteral("call"), QStringLiteral("starting a call in %1, %2")
+                                         .arg(channelId, ring ? QStringLiteral("ringing once it is up")
+                                                              : QStringLiteral("not ringing")));
+        joinPrivateCall(channelId);
+        if (!ring)
+            return;
+        if (m_activeCalls.contains(channelId)) {
+            ringWhoIsMissing(channelId);
+            return;
+        }
+        m_pendingRings.insert(channelId);
+        // Should CALL_CREATE never come, the ring still goes once the voice
+        // is likely up, rather than not at all.
+        QTimer::singleShot(8000, this, [this, channelId]() {
+            if (m_pendingRings.remove(channelId) && m_voiceChannelId == channelId)
+                ringWhoIsMissing(channelId);
+        });
+    };
+
+    // A group is rung without asking; Discord asks only for one person.
+    if (channel.type != 1 || channel.recipientIds.size() != 1) {
+        begin(true);
+        return;
     }
-    const QString channelId = channel.id;
-    wlog(QStringLiteral("call"), QStringLiteral("starting a call in %1, ringing %2")
-                                     .arg(channelId)
-                                     .arg(recipients.size()));
+    const QString who = callPeerName(channelId);
+    m_rest->fetchCall(
+        channelId,
+        [this, begin, who](const QJsonObject &call) {
+            const bool ringable = call.value(QStringLiteral("ringable")).toBool(true);
+            if (!ringable)
+                flashStatus(QStringLiteral("Discord won't ring %1, so they will only see the call if they open "
+                                           "this chat.").arg(who),
+                            6000);
+            begin(ringable);
+        },
+        [this, who](const RestClient::Error &error) {
+            // Discord's client stops here too, and offers to add them as a
+            // friend: a call to someone who is not one is refused.
+            wlog(QStringLiteral("call"), QStringLiteral("call check failed: HTTP %1").arg(error.httpStatus));
+            flashStatus(QStringLiteral("Discord won't let you call %1. You may need to be friends first.").arg(who),
+                        6000);
+        });
+}
+
+// The people of a direct or group chat not sitting in its call.
+QStringList MainWindow::missingFromCall(const QString &channelId) const
+{
+    QStringList missing;
+    if (!m_store)
+        return missing;
+    const QStringList here = m_store->voiceMembers(channelId);
+    for (const QString &id : m_store->channel(channelId).recipientIds) {
+        if (id != m_selfUserId && !here.contains(id))
+            missing.append(id);
+    }
+    return missing;
+}
+
+void MainWindow::ringWhoIsMissing(const QString &channelId)
+{
+    if (!m_rest)
+        return;
+    const QStringList missing = missingFromCall(channelId);
+    if (missing.isEmpty())
+        return;
+    QJsonArray recipients;
+    for (const QString &id : missing)
+        recipients.append(id);
+    wlog(QStringLiteral("call"), QStringLiteral("ringing %1 in %2").arg(missing.size()).arg(channelId));
     m_rest->ringCall(channelId, recipients, [](const QJsonObject &) {},
                      [this](const RestClient::Error &error) {
-                         wlog(QStringLiteral("call"),
-                              QStringLiteral("ring failed: HTTP %1").arg(error.httpStatus));
-                         flashStatus(QStringLiteral("Could not start the call."), 5000);
+                         wlog(QStringLiteral("call"), QStringLiteral("ring failed: HTTP %1").arg(error.httpStatus));
+                         flashStatus(QStringLiteral("Could not ring them: %1").arg(error.message), 5000);
                      });
-    joinPrivateCall(channelId);
+    flashStatus(QStringLiteral("Ringing %1...").arg(missing.size() == 1 ? m_store->user(missing.first()).displayName()
+                                                                        : QStringLiteral("everyone")),
+                4000);
 }
 
 QString MainWindow::callPeerName(const QString &channelId) const
@@ -12945,11 +13232,16 @@ void MainWindow::notePrivateCall(const QJsonObject &data, bool ended)
         if (m_store)
             m_store->endCall(channelId);
         refreshCallBanner();
+        updateCallButton();
         return;
     }
 
     m_callEvents.insert(channelId);
     m_activeCalls.insert(channelId);
+    // The call we started is there now: its ring goes, as Discord's client
+    // sends an enqueued ring on CALL_CREATE.
+    if (m_pendingRings.remove(channelId))
+        QTimer::singleShot(0, this, [this, channelId]() { ringWhoIsMissing(channelId); });
     QStringList ringing;
     for (const QJsonValue &id : data.value(QStringLiteral("ringing")).toArray()) {
         const QString userId = id.toString();
@@ -12985,13 +13277,19 @@ void MainWindow::noteCallMessage(const MessageInfo &message)
     refreshCallBanner();
 }
 
+// Call when you are not in this chat's call; Ring once you are and somebody
+// is not, as Discord offers; nothing once everyone is there.
 void MainWindow::updateCallButton()
 {
     if (!m_callButton || !m_store)
         return;
     const ChannelInfo channel = m_store->channel(m_currentChannelId);
     const bool inThisCall = m_voiceChannelId == m_currentChannelId && !m_voiceChannelId.isEmpty();
-    m_callButton->setVisible(channel.isDirect() && !inThisCall);
+    const bool someoneMissing = inThisCall && !missingFromCall(m_currentChannelId).isEmpty();
+    m_callButton->setText(inThisCall ? QStringLiteral("Ring") : QStringLiteral("Call"));
+    m_callButton->setToolTip(inThisCall ? QStringLiteral("Ring whoever is not in the call")
+                                        : QStringLiteral("Start a call"));
+    m_callButton->setVisible(channel.isDirect() && (!inThisCall || someoneMissing));
 }
 
 void MainWindow::playSound(const QString &name)
@@ -13427,6 +13725,9 @@ void MainWindow::leaveVoice()
     m_gateway->leaveVoice(guildId);
     m_voice->disconnectFromVoice();
     m_speakingUsers.clear();
+    // A ring still waiting for its call goes with the call, as Discord's
+    // client drops its queued rings when you leave voice.
+    m_pendingRings.clear();
 
     // Remembered briefly, to recognise Discord's late echo of it.
     m_leftVoiceChannelId = m_voiceChannelId;
@@ -13903,11 +14204,22 @@ bool MainWindow::canMoveVoiceMember(const QString &userId) const
         return false;
     if (userId == m_selfUserId)
         return true;
-    constexpr quint64 MoveMembers = 1ull << 24;
     const QString guildId = voiceGuildOf(userId);
     if (guildId.isEmpty() || !m_store)
         return false;
-    return (m_store->selfPermissions(guildId) & MoveMembers) != 0;
+    // In the channel they are in, as Discord's client decides it
+    // (can(MOVE_MEMBERS, channel)): a moderator often has Move Members only
+    // through a channel's own permissions - a private call's - and the
+    // server-wide check said no, so the drag never even started (0.9.3).
+    return canMoveMembersIn(m_store->voiceState(userId).channelId);
+}
+
+bool MainWindow::canMoveMembersIn(const QString &channelId) const
+{
+    constexpr quint64 MoveMembers = 1ull << 24;
+    if (channelId.isEmpty() || !m_store)
+        return false;
+    return (m_store->channelPermissions(channelId) & MoveMembers) != 0;
 }
 
 void MainWindow::patchVoiceMember(const QString &userId, const QJsonObject &fields, const QString &failed)
@@ -14066,7 +14378,11 @@ bool MainWindow::handleVoiceMemberDrag(QEvent *event, QObject *watched)
     }
     const QString channelId = voiceChannelAt(viewportPos);
     const bool same = m_store && m_store->voiceState(userId).channelId == channelId;
-    const bool ok = !channelId.isEmpty() && !same;
+    // Somewhere you may move people into, as Discord's drop targets: your
+    // own move goes anywhere you can join; someone else's needs Move Members
+    // in the channel they are going to as well.
+    const bool allowed = userId == m_selfUserId || canMoveMembersIn(channelId);
+    const bool ok = !channelId.isEmpty() && !same && allowed;
 
     if (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove) {
         m_channelDelegate->setDropTarget(ok ? channelId : QString());
@@ -14163,7 +14479,9 @@ void MainWindow::showPersonMenuAt(const QString &userId, const QPoint &globalPos
             constexpr quint64 MuteMembers = 1ull << 22;
             constexpr quint64 DeafenMembers = 1ull << 23;
             constexpr quint64 MoveMembers = 1ull << 24;
-            const quint64 bits = m_store->selfPermissions(guildId);
+            // In the channel they are in: these three are channel permissions,
+            // and a private call's own permissions are often what grants them.
+            const quint64 bits = m_store->channelPermissions(voice.channelId);
             const bool canMute = (bits & MuteMembers) != 0;
             const bool canDeaf = (bits & DeafenMembers) != 0;
             const bool canMove = self || (bits & MoveMembers) != 0;
@@ -14196,7 +14514,9 @@ void MainWindow::showPersonMenuAt(const QString &userId, const QPoint &globalPos
                 for (const ChannelGroup &group : m_store->groupedChannels(guildId)) {
                     QList<ChannelInfo> voices;
                     for (const ChannelInfo &channel : group.channels) {
-                        if (channel.isVoice() && channel.id != voice.channelId)
+                        // Only where you may move people to, as in Discord.
+                        if (channel.isVoice() && channel.id != voice.channelId
+                            && (self || canMoveMembersIn(channel.id)))
                             voices.append(channel);
                     }
                     if (voices.isEmpty())
@@ -14579,10 +14899,18 @@ void MainWindow::updateVoicePanel()
         const bool live = !m_myStreamKey.isEmpty();
         // Short, because this sits in half a sidebar. The tooltip carries the
         // full sentence.
-        m_shareButton->setText(live ? QStringLiteral("Stop") : QStringLiteral("Share"));
-        m_shareButton->setToolTip(live
-                                      ? QStringLiteral("Stop showing your screen")
-                                      : QStringLiteral("Show your screen to everyone in this call"));
+        // While live it says how many are watching, and the tooltip who.
+        QStringList watchers;
+        for (const QString &id : std::as_const(m_myStreamViewers))
+            watchers.append(m_store->user(id).displayName());
+        watchers.sort(Qt::CaseInsensitive);
+        m_shareButton->setText(!live ? QStringLiteral("Share")
+                                     : watchers.isEmpty() ? QStringLiteral("Live")
+                                                          : QStringLiteral("Live · %1").arg(watchers.size()));
+        m_shareButton->setToolTip(!live ? QStringLiteral("Show your screen to everyone in this call")
+                                        : (watchers.isEmpty() ? QStringLiteral("Nobody is watching yet.")
+                                                              : QStringLiteral("Watching: ") + watchers.join(QStringLiteral(", ")))
+                                              + QStringLiteral("\nClick to change what you are sharing, or stop."));
     }
 
     const bool watching = connected && !m_watchingUserId.isEmpty();

@@ -92,6 +92,22 @@ struct Page
 // marked "hit": true; the hit is taken either way.
 Page readPage(const QJsonObject &reply);
 
+// Searching every direct and group chat at once, as Discord's home page
+// does: POST /users/@me/messages/search/tabs (SEARCH_TABS_DMS in Discord's
+// own route table). There is no flat GET for it. The same filters go in a
+// JSON body, inside one "tab":
+//   {"tabs": {"messages": {"content": "...", "author_id": [...], "has": [...],
+//              "sort_by": ..., "sort_order": ..., "offset": n, "limit": 25}},
+//    "track_exact_total_hits": true}
+// Names that can repeat in the query (author_id, mentions, channel_id, has)
+// become arrays; offset and limit numbers; pinned and include_nsfw booleans.
+QJsonObject toTabBody(const QList<QPair<QString, QString>> &query);
+
+// The "messages" tab of a tab search's answer, which has the flat search's
+// shape ({"messages", "total_results", "threads"}), so readPage reads it.
+// Empty when the answer has no such tab: a 202 "not indexed yet" instead.
+QJsonObject messagesTab(const QJsonObject &reply);
+
 // The words a result is marked at: the search's words, without quotes and
 // lower case.
 QStringList highlightTerms(const QString &content);

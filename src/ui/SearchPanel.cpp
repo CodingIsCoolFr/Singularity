@@ -51,6 +51,40 @@ constexpr int PlaceRole = Qt::UserRole + 7;    // "# general" over the first of 
 constexpr int HtmlRole = Qt::UserRole + 8;     // the words, with the hits marked
 constexpr int ExtraRole = Qt::UserRole + 9;    // files and stickers, one line
 
+// Everyone you have a direct or group chat with, once each: who from: and
+// mentions: can name when every chat is searched.
+QStringList everyoneInChats(const MessageStore *store)
+{
+    QStringList ids;
+    for (const ChannelInfo &chat : store->directChannels()) {
+        for (const QString &id : chat.recipientIds) {
+            if (!ids.contains(id))
+                ids.append(id);
+        }
+    }
+    return ids;
+}
+
+// A chat by the name the home page lists it under: "@ Alex" for a direct
+// message, the group's name (or its people) for a group.
+QString chatName(const MessageStore *store, const QString &channelId)
+{
+    const ChannelInfo chat = store->channel(channelId);
+    if (chat.type == 1 && !chat.recipientIds.isEmpty()) {
+        const QString who = store->user(chat.recipientIds.first()).displayName();
+        return QStringLiteral("@ ") + (who.isEmpty() ? QStringLiteral("someone") : who);
+    }
+    if (!chat.name.isEmpty())
+        return chat.name;
+    QStringList names;
+    for (const QString &id : chat.recipientIds) {
+        const QString who = store->user(id).displayName();
+        if (!who.isEmpty())
+            names.append(who);
+    }
+    return names.isEmpty() ? QStringLiteral("a chat") : names.join(QStringLiteral(", "));
+}
+
 // A result's measurements.
 constexpr int Outer = 8;         // card to the panel's edge
 constexpr int Gap = 4;           // between cards
@@ -248,7 +282,8 @@ SearchBox::SearchBox(MessageStore *store, RestClient *rest, QWidget *parent)
     , m_rest(rest)
 {
     setObjectName(QStringLiteral("SearchBox"));
-    setPlaceholderText(QStringLiteral("Search"));
+    // No server and no chat is the home page's scope: every chat.
+    setPlaceholderText(QStringLiteral("Search all DMs"));
     setClearButtonEnabled(true);
     setFixedWidth(240);
 
@@ -281,11 +316,15 @@ void SearchBox::setScope(const QString &guildId, const QString &channelId)
     m_peopleAsked.clear();
     hideSuggestions();
 
-    // "Search Server Name", as Discord words it; a chat is just "Search".
+    // "Search Server Name", as Discord words it; a chat is just "Search";
+    // the home page searches every chat.
     const QString place = guildId.isEmpty() ? QString() : m_store->guild(guildId).name;
-    setPlaceholderText(place.isEmpty()
-                           ? QStringLiteral("Search")
-                           : fontMetrics().elidedText(QStringLiteral("Search ") + place, Qt::ElideRight, width() - 48));
+    if (guildId.isEmpty() && channelId.isEmpty())
+        setPlaceholderText(QStringLiteral("Search all DMs"));
+    else
+        setPlaceholderText(place.isEmpty()
+                               ? QStringLiteral("Search")
+                               : fontMetrics().elidedText(QStringLiteral("Search ") + place, Qt::ElideRight, width() - 48));
 }
 
 SearchBox::Word SearchBox::wordAtCursor() const
@@ -352,8 +391,9 @@ QStringList SearchBox::peopleHere(const QString &text) const
 {
     QStringList ids;
     if (m_guildId.isEmpty()) {
-        // A direct or group chat: the people in it, and you.
-        QStringList members = m_store->channel(m_channelId).recipientIds;
+        // A direct or group chat: the people in it, and you. Every chat at
+        // once: everyone you have one with.
+        QStringList members = m_channelId.isEmpty() ? everyoneInChats(m_store) : m_store->channel(m_channelId).recipientIds;
         if (!m_store->selfUserId().isEmpty())
             members.append(m_store->selfUserId());
         for (const QString &id : std::as_const(members)) {
@@ -361,6 +401,8 @@ QStringList SearchBox::peopleHere(const QString &text) const
             if (text.isEmpty() || info.username.contains(text, Qt::CaseInsensitive)
                 || info.globalName.contains(text, Qt::CaseInsensitive))
                 ids.append(id);
+            if (ids.size() >= 8)
+                break;
         }
         return ids;
     }
@@ -791,7 +833,7 @@ QString SearchPanel::personNamed(const QString &name) const
 {
     QList<UserInfo> candidates;
     if (m_guildId.isEmpty()) {
-        QStringList ids = m_store->channel(m_channelId).recipientIds;
+        QStringList ids = m_channelId.isEmpty() ? everyoneInChats(m_store) : m_store->channel(m_channelId).recipientIds;
         ids.append(m_store->selfUserId());
         for (const QString &id : std::as_const(ids))
             candidates.append(m_store->user(id));
@@ -879,30 +921,35 @@ void SearchPanel::runPage()
 
     showStatus(QStringLiteral("Searching..."));
     const int serial = m_serial;
-    m_rest->searchMessages(
-        m_guildId, m_channelId, query,
-        [this, serial](const QJsonObject &body) {
-            if (serial == m_serial)
-                showPage(SearchQuery::readPage(body));
-        },
-        [this, serial](const RestClient::Error &error) {
-            if (serial != m_serial)
-                return;
-            m_count->setText(QStringLiteral("Search"));
-            m_list->clear();
-            m_pager->hide();
-            if (error.httpStatus == 403)
-                showStatus(QStringLiteral("You can't search here."));
-            else if (error.httpStatus == 429)
-                showStatus(QStringLiteral("Discord says that is too many searches for now. Try again in a minute."));
-            else if (error.httpStatus == 202)
-                showStatus(error.message);
-            else if (error.httpStatus == 400 && !error.message.isEmpty())
-                showStatus(QStringLiteral("Discord could not search for that: %1").arg(error.message));
-            else
-                showStatus(QStringLiteral("The search did not go through (HTTP %1). The log has the details.")
-                               .arg(error.httpStatus));
-        });
+    RestClient::ObjectHandler onPage = [this, serial](const QJsonObject &body) {
+        if (serial == m_serial)
+            showPage(SearchQuery::readPage(body));
+    };
+    RestClient::ErrorHandler onError = [this, serial](const RestClient::Error &error) {
+        if (serial != m_serial)
+            return;
+        m_count->setText(QStringLiteral("Search"));
+        m_list->clear();
+        m_pager->hide();
+        if (error.httpStatus == 403)
+            showStatus(QStringLiteral("You can't search here."));
+        else if (error.httpStatus == 429)
+            showStatus(QStringLiteral("Discord says that is too many searches for now. Try again in a minute."));
+        else if (error.httpStatus == 202)
+            showStatus(error.message);
+        else if (error.httpStatus == 400 && !error.message.isEmpty())
+            showStatus(QStringLiteral("Discord could not search for that: %1").arg(error.message));
+        else
+            showStatus(QStringLiteral("The search did not go through (HTTP %1). The log has the details.")
+                           .arg(error.httpStatus));
+    };
+
+    // Outside a server with no chat open - the home page, Friends - every
+    // direct and group chat is searched at once, as Discord's home page does.
+    if (m_guildId.isEmpty() && m_channelId.isEmpty())
+        m_rest->searchAllDirect(SearchQuery::toTabBody(query), std::move(onPage), std::move(onError));
+    else
+        m_rest->searchMessages(m_guildId, m_channelId, query, std::move(onPage), std::move(onError));
 }
 
 void SearchPanel::showStatus(const QString &text)
@@ -993,12 +1040,18 @@ void SearchPanel::showPage(const SearchQuery::Page &page)
         item->setData(MessageRole, message.id);
 
         // Where it was said, over the first of each run from one channel. A
-        // chat search is all one chat, so it goes without.
+        // chat search is all one chat, so it goes without; a search of every
+        // chat names the chat, as Discord's home page search does.
+        QString place;
         if (!m_guildId.isEmpty()) {
             QString name = m_store->channel(channelId).name;
             if (name.isEmpty())
                 name = page.threads.value(channelId).value(QStringLiteral("name")).toString();
-            const QString place = QStringLiteral("# ") + (name.isEmpty() ? QStringLiteral("unknown channel") : name);
+            place = QStringLiteral("# ") + (name.isEmpty() ? QStringLiteral("unknown channel") : name);
+        } else if (m_channelId.isEmpty()) {
+            place = chatName(m_store, channelId);
+        }
+        if (!place.isEmpty()) {
             if (place != lastPlace)
                 item->setData(PlaceRole, place);
             lastPlace = place;

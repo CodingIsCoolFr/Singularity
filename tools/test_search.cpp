@@ -15,6 +15,7 @@
 #include "core/RestClient.h"
 #include "core/SearchQuery.h"
 #include "core/Logger.h"
+#include "ui/MediaCache.h"
 #include "ui/SearchPanel.h"
 #include "ui/Theme.h"
 
@@ -93,6 +94,7 @@ public:
     };
     QList<Reply> replies;
     QStringList asked;
+    QStringList posted;   // "POST /path {json}"
 
     void reply(const QString &pathStart, int status, const QJsonObject &body)
     {
@@ -131,6 +133,15 @@ protected:
             if (onError)
                 onError(error);
         });
+    }
+
+    // A POST is answered from the same list; what it would have sent is kept
+    // in `posted`.
+    void sendJson(const QByteArray &verb, const QString &path, const QByteArray &json, const CaptchaProof &,
+                  ObjectHandler onOk, ErrorHandler onError) override
+    {
+        posted.append(QString::fromLatin1(verb) + QLatin1Char(' ') + path + QLatin1Char(' ') + QString::fromUtf8(json));
+        sendGet(path, std::move(onOk), nullptr, std::move(onError));
     }
 };
 
@@ -459,6 +470,72 @@ void restTests()
     waitFor([&]() { return answered; });
     expect(rest.asked.value(0) == QStringLiteral("/channels/%1/messages/search?content=hi").arg(Direct),
            "a chat is GET /channels/{id}/messages/search");
+
+    // Every chat at once, as Discord's home page searches: a POST with the
+    // filters in the "messages" tab, answered with that tab.
+    {
+        const QList<QPair<QString, QString>> query{
+            {QStringLiteral("content"), QStringLiteral("cake")},
+            {QStringLiteral("author_id"), Alex},
+            {QStringLiteral("author_id"), Sam},
+            {QStringLiteral("has"), QStringLiteral("image")},
+            {QStringLiteral("pinned"), QStringLiteral("true")},
+            {QStringLiteral("sort_by"), QStringLiteral("timestamp")},
+            {QStringLiteral("sort_order"), QStringLiteral("desc")},
+            {QStringLiteral("offset"), QStringLiteral("25")},
+        };
+        const QJsonObject body = SearchQuery::toTabBody(query);
+        const QJsonObject tab = body.value(QStringLiteral("tabs")).toObject().value(QStringLiteral("messages")).toObject();
+        expect(body.value(QStringLiteral("track_exact_total_hits")).toBool(), "every chat: exact totals asked for");
+        expect(tab.value(QStringLiteral("content")).toString() == QLatin1String("cake"), "every chat: the words in the tab");
+        expect(tab.value(QStringLiteral("author_id")).toArray() == QJsonArray{Alex, Sam}, "every chat: from: as an array");
+        expect(tab.value(QStringLiteral("has")).toArray() == QJsonArray{QStringLiteral("image")}, "every chat: has: as an array");
+        expect(tab.value(QStringLiteral("pinned")).isBool() && tab.value(QStringLiteral("pinned")).toBool(),
+               "every chat: pinned: as a boolean");
+        expect(tab.value(QStringLiteral("offset")).toInt() == 25 && tab.value(QStringLiteral("offset")).isDouble(),
+               "every chat: offset as a number");
+        expect(tab.value(QStringLiteral("limit")).toInt() == SearchQuery::PageSize, "every chat: a page of 25");
+        expect(tab.value(QStringLiteral("sort_order")).toString() == QLatin1String("desc"), "every chat: the sort kept");
+        expect(!body.contains(QStringLiteral("include_nsfw")), "every chat: no include_nsfw unless asked");
+
+        rest.asked.clear();
+        rest.posted.clear();
+        bool got = false;
+        int count = 0;
+        // Discord's answer: the flat search's page, inside tabs.messages.
+        rest.reply(QStringLiteral("/users/@me/messages/search/tabs"), 202, notIndexed());
+        rest.reply(QStringLiteral("/users/@me/messages/search/tabs"), 200,
+                   QJsonObject{{QStringLiteral("analytics_id"), QStringLiteral("x")},
+                               {QStringLiteral("tabs"), QJsonObject{{QStringLiteral("messages"), page(1, {hit})}}}});
+        rest.searchAllDirect(body,
+                             [&](const QJsonObject &answer) {
+                                 got = true;
+                                 count = SearchQuery::readPage(answer).messages.size();
+                             },
+                             [](const RestClient::Error &) {});
+        waitFor([&]() { return got; }, 6000);
+        expect(rest.posted.value(0).startsWith(QLatin1String("POST /users/@me/messages/search/tabs {\"tabs\":{\"messages\":")),
+               "every chat is POST /users/@me/messages/search/tabs");
+        expect(rest.posted.size() == 2, "every chat: the 202 is waited out and asked again, with the same body");
+        expect(rest.posted.value(0) == rest.posted.value(1), "every chat: the second ask is the same as the first");
+        expect(got && count == 1, "every chat: the messages tab is read as a page");
+        expect(SearchQuery::messagesTab(notIndexed()).isEmpty(), "every chat: a 202 has no tab");
+    }
+
+    // A video's placeholder while its still is made: ThumbHash. Built by
+    // hand, bit by bit: landscape, 7 by 4 lightness factors, no alpha, every
+    // scale zero, lightness full (white) or none (black), colour centred.
+    {
+        const QImage white = MediaCache::fromThumbHash(QStringLiteral("PwgCBIAAAAAAAAAAAAAAAAAAAA=="));
+        expect(white.size() == QSize(32, 18), "placeholder: a 7:4 landscape hash is 32 by 18");
+        const QColor middle = white.isNull() ? QColor() : white.pixelColor(16, 9);
+        expect(middle.red() > 240 && middle.green() > 240 && middle.blue() > 240, "placeholder: full lightness is white");
+        const QImage black = MediaCache::fromThumbHash(QStringLiteral("AAgCBIAAAAAAAAAAAAAAAAAAAA=="));
+        const QColor dark = black.isNull() ? QColor(255, 255, 255) : black.pixelColor(16, 9);
+        expect(dark.red() < 16 && dark.green() < 16 && dark.blue() < 16, "placeholder: no lightness is black");
+        expect(MediaCache::fromThumbHash(QStringLiteral("AAA=")).isNull(), "placeholder: too short to be one is nothing");
+        expect(MediaCache::fromThumbHash(QString()).isNull(), "placeholder: none is nothing");
+    }
 
     // 202: not indexed yet, then the page.
     rest.asked.clear();

@@ -14,6 +14,8 @@
 #include <QTimer>
 #include <QUrl>
 
+#include <memory>
+
 RestClient::RestClient(QObject *parent)
     : QObject(parent)
 {
@@ -137,17 +139,29 @@ void RestClient::searchMessages(const QString &guildId, const QString &channelId
     // Where, never what: the words somebody searched for stay out of the log.
     wlog(QStringLiteral("search"), guildId.isEmpty() ? QStringLiteral("searching chat %1").arg(channelId)
                                                      : QStringLiteral("searching server %1").arg(guildId));
-    searchGet(path, ++m_searchSerial, std::move(onOk), std::move(onError), 0, 0);
+    searchSend(path, {}, ++m_searchSerial, std::move(onOk), std::move(onError), 0, 0);
 }
 
-void RestClient::searchGet(const QString &path, int serial, ObjectHandler onOk, ErrorHandler onError,
-                           int indexWaits, int rateWaits)
+void RestClient::searchAllDirect(const QJsonObject &body, ObjectHandler onOk, ErrorHandler onError)
+{
+    wlog(QStringLiteral("search"), QStringLiteral("searching every direct and group chat"));
+    searchSend(QStringLiteral("/users/@me/messages/search/tabs"), QJsonDocument(body).toJson(QJsonDocument::Compact),
+               ++m_searchSerial, std::move(onOk), std::move(onError), 0, 0);
+}
+
+void RestClient::searchSend(const QString &path, const QByteArray &json, int serial, ObjectHandler onOk,
+                            ErrorHandler onError, int indexWaits, int rateWaits)
 {
     // About half a minute of "not indexed yet" at Discord's usual two
     // seconds, which is longer than a first search of a place usually takes.
     constexpr int MostIndexWaits = 12;
 
-    ObjectHandler answer = [this, path, serial, onOk, onError, indexWaits, rateWaits](const QJsonObject &body) {
+    ObjectHandler answer = [this, path, json, serial, onOk, onError, indexWaits, rateWaits](const QJsonObject &reply) {
+        // A tab search answers {"tabs": {"messages": {...}}}; the tab has
+        // the flat search's shape, so the caller reads both alike.
+        const QJsonObject body = json.isEmpty()
+            ? reply
+            : reply.value(QStringLiteral("tabs")).toObject().value(QStringLiteral("messages")).toObject();
         // A page says how many it found. The 202 says how long to wait
         // instead, and nothing else.
         if (body.contains(QStringLiteral("total_results")) || body.contains(QStringLiteral("messages"))) {
@@ -158,31 +172,32 @@ void RestClient::searchGet(const QString &path, int serial, ObjectHandler onOk, 
         if (indexWaits >= MostIndexWaits) {
             Error error;
             error.httpStatus = 202;
-            error.body = body;
+            error.body = reply;
             error.message = QStringLiteral("Discord is still getting this ready to search. Try again in a minute.");
             if (onError)
                 onError(error);
             return;
         }
-        const double wait = body.value(QStringLiteral("retry_after")).toDouble(2.0);
+        // The 202 is the same for both kinds of search, with no tab in it.
+        const double wait = reply.value(QStringLiteral("retry_after")).toDouble(2.0);
         const int ms = qBound(500, int(wait * 1000), 15000);
         wlog(QStringLiteral("search"), QStringLiteral("Discord is still indexing; asking again in %1 ms").arg(ms));
-        QTimer::singleShot(ms, this, [this, path, serial, onOk, onError, indexWaits, rateWaits]() {
+        QTimer::singleShot(ms, this, [this, path, json, serial, onOk, onError, indexWaits, rateWaits]() {
             if (serial == m_searchSerial)
-                searchGet(path, serial, onOk, onError, indexWaits + 1, rateWaits);
+                searchSend(path, json, serial, onOk, onError, indexWaits + 1, rateWaits);
         });
     };
 
     // "Too fast" is waited out as the GIF picker does: Discord says how long.
-    ErrorHandler waitOrFail = [this, path, serial, onOk, onError, indexWaits, rateWaits](const Error &error) {
+    ErrorHandler waitOrFail = [this, path, json, serial, onOk, onError, indexWaits, rateWaits](const Error &error) {
         if (error.httpStatus == 429 && rateWaits < 3) {
             const double wait = error.body.value(QStringLiteral("retry_after")).toDouble(1.0);
             const int ms = qBound(300, int(wait * 1000) + 250, 30000);
             wlog(QStringLiteral("search"),
                  QStringLiteral("Discord asked us to wait %1 ms before searching again").arg(ms));
-            QTimer::singleShot(ms, this, [this, path, serial, onOk, onError, indexWaits, rateWaits]() {
+            QTimer::singleShot(ms, this, [this, path, json, serial, onOk, onError, indexWaits, rateWaits]() {
                 if (serial == m_searchSerial)
-                    searchGet(path, serial, onOk, onError, indexWaits, rateWaits + 1);
+                    searchSend(path, json, serial, onOk, onError, indexWaits, rateWaits + 1);
             });
             return;
         }
@@ -190,7 +205,10 @@ void RestClient::searchGet(const QString &path, int serial, ObjectHandler onOk, 
             onError(error);
     };
 
-    sendGet(path, std::move(answer), nullptr, std::move(waitOrFail));
+    if (json.isEmpty())
+        sendGet(path, std::move(answer), nullptr, std::move(waitOrFail));
+    else
+        sendJson(QByteArrayLiteral("POST"), path, json, {}, std::move(answer), std::move(waitOrFail));
 }
 
 void RestClient::leaveGuild(const QString &guildId, ObjectHandler onOk, ErrorHandler onError)
@@ -212,6 +230,11 @@ void RestClient::ringCall(const QString &channelId, const QJsonArray &recipients
         buildRequest(QStringLiteral("/channels/%1/call/ring").arg(channelId)),
         QJsonDocument(body).toJson(QJsonDocument::Compact));
     dispatch(reply, std::move(onOk), nullptr, std::move(onError));
+}
+
+void RestClient::fetchCall(const QString &channelId, ObjectHandler onOk, ErrorHandler onError)
+{
+    sendGet(QStringLiteral("/channels/%1/call").arg(channelId), std::move(onOk), nullptr, std::move(onError));
 }
 
 void RestClient::stopRinging(const QString &channelId, const QString &userId, ObjectHandler onOk,
@@ -317,6 +340,176 @@ void RestClient::sendMessage(const QString &channelId, const QString &content, c
         return;
     }
 
+    uploadThenSend(channelId, body, files, std::move(onOk), std::move(onError), captcha);
+}
+
+// Discord's client, read from its own upload code: each file is put in the
+// cloud first, then the message names the uploads.
+//   POST /channels/{id}/attachments {"files": [{id, filename, file_size,
+//        is_clip, original_content_type}]} -> {"attachments": [{id,
+//        upload_url, upload_filename}]}
+//   PUT  upload_url, the bytes as application/octet-stream
+//   POST /channels/{id}/messages {..., "attachments": [{id, filename,
+//        uploaded_filename}]}
+// One multipart post with every file in it was what this did before: files
+// with quotes or accents in their names came through misnamed or not at all,
+// and big ones timed out half way. That way is kept for when Discord
+// refuses the first step.
+void RestClient::uploadThenSend(const QString &channelId, const QJsonObject &body, const QStringList &files,
+                                ObjectHandler onOk, ErrorHandler onError, const CaptchaProof &captcha)
+{
+    QMimeDatabase mime;
+    QJsonArray wanted;
+    QList<QPair<QString, QString>> named;   // path, name
+    for (int i = 0; i < files.size(); ++i) {
+        const QFileInfo info(files.at(i));
+        if (!info.isFile())
+            continue;
+        const QString name = info.fileName();
+        wanted.append(QJsonObject{
+            {QStringLiteral("id"), QString::number(named.size())},
+            {QStringLiteral("filename"), name},
+            {QStringLiteral("file_size"), static_cast<qint64>(info.size())},
+            {QStringLiteral("is_clip"), false},
+            {QStringLiteral("original_content_type"), mime.mimeTypeForFile(info).name()},
+        });
+        named.append({files.at(i), name});
+    }
+    if (named.isEmpty()) {
+        Error error;
+        error.message = QStringLiteral("none of the files could be read");
+        if (onError)
+            onError(error);
+        return;
+    }
+
+    const QString path = QStringLiteral("/channels/%1/attachments").arg(channelId);
+    QNetworkReply *ask = m_network.post(buildRequest(path),
+                                        QJsonDocument(QJsonObject{{QStringLiteral("files"), wanted}}).toJson(QJsonDocument::Compact));
+    dispatch(
+        ask,
+        [this, channelId, body, named, onOk, onError, captcha](const QJsonObject &reply) {
+            const QJsonArray places = reply.value(QStringLiteral("attachments")).toArray();
+            if (places.size() != named.size()) {
+                wlog(QStringLiteral("upload"), QStringLiteral("Discord gave %1 upload places for %2 files; sending "
+                                                              "them the old way").arg(places.size()).arg(named.size()));
+                QStringList paths;
+                for (const auto &file : named)
+                    paths.append(file.first);
+                sendMultipart(channelId, body, paths, onOk, onError, captcha);
+                return;
+            }
+
+            struct Run {
+                int left = 0;
+                bool failed = false;
+                QJsonArray attachments;
+            };
+            auto run = std::make_shared<Run>();
+            run->left = int(named.size());
+            for (int i = 0; i < named.size(); ++i) {
+                const QJsonObject slot = places.at(i).toObject();
+                run->attachments.append(QJsonObject{
+                    {QStringLiteral("id"), QString::number(i)},
+                    {QStringLiteral("filename"), named.at(i).second},
+                    {QStringLiteral("uploaded_filename"), slot.value(QStringLiteral("upload_filename")).toString()},
+                });
+
+                auto *file = new QFile(named.at(i).first);
+                if (!file->open(QIODevice::ReadOnly)) {
+                    delete file;
+                    run->failed = true;
+                    Error error;
+                    error.message = QStringLiteral("could not read %1").arg(named.at(i).second);
+                    if (onError)
+                        onError(error);
+                    return;
+                }
+                // A signed address on Discord's storage: no token goes with it.
+                QNetworkRequest put(QUrl(slot.value(QStringLiteral("upload_url")).toString()));
+                put.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/octet-stream"));
+                put.setHeader(QNetworkRequest::ContentLengthHeader, file->size());
+                put.setTransferTimeout(10 * 60 * 1000);
+                QNetworkReply *sent = m_network.put(put, file);
+                file->setParent(sent);
+                const QString name = named.at(i).second;
+                connect(sent, &QNetworkReply::finished, this,
+                        [this, sent, run, name, channelId, body, onOk, onError, captcha]() {
+                            sent->deleteLater();
+                            if (run->failed)
+                                return;
+                            const int status = sent->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+                            if (sent->error() != QNetworkReply::NoError || status < 200 || status >= 300) {
+                                run->failed = true;
+                                wlog(QStringLiteral("upload"), QStringLiteral("putting %1 in Discord's storage failed: HTTP %2 %3")
+                                                                   .arg(name).arg(status).arg(sent->errorString()));
+                                Error error;
+                                error.httpStatus = status;
+                                error.message = QStringLiteral("the upload of %1 failed").arg(name);
+                                if (onError)
+                                    onError(error);
+                                return;
+                            }
+                            if (--run->left > 0)
+                                return;
+                            QJsonObject message = body;
+                            message.insert(QStringLiteral("attachments"), run->attachments);
+                            QNetworkRequest request = buildRequest(QStringLiteral("/channels/%1/messages").arg(channelId));
+                            if (!captcha.key.isEmpty()) {
+                                request.setRawHeader("X-Captcha-Key", captcha.key.toUtf8());
+                                if (!captcha.rqtoken.isEmpty())
+                                    request.setRawHeader("X-Captcha-Rqtoken", captcha.rqtoken.toUtf8());
+                                if (!captcha.sessionId.isEmpty())
+                                    request.setRawHeader("X-Captcha-Session-Id", captcha.sessionId.toUtf8());
+                            }
+                            QNetworkReply *posted =
+                                m_network.post(request, QJsonDocument(message).toJson(QJsonDocument::Compact));
+                            dispatch(posted, onOk, nullptr, onError);
+                        });
+            }
+        },
+        nullptr,
+        [this, channelId, body, named, onOk, onError, captcha](const Error &error) {
+            // Refused for a reason uploading another way will not fix: say so.
+            if (error.httpStatus == 401 || error.httpStatus == 403 || error.httpStatus == 413
+                || error.httpStatus == 429 || !error.body.value(QStringLiteral("captcha_key")).isUndefined()) {
+                if (onError)
+                    onError(error);
+                return;
+            }
+            wlog(QStringLiteral("upload"), QStringLiteral("asking for upload places failed (HTTP %1); sending the old way")
+                                               .arg(error.httpStatus));
+            QStringList paths;
+            for (const auto &file : named)
+                paths.append(file.first);
+            sendMultipart(channelId, body, paths, onOk, onError, captcha);
+        });
+}
+
+void RestClient::sendMultipart(const QString &channelId, const QJsonObject &body, const QStringList &files,
+                               ObjectHandler onOk, ErrorHandler onError, const CaptchaProof &captcha)
+{
+    const QString path = QStringLiteral("/channels/%1/messages").arg(channelId);
+    const auto withCaptcha = [&captcha](QNetworkRequest request) {
+        if (captcha.key.isEmpty())
+            return request;
+        request.setRawHeader("X-Captcha-Key", captcha.key.toUtf8());
+        if (!captcha.rqtoken.isEmpty())
+            request.setRawHeader("X-Captcha-Rqtoken", captcha.rqtoken.toUtf8());
+        if (!captcha.sessionId.isEmpty())
+            request.setRawHeader("X-Captcha-Session-Id", captcha.sessionId.toUtf8());
+        return request;
+    };
+
+    // Each file named in payload_json too, as Discord's API asks, so a name
+    // the form header mangles still arrives right.
+    QJsonObject withFiles = body;
+    QJsonArray listed;
+    for (int i = 0; i < files.size(); ++i)
+        listed.append(QJsonObject{{QStringLiteral("id"), i}, {QStringLiteral("filename"), QFileInfo(files.at(i)).fileName()}});
+    withFiles.insert(QStringLiteral("attachments"), listed);
+    const QByteArray json = QJsonDocument(withFiles).toJson(QJsonDocument::Compact);
+
     // The content type on the request has to be cleared. buildRequest sets
     // application/json, and leaving it there strips the multipart boundary
     // Discord needs in order to find the file.
@@ -340,11 +533,15 @@ void RestClient::sendMessage(const QString &channelId, const QString &content, c
         file->setParent(multi);
 
         const QString name = QFileInfo(files.at(i)).fileName();
+        // A quote would end the header's filename early; payload_json above
+        // carries the real name either way.
+        QString headerName = name;
+        headerName.replace(QLatin1Char('"'), QLatin1Char('_'));
         QHttpPart part;
         part.setHeader(QNetworkRequest::ContentDispositionHeader,
                        QVariant(QStringLiteral("form-data; name=\"files[%1]\"; filename=\"%2\"")
                                     .arg(i)
-                                    .arg(name)));
+                                    .arg(headerName)));
         part.setHeader(QNetworkRequest::ContentTypeHeader,
                        QVariant(mime.mimeTypeForFile(name).name()));
         part.setBodyDevice(file);

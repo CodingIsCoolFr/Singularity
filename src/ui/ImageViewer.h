@@ -35,8 +35,9 @@ public:
     // `url` must be a Discord host, the same rule the message view follows.
     void showImage(const QUrl &url);
 
-    // A video attachment, played with its sound. Same host rule.
-    void showVideo(const QUrl &url);
+    // A video attachment, played with its sound. Same host rule. `startMs`
+    // carries on from where it got to in the chat (Pop out).
+    void showVideo(const QUrl &url, qint64 startMs = 0);
 
 protected:
     void keyPressEvent(QKeyEvent *event) override;
@@ -67,6 +68,7 @@ private:
     // pictures never starts the media machinery.
     QStackedLayout *m_stack = nullptr;
     QMediaPlayer *m_player = nullptr;
+    qint64 m_pendingStartMs = 0;   // where to start once the file is open
     QAudioOutput *m_audio = nullptr;
     QVideoWidget *m_videoWidget = nullptr;
     QWidget *m_videoBar = nullptr;

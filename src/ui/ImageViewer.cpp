@@ -385,7 +385,7 @@ bool ImageViewer::playingVideo() const
     return m_videoWidget && m_stack->currentWidget() == m_videoWidget;
 }
 
-void ImageViewer::showVideo(const QUrl &url)
+void ImageViewer::showVideo(const QUrl &url, qint64 startMs)
 {
     if (!MediaCache::isAllowedHost(url)) {
         wlog(QStringLiteral("viewer"), QStringLiteral("refusing %1: not a Discord host").arg(url.toString()));
@@ -428,6 +428,12 @@ void ImageViewer::showVideo(const QUrl &url)
             m_playButton->setText(state == QMediaPlayer::PlayingState ? QStringLiteral("Pause")
                                                                       : QStringLiteral("Play"));
         });
+        connect(m_player, &QMediaPlayer::mediaStatusChanged, this, [this](QMediaPlayer::MediaStatus status) {
+            if (m_pendingStartMs > 0 && (status == QMediaPlayer::LoadedMedia || status == QMediaPlayer::BufferedMedia)) {
+                m_player->setPosition(m_pendingStartMs);
+                m_pendingStartMs = 0;
+            }
+        });
         connect(m_player, &QMediaPlayer::errorOccurred, this,
                 [this](QMediaPlayer::Error, const QString &reason) {
                     wlog(QStringLiteral("viewer"),
@@ -448,6 +454,9 @@ void ImageViewer::showVideo(const QUrl &url)
     presentWindow();
 
     wlog(QStringLiteral("viewer"), QStringLiteral("playing %1").arg(name));
+    // A position asked for before the file is open is ignored, so it waits
+    // for the player to have it (mediaStatusChanged, above).
+    m_pendingStartMs = qMax<qint64>(0, startMs);
     m_player->setSource(url);
     m_player->play();
 }

@@ -58,6 +58,11 @@ public:
     static QPixmap initialsAvatar(const QString &name, int size);
     static QPixmap brandMark(int size);
 
+    // A ThumbHash (the base64 "placeholder" Discord puts on attachments)
+    // decoded to its small blurred picture, at most 32 pixels on its long
+    // side. Null for anything that is not one.
+    static QImage fromThumbHash(const QString &base64);
+
     // Discord picture addresses.
     static QUrl avatarUrl(const QString &userId, const QString &avatarHash, int size = 80);
     static QUrl guildIconUrl(const QString &guildId, const QString &iconHash, int size = 96);
@@ -96,6 +101,10 @@ private:
     // few times, further apart each time. Waiting for somebody to ask again
     // left a face blank for as long as nothing on screen happened to redraw.
     QHash<QString, int> m_retries;
+    // Waiting for one of those tries. Not asked for again meanwhile: asking
+    // on every repaint sent a video still's request four times a second for
+    // as long as Discord's media server took to make it (0.9.3).
+    QSet<QString> m_retrying;
 
     // When each picture arrived. One that arrived moments ago is kept
     // whatever the budget says, because whoever asked for it may not have

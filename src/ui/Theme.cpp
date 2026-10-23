@@ -725,6 +725,20 @@ QMainWindow[glass="true"] #VoicePanel {
     background-color: transparent;
     border-bottom: 1px solid @accent22;
 }
+/* The channel's bar across the top of the content area, over the chat and
+   the member list both, as Discord's is. A card like the others; on glass,
+   only the line under it. */
+#ChannelBar {
+    background-color: @chat;
+    border: 1px solid @accent38;
+    border-radius: 18px;
+}
+QMainWindow[glass="true"] #ChannelBar {
+    background-color: transparent;
+    border: none;
+    border-bottom: 1px solid @accent22;
+    border-radius: 0;
+}
 #ChannelTitle { color: @text; font-size: 16px; font-weight: 600; letter-spacing: 0.2px; }
 #ChannelTopic { color: @faint; font-size: 12px; }
 

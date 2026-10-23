@@ -326,6 +326,7 @@ QWidget *FriendsPage::buildTabBar()
     auto *layout = new QHBoxLayout(bar);
     layout->setContentsMargins(20, 8, 20, 8);
     layout->setSpacing(16);
+    m_barLayout = layout;
 
     auto *title = new QLabel(QStringLiteral("Friends"), bar);
     title->setObjectName(QStringLiteral("ChannelTitle"));
@@ -357,6 +358,15 @@ QWidget *FriendsPage::buildTabBar()
 
     layout->addStretch(1);
     return bar;
+}
+
+void FriendsPage::placeInBar(QWidget *widget)
+{
+    if (!m_barLayout || !widget || m_barLayout->indexOf(widget) >= 0)
+        return;
+    // After the stretch, so it sits at the right as in the channel bar.
+    m_barLayout->addWidget(widget, 0, Qt::AlignVCenter);
+    widget->show();
 }
 
 QWidget *FriendsPage::buildAddPanel()

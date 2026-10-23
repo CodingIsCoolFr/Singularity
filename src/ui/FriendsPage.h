@@ -31,6 +31,10 @@ public:
 
     void refresh();
 
+    // Puts `widget` at the right end of the tab bar: the window's search box
+    // while this page is shown, since Friends has no channel bar above it.
+    void placeInBar(QWidget *widget);
+
 signals:
     void openDirectMessage(const QString &channelId);
     void openProfile(const QString &userId);
@@ -75,6 +79,7 @@ private:
     QPushButton *m_pendingTab = nullptr;
     QPushButton *m_blockedTab = nullptr;
     QPushButton *m_addTab = nullptr;
+    class QHBoxLayout *m_barLayout = nullptr;   // the tab bar's row, for placeInBar
 
     QWidget *m_top = nullptr;         // search and heading, hidden on Add Friend
     QWidget *m_addPanel = nullptr;

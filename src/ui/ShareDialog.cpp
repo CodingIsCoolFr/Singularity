@@ -76,6 +76,7 @@ ShareDialog::ShareDialog(QWidget *parent)
     layout->addWidget(m_list);
 
     auto *qualityLabel = new QLabel(QStringLiteral("How good?"), this);
+    m_qualityLabel = qualityLabel;
     qualityLabel->setStyleSheet(QStringLiteral("font-size: 15px; font-weight: 500;"));
     layout->addWidget(qualityLabel);
 
@@ -243,6 +244,16 @@ int ShareDialog::frameRate() const
 int ShareDialog::bitrate() const
 {
     return kQualities[qBound(0, m_quality->currentIndex(), int(std::size(kQualities)) - 1)].bitrate;
+}
+
+void ShareDialog::setSwitching(bool switching)
+{
+    // Discord's Change Windows picker: only what to share. The quality is the
+    // running stream's and stays.
+    setWindowTitle(switching ? QStringLiteral("Change what you share") : QStringLiteral("Share"));
+    m_goLive->setText(switching ? QStringLiteral("Switch") : QStringLiteral("Go live"));
+    m_qualityLabel->setVisible(!switching);
+    m_quality->setVisible(!switching);
 }
 
 ShareAudio::Source ShareDialog::soundSource() const

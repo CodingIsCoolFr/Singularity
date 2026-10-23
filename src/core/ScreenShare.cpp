@@ -65,44 +65,20 @@ void ScreenShareWorker::begin(const QString &monitorId, int width, int height, i
         return;
     }
 
-    // Keep the shape of the screen. Sending a 16:9 monitor as 4:3 would
-    // squash it, and letterboxing wastes the bitrate on black.
-    const int sourceWidth = m_capture.width();
-    const int sourceHeight = m_capture.height();
-    if (sourceWidth <= 0 || sourceHeight <= 0) {
+    if (m_capture.width() <= 0 || m_capture.height() <= 0) {
         m_capture.stop();
         emit failed(QStringLiteral("That screen reported no size."));
         return;
     }
 
-    int outWidth = width;
-    int outHeight = int(qRound(double(width) * sourceHeight / sourceWidth));
-    if (outHeight > height) {
-        outHeight = height;
-        outWidth = int(qRound(double(height) * sourceWidth / sourceHeight));
-    }
-
-    if (!m_encoder.open(outWidth, outHeight, fps, bitrate)) {
+    m_sourceId = monitorId;
+    m_maxWidth = width;
+    m_maxHeight = height;
+    m_bitrate = bitrate;
+    if (!openEncoder(fps)) {
         m_capture.stop();
         emit failed(QStringLiteral("This machine has no H.264 encoder that would start."));
         return;
-    }
-
-    // Only the CPU would take it, so ask less of the CPU. 1080p at 30 in
-    // software took a friend's whole machine with it: the window froze fifty
-    // times a minute and her voice lagged (2026-09-25). 720p is Discord's own
-    // ceiling without Nitro, and a quarter of the work.
-    if (!m_encoder.isHardware() && outHeight > 720) {
-        const int cappedWidth = int(qRound(double(outWidth) * 720.0 / outHeight));
-        if (m_encoder.open(cappedWidth, 720, fps, bitrate)) {
-            wlog(QStringLiteral("share"),
-                 QStringLiteral("no graphics card encoder, so sending %1x720 instead of %2x%3")
-                     .arg(cappedWidth).arg(outWidth).arg(outHeight));
-        } else if (!m_encoder.open(outWidth, outHeight, fps, bitrate)) {
-            m_capture.stop();
-            emit failed(QStringLiteral("This machine has no H.264 encoder that would start."));
-            return;
-        }
     }
 
     m_fps = qBound(5, fps, 60);
@@ -115,6 +91,100 @@ void ScreenShareWorker::begin(const QString &monitorId, int width, int height, i
     emit started(m_encoder.width(), m_encoder.height(), m_encoder.name(), m_encoder.isHardware());
 
     m_timer.start(1000 / m_fps);
+}
+
+// The encoder for what is being captured now, inside the size asked for.
+bool ScreenShareWorker::openEncoder(int fps)
+{
+    // Keep the shape of the screen. Sending a 16:9 monitor as 4:3 would
+    // squash it, and letterboxing wastes the bitrate on black.
+    const int sourceWidth = m_capture.width();
+    const int sourceHeight = m_capture.height();
+    int outWidth = m_maxWidth;
+    int outHeight = int(qRound(double(m_maxWidth) * sourceHeight / sourceWidth));
+    if (outHeight > m_maxHeight) {
+        outHeight = m_maxHeight;
+        outWidth = int(qRound(double(m_maxHeight) * sourceWidth / sourceHeight));
+    }
+    // H.264 wants even sizes.
+    outWidth &= ~1;
+    outHeight &= ~1;
+
+    // Only the CPU would take it, so ask less of the CPU. 1080p at 30 in
+    // software took a friend's whole machine with it: the window froze fifty
+    // times a minute and her voice lagged (2026-09-25). 720p is Discord's own
+    // ceiling without Nitro, and a quarter of the work.
+    if (m_encoder.isOpen() && !m_encoder.isHardware() && outHeight > 720) {
+        outWidth = int(qRound(double(outWidth) * 720.0 / outHeight)) & ~1;
+        outHeight = 720;
+    }
+    if (m_encoder.isOpen() && m_encoder.width() == outWidth && m_encoder.height() == outHeight)
+        return true;
+
+    if (!m_encoder.open(outWidth, outHeight, fps, m_bitrate))
+        return false;
+    if (!m_encoder.isHardware() && outHeight > 720) {
+        const int cappedWidth = int(qRound(double(outWidth) * 720.0 / outHeight)) & ~1;
+        if (m_encoder.open(cappedWidth, 720, fps, m_bitrate)) {
+            wlog(QStringLiteral("share"),
+                 QStringLiteral("no graphics card encoder, so sending %1x720 instead of %2x%3")
+                     .arg(cappedWidth).arg(outWidth).arg(outHeight));
+        } else if (!m_encoder.open(outWidth, outHeight, fps, m_bitrate)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Discord's Change Windows: a different window or screen on the same stream.
+// The stream, its connection and everyone watching stay; only the capture
+// changes, and the next picture is a keyframe so viewers redraw at once. A
+// window of another shape gets the encoder at that shape, still inside the
+// size asked for, and the size Discord was told is updated with it.
+void ScreenShareWorker::switchSource(const QString &monitorId)
+{
+    if (!m_running || monitorId == m_sourceId)
+        return;
+    const QString previous = m_sourceId;
+    m_capture.stop();
+    if (!m_capture.start(monitorId) || m_capture.width() <= 0 || m_capture.height() <= 0) {
+        m_capture.stop();
+        // What was shared before comes back, so a window that will not be
+        // captured does not end the share for everyone.
+        if (m_capture.start(previous)) {
+            m_encoder.requestKeyframe();
+            m_lastSentMs = 0;
+            emit switchFailed(ScreenCapture::isWindowId(monitorId)
+                                  ? QStringLiteral("Windows would not let that window be captured, so you are "
+                                                   "still sharing what you were.")
+                                  : QStringLiteral("Windows would not let that screen be captured, so you are "
+                                                   "still sharing what you were."));
+            return;
+        }
+        end();
+        emit failed(QStringLiteral("Neither the new window nor the old one could be captured, so the share ended."));
+        return;
+    }
+
+    const int widthBefore = m_encoder.width();
+    const int heightBefore = m_encoder.height();
+    if (!openEncoder(m_fps)) {
+        end();
+        emit failed(QStringLiteral("The encoder would not start again at the new window's size."));
+        return;
+    }
+    m_sourceId = monitorId;
+    m_encoder.requestKeyframe();
+    m_lastSentMs = 0;
+    m_lastPreviewMs = 0;
+    wlog(QStringLiteral("share"), QStringLiteral("now sharing %1 at %2x%3")
+                                      .arg(ScreenCapture::isWindowId(monitorId) ? QStringLiteral("a window")
+                                                                               : QStringLiteral("a screen"))
+                                      .arg(m_encoder.width())
+                                      .arg(m_encoder.height()));
+    if (m_encoder.width() != widthBefore || m_encoder.height() != heightBefore)
+        emit resized(m_encoder.width(), m_encoder.height());
+    emit switched();
 }
 
 void ScreenShareWorker::end()
@@ -279,6 +349,9 @@ ScreenShare::ScreenShare(QObject *parent)
         m_running = false;
         emit failed(reason);
     });
+    connect(m_worker, &ScreenShareWorker::switched, this, &ScreenShare::switched);
+    connect(m_worker, &ScreenShareWorker::resized, this, &ScreenShare::resized);
+    connect(m_worker, &ScreenShareWorker::switchFailed, this, &ScreenShare::switchFailed);
 
     m_thread.setObjectName(QStringLiteral("screen-share"));
     m_thread.start();
@@ -303,6 +376,13 @@ void ScreenShare::stop()
     if (!m_worker)
         return;
     QMetaObject::invokeMethod(m_worker, "end", Qt::QueuedConnection);
+}
+
+void ScreenShare::switchSource(const QString &monitorId)
+{
+    if (!m_worker || !m_running)
+        return;
+    QMetaObject::invokeMethod(m_worker, "switchSource", Qt::QueuedConnection, Q_ARG(QString, monitorId));
 }
 
 void ScreenShare::setPreviewLarge(bool large)

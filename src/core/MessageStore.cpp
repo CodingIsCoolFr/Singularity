@@ -1710,6 +1710,7 @@ MessageInfo MessageStore::parseMessage(const QJsonObject &raw)
         // apart, and isImage() needs both.
         attachment.width = raw.value(QStringLiteral("width")).toInt();
         attachment.height = raw.value(QStringLiteral("height")).toInt();
+        attachment.placeholder = raw.value(QStringLiteral("placeholder")).toString();
         message.attachments.append(attachment);
     }
 

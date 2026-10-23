@@ -72,6 +72,13 @@ public:
     void searchMessages(const QString &guildId, const QString &channelId,
                         const QList<QPair<QString, QString>> &query, ObjectHandler onOk, ErrorHandler onError);
 
+    // Every direct and group chat at once, as Discord's home page searches:
+    // POST /users/@me/messages/search/tabs with SearchQuery::toTabBody's
+    // body. `onOk` gets the "messages" tab, which has the flat search's
+    // shape, so the caller reads both answers the same way. The 202 and 429
+    // are waited out as above.
+    void searchAllDirect(const QJsonObject &body, ObjectHandler onOk, ErrorHandler onError);
+
     // What Discord hands back when it wants a person to finish a check, and
     // what we hand back after they have.
     struct CaptchaProof
@@ -155,11 +162,18 @@ public:
     // someone and returns the channel.
     void openDirectMessage(const QString &userId, ObjectHandler onOk, ErrorHandler onError);
 
-    // A direct or group call. Ring starts one and rings those people; an empty
-    // list rings whoever else is in the channel. Stop ringing is decline, and
-    // also what accepting sends so the ring does not keep going.
+    // A direct or group call. Ring rings those people in the call that is
+    // there; an empty list rings whoever else is in the channel. Discord's
+    // client only rings once the call exists (CALL_CREATE), and so does the
+    // window. Stop ringing is decline, and also what accepting sends so the
+    // ring does not keep going.
     void ringCall(const QString &channelId, const QJsonArray &recipients, ObjectHandler onOk,
                   ErrorHandler onError);
+
+    // GET /channels/{id}/call: {"ringable": bool}, whether Discord will ring
+    // the other person of a direct message. Discord's client asks before
+    // every call it starts, and does not ring when the answer is no.
+    void fetchCall(const QString &channelId, ObjectHandler onOk, ErrorHandler onError);
     void stopRinging(const QString &channelId, const QString &userId, ObjectHandler onOk,
                      ErrorHandler onError);
 
@@ -429,6 +443,15 @@ private:
     QNetworkRequest buildRequest(const QString &path) const;
     void dispatch(QNetworkReply *reply, ObjectHandler onObject, ArrayHandler onArray, ErrorHandler onError);
 
+    // A message with files, the way Discord's client sends one: each file to
+    // Discord's storage first, then the message naming the uploads. See the
+    // .cpp. sendMultipart is the older single post, kept for when the first
+    // step is refused.
+    void uploadThenSend(const QString &channelId, const QJsonObject &body, const QStringList &files,
+                        ObjectHandler onOk, ErrorHandler onError, const CaptchaProof &captcha);
+    void sendMultipart(const QString &channelId, const QJsonObject &body, const QStringList &files,
+                       ObjectHandler onOk, ErrorHandler onError, const CaptchaProof &captcha);
+
     QNetworkAccessManager m_network;
 
     // GIF answers by request path, with when they arrived. See gifGet.
@@ -437,9 +460,10 @@ private:
                 int attempt = 0);
 
     // See searchMessages. `serial` is which search this is; m_searchSerial
-    // is the newest.
-    void searchGet(const QString &path, int serial, ObjectHandler onOk, ErrorHandler onError, int indexWaits,
-                   int rateWaits);
+    // is the newest. An empty `json` is a GET; otherwise it is POSTed, and
+    // the answer's "messages" tab is what onOk is given.
+    void searchSend(const QString &path, const QByteArray &json, int serial, ObjectHandler onOk,
+                    ErrorHandler onError, int indexWaits, int rateWaits);
     int m_searchSerial = 0;
     QString m_token;
 

@@ -181,6 +181,34 @@ void CallView::setFrame(const QString &userId, const QImage &image, Surface surf
     }
 }
 
+void CallView::setStreamViewers(const QString &streamerId, const QStringList &viewerIds)
+{
+    if (streamerId.isEmpty())
+        return;
+    if (viewerIds.isEmpty())
+        m_streamViewers.remove(streamerId);
+    else
+        m_streamViewers.insert(streamerId, viewerIds);
+    for (const Tile &tile : m_tiles) {
+        if (tile.userId == streamerId && tile.surface == Surface::Share)
+            update(tile.box);
+    }
+}
+
+QString CallView::viewersText(const QString &streamerId) const
+{
+    const QStringList viewers = m_streamViewers.value(streamerId);
+    if (viewers.isEmpty() || !m_store)
+        return {};
+    QStringList names;
+    for (const QString &id : viewers) {
+        const QString name = m_store->user(id).displayName();
+        names.append(name.isEmpty() ? QStringLiteral("someone") : name);
+    }
+    names.sort(Qt::CaseInsensitive);
+    return QStringLiteral("%1 watching: %2").arg(viewers.size()).arg(names.join(QStringLiteral(", ")));
+}
+
 void CallView::dropFrames(const QString &userId, Surface surface)
 {
     const bool removed = surface == Surface::Share ? m_shareFrames.remove(userId)
@@ -678,6 +706,39 @@ void CallView::paintMarks(QPainter &painter, const Tile &tile) const
         painter.setPen(QColor(Theme::Light));
         painter.drawText(badge, Qt::AlignCenter, word);
         edgeX = badge.left() - 8;
+
+        // Discord's viewer count beside LIVE: an eye and how many are
+        // watching. Who they are is in the tile's tooltip.
+        const int viewers = tile.surface == Surface::Share ? int(m_streamViewers.value(tile.userId).size()) : 0;
+        if (viewers > 0) {
+            const QString count = QString::number(viewers);
+            const int eyeWidth = tile.featured ? 14 : 11;
+            const int pillWidth = eyeWidth + painter.fontMetrics().horizontalAdvance(count) + 16;
+            const QRect pill(edgeX - pillWidth, badge.top(), pillWidth, badgeHeight);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(0, 0, 0, 160));
+            painter.drawRoundedRect(pill, 4, 4);
+
+            const QRectF eye(pill.left() + 6, pill.center().y() - eyeWidth * 0.32, eyeWidth, eyeWidth * 0.64);
+            QPainterPath lids;
+            lids.moveTo(eye.left(), eye.center().y());
+            lids.quadTo(eye.center().x(), eye.top() - eye.height() * 0.45, eye.right(), eye.center().y());
+            lids.quadTo(eye.center().x(), eye.bottom() + eye.height() * 0.45, eye.left(), eye.center().y());
+            QPen outline{QColor(Theme::Light)};
+            outline.setWidthF(1.3);
+            painter.setPen(outline);
+            painter.setBrush(Qt::NoBrush);
+            painter.drawPath(lids);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(Theme::Light));
+            const qreal pupil = eye.height() * 0.62;
+            painter.drawEllipse(QRectF(eye.center().x() - pupil / 2, eye.center().y() - pupil / 2, pupil, pupil));
+
+            painter.setPen(QColor(Theme::Light));
+            painter.drawText(QRect(int(eye.right()) + 4, pill.top(), pill.right() - int(eye.right()) - 6, pill.height()),
+                             Qt::AlignVCenter | Qt::AlignLeft, count);
+            edgeX = pill.left() - 8;
+        }
     }
 
     const int markSize = tile.featured ? 16 : 13;
@@ -780,6 +841,8 @@ void CallView::mouseMoveEvent(QMouseEvent *event)
         return;
     m_hoverUserId = id;
     m_hoverSurface = surface;
+    // A stream's tile names who is watching it, as Discord's viewer list.
+    setToolTip(tile && surface == Surface::Share ? viewersText(id) : QString());
     update();
 }
 

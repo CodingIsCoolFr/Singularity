@@ -39,6 +39,10 @@ public slots:
     void begin(const QString &monitorId, int width, int height, int fps, int bitrate);
     void end();
 
+    // Another window or screen on the same running share, as Discord's
+    // Change Windows does. See ScreenShare::switchSource.
+    void switchSource(const QString &monitorId);
+
     // A viewer said it cannot draw anything yet. Everything it has been sent
     // so far describes changes from a picture it never saw.
     void requestKeyframe();
@@ -66,8 +70,15 @@ signals:
     void stopped();
     void failed(const QString &reason);
 
+    // The new source is being sent; `resized` first when its shape changed
+    // the picture's size. switchFailed: the old source is still being sent.
+    void switched();
+    void resized(int width, int height);
+    void switchFailed(const QString &reason);
+
 private:
     void tick();
+    bool openEncoder(int fps);
 
     ScreenCapture m_capture;
     VideoEncoder m_encoder;
@@ -84,6 +95,10 @@ private:
     qint64 m_lastPreviewMs = 0;
 
     int m_fps = 30;
+    QString m_sourceId;     // what is being captured
+    int m_maxWidth = 0;     // the size asked for, which every source fits inside
+    int m_maxHeight = 0;
+    int m_bitrate = 0;
     bool m_previewLarge = false;
     bool m_running = false;
     bool m_saidFirst = false;
@@ -107,12 +122,21 @@ public:
     void setPreviewLarge(bool large);
     bool isRunning() const { return m_running; }
 
+    // Shares a different window or screen without stopping: the stream,
+    // its connection and its viewers carry on, as with Discord's Change
+    // Windows. Stopping and starting again ended the stream for everyone
+    // watching and made them click Watch again.
+    void switchSource(const QString &monitorId);
+
 signals:
     void picture(const QList<QByteArray> &units, bool keyframe);
     void preview(const QImage &frame);
     void started(int width, int height, const QString &encoder, bool hardware);
     void stopped();
     void failed(const QString &reason);
+    void switched();
+    void resized(int width, int height);
+    void switchFailed(const QString &reason);
 
 private:
     QThread m_thread;

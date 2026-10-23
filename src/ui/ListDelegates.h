@@ -67,6 +67,11 @@ constexpr int Relationship = Qt::UserRole + 20;
 // this carries the person; the server is empty outside one.
 constexpr int UserId = Qt::UserRole + 21;
 constexpr int GuildId = Qt::UserRole + 22;
+
+// The address of an animated avatar (an "a_" hash). The row's picture is its
+// first frame; while the row is hovered or open it plays, as Discord's lists
+// do. Empty for a still one.
+constexpr int AvatarUrl = Qt::UserRole + 23;
 } // namespace SingularityRoles
 
 // Shared easing used by both delegates below.
@@ -117,6 +122,11 @@ protected:
     // none, for the dot to be drawn instead.
     bool paintAvatarIcon(QPainter *painter, int row, const QRect &avatar, const QString &userId,
                          const QColor &backdrop) const;
+
+    // The row's picture: its still (DecorationRole), or while `playing` the
+    // current frame of its animated avatar (AvatarUrl), as Discord's lists
+    // play one only on the row under the pointer or the one open.
+    void paintAvatar(QPainter *painter, const QRect &avatar, const QModelIndex &index, bool playing) const;
 
     QAbstractItemView *m_view = nullptr;
 

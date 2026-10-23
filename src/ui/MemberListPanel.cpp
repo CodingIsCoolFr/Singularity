@@ -73,6 +73,8 @@ void setFace(QListWidgetItem *item, const QString &userId, const QString &name, 
     const QImage picture = url.isEmpty() ? QImage() : MediaCache::instance().image(url);
     item->setIcon(picture.isNull() ? QIcon(MediaCache::initialsAvatar(name, 32))
                                    : QIcon(MediaCache::circular(picture, 32)));
+    item->setData(SingularityRoles::AvatarUrl,
+                  avatarHash.startsWith(QLatin1String("a_")) ? url.toString() : QString());
 }
 
 // Discord's own names for the two groups that are not roles.

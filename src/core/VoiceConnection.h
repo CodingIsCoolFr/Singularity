@@ -151,6 +151,9 @@ public:
     // `fps` and `bitrate` are what the encoder really runs at; the Video
     // payload tells the server so, as Discord's client does.
     void startSendingVideo(int width, int height, int fps = 30, int bitrate = 2500000);
+    // The pictures changed size on the same running stream (a different
+    // window was picked): tells the server the new size, nothing else.
+    void updateVideoSize(int width, int height);
     void stopSendingVideo();
     bool isSendingVideo() const { return m_publicSending.load(); }
 

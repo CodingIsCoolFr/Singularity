@@ -3127,6 +3127,21 @@ void VoiceConnection::startSendingVideo(int width, int height, int fps, int bitr
     sendSpeaking(m_speaking);
 }
 
+void VoiceConnection::updateVideoSize(int width, int height)
+{
+    if (postToOwnThread([this, width, height]() { updateVideoSize(width, height); }))
+        return;
+    if (!m_sendingVideo || (width == m_sendWidth && height == m_sendHeight))
+        return;
+    // Same stream, same ssrc, same packet count: only the size it is
+    // announced at changes, as Discord's client re-sends op 12 when a shared
+    // window changes shape. Starting over would drop every viewer.
+    m_sendWidth = width;
+    m_sendHeight = height;
+    wlog(QStringLiteral("share"), QStringLiteral("picture is now %1x%2, same stream").arg(width).arg(height));
+    sendVideoState();
+}
+
 void VoiceConnection::stopSendingVideo()
 {
     if (postToOwnThread([this]() { stopSendingVideo(); }))
