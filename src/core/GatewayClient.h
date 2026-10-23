@@ -6,6 +6,7 @@
 #include <QJsonObject>
 #include <QList>
 #include <QObject>
+#include <QPair>
 #include <QSet>
 #include <QString>
 #include <QTimer>
@@ -69,6 +70,12 @@ public:
     // sends no member list and therefore no statuses, so everybody in the
     // server looks offline.
     void subscribeToGuild(const QString &guildId, const QString &channelId = QString());
+
+    // Asks for more of the subscribed channel's member list, in Discord's
+    // 100-row pages ([0, 99], [100, 199] ...). Discord only sends the rows a
+    // client asks for, so a list that never asks past [0, 99] stops after
+    // 100 people however many the server has. Sent only when the pages change.
+    void requestMemberRanges(const QString &guildId, const QList<QPair<int, int>> &ranges);
 
     // Keeps a server's live changes coming, joins and leaves in voice above
     // all, without touching what is already asked for there. Discord's
@@ -196,7 +203,8 @@ private:
     void closeKeepingSession();
     void openSocket();
     void scheduleReconnect();
-    void sendJson(const QJsonObject &payload);
+    // False when it did not go out: no socket, or held back near the limit.
+    bool sendJson(const QJsonObject &payload);
     void sendIdentify();
     void sendResume();
     void sendHeartbeat();
@@ -247,6 +255,8 @@ private:
     // server twice does not send the same request again. Discord counts every
     // command against a limit and hangs up when it is passed.
     QHash<QString, QString> m_subscribedChannels;
+    // The member list pages last asked for in each guild.
+    QHash<QString, QList<QPair<int, int>>> m_memberRanges;
 
     // A rolling count of commands sent, purely so the log shows it before a
     // close rather than leaving us guessing.

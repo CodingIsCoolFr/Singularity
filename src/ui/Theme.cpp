@@ -594,7 +594,7 @@ QMainWindow[glass="true"] #SearchPanel {
 }
 #GuildRail QListWidget,
 #Sidebar QListWidget,
-#MemberPanel QListWidget {
+#MemberPanel QListView {
     background-color: transparent;
     border: none;
     outline: none;

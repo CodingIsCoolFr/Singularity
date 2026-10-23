@@ -1036,6 +1036,12 @@ void MessageStore::ingestMemberListUpdate(const QJsonObject &payload)
     const bool fresh = m_memberListFresh.remove(guildId);
     if (!fresh && !list.listId.isEmpty() && !listId.isEmpty() && listId != list.listId)
         return;
+    // A channel just opened with a list of its own: its rows start afresh,
+    // or the old list's people would sit in the new list's places.
+    if (fresh && !listId.isEmpty() && listId != list.listId) {
+        list.rows.clear();
+        list.listId = listId;
+    }
 
     int learned = 0;
 
@@ -1110,94 +1116,97 @@ void MessageStore::ingestMemberListUpdate(const QJsonObject &payload)
         return row;
     };
 
+    // Discord's own list, read from its client (ChannelMemberStore): every
+    // row has a fixed place - a heading, then that group's people, group
+    // after group - and the list is as long as the groups say even where
+    // nothing has been sent yet. Each edit names absolute places:
+    //   SYNC {range:[a,b], items}  the items go in from a
+    //   INVALIDATE {range:[a,b]}   those places go back to not loaded
+    //   INSERT {index, item}       in at index, the rest move down
+    //   UPDATE {index, item}       that place changes
+    //   DELETE {index}             out, the rest move up
+    // and after them the groups set the length. Every SYNC used to replace
+    // the whole list, which was right only while rows 0 to 99 were all that
+    // was ever asked for - so a big server's list stopped after a hundred
+    // rows and scrolling never brought the rest (0.9.5).
+    const auto place = [&list](int index, const MemberRow &row) {
+        if (index < 0 || index >= MaxMemberRows)
+            return;
+        if (index >= list.rows.size())
+            list.rows.resize(index + 1);
+        list.rows[index] = row;
+    };
+
     const QJsonArray ops = payload.value(QStringLiteral("ops")).toArray();
     for (const QJsonValue &opValue : ops) {
         const QJsonObject op = opValue.toObject();
         const QString kind = op.value(QStringLiteral("op")).toString();
-
-        if (kind == QLatin1String("SYNC")) {
-            // A whole range at once. An empty one is a repeat of a range we
-            // already have, not a cleared list — replacing with it blanked
-            // the panel.
-            const QJsonArray items = op.value(QStringLiteral("items")).toArray();
-            if (items.isEmpty())
-                continue;
-
-            QList<MemberRow> rows;
-            QSet<QString> seen;
-            rows.reserve(items.size());
-            for (const QJsonValue &item : items) {
-                const MemberRow row = readItem(item);
-                if (row.heading) {
-                    rows.append(row);
-                    continue;
-                }
-                if (row.userId.isEmpty() || seen.contains(row.userId))
-                    continue;
-                seen.insert(row.userId);
-                rows.append(row);
-            }
-            list.rows = rows;
-            if (!listId.isEmpty())
-                list.listId = listId;
-            continue;
-        }
-
-        // The single-row edits. Discord numbers them against the list as it
-        // believes we hold it, so an index past the end is not an error - it
-        // means our copy is short, and appending is the closest honest answer.
+        const QJsonArray range = op.value(QStringLiteral("range")).toArray();
         const int index = op.value(QStringLiteral("index")).toInt(-1);
 
-        if (kind == QLatin1String("DELETE")) {
+        if (kind == QLatin1String("SYNC")) {
+            const int start = range.at(0).toInt(0);
+            const QJsonArray items = op.value(QStringLiteral("items")).toArray();
+            for (int i = 0; i < items.size(); ++i)
+                place(start + i, readItem(items.at(i)));
+            if (!listId.isEmpty())
+                list.listId = listId;
+        } else if (kind == QLatin1String("INVALIDATE")) {
+            const int start = qMax(0, range.at(0).toInt(0));
+            const int end = qMin(int(list.rows.size()) - 1, range.at(1).toInt(-1));
+            for (int i = start; i <= end; ++i)
+                list.rows[i] = MemberRow();
+        } else if (kind == QLatin1String("INSERT")) {
+            const MemberRow row = readItem(op.value(QStringLiteral("item")));
+            if (index >= 0 && index <= list.rows.size())
+                list.rows.insert(index, row);
+            else
+                place(index, row);
+        } else if (kind == QLatin1String("UPDATE")) {
+            place(index, readItem(op.value(QStringLiteral("item"))));
+        } else if (kind == QLatin1String("DELETE")) {
             if (index >= 0 && index < list.rows.size())
                 list.rows.removeAt(index);
-            continue;
-        }
-
-        if (kind == QLatin1String("INSERT") || kind == QLatin1String("UPDATE")) {
-            const MemberRow row = readItem(op.value(QStringLiteral("item")));
-            if (!row.heading && row.userId.isEmpty())
-                continue;
-
-            if (kind == QLatin1String("UPDATE") && index >= 0 && index < list.rows.size()) {
-                list.rows[index] = row;
-            } else if (!row.heading && !row.userId.isEmpty()) {
-                // Already on the list. A second insert of the same person is
-                // what the panel was drawing as two profiles.
-                int existing = -1;
-                for (int i = 0; i < list.rows.size(); ++i) {
-                    if (!list.rows.at(i).heading && list.rows.at(i).userId == row.userId) {
-                        existing = i;
-                        break;
-                    }
-                }
-                if (existing >= 0)
-                    list.rows[existing] = row;
-                else if (index >= 0 && index <= list.rows.size())
-                    list.rows.insert(index, row);
-                else
-                    list.rows.append(row);
-            } else if (index >= 0 && index <= list.rows.size()) {
-                list.rows.insert(index, row);
-            } else {
-                list.rows.append(row);
-            }
         }
     }
 
-    {
-        QList<MemberRow> unique;
-        QSet<QString> seen;
-        unique.reserve(list.rows.size());
-        for (const MemberRow &row : list.rows) {
-            if (!row.heading && !row.userId.isEmpty()) {
-                if (seen.contains(row.userId))
-                    continue;
-                seen.insert(row.userId);
-            }
-            unique.append(row);
+    // As long as the groups say: a heading for each, and its count of people
+    // after it. Discord draws each group's title from here (setGroups gives
+    // every group the index of its heading), not from the rows, so a title is
+    // in place before any of its people have been sent.
+    if (!groups.isEmpty()) {
+        int length = 0;
+        QList<QPair<int, MemberRow>> titles;
+        for (const QJsonValue &value : groups) {
+            const QJsonObject group = value.toObject();
+            MemberRow title;
+            title.heading = true;
+            title.groupId = group.value(QStringLiteral("id")).toString();
+            title.groupCount = qMax(0, group.value(QStringLiteral("count")).toInt());
+            titles.append({length, title});
+            length += title.groupCount + 1;
         }
-        list.rows = unique;
+        list.rows.resize(qMin(length, MaxMemberRows));
+        for (const auto &[at, title] : titles) {
+            if (at < list.rows.size())
+                list.rows[at] = title;
+        }
+    }
+
+    // One person in two places means one place is out of date (a move whose
+    // second half has not come). The earlier is shown as not loaded rather
+    // than removed, so every other row keeps its place.
+    {
+        QHash<QString, int> at;
+        for (int i = 0; i < list.rows.size(); ++i) {
+            const MemberRow &row = list.rows.at(i);
+            if (row.heading || row.userId.isEmpty())
+                continue;
+            const auto seen = at.constFind(row.userId);
+            if (seen != at.constEnd())
+                list.rows[seen.value()] = MemberRow();
+            at.insert(row.userId, i);
+        }
     }
 
     if (learned > 0) {
@@ -1216,6 +1225,27 @@ void MessageStore::ingestMemberListUpdate(const QJsonObject &payload)
 MemberList MessageStore::memberList(const QString &guildId) const
 {
     return m_memberLists.value(guildId);
+}
+
+QList<QPair<int, int>> memberListPages(int firstVisible, int lastVisible)
+{
+    // Discord's, in rows rather than pixels: it divides the scroll offset by
+    // the row height, which comes to the same thing.
+    constexpr int Page = 100;
+    const int first = qMax(0, firstVisible);
+    const int last = qMax(first, lastVisible);
+    const int pad = (last - first + 2) / 2;   // half the rows on screen, rounded up
+    int from = qMax(0, first - pad);
+    const int to = last + pad;
+
+    QList<QPair<int, int>> pages;
+    if (from > 0) {
+        pages.append({0, Page - 1});
+        from = qMax(from, Page);
+    }
+    for (from = from / Page * Page; from <= to && from < MaxMemberRows; from += Page)
+        pages.append({from, from + Page - 1});
+    return pages;
 }
 
 void MessageStore::applyGuild(const QJsonObject &rawGuild)

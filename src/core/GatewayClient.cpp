@@ -199,6 +199,7 @@ void GatewayClient::stop()
     m_firstHeartbeatTimer.stop();
     m_subscribedGuilds.clear();
     m_subscribedChannels.clear();
+    m_memberRanges.clear();
     m_recentSends.clear();
     if (m_socket.state() != QAbstractSocket::UnconnectedState)
         m_socket.close();
@@ -307,10 +308,10 @@ void GatewayClient::scheduleReconnect()
     m_reconnectTimer.start(delay);
 }
 
-void GatewayClient::sendJson(const QJsonObject &payload)
+bool GatewayClient::sendJson(const QJsonObject &payload)
 {
     if (m_socket.state() != QAbstractSocket::ConnectedState)
-        return;
+        return false;
 
     const int op = payload.value(QStringLiteral("op")).toInt(-1);
 
@@ -333,11 +334,12 @@ void GatewayClient::sendJson(const QJsonObject &payload)
                  QStringLiteral("holding back op %1: %2 commands in the last minute, near the limit")
                      .arg(op)
                      .arg(m_recentSends.size()));
-            return;
+            return false;
         }
     }
 
     m_socket.sendTextMessage(QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact)));
+    return true;
 }
 
 void GatewayClient::onConnected()
@@ -651,6 +653,8 @@ void GatewayClient::subscribeToGuild(const QString &guildId, const QString &chan
 
     m_subscribedGuilds.insert(guildId);
     m_subscribedChannels.insert(guildId, channelId);
+    // A new channel's list starts at its top, as Discord's does.
+    m_memberRanges.insert(guildId, {{0, 99}});
 
     // Asking for rows 0 to 99 of a channel's member list is what makes Discord
     // send everyone's status. With an empty channel map it answers with
@@ -688,6 +692,40 @@ void GatewayClient::subscribeToGuild(const QString &guildId, const QString &chan
         {QStringLiteral("op"), OpGuildSubscriptionsBulk},
         {QStringLiteral("d"), QJsonObject{{QStringLiteral("subscriptions"), subscriptions}}},
     });
+}
+
+void GatewayClient::requestMemberRanges(const QString &guildId, const QList<QPair<int, int>> &ranges)
+{
+    const QString channelId = m_subscribedChannels.value(guildId);
+    if (guildId.isEmpty() || channelId.isEmpty() || ranges.isEmpty())
+        return;
+    // Asked only when they change: every message counts against the 120 a
+    // minute that closes the socket.
+    if (m_memberRanges.value(guildId) == ranges)
+        return;
+
+    QJsonArray list;
+    QStringList said;
+    for (const auto &range : ranges) {
+        QJsonArray pair;   // built a step at a time; see subscribeToGuild
+        pair.append(range.first);
+        pair.append(range.second);
+        list.append(pair);
+        said << QStringLiteral("%1-%2").arg(range.first).arg(range.second);
+    }
+    QJsonObject channels;
+    channels.insert(channelId, list);
+    QJsonObject subscriptions;
+    subscriptions.insert(guildId, guildSubscription(channels));
+    // Remembered only once it has gone: one held back near the limit is
+    // asked again on the next scroll rather than taken as already asked.
+    if (!sendJson(QJsonObject{
+            {QStringLiteral("op"), OpGuildSubscriptionsBulk},
+            {QStringLiteral("d"), QJsonObject{{QStringLiteral("subscriptions"), subscriptions}}},
+        }))
+        return;
+    m_memberRanges.insert(guildId, ranges);
+    wlog(QStringLiteral("gateway"), QStringLiteral("member list rows %1 of guild %2").arg(said.join(QStringLiteral(", ")), guildId));
 }
 
 QJsonObject GatewayClient::guildSubscription(const QJsonObject &channels)
@@ -1170,6 +1208,7 @@ void GatewayClient::handleDispatch(const QString &type, const QJsonObject &data,
         // A fresh session knows nothing about what we asked for before.
         m_subscribedGuilds.clear();
         m_subscribedChannels.clear();
+        m_memberRanges.clear();
         setState(State::Ready);
         // A new session has been told nothing yet.
         m_lastPresence.clear();

@@ -1636,6 +1636,12 @@ void MainWindow::buildUi()
     connect(m_members, &MemberListPanel::profileRequested, this,
             [this](const QString &userId) { showProfile(userId, QCursor::pos()); });
     connect(m_members, &MemberListPanel::volumeMenuRequested, this, &MainWindow::showPersonMenu);
+    // Scrolling the list asks Discord for the rows coming into view.
+    connect(m_members, &MemberListPanel::rangesWanted, this,
+            [this](const QString &guildId, const QList<QPair<int, int>> &ranges) {
+                if (m_gateway)
+                    m_gateway->requestMemberRanges(guildId, ranges);
+            });
     contentRow->addWidget(m_members);
 
     // Search results take the member list's place while a search is open,

@@ -436,6 +436,139 @@ void storeTests()
     expect(!store.hasHistory(General) && store.messages(General).isEmpty(), "a channel's past can be let go of");
 }
 
+// --- the member list -----------------------------------------------------------
+
+// One person as GUILD_MEMBER_LIST_UPDATE carries them.
+QJsonObject listMember(int n)
+{
+    const QString id = QStringLiteral("7000000000000%1").arg(n, 5, 10, QLatin1Char('0'));
+    return QJsonObject{{QStringLiteral("member"),
+                        QJsonObject{{QStringLiteral("user"), QJsonObject{{QStringLiteral("id"), id},
+                                                                         {QStringLiteral("username"), QStringLiteral("person%1").arg(n)}}},
+                                    {QStringLiteral("roles"), QJsonArray{}},
+                                    {QStringLiteral("presence"), QJsonObject{{QStringLiteral("status"), QStringLiteral("online")}}}}}};
+}
+
+QString listMemberId(int n)
+{
+    return listMember(n).value(QStringLiteral("member")).toObject().value(QStringLiteral("user")).toObject()
+        .value(QStringLiteral("id")).toString();
+}
+
+QJsonObject listGroup(const QString &id, int count)
+{
+    return QJsonObject{{QStringLiteral("group"), QJsonObject{{QStringLiteral("id"), id}, {QStringLiteral("count"), count}}}};
+}
+
+// The groups beside the ops, as Discord sends them with every update.
+QJsonArray listGroups(int staff, int online, int offline)
+{
+    return QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("600000000000000001")}, {QStringLiteral("count"), staff}},
+                      QJsonObject{{QStringLiteral("id"), QStringLiteral("online")}, {QStringLiteral("count"), online}},
+                      QJsonObject{{QStringLiteral("id"), QStringLiteral("offline")}, {QStringLiteral("count"), offline}}};
+}
+
+QJsonObject listUpdate(const QJsonArray &groups, const QJsonArray &ops)
+{
+    return QJsonObject{{QStringLiteral("guild_id"), Guild},
+                       {QStringLiteral("id"), QStringLiteral("everyone")},
+                       {QStringLiteral("online_count"), 152},
+                       {QStringLiteral("member_count"), 1219},
+                       {QStringLiteral("groups"), groups},
+                       {QStringLiteral("ops"), ops}};
+}
+
+QJsonObject syncOp(int from, const QJsonArray &items)
+{
+    return QJsonObject{{QStringLiteral("op"), QStringLiteral("SYNC")},
+                       {QStringLiteral("range"), QJsonArray{from, from + 99}},
+                       {QStringLiteral("items"), items}};
+}
+
+void memberListTests()
+{
+    using Pages = QList<QPair<int, int>>;
+    expect(memberListPages(0, 20) == Pages({{0, 99}}), "the top of the list asks for the first page only");
+    expect(memberListPages(50, 70) == Pages({{0, 99}}), "within the first page, still the first page");
+    expect(memberListPages(140, 160) == Pages({{0, 99}, {100, 199}}),
+           "rows 140 to 160 ask for the first page and their own, as Discord does");
+    expect(memberListPages(195, 215) == Pages({{0, 99}, {100, 199}, {200, 299}}),
+           "half a screen more each way reaches into the next page");
+
+    // Two staff, 150 online, 40 offline: Discord's list is 2+1 + 150+1 + 40+1
+    // places long however few of them it has sent.
+    MessageStore store;
+    QJsonArray first;
+    first.append(listGroup(QStringLiteral("600000000000000001"), 2));
+    first.append(listMember(1));
+    first.append(listMember(2));
+    first.append(listGroup(QStringLiteral("online"), 150));
+    for (int n = 3; n <= 98; ++n)
+        first.append(listMember(n));
+    store.ingestMemberListUpdate(listUpdate(listGroups(2, 150, 40), QJsonArray{syncOp(0, first)}));
+
+    MemberList list = store.memberList(Guild);
+    expect(list.rows.size() == 195, "the list is as long as its groups say, not the hundred rows sent");
+    expect(list.rows.value(0).heading && list.rows.value(3).heading && list.rows.value(3).groupId == QLatin1String("online"),
+           "headings sit where Discord put them");
+    expect(list.rows.value(99).userId == listMemberId(98), "the hundredth row is the last person sent");
+    expect(!list.rows.value(100).loaded() && !list.rows.value(194).loaded(), "the places not sent yet are placeholders");
+    expect(list.rows.value(154).heading && list.rows.value(154).groupId == QLatin1String("offline"),
+           "a group's heading is in place before any of its people are sent");
+
+    // Scrolling down: the second page arrives on its own.
+    QJsonArray second;
+    for (int n = 99; n <= 152; ++n)
+        second.append(listMember(n));
+    second.append(listGroup(QStringLiteral("offline"), 40));
+    for (int n = 153; n <= 192; ++n)
+        second.append(listMember(n));
+    store.ingestMemberListUpdate(listUpdate(listGroups(2, 150, 40), QJsonArray{syncOp(100, second)}));
+    list = store.memberList(Guild);
+    expect(list.rows.value(100).userId == listMemberId(99) && list.rows.value(194).userId == listMemberId(192),
+           "the second page fills rows 100 onward");
+    expect(list.rows.value(1).userId == listMemberId(1) && list.rows.value(99).userId == listMemberId(98),
+           "and the first page is still there (it used to be replaced, so the list stopped at 100)");
+
+    // Somebody comes online at the top: in at 1, everyone below moves down.
+    store.ingestMemberListUpdate(listUpdate(
+        listGroups(3, 150, 40),
+        QJsonArray{QJsonObject{{QStringLiteral("op"), QStringLiteral("INSERT")}, {QStringLiteral("index"), 1},
+                               {QStringLiteral("item"), listMember(500)}}}));
+    list = store.memberList(Guild);
+    expect(list.rows.size() == 196 && list.rows.value(1).userId == listMemberId(500)
+               && list.rows.value(2).userId == listMemberId(1) && list.rows.value(4).heading,
+           "an insert pushes the rows below it down one place");
+
+    // And goes again.
+    store.ingestMemberListUpdate(listUpdate(
+        listGroups(2, 150, 40),
+        QJsonArray{QJsonObject{{QStringLiteral("op"), QStringLiteral("DELETE")}, {QStringLiteral("index"), 1}}}));
+    list = store.memberList(Guild);
+    expect(list.rows.size() == 195 && list.rows.value(1).userId == listMemberId(1) && list.rows.value(3).heading,
+           "a delete pulls them back up");
+
+    // One place changes and nothing else moves.
+    store.ingestMemberListUpdate(listUpdate(
+        listGroups(2, 150, 40),
+        QJsonArray{QJsonObject{{QStringLiteral("op"), QStringLiteral("UPDATE")}, {QStringLiteral("index"), 5},
+                               {QStringLiteral("item"), listMember(600)}}}));
+    list = store.memberList(Guild);
+    expect(list.rows.value(5).userId == listMemberId(600) && list.rows.value(6).userId == listMemberId(5),
+           "an update changes its one place");
+
+    // Scrolled away from: Discord stops keeping that page and says so.
+    store.ingestMemberListUpdate(listUpdate(
+        listGroups(2, 150, 40),
+        QJsonArray{QJsonObject{{QStringLiteral("op"), QStringLiteral("INVALIDATE")},
+                               {QStringLiteral("range"), QJsonArray{100, 199}}}}));
+    list = store.memberList(Guild);
+    expect(!list.rows.value(100).loaded() && !list.rows.value(153).loaded() && list.rows.value(99).loaded()
+               && list.rows.size() == 195,
+           "an invalidated page goes back to placeholders and keeps its places");
+    expect(list.rows.value(154).heading, "its heading stays, from the groups");
+}
+
 // --- the calls ---------------------------------------------------------------
 
 void restTests()
@@ -898,6 +1031,7 @@ int main(int argc, char **argv)
 
     queryTests();
     storeTests();
+    memberListTests();
     restTests();
     panelTests(shot);
 

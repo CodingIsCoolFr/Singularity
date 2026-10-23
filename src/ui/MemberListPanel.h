@@ -1,5 +1,8 @@
 #pragma once
 
+#include <QElapsedTimer>
+#include <QList>
+#include <QPair>
 #include <QPoint>
 #include <QString>
 #include <QWidget>
@@ -7,8 +10,9 @@
 class QTimer;
 
 class MessageStore;
+class MemberRowsModel;
 class QLabel;
-class QListWidget;
+class QListView;
 class QPushButton;
 
 // The people in a server, down the right hand side.
@@ -19,8 +23,11 @@ class QPushButton;
 // with the official client for no benefit. What arrives is a flat list with
 // the headings already in it, and that is what gets drawn.
 //
-// Only the first hundred rows are ever asked for, which is why the heading
-// carries the server's own totals rather than counting what is on screen.
+// Discord sends a list 100 rows at a time, and only the pages a client asks
+// for. The list is as long as the whole server from the start, rows not sent
+// yet drawn as placeholders, and scrolling asks for the pages on screen the
+// way Discord's own client does (rangesWanted). Until 0.9.6 only rows 0 to 99
+// were ever asked for, so a big server's list simply stopped there.
 class MemberListPanel : public QWidget
 {
     Q_OBJECT
@@ -48,11 +55,19 @@ signals:
     void volumeMenuRequested(const QString &userId, const QPoint &globalPos);
     void collapsedChanged(bool collapsed);
 
+    // The pages of the member list the rows on screen fall in
+    // (memberListPages). Sent when scrolling settles, a second apart at most:
+    // every request counts against the gateway's 120 a minute.
+    void rangesWanted(const QString &guildId, const QList<QPair<int, int>> &ranges);
+
 private:
     void rebuild();
+    void askForVisibleRows();
 
     // Batches rebuilds triggered by the gateway. See the constructor.
     QTimer *m_rebuildTimer = nullptr;
+    QTimer *m_rangeTimer = nullptr;
+    QElapsedTimer m_sinceRangeAsk;
     void refreshAvatar(const QString &userId);
 
     MessageStore *m_store = nullptr;
@@ -65,5 +80,6 @@ private:
     QWidget *m_body = nullptr;
     QLabel *m_counts = nullptr;
     QPushButton *m_toggle = nullptr;
-    QListWidget *m_list = nullptr;
+    MemberRowsModel *m_model = nullptr;
+    QListView *m_list = nullptr;
 };

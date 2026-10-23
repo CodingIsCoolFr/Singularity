@@ -10,6 +10,7 @@
 #include <QJsonValue>
 #include <QList>
 #include <QObject>
+#include <QPair>
 #include <QSet>
 #include <QString>
 
@@ -181,6 +182,10 @@ struct MemberRow
     QString userId;
     QString nickname;     // server nickname, may be empty
     QString colourRoleId; // the role that decides their colour, may be empty
+
+    // Neither a heading nor a person: a place Discord has not sent yet,
+    // drawn as a placeholder until it is asked for.
+    bool loaded() const { return heading || !userId.isEmpty(); }
 };
 
 struct MemberList
@@ -191,8 +196,9 @@ struct MemberList
     // rather than on them.
     QHash<QString, int> groupCounts;
 
-    // Discord's own totals, which are not the same as the number of rows:
-    // only the first hundred rows are ever asked for.
+    // Discord's own totals, which are not the same as the number of rows: a
+    // large server lists only who is online, and rows arrive a hundred at a
+    // time as the list is scrolled.
     int onlineCount = 0;
     int memberCount = 0;
 
@@ -200,6 +206,18 @@ struct MemberList
     // the same rows, and every person showed up twice.
     QString listId;
 };
+
+// The longest member list kept. Discord's runs as long as a server's online
+// count; nobody scrolls past two hundred thousand people, and every row not
+// sent yet still costs about a hundred bytes.
+constexpr int MaxMemberRows = 200000;
+
+// The 100-row pages of a member list to ask Discord for while rows
+// `firstVisible` to `lastVisible` are on screen. Discord's own rule (its
+// member list's scroll handler): half a screen more each way, always the
+// first page, then every page the stretch touches. Rows 140 to 160 ask for
+// [0, 99] and [100, 199].
+QList<QPair<int, int>> memberListPages(int firstVisible, int lastVisible);
 
 struct EmojiInfo
 {

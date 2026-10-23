@@ -767,12 +767,12 @@ constexpr int MemberAvatar = 32;
 QSize MemberDelegate::sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const
 {
     Q_UNUSED(option)
+    Q_UNUSED(index)
 
-    // A heading gets room above it as well as below, which is what separates
-    // one group from the next without drawing a line between them.
-    if (index.data(SingularityRoles::Heading).toBool())
-        return QSize(0, index.row() == 0 ? 26 : 34);
-
+    // Every row one height, headings included, as in Discord's list (a
+    // heading is the same height as a person, its words at the bottom; the
+    // room above is what separates one group from the next). The list can be
+    // tens of thousands long, and one height lets it be laid out at once.
     return QSize(0, 42);
 }
 
@@ -795,6 +795,20 @@ void MemberDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
         painter->drawText(QRect(cell.left() + 14, cell.bottom() - 18, cell.width() - 24, 16),
                           Qt::AlignLeft | Qt::AlignVCenter,
                           index.data(Qt::DisplayRole).toString().toUpper());
+        painter->restore();
+        return;
+    }
+
+    // A place Discord has not sent yet, until scrolling to it asks for it:
+    // a faint circle and bar, as Discord draws, the bar's length varying from
+    // row to row so a run of them does not read as a table.
+    if (index.data(SingularityRoles::Id).toString().isEmpty()) {
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(withAlpha(Theme::TextFaint, 0.14));
+        const QRect avatar(cell.left() + 14, cell.center().y() - MemberAvatar / 2, MemberAvatar, MemberAvatar);
+        painter->drawEllipse(avatar);
+        const int length = 48 + (index.row() * 37) % 72;
+        painter->drawRoundedRect(QRectF(avatar.right() + 10, cell.center().y() - 6, length, 12), 6, 6);
         painter->restore();
         return;
     }
