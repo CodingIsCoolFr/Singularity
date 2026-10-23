@@ -87,6 +87,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "test_search failed" }
           & .\build\Release\test_polls.exe
           if ($LASTEXITCODE -ne 0) { throw "test_polls failed" }
+          & .\build\Release\test_privacy.exe
+          if ($LASTEXITCODE -ne 0) { throw "test_privacy failed" }
 
       # A missing piece here is a broken update for everyone, so say what is
       # in the folder and stop on anything a shipped build has always had.

@@ -165,9 +165,37 @@ void GameActivity::start(RestClient *rest)
 {
     if (!m_catalogAsked && rest)
         fetchCatalog(rest);
-    if (!m_timer.isActive())
+    m_ready = true;
+    updateTimer();
+}
+
+void GameActivity::watchRunning(QObject *watcher)
+{
+    if (!watcher)
+        return;
+    ++m_watchers;
+    connect(watcher, &QObject::destroyed, this, [this]() {
+        --m_watchers;
+        updateTimer();
+    });
+    updateTimer();
+}
+
+// Programs are looked at only while there is a reason to: games go on your
+// status, or the Activity page is open to add one. Until 0.9.3 this ran every
+// five seconds from sign-in whatever the switch said, which the privacy page
+// had been promising it did not.
+void GameActivity::updateTimer()
+{
+    const bool wanted = m_ready && (m_shown || m_watchers > 0);
+    if (wanted && !m_timer.isActive()) {
         m_timer.start();
-    scan();
+        scan();
+    } else if (!wanted && m_timer.isActive()) {
+        m_timer.stop();
+        m_running.clear();
+        m_runningKey.clear();
+    }
 }
 
 void GameActivity::refresh()
@@ -196,6 +224,7 @@ void GameActivity::setShown(bool on)
     m_shown = on;
     AppConfig::instance().setValue(QStringLiteral("presence/showGames"), on);
     rebuild();
+    updateTimer();
 }
 
 void GameActivity::setDetect(bool on)
@@ -435,7 +464,8 @@ void GameActivity::applyCatalog(const QJsonArray &apps)
              .arg(programs)
              .arg(m_catalog.size())
              .arg(byCommandLine));
-    scan();
+    if (m_timer.isActive())
+        scan();
 }
 
 void GameActivity::scan()

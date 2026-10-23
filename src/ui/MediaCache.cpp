@@ -35,8 +35,11 @@ const QStringList kAllowedSuffixes{
     QStringLiteral(".giphy.com"),
     // Album art for a listening activity. Discord hands the key as "spotify:".
     QStringLiteral(".scdn.co"),
-    // The Singularity mark, used as the Playing card's picture.
-    QStringLiteral("singularitycord.pages.dev"),
+    // The Singularity mark, used as the Playing card's picture. With its dot
+    // like the rest: without one, "evilsingularitycord.pages.dev" - a name
+    // anyone can claim on Cloudflare Pages - passed too, and a picture there
+    // would have told a stranger your address.
+    QStringLiteral(".singularitycord.pages.dev"),
     // Discord's own site, which serves some badge tier pictures by full
     // address. Matched as ".discord.com" against ".<host>", so discord.com
     // itself counts and a look-alike such as notdiscord.com does not.

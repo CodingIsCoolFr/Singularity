@@ -339,6 +339,12 @@ QWidget *AnonymousPlugin::createSettingsWidget(QWidget *parent)
         "you are."), page));
 
     // ---- what Singularity never did in the first place ------------------------
+    //
+    // Every line here is checked against the code by tools/test_privacy.cpp
+    // where a test can check it. Until 0.9.3 this said there were no read
+    // receipts, no real fingerprint and no game detection, and all three had
+    // stopped being true as features were added. A line that is not true
+    // does more harm than no line.
 
     auto *heading = new QLabel(QStringLiteral("Things Singularity never sends"), page);
     heading->setStyleSheet(QStringLiteral("color: %1; font-weight: 600; margin-top: 12px;")
@@ -348,19 +354,35 @@ QWidget *AnonymousPlugin::createSettingsWidget(QWidget *parent)
     layout->addWidget(note(QStringLiteral(
         "These are not settings, and no switch turns them on. They are missing because "
         "the code to do them was never written.\n\n"
-        "•  No analytics events. The official client posts to an endpoint called "
-        "/science as you click around. Singularity never calls it.\n"
-        "•  No read receipts. Nothing tells Discord which messages you have looked "
-        "at, or when.\n"
-        "•  No real fingerprint. The client details sent on sign-in are fixed "
-        "numbers written into the source, not your actual Windows version, locale or "
-        "hardware, and they are identical for everyone running Singularity.\n"
+        "•  No analytics events. The official client reports what you click to an "
+        "endpoint Discord calls science. Singularity has no code that calls it.\n"
+        "•  No client metrics and no crash reports. Nothing goes to Discord's metrics, "
+        "or to Sentry, the crash reporter Discord's own app sends to.\n"
         "•  No session correlation. The fields the official client fills with "
         "identifiers that link your sessions together are sent empty.\n"
-        "•  No game detection. Nothing looks at what programs you have open.\n"
-        "•  No third party image loading. Pictures are only ever fetched from "
-        "Discord's own hosts, so a stranger's message cannot make your client contact "
-        "an address of their choosing and learn where you are."), page));
+        "•  No pictures from strangers' servers. Pictures come only from Discord, the "
+        "GIF services Discord uses (Tenor, Klipy, Giphy), Spotify for album art and "
+        "Singularity's own site for its logo. A message cannot make your client "
+        "contact an address of someone else's choosing."), page));
+
+    auto *sends = new QLabel(QStringLiteral("What Singularity does send"), page);
+    sends->setStyleSheet(QStringLiteral("color: %1; font-weight: 600; margin-top: 12px;")
+                             .arg(QLatin1String(Theme::TextMuted)));
+    layout->addWidget(sends);
+
+    layout->addWidget(note(QStringLiteral(
+        "•  What you have read. Opening a chat tells Discord the newest message you "
+        "saw, as the official client does, so your phone knows it is read too.\n"
+        "•  Client details. Sign-in and every request carry what Discord's desktop "
+        "app sends: its version numbers, copied from the Discord app on this PC or "
+        "Discord's update server, and this PC's Windows version. The language is "
+        "always en-US.\n"
+        "•  Your games, only if you ask. Games go on your status only with Show games "
+        "switched on. Singularity looks at which programs have a window only while "
+        "that is on, or while the Activity settings page is open.\n"
+        "•  Other services, each for one job: GitHub to check for updates and to "
+        "download the read-aloud voice when you ask for it, hCaptcha when Discord asks "
+        "for a captcha, and gofile.io only when you send a big file with Big files."), page));
 
     layout->addStretch(1);
 

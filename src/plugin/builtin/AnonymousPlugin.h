@@ -9,10 +9,11 @@
 // A note on what this plugin is not. Most of the tracking people worry about
 // in the official client is absent from Singularity already, not because a plugin
 // switched it off but because the code to do it was never written: no
-// analytics events, no read receipts, no reading of your real machine for a
-// fingerprint, no watching which programs you have open. Those are facts about
-// the client, and the settings page says so plainly rather than claiming them
-// as features of this plugin.
+// analytics events, no client metrics, no crash reports, no session
+// identifiers. Those are facts about the client, and the settings page says
+// so plainly, next to what Singularity does send (read state, the client
+// details, games when you switch them on), rather than claiming any of it as
+// a feature of this plugin. tools/test_privacy.cpp keeps the claims honest.
 //
 // What is left here are the three things Singularity genuinely does send, and can
 // stop sending.

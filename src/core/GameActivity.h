@@ -46,6 +46,11 @@ public:
 
     void refresh();
 
+    // Keeps the list of running programs fresh for as long as `watcher`
+    // lives: the Activity page, while it is open. Without a watcher, and
+    // with games off your status, nothing looks at your programs at all.
+    void watchRunning(QObject *watcher);
+
     QList<Saved> saved() const { return m_saved; }
     void addSaved(const Saved &game);
     void updateSaved(int index, const Saved &game);
@@ -77,6 +82,7 @@ private:
     void applyCatalog(const QJsonArray &apps);
     void scan();
     void rebuild();
+    void updateTimer();
 
     struct Known
     {
@@ -106,4 +112,6 @@ private:
     QString m_runningKey;
     QTimer m_timer;
     bool m_catalogAsked = false;
+    bool m_ready = false;    // signed in: start() has run
+    int m_watchers = 0;      // open pages that show the running programs
 };

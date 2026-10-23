@@ -237,6 +237,7 @@ QWidget *SettingsDialog::buildActivityPage()
 
     if (m_games) {
         connect(m_games, &GameActivity::changed, page, refresh);
+        m_games->watchRunning(page);
         m_games->refresh();
     }
     refresh();

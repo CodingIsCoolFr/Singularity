@@ -532,3 +532,28 @@ add_executable(test_polls
 )
 target_include_directories(test_polls PRIVATE src)
 target_link_libraries(test_polls PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network crypt32 dwmapi)
+
+# What the Anonymous plugin's privacy page promises, held to the code:
+# pictures only from the hosts it names, client details with no identifier
+# of their own, no analytics/metrics/Sentry request path in the source, and
+# no program listed while games are off. The release build runs this one too.
+add_executable(test_privacy
+    tools/test_privacy.cpp
+    src/core/GameActivity.cpp
+    src/core/RestClient.cpp
+    src/core/MessageStore.cpp
+    src/core/Cosmetics.cpp
+    src/core/DiscordIdentity.cpp
+    src/core/AppConfig.cpp
+    src/core/TokenStore.cpp
+    src/core/Logger.cpp
+    src/ui/MediaCache.cpp
+    src/ui/AnimatedImage.cpp
+    src/ui/ApngDecoder.cpp
+    src/ui/FrameClock.cpp
+    src/ui/UiTime.cpp
+    src/ui/Theme.cpp
+)
+target_include_directories(test_privacy PRIVATE src)
+target_compile_definitions(test_privacy PRIVATE SINGULARITY_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_privacy PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network crypt32 dwmapi user32)
