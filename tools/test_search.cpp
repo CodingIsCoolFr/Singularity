@@ -33,6 +33,7 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QLocale>
+#include <QMouseEvent>
 #include <QNetworkProxy>
 #include <QPushButton>
 #include <QSettings>
@@ -719,6 +720,31 @@ void panelTests(const QString &shotPath)
     box->insert(QStringLiteral("cake"));
     pressKey(box, Qt::Key_Return);
     expect(searched == QLatin1String("from:alex has:image cake"), "Enter on words searches");
+
+    // A click anywhere else closes the list, as Discord's does - even on
+    // something that takes no focus, which used to leave it open for good.
+    {
+        const auto pressAt = [](QWidget *on, const QPoint &local) {
+            QMouseEvent press(QEvent::MouseButtonPress, QPointF(local), QPointF(on->mapToGlobal(local)), Qt::LeftButton,
+                              Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(on, &press);
+        };
+        const QString kept = box->text();
+        box->clear();   // emptied with focus: the filters come up again
+        popup = window.findChild<QListWidget *>(QStringLiteral("SearchPopup"));
+        expect(popup && popup->isVisible(), "click away: the list is open to begin with");
+        if (popup && popup->isVisible()) {
+            pressAt(popup->viewport(), QPoint(20, 40));
+            expect(popup->isVisible(), "click away: a click in the list keeps it open");
+            pressAt(box, QPoint(10, box->height() / 2));
+            expect(popup->isVisible(), "click away: a click in the box keeps it open");
+            panel->setFocusPolicy(Qt::NoFocus);
+            pressAt(panel, QPoint(panel->width() / 2, panel->height() / 2));
+            expect(!popup->isVisible(), "click away: a click on something that takes no focus closes it");
+            expect(!box->hasFocus(), "click away: and the box lets go, as Discord's does");
+        }
+        box->setText(kept);
+    }
 
     // The pane: a search, a page, the hits marked.
     const QList<QJsonObject> hits{

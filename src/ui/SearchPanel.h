@@ -49,6 +49,9 @@ protected:
     void keyPressEvent(QKeyEvent *event) override;
     void focusInEvent(QFocusEvent *event) override;
     void focusOutEvent(QFocusEvent *event) override;
+    // While the list is open: a click anywhere outside it and the box closes
+    // it, as Discord's does.
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     struct Word
@@ -75,6 +78,7 @@ private:
     QString m_channelId;
 
     QListWidget *m_popup = nullptr;   // made on first use, on the window
+    bool m_watchingClicks = false;    // the application's events filtered while the list shows
     QHash<QString, QString> m_picked;
 
     // Discord's member search, for people this client has not met yet:

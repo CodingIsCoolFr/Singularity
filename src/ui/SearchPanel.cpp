@@ -6,6 +6,7 @@
 #include "ui/Theme.h"
 
 #include <QAbstractTextDocumentLayout>
+#include <QApplication>
 #include <QColor>
 #include <QDate>
 #include <QDateTime>
@@ -19,6 +20,7 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QLocale>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
@@ -567,6 +569,14 @@ void SearchBox::updateSuggestions()
     m_popup->move(qMax(8, corner.x() - width), corner.y());
     m_popup->raise();
     m_popup->show();
+    // Watching every click while the list is open, so one anywhere else
+    // closes it, as Discord's does. Waiting for the box to lose focus was not
+    // enough: the window's background, the bar and the space around the chat
+    // take no focus, so a click there left the list hanging open.
+    if (!m_watchingClicks) {
+        qApp->installEventFilter(this);
+        m_watchingClicks = true;
+    }
 }
 
 void SearchBox::hideSuggestions()
@@ -574,6 +584,44 @@ void SearchBox::hideSuggestions()
     m_peopleTimer.stop();
     if (m_popup)
         m_popup->hide();
+    if (m_watchingClicks) {
+        qApp->removeEventFilter(this);
+        m_watchingClicks = false;
+    }
+}
+
+bool SearchBox::eventFilter(QObject *watched, QEvent *event)
+{
+    if (m_popup && m_popup->isVisible()) {
+        switch (event->type()) {
+        case QEvent::MouseButtonPress:
+        case QEvent::NonClientAreaMouseButtonPress: {
+            const QPoint at = static_cast<QMouseEvent *>(event)->globalPosition().toPoint();
+            const bool inBox = rect().contains(mapFromGlobal(at));
+            const bool inList = m_popup->rect().contains(m_popup->mapFromGlobal(at));
+            if (!inBox && !inList) {
+                // The click still goes where it was meant to; the box only
+                // lets go, as an input on Discord does when you click away.
+                hideSuggestions();
+                clearFocus();
+            }
+            break;
+        }
+        // Another program in front, or the window moved or resized under a
+        // list placed where the box used to be.
+        case QEvent::ApplicationDeactivate:
+            hideSuggestions();
+            break;
+        case QEvent::Move:
+        case QEvent::Resize:
+            if (watched == window())
+                hideSuggestions();
+            break;
+        default:
+            break;
+        }
+    }
+    return QLineEdit::eventFilter(watched, event);
 }
 
 void SearchBox::applySuggestion(QListWidgetItem *item)
