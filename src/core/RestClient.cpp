@@ -102,6 +102,97 @@ void RestClient::fetchMessages(const QString &channelId, int limit, ArrayHandler
     dispatch(reply, nullptr, std::move(onOk), std::move(onError));
 }
 
+void RestClient::sendGet(const QString &path, ObjectHandler onObject, ArrayHandler onArray, ErrorHandler onError)
+{
+    QNetworkReply *reply = m_network.get(buildRequest(path));
+    dispatch(reply, std::move(onObject), std::move(onArray), std::move(onError));
+}
+
+void RestClient::fetchMessagesAround(const QString &channelId, const QString &messageId, int limit,
+                                     ArrayHandler onOk, ErrorHandler onError)
+{
+    sendGet(QStringLiteral("/channels/%1/messages?around=%2&limit=%3").arg(channelId, messageId).arg(limit),
+            nullptr, std::move(onOk), std::move(onError));
+}
+
+void RestClient::fetchMessagesAfter(const QString &channelId, const QString &messageId, int limit,
+                                    ArrayHandler onOk, ErrorHandler onError)
+{
+    sendGet(QStringLiteral("/channels/%1/messages?after=%2&limit=%3").arg(channelId, messageId).arg(limit),
+            nullptr, std::move(onOk), std::move(onError));
+}
+
+void RestClient::searchMessages(const QString &guildId, const QString &channelId,
+                                const QList<QPair<QString, QString>> &query, ObjectHandler onOk,
+                                ErrorHandler onError)
+{
+    QString path = guildId.isEmpty() ? QStringLiteral("/channels/%1/messages/search").arg(channelId)
+                                     : QStringLiteral("/guilds/%1/messages/search").arg(guildId);
+    QStringList pairs;
+    for (const QPair<QString, QString> &pair : query)
+        pairs.append(pair.first + QLatin1Char('=') + QString::fromUtf8(QUrl::toPercentEncoding(pair.second)));
+    if (!pairs.isEmpty())
+        path += QLatin1Char('?') + pairs.join(QLatin1Char('&'));
+
+    // Where, never what: the words somebody searched for stay out of the log.
+    wlog(QStringLiteral("search"), guildId.isEmpty() ? QStringLiteral("searching chat %1").arg(channelId)
+                                                     : QStringLiteral("searching server %1").arg(guildId));
+    searchGet(path, ++m_searchSerial, std::move(onOk), std::move(onError), 0, 0);
+}
+
+void RestClient::searchGet(const QString &path, int serial, ObjectHandler onOk, ErrorHandler onError,
+                           int indexWaits, int rateWaits)
+{
+    // About half a minute of "not indexed yet" at Discord's usual two
+    // seconds, which is longer than a first search of a place usually takes.
+    constexpr int MostIndexWaits = 12;
+
+    ObjectHandler answer = [this, path, serial, onOk, onError, indexWaits, rateWaits](const QJsonObject &body) {
+        // A page says how many it found. The 202 says how long to wait
+        // instead, and nothing else.
+        if (body.contains(QStringLiteral("total_results")) || body.contains(QStringLiteral("messages"))) {
+            if (onOk)
+                onOk(body);
+            return;
+        }
+        if (indexWaits >= MostIndexWaits) {
+            Error error;
+            error.httpStatus = 202;
+            error.body = body;
+            error.message = QStringLiteral("Discord is still getting this ready to search. Try again in a minute.");
+            if (onError)
+                onError(error);
+            return;
+        }
+        const double wait = body.value(QStringLiteral("retry_after")).toDouble(2.0);
+        const int ms = qBound(500, int(wait * 1000), 15000);
+        wlog(QStringLiteral("search"), QStringLiteral("Discord is still indexing; asking again in %1 ms").arg(ms));
+        QTimer::singleShot(ms, this, [this, path, serial, onOk, onError, indexWaits, rateWaits]() {
+            if (serial == m_searchSerial)
+                searchGet(path, serial, onOk, onError, indexWaits + 1, rateWaits);
+        });
+    };
+
+    // "Too fast" is waited out as the GIF picker does: Discord says how long.
+    ErrorHandler waitOrFail = [this, path, serial, onOk, onError, indexWaits, rateWaits](const Error &error) {
+        if (error.httpStatus == 429 && rateWaits < 3) {
+            const double wait = error.body.value(QStringLiteral("retry_after")).toDouble(1.0);
+            const int ms = qBound(300, int(wait * 1000) + 250, 30000);
+            wlog(QStringLiteral("search"),
+                 QStringLiteral("Discord asked us to wait %1 ms before searching again").arg(ms));
+            QTimer::singleShot(ms, this, [this, path, serial, onOk, onError, indexWaits, rateWaits]() {
+                if (serial == m_searchSerial)
+                    searchGet(path, serial, onOk, onError, indexWaits, rateWaits + 1);
+            });
+            return;
+        }
+        if (onError)
+            onError(error);
+    };
+
+    sendGet(path, std::move(answer), nullptr, std::move(waitOrFail));
+}
+
 void RestClient::leaveGuild(const QString &guildId, ObjectHandler onOk, ErrorHandler onError)
 {
     // The official client's Leave Server: DELETE with {"lurking": false}.
@@ -540,8 +631,7 @@ void RestClient::searchGuildMembers(const QString &guildId, const QString &query
     const QString path = QStringLiteral("/guilds/%1/members/search?query=%2&limit=10")
                              .arg(guildId, QString::fromUtf8(QUrl::toPercentEncoding(query)));
     wlog(QStringLiteral("rest"), QStringLiteral("searching %1 for \"%2\"").arg(guildId, query));
-    QNetworkReply *reply = m_network.get(buildRequest(path));
-    dispatch(reply, {}, onOk, onError);
+    sendGet(path, {}, onOk, onError);
 }
 
 void RestClient::fetchChannel(const QString &channelId, ObjectHandler onOk, ErrorHandler onError)

@@ -575,7 +575,8 @@ QDialog { background-color: @chat; }
 QMainWindow[glass="true"] #GuildRail,
 QMainWindow[glass="true"] #Sidebar,
 QMainWindow[glass="true"] #ChatColumn,
-QMainWindow[glass="true"] #MemberPanel {
+QMainWindow[glass="true"] #MemberPanel,
+QMainWindow[glass="true"] #SearchPanel {
     background-color: transparent;
     border: none;
 }
@@ -619,6 +620,35 @@ QMainWindow[glass="true"] #MemberPanel {
     font-size: 11.5px;
     color: @muted;
 }
+
+/* Search results stand where the member list does, in the same glass. */
+#SearchPanel {
+    background-color: @glass150;
+    border: 1px solid @accent22;
+    border-radius: 18px;
+}
+#SearchPanel QListWidget {
+    background-color: transparent;
+    border: none;
+    outline: none;
+}
+#SearchCount {
+    color: @text;
+    font-size: 14px;
+    font-weight: 600;
+    background: transparent;
+}
+
+/* The search box at the right of the channel header: small, as Discord's
+   is, so the title keeps the room. */
+QLineEdit#SearchBox {
+    background-color: @input220;
+    border: 1px solid @accent22;
+    border-radius: 8px;
+    padding: 4px 10px;
+    font-size: 13px;
+}
+QLineEdit#SearchBox:focus { border-color: @accent; }
 
 #SidebarHeader {
     color: @text;

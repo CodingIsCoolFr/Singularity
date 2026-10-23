@@ -42,6 +42,7 @@
 #include "ui/PollCard.h"
 #include "ui/PollDialog.h"
 #include "ui/ProfileDialog.h"
+#include "ui/SearchPanel.h"
 #include "ui/SettingsDialog.h"
 #include "ui/Theme.h"
 #include "ui/UiTime.h"
@@ -1223,8 +1224,10 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
         if (m_autoScrolling)
             return;
 
-        if (!m_windowAtTail && m_readerMoved && value >= bar->maximum() - 240
-            && bar->maximum() > 0) {
+        // A channel away from the present has more below what it holds, so
+        // its end is not the end either.
+        if ((!m_windowAtTail || m_awayFromPresent.contains(m_currentChannelId)) && m_readerMoved
+            && value >= bar->maximum() - 240 && bar->maximum() > 0) {
             revealNewer();
         }
 
@@ -1245,6 +1248,8 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
             &QAbstractTextDocumentLayout::documentSizeChanged, this, [this](const QSizeF &) {
                 if (m_stickToBottom)
                     scrollToBottom();
+                else if (!m_jumpTarget.isEmpty())
+                    holdJumpTarget();
             });
 
     // Hands each slice of microphone sound to the plugins on its way out.
@@ -1583,6 +1588,27 @@ void MainWindow::buildUi()
             [this](const QString &userId) { showProfile(userId, QCursor::pos()); });
     connect(m_members, &MemberListPanel::volumeMenuRequested, this, &MainWindow::showPersonMenu);
     rootLayout->addWidget(m_members);
+
+    // Search results take the member list's place while a search is open,
+    // as in Discord.
+    m_searchPanel = new SearchPanel(m_rest, m_store, m_backdrop);
+    m_searchPanel->hide();
+    rootLayout->addWidget(m_searchPanel);
+    connect(m_searchBox, &SearchBox::searchRequested, this, &MainWindow::openSearch);
+    connect(m_searchBox, &SearchBox::cleared, this, &MainWindow::closeSearch);
+    connect(m_searchPanel, &SearchPanel::closeRequested, this, &MainWindow::closeSearch);
+    connect(m_searchPanel, &SearchPanel::jumpRequested, this, &MainWindow::jumpToMessage);
+
+    // Ctrl+F goes to the box, as in Discord, wherever a chat is open.
+    auto *findAction = new QAction(this);
+    findAction->setShortcut(QKeySequence::Find);
+    connect(findAction, &QAction::triggered, this, [this]() {
+        if (m_chatStack->currentWidget() != m_chatPage)
+            return;
+        m_searchBox->setFocus(Qt::ShortcutFocusReason);
+        m_searchBox->selectAll();
+    });
+    addAction(findAction);
 
     shell->addLayout(rootLayout, 1);
 
@@ -2160,9 +2186,17 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
     auto *header = new QWidget(chat);
     header->setObjectName(QStringLiteral("ChatHeader"));
     header->setFixedHeight(58);
-    auto *headerLayout = new QVBoxLayout(header);
-    headerLayout->setContentsMargins(22, 10, 22, 10);
+    // The title and topic on the left, the search box at the right, as
+    // Discord lays its header out.
+    auto *headerRow = new QHBoxLayout(header);
+    headerRow->setContentsMargins(22, 10, 16, 10);
+    headerRow->setSpacing(12);
+    auto *headerLayout = new QVBoxLayout;
+    headerLayout->setContentsMargins(0, 0, 0, 0);
     headerLayout->setSpacing(1);
+    headerRow->addLayout(headerLayout, 1);
+    m_searchBox = new SearchBox(m_store, m_rest, header);
+    headerRow->addWidget(m_searchBox, 0, Qt::AlignVCenter);
 
     m_channelTitle = new QLabel(QStringLiteral("Pick a channel"), header);
     m_channelTitle->setObjectName(QStringLiteral("ChannelTitle"));
@@ -2202,6 +2236,22 @@ QWidget *MainWindow::buildChatColumn(QWidget *parent)
     connect(m_messageView, &ChatView::anchorClicked, this, &MainWindow::handleAnchor);
     connect(m_messageView, &QWidget::customContextMenuRequested, this, &MainWindow::showMessageMenu);
     layout->addWidget(m_messageView, 1);
+
+    // Discord's bar while a channel shows its past rather than its newest
+    // messages, after a jump to an old one. A click goes back to the present.
+    m_presentBar = new QPushButton(QStringLiteral("You're viewing older messages      Jump to present"), chat);
+    m_presentBar->setObjectName(QStringLiteral("PresentBar"));
+    m_presentBar->setCursor(Qt::PointingHandCursor);
+    m_presentBar->setFocusPolicy(Qt::NoFocus);
+    m_presentBar->setStyleSheet(QStringLiteral(
+        "QPushButton#PresentBar { background-color: %1; color: %2; border: none; border-radius: 8px; "
+        "margin: 2px 18px 0 18px; padding: 6px 12px; font-size: 12px; font-weight: 600; text-align: left; }"
+        "QPushButton#PresentBar:hover { color: %3; }")
+                                    .arg(QLatin1String(Theme::SurfaceHover), QLatin1String(Theme::TextMuted),
+                                         QLatin1String(Theme::TextPrimary)));
+    m_presentBar->hide();
+    connect(m_presentBar, &QPushButton::clicked, this, &MainWindow::returnToPresent);
+    layout->addWidget(m_presentBar);
 
     m_typingLabel = new QLabel(QString(), chat);
     m_typingLabel->setObjectName(QStringLiteral("TypingLabel"));
@@ -2458,6 +2508,10 @@ void MainWindow::onGatewayReady(const QJsonObject &payload)
     if (m_gateway->games())
         m_gateway->games()->start(m_rest);
     m_selfPremiumType = user.value(QStringLiteral("premium_type")).toInt();
+    // Search takes in age-restricted channels for an account allowed them,
+    // as Discord's client does with include_nsfw.
+    if (m_searchPanel)
+        m_searchPanel->setIncludeNsfw(user.value(QStringLiteral("nsfw_allowed")).toBool());
     m_selfAvatarHash = user.value(QStringLiteral("avatar")).toString();
     // Your own account as the store knows everybody else: your decoration,
     // nameplate, server tag and name style are drawn from it.
@@ -2498,6 +2552,11 @@ void MainWindow::onGatewayReady(const QJsonObject &payload)
         m_loading->setStep(QStringLiteral("Sorting your servers..."));
 
     m_store->ingestReady(payload);
+    // Every history went with the old session, a stretch of the past that a
+    // jump opened included; a channel opens at its present again.
+    m_awayFromPresent.clear();
+    m_jumpTarget.clear();
+    updatePresentBar();
     m_notifyRules = NotificationRules();
     m_notifyRules.ingestReady(payload, m_selfUserId);
     const QByteArray settingsProto = QByteArray::fromBase64(
@@ -2670,14 +2729,19 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
     }
 
     if (eventType == QLatin1String("MESSAGE_CREATE")) {
-        const int dropped = m_store->appendMessage(data);
         const QString channelId = data.value(QStringLiteral("channel_id")).toString();
+        // A channel opened at an old message holds a stretch of its past. A
+        // new message put after that stretch would read as said back then;
+        // it is fetched with the rest of the present when the reader gets
+        // there. It still counts as unread, and still notifies.
+        const bool away = m_awayFromPresent.contains(channelId);
+        const int dropped = away ? 0 : m_store->appendMessage(data);
         if (dropped > 0 && channelId == m_currentChannelId)
             m_renderFirst = qMax(0, m_renderFirst - dropped);
         if (dropped >= 0) {
             const MessageInfo message = MessageStore::parseMessage(data);
             const bool mine = message.authorId == m_selfUserId;
-            const bool seen = mine || (channelId == m_currentChannelId && m_stickToBottom);
+            const bool seen = mine || (!away && channelId == m_currentChannelId && m_stickToBottom);
             const QString raw = data.value(QStringLiteral("content")).toString();
             // In a direct message every message counts, as in Discord: the
             // red number on a DM is how many you have not read.
@@ -2705,7 +2769,7 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
             if (message.type == 3)
                 noteCallMessage(message);
 
-            if (channelId == m_currentChannelId && m_store->hasHistory(channelId)) {
+            if (!away && channelId == m_currentChannelId && m_store->hasHistory(channelId)) {
                 const bool grouped = m_hasLastRendered && shouldGroup(m_lastRendered, message);
                 appendMessageToView(message, grouped);
                 m_lastRendered = message;
@@ -4106,6 +4170,12 @@ void MainWindow::enterGuild(const QString &guildId)
     if (m_members)
         m_members->setGuild(m_currentGuildId);
 
+    // A search of another server is over; one of this server stays, still
+    // standing where the member list would.
+    updateSearchScope();
+    if (m_members && m_searchPanel && !m_searchPanel->isHidden())
+        m_members->hide();
+
     // Start pulling the channels near the top of this server down before
     // anybody picks one.
     prefetchGuild(m_currentGuildId);
@@ -4443,9 +4513,17 @@ void MainWindow::openChannel(const QString &channelId)
     hideMentionPopup();
     m_mentionSearchHits.clear();
 
+    // A channel left while it held a stretch of its past is let go of, so
+    // coming back opens it at the present, as Discord does.
+    if (m_currentChannelId != channelId && m_awayFromPresent.remove(m_currentChannelId))
+        m_store->forgetHistory(m_currentChannelId);
+    m_jumpTarget.clear();
+
     // The Friends row is not a channel, it swaps the whole chat area.
     if (channelId == QLatin1String("singularity:friends")) {
         m_currentChannelId.clear();
+        updateSearchScope();
+        updatePresentBar();
         if (m_members)
             m_members->setFocusChannel(QString(), false);
         // The call stays connected. The stage is for when that channel is
@@ -4465,6 +4543,8 @@ void MainWindow::openChannel(const QString &channelId)
     m_currentChannelId = channelId;
     m_hasLastRendered = false;
     setTypingHint(QString());
+    updateSearchScope();
+    updatePresentBar();
 
     // Let go of channels nobody has been near for a while. Fetching ahead
     // fills the store with channels that were never opened, and without this
@@ -4580,6 +4660,10 @@ void MainWindow::openChannel(const QString &channelId)
                           m_store->permissionSummary(channelId))
                      .arg(started->elapsed())
                      .arg(messages.size()));
+            // A jump got there first and opened the channel at an old
+            // message. Its page stands; the newest come when it is read down.
+            if (m_awayFromPresent.contains(channelId))
+                return;
             // Fewer than asked for is the whole conversation, so its
             // beginning is known without asking again.
             if (messages.size() < limit)
@@ -7567,12 +7651,16 @@ void MainWindow::handleAnchor(const QUrl &url)
     }
 
     // A link to a channel opens it here. Discord does the same for a button
-    // that points at a channel, instead of handing it to a browser.
+    // that points at a channel, instead of handing it to a browser. A link to
+    // one message in it opens the channel at that message.
     static const QRegularExpression channelLink(QStringLiteral(
-        R"(^https?://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/channels/[^/]+/(\d+))"));
+        R"(^https?://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/channels/[^/]+/(\d+)(?:/(\d+))?)"));
     const QRegularExpressionMatch channelHit = channelLink.match(whole);
     if (channelHit.hasMatch()) {
-        selectChannelEverywhere(channelHit.captured(1));
+        if (!channelHit.captured(2).isEmpty())
+            jumpToMessage(channelHit.captured(1), channelHit.captured(2));
+        else
+            selectChannelEverywhere(channelHit.captured(1));
         return;
     }
 
@@ -11238,7 +11326,9 @@ void MainWindow::acknowledgeChannel(const QString &channelId)
 
     QString messageId = m_store->channel(channelId).lastMessageId;
     const QList<MessageInfo> messages = m_store->messages(channelId);
-    if (!messages.isEmpty())
+    // Away from the present, the last message held is an old one; what has
+    // been read is still the channel's newest.
+    if (!messages.isEmpty() && !m_awayFromPresent.contains(channelId))
         messageId = messages.last().id;
     if (messageId.isEmpty())
         return;
@@ -11285,6 +11375,11 @@ void MainWindow::sendCurrentMessage()
             });
         return;
     }
+
+    // Sending from a stretch of the past goes back to the present first, as
+    // in Discord, so the message is seen arriving.
+    if (m_awayFromPresent.contains(channelId))
+        returnToPresent();
 
     m_rest->sendMessage(
         channelId, content, replyTo, files, [](const QJsonObject &) {},
@@ -11414,6 +11509,8 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         case QEvent::TouchBegin:
             m_readerMoved = true;
             m_scrolledSinceLoad = true;
+            // The reader has the page now; a jump stops holding its message.
+            m_jumpTarget.clear();
             break;
         default:
             break;
@@ -12189,13 +12286,17 @@ void MainWindow::reachedTop()
 
 void MainWindow::revealNewer()
 {
-    if (m_currentChannelId.isEmpty() || m_windowAtTail)
+    const bool away = m_awayFromPresent.contains(m_currentChannelId);
+    if (m_currentChannelId.isEmpty() || (m_windowAtTail && !away))
         return;
 
     const int held = m_store->messages(m_currentChannelId).size();
     const int drawnEnd = m_renderFirst + m_renderedCount;
     if (drawnEnd >= held) {
         m_windowAtTail = true;
+        // Everything held is drawn, and there is more between it and now.
+        if (away)
+            loadNewerMessages();
         return;
     }
 
@@ -12276,6 +12377,292 @@ void MainWindow::loadOlderMessages()
                                              .arg(error.httpStatus));
         },
         oldest);
+}
+
+// ---------------------------------------------------------------------------
+// Search, and opening a channel at one message
+// ---------------------------------------------------------------------------
+
+void MainWindow::openSearch(const QString &text)
+{
+    if (!m_searchPanel || !m_searchBox)
+        return;
+
+    // A server searches all of it; outside one, the chat that is open.
+    QString channelId;
+    if (m_currentGuildId.isEmpty()) {
+        const ChannelInfo channel = m_store->channel(m_currentChannelId);
+        if (!channel.isDirect()) {
+            flashStatus(QStringLiteral("Open a server or a chat to search it."), 4000);
+            return;
+        }
+        channelId = channel.id;
+    }
+
+    if (m_members)
+        m_members->hide();
+    m_searchPanel->show();
+    m_searchPanel->search(m_currentGuildId, channelId, text, m_searchBox->picked());
+}
+
+void MainWindow::closeSearch()
+{
+    if (!m_searchPanel)
+        return;
+    const bool wasOpen = !m_searchPanel->isHidden();
+    m_searchPanel->clear();
+    m_searchPanel->hide();
+    // Emptying the box says cleared, which lands back here with nothing to do.
+    if (m_searchBox && !m_searchBox->text().isEmpty())
+        m_searchBox->clear();
+    // The member list as it would be without the search: setGuild decides.
+    if (wasOpen && m_members)
+        m_members->setGuild(m_currentGuildId);
+}
+
+// The box searches where the window is: the server on screen, or the chat
+// open on the home page. A search open for anywhere else is over.
+void MainWindow::updateSearchScope()
+{
+    if (!m_searchBox)
+        return;
+    QString channelId;
+    if (m_currentGuildId.isEmpty()) {
+        const ChannelInfo channel = m_store->channel(m_currentChannelId);
+        if (channel.isDirect())
+            channelId = channel.id;
+    }
+    m_searchBox->setScope(m_currentGuildId, channelId);
+    if (m_searchPanel && !m_searchPanel->isHidden()
+        && (m_searchPanel->guildId() != m_currentGuildId || m_searchPanel->channelId() != channelId))
+        closeSearch();
+}
+
+void MainWindow::jumpToMessage(const QString &channelId, const QString &messageId)
+{
+    if (channelId.isEmpty() || messageId.isEmpty() || !m_rest)
+        return;
+
+    // A channel this client has not loaded - a thread, or one a link names -
+    // is asked about first, the way selectChannelEverywhere does it.
+    if (m_store->channel(channelId).id.isEmpty()) {
+        flashStatus(QStringLiteral("Opening that message..."), 3000);
+        m_rest->fetchChannel(
+            channelId,
+            [this, channelId, messageId](const QJsonObject &object) {
+                m_store->ingestChannelObject(object);
+                if (!m_store->channel(channelId).id.isEmpty())
+                    jumpToMessage(channelId, messageId);
+            },
+            [this](const RestClient::Error &error) {
+                flashStatus(QStringLiteral("That message could not be opened: %1").arg(error.message), 5000);
+            });
+        return;
+    }
+
+    // Held already, as a recent message usually is: open the channel there.
+    bool held = false;
+    if (m_store->hasHistory(channelId)) {
+        for (const MessageInfo &message : m_store->messages(channelId)) {
+            if (message.id == messageId) {
+                held = true;
+                break;
+            }
+        }
+    }
+    if (held) {
+        if (m_currentChannelId != channelId)
+            selectChannelEverywhere(channelId);
+        if (m_currentChannelId == channelId && showMessageInView(messageId))
+            return;
+    }
+
+    // Otherwise the messages around it, which become what the channel holds.
+    flashStatus(QStringLiteral("Finding that message..."), 3000);
+    m_rest->fetchMessagesAround(
+        channelId, messageId, 50,
+        [this, channelId, messageId](const QJsonArray &messages) {
+            // The page reaches the present when it holds the channel's newest
+            // message. Anything else is a stretch of the past.
+            const QString newest = m_store->channel(channelId).lastMessageId;
+            bool present = false;
+            for (const QJsonValue &value : messages) {
+                if (!newest.isEmpty() && value.toObject().value(QStringLiteral("id")).toString() == newest)
+                    present = true;
+            }
+            if (present)
+                m_awayFromPresent.remove(channelId);
+            else
+                m_awayFromPresent.insert(channelId);
+            // Its start is not the channel's beginning, as far as anyone knows.
+            m_fullyLoaded.remove(channelId);
+
+            // The open below draws it, so the store's own signal does not.
+            m_applyingHistory = true;
+            m_store->setHistory(channelId, messages);
+            m_applyingHistory = false;
+
+            if (m_currentChannelId != channelId)
+                selectChannelEverywhere(channelId);
+            if (m_currentChannelId != channelId)
+                return;
+            updatePresentBar();
+            if (!showMessageInView(messageId)) {
+                renderChannel();
+                flashStatus(QStringLiteral("That message is not there any more."), 5000);
+            }
+        },
+        [this](const RestClient::Error &error) {
+            flashStatus(QStringLiteral("That message could not be loaded: %1").arg(error.message), 5000);
+        });
+}
+
+// Draws the open channel around one message it holds, that message a third
+// of the way down the view and lit for a moment, the way Discord shows the
+// message it jumped to.
+bool MainWindow::showMessageInView(const QString &messageId)
+{
+    const QList<MessageInfo> all = m_store->messages(m_currentChannelId);
+    int index = -1;
+    for (int i = 0; i < all.size(); ++i) {
+        if (all.at(i).id == messageId) {
+            index = i;
+            break;
+        }
+    }
+    if (index < 0)
+        return false;
+
+    // The usual window, placed around it instead of at the end.
+    const int held = int(all.size());
+    const int take = qMin(held, RenderWindowStep);
+    const int first = qBound(0, index - take / 3, held - take);
+    m_renderFirst = first;
+    m_renderedCount = take;
+    m_windowAtTail = first + take >= held;
+    m_renderedChannelId = m_currentChannelId;
+    m_readerMoved = false;
+    m_scrolledSinceLoad = false;
+    m_anchorMessageId = messageId;
+    m_anchorOffset = m_messageView->viewport()->height() / 3;
+    renderChannel();
+    m_stickToBottom = false;
+
+    m_jumpTarget = messageId;
+    holdJumpTarget();
+    updatePresentBar();
+
+    QTextDocument *document = m_messageView->document();
+    const QList<QTextFrame *> rows = document->rootFrame()->childFrames();
+    const int row = m_renderedIds.indexOf(messageId);
+    if (row >= 0 && rows.size() == m_renderedIds.size()) {
+        QPointer<QTextFrame> frame = rows.at(row);
+        const QTextFrameFormat plain = frame->frameFormat();
+        QTextFrameFormat lit = plain;
+        QColor glow{QLatin1String(Theme::Accent)};
+        glow.setAlpha(40);
+        lit.setBackground(glow);
+        m_autoScrolling = true;
+        frame->setFrameFormat(lit);
+        m_autoScrolling = false;
+        // One change back, not a fade: nothing here moves.
+        QTimer::singleShot(2500, this, [this, frame, plain]() {
+            if (!frame)
+                return;
+            m_autoScrolling = true;
+            frame->setFrameFormat(plain);
+            m_autoScrolling = false;
+        });
+    }
+    return true;
+}
+
+void MainWindow::holdJumpTarget()
+{
+    if (m_jumpTarget.isEmpty() || m_readerMoved || m_renderedChannelId != m_currentChannelId)
+        return;
+    const int index = m_renderedIds.indexOf(m_jumpTarget);
+    QTextDocument *document = m_messageView->document();
+    const QList<QTextFrame *> rows = document->rootFrame()->childFrames();
+    if (index < 0 || rows.size() != m_renderedIds.size())
+        return;
+
+    const QRectF box = document->documentLayout()->frameBoundingRect(rows.at(index));
+    QScrollBar *bar = m_messageView->verticalScrollBar();
+    m_autoScrolling = true;
+    bar->setValue(qBound(0, qRound(box.top()) - m_messageView->viewport()->height() / 3, bar->maximum()));
+    m_autoScrolling = false;
+}
+
+// Reading down a channel away from the present: the messages after the last
+// one held, put on below the reader the way older ones go on above. A page
+// shorter than asked for reached the newest message, and the channel is in
+// the present again.
+void MainWindow::loadNewerMessages()
+{
+    if (m_loadingNewer || m_currentChannelId.isEmpty() || !m_awayFromPresent.contains(m_currentChannelId))
+        return;
+    const QList<MessageInfo> held = m_store->messages(m_currentChannelId);
+    if (held.isEmpty())
+        return;
+
+    const int page = 50;
+    m_loadingNewer = true;
+    const QString channelId = m_currentChannelId;
+    m_rest->fetchMessagesAfter(
+        channelId, held.last().id, page,
+        [this, channelId, page](const QJsonArray &messages) {
+            m_loadingNewer = false;
+            // Left, or taken back to the present some other way, meanwhile.
+            if (!m_awayFromPresent.contains(channelId))
+                return;
+
+            m_applyingHistory = true;
+            const int added = m_store->appendHistory(channelId, messages);
+            m_applyingHistory = false;
+            if (messages.size() < page) {
+                m_awayFromPresent.remove(channelId);
+                updatePresentBar();
+            }
+            if (added <= 0 || channelId != m_currentChannelId)
+                return;
+
+            const int total = int(m_store->messages(channelId).size());
+            const int drawnEnd = m_renderFirst + m_renderedCount;
+            const int count = qMin(RenderWindowStep, total - drawnEnd);
+            if (count > 0 && !appendMessagesToView(drawnEnd, count)) {
+                m_windowAtTail = false;
+                captureScrollAnchor();
+                renderChannel();
+            }
+            if (m_renderedCount > MaxRenderedMessages)
+                trimRenderedStart(m_renderedCount - (MaxRenderedMessages - RenderWindowStep));
+        },
+        [this, channelId](const RestClient::Error &error) {
+            m_loadingNewer = false;
+            wlog(QStringLiteral("rest"), QStringLiteral("newer messages failed for %1: HTTP %2")
+                                             .arg(channelId)
+                                             .arg(error.httpStatus));
+        });
+}
+
+void MainWindow::returnToPresent()
+{
+    const QString channelId = m_currentChannelId;
+    if (channelId.isEmpty())
+        return;
+    m_awayFromPresent.remove(channelId);
+    m_store->forgetHistory(channelId);
+    m_fullyLoaded.remove(channelId);
+    // Drawn as a channel freshly opened, at its newest message.
+    m_renderedChannelId.clear();
+    openChannel(channelId);
+}
+
+void MainWindow::updatePresentBar()
+{
+    if (m_presentBar)
+        m_presentBar->setVisible(m_awayFromPresent.contains(m_currentChannelId));
 }
 
 void MainWindow::requestMemberLook(const QString &userId, const QString &guildId)

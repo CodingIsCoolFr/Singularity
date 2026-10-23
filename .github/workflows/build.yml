@@ -83,6 +83,8 @@ jobs:
           $env:QT_QPA_PLATFORM = 'offscreen'
           & .\build\Release\test_frames.exe
           if ($LASTEXITCODE -ne 0) { throw "test_frames failed" }
+          & .\build\Release\test_search.exe
+          if ($LASTEXITCODE -ne 0) { throw "test_search failed" }
           & .\build\Release\test_polls.exe
           if ($LASTEXITCODE -ne 0) { throw "test_polls failed" }
 

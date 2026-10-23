@@ -64,6 +64,8 @@ qt_add_executable(Singularity WIN32
     src/core/DiscordAppCache.cpp
     src/core/AppCommands.h
     src/core/AppCommands.cpp
+    src/core/SearchQuery.h
+    src/core/SearchQuery.cpp
 
     src/plugin/Plugin.h
     src/plugin/PluginHost.h
@@ -198,6 +200,8 @@ qt_add_executable(Singularity WIN32
     src/ui/GuildHeader.cpp
     src/ui/MemberListPanel.h
     src/ui/MemberListPanel.cpp
+    src/ui/SearchPanel.h
+    src/ui/SearchPanel.cpp
     src/ui/LoadingOverlay.h
     src/ui/LoadingOverlay.cpp
     src/ui/MainWindow.h
@@ -464,6 +468,31 @@ add_executable(test_rail
 )
 target_include_directories(test_rail PRIVATE src)
 target_link_libraries(test_rail PRIVATE Qt6::Core crypt32)
+
+# Message search against Discord's own shapes: the line the box writes, the
+# query that goes out, the 202 and 429 waits, the results pane and the jump
+# it asks for. A stand-in RestClient answers; nothing reaches Discord. The
+# release build runs this one too.
+add_executable(test_search
+    tools/test_search.cpp
+    src/core/SearchQuery.cpp
+    src/core/RestClient.cpp
+    src/core/MessageStore.cpp
+    src/core/Cosmetics.cpp
+    src/core/DiscordIdentity.cpp
+    src/core/AppConfig.cpp
+    src/core/TokenStore.cpp
+    src/core/Logger.cpp
+    src/ui/SearchPanel.cpp
+    src/ui/MediaCache.cpp
+    src/ui/AnimatedImage.cpp
+    src/ui/ApngDecoder.cpp
+    src/ui/FrameClock.cpp
+    src/ui/UiTime.cpp
+    src/ui/Theme.cpp
+)
+target_include_directories(test_search PRIVATE src)
+target_link_libraries(test_search PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network crypt32 dwmapi)
 
 # Animations keep the frame clock's rules: a paint shows the last tick's
 # frame, every frame comes in order and on time, and a tick's redraw is not

@@ -644,6 +644,15 @@ public:
     // whether it reached the beginning of the channel.
     int prependHistory(const QString &channelId, const QJsonArray &rawMessages);
 
+    // The other end: a batch of newer messages put after the ones held, for a
+    // channel opened at an old message and read back toward the present.
+    // Skips any already there and returns how many were new.
+    int appendHistory(const QString &channelId, const QJsonArray &rawMessages);
+
+    // Lets go of a channel's messages, so opening it next asks Discord for
+    // its newest again. Says nothing: the channel is being left.
+    void forgetHistory(const QString &channelId);
+
     // The oldest message being held for a channel, which is where the next
     // request back in time starts from.
     QString oldestMessageId(const QString &channelId) const;
@@ -702,6 +711,13 @@ public:
     // Everyone with a given link to you: 1 friend, 2 blocked, 3 they asked,
     // 4 you asked. Sorted so the list never jumps around.
     QList<UserInfo> usersWithRelationship(int type) const;
+
+    // People this client knows whose handle, display name or nickname in that
+    // server starts with or holds `text`, best match first: an exact name,
+    // then a start, then the middle. In a server only its members are looked
+    // at; with no server, everyone known. For the search box's from: and
+    // mentions:.
+    QList<UserInfo> findUsers(const QString &text, const QString &guildId, int limit = 8) const;
 
     // The direct message channel with one person, if the client knows of one.
     QString directChannelWith(const QString &userId) const;

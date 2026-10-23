@@ -408,6 +408,63 @@ QList<UserInfo> MessageStore::usersWithRelationship(int type) const
     return result;
 }
 
+QList<UserInfo> MessageStore::findUsers(const QString &text, const QString &guildId, int limit) const
+{
+    const QString wanted = text.trimmed();
+
+    // Who to look at: a server's members as far as they are known here, or
+    // everybody known.
+    QSet<QString> candidates;
+    if (guildId.isEmpty()) {
+        for (auto it = m_users.constBegin(); it != m_users.constEnd(); ++it)
+            candidates.insert(it.key());
+    } else {
+        const QHash<QString, MemberLook> looks = m_memberLooks.value(guildId);
+        for (auto it = looks.constBegin(); it != looks.constEnd(); ++it)
+            candidates.insert(it.key());
+        for (const MemberRow &row : m_memberLists.value(guildId).rows) {
+            if (!row.heading && !row.userId.isEmpty())
+                candidates.insert(row.userId);
+        }
+    }
+
+    // 0 is a whole name, 1 the start of one, 2 somewhere inside.
+    QList<QPair<int, UserInfo>> ranked;
+    for (const QString &userId : std::as_const(candidates)) {
+        const UserInfo info = m_users.value(userId);
+        if (info.id.isEmpty())
+            continue;
+        const QString nickname = guildId.isEmpty() ? QString() : m_memberLooks.value(guildId).value(userId).nickname;
+        int best = 3;
+        for (const QString &name : {info.username, info.globalName, nickname}) {
+            if (name.isEmpty())
+                continue;
+            if (wanted.isEmpty() || name.compare(wanted, Qt::CaseInsensitive) == 0)
+                best = qMin(best, wanted.isEmpty() ? 1 : 0);
+            else if (name.startsWith(wanted, Qt::CaseInsensitive))
+                best = qMin(best, 1);
+            else if (name.contains(wanted, Qt::CaseInsensitive))
+                best = qMin(best, 2);
+        }
+        if (best < 3)
+            ranked.append({best, info});
+    }
+
+    std::sort(ranked.begin(), ranked.end(), [](const QPair<int, UserInfo> &a, const QPair<int, UserInfo> &b) {
+        if (a.first != b.first)
+            return a.first < b.first;
+        return a.second.displayName().localeAwareCompare(b.second.displayName()) < 0;
+    });
+
+    QList<UserInfo> result;
+    for (const QPair<int, UserInfo> &entry : std::as_const(ranked)) {
+        if (result.size() >= limit)
+            break;
+        result.append(entry.second);
+    }
+    return result;
+}
+
 QString MessageStore::directChannelWith(const QString &userId) const
 {
     for (const QString &channelId : m_directOrder) {
@@ -1911,6 +1968,50 @@ int MessageStore::prependHistory(const QString &channelId, const QJsonArray &raw
     list = fresh + list;
     emit channelHistoryChanged(channelId);
     return fresh.size();
+}
+
+int MessageStore::appendHistory(const QString &channelId, const QJsonArray &rawMessages)
+{
+    if (rawMessages.isEmpty())
+        return 0;
+
+    QList<MessageInfo> &list = m_messages[channelId];
+    QSet<QString> known;
+    known.reserve(list.size());
+    for (const MessageInfo &message : list)
+        known.insert(message.id);
+
+    QList<MessageInfo> fresh;
+    fresh.reserve(rawMessages.size());
+    for (const QJsonValue &value : rawMessages) {
+        const QJsonObject raw = value.toObject();
+        rememberUser(raw.value(QStringLiteral("author")).toObject());
+        MessageInfo message = parseMessage(raw);
+        if (message.id.isEmpty() || known.contains(message.id))
+            continue;
+        if (message.channelId.isEmpty())
+            message.channelId = channelId;
+        known.insert(message.id);
+        fresh.append(message);
+    }
+    if (fresh.isEmpty())
+        return 0;
+
+    // Sorted by id rather than trusting the order: a page after a message is
+    // the next ones along, but Discord lists them newest first.
+    std::sort(fresh.begin(), fresh.end(), [](const MessageInfo &a, const MessageInfo &b) {
+        return newerId(b.id, a.id);
+    });
+    list += fresh;
+    emit channelHistoryChanged(channelId);
+    return fresh.size();
+}
+
+void MessageStore::forgetHistory(const QString &channelId)
+{
+    m_messages.remove(channelId);
+    m_historyLoaded.remove(channelId);
+    m_historyOrder.removeOne(channelId);
 }
 
 QString MessageStore::oldestMessageId(const QString &channelId) const

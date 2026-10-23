@@ -50,6 +50,28 @@ public:
     void fetchMessages(const QString &channelId, int limit, ArrayHandler onOk, ErrorHandler onError,
                        const QString &before = QString());
 
+    // The same list from somewhere other than the end: the messages `around`
+    // one (it and those either side), or the ones `after` it, toward the
+    // present. How a channel is opened at an old message.
+    void fetchMessagesAround(const QString &channelId, const QString &messageId, int limit, ArrayHandler onOk,
+                             ErrorHandler onError);
+    void fetchMessagesAfter(const QString &channelId, const QString &messageId, int limit, ArrayHandler onOk,
+                            ErrorHandler onError);
+
+    // Discord's message search, a page of 25 at a time:
+    // GET /guilds/{id}/messages/search in a server, or
+    // GET /channels/{id}/messages/search for a direct or group chat when
+    // guildId is empty. `query` is SearchQuery::toQuery's parameters; the
+    // answer is {"total_results", "messages", "threads"}.
+    //
+    // Discord answers 202 for a place it has not indexed yet, with
+    // {"code": 110000, "retry_after": seconds}, and 429 when asked too fast.
+    // Both are waited out and asked again here, so the caller sees the page
+    // or a real failure. Only the newest search is asked again: there is one
+    // search box, and an older search's answer is no use to it.
+    void searchMessages(const QString &guildId, const QString &channelId,
+                        const QList<QPair<QString, QString>> &query, ObjectHandler onOk, ErrorHandler onError);
+
     // What Discord hands back when it wants a person to finish a check, and
     // what we hand back after they have.
     struct CaptchaProof
@@ -396,6 +418,13 @@ protected:
 signals:
     void unauthorized();
 
+protected:
+    // One GET, answered the way dispatch answers. Search, the member lookup
+    // it leans on and the history around a message go through here, so
+    // tools/test_search can answer them with Discord's replies instead of
+    // Discord.
+    virtual void sendGet(const QString &path, ObjectHandler onObject, ArrayHandler onArray, ErrorHandler onError);
+
 private:
     QNetworkRequest buildRequest(const QString &path) const;
     void dispatch(QNetworkReply *reply, ObjectHandler onObject, ArrayHandler onArray, ErrorHandler onError);
@@ -406,6 +435,12 @@ private:
     QHash<QString, QPair<qint64, QJsonDocument>> m_gifCache;
     void gifGet(const QString &path, ObjectHandler onObject, ArrayHandler onArray, ErrorHandler onError,
                 int attempt = 0);
+
+    // See searchMessages. `serial` is which search this is; m_searchSerial
+    // is the newest.
+    void searchGet(const QString &path, int serial, ObjectHandler onOk, ErrorHandler onError, int indexWaits,
+                   int rateWaits);
+    int m_searchSerial = 0;
     QString m_token;
 
     void noteOwnRemoval(const QString &id);

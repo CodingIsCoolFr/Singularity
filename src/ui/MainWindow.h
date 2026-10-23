@@ -34,6 +34,8 @@ class FriendsPage;
 class ImageViewer;
 class QStackedWidget;
 class ProfileDialog;
+class SearchBox;
+class SearchPanel;
 class SettingsDialog;
 class QListWidget;
 class QListWidgetItem;
@@ -648,6 +650,36 @@ private:
 
     void loadOlderMessages();
     bool m_loadingOlder = false;
+
+    // Discord's message search: the box in the channel header, and the
+    // results down the right in place of the member list. A search covers the
+    // server on screen, or the direct or group chat when not in a server, and
+    // ends when the box is emptied or another server is opened.
+    void openSearch(const QString &text);
+    void closeSearch();
+    void updateSearchScope();
+    SearchBox *m_searchBox = nullptr;
+    SearchPanel *m_searchPanel = nullptr;
+
+    // Opening a channel at one message, as a search result or a link to a
+    // message does in Discord. A message older than what is held is fetched
+    // with the ones around it, and the channel then holds that stretch of its
+    // past rather than its end: "away from the present". Reading down asks
+    // for the next messages until the present is reached; the bar above the
+    // composer, or sending a message, goes straight back to it.
+    void jumpToMessage(const QString &channelId, const QString &messageId);
+    bool showMessageInView(const QString &messageId);
+    void holdJumpTarget();
+    void loadNewerMessages();
+    void returnToPresent();
+    void updatePresentBar();
+    QSet<QString> m_awayFromPresent;
+    bool m_loadingNewer = false;
+    // The message a jump opened at. It is kept in view while the page
+    // settles - pictures arriving above it push it down - until the reader
+    // scrolls.
+    QString m_jumpTarget;
+    QPushButton *m_presentBar = nullptr;
 
     // Set while a history page is being merged into the store, so the
     // "history changed" signal does not throw away the document and draw the
