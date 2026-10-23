@@ -2697,6 +2697,9 @@ void MainWindow::onGatewayReady(const QJsonObject &payload)
     // stale member list, and joins and leaves in the call never heard.
     m_listGuild.clear();
     m_listChannel.clear();
+    // Nor are any member lists kept from the last one: Discord's client
+    // drops them all on a new connection.
+    m_store->clearMemberLists();
     if (!wasInGuild.isEmpty() && railRowFor(wasInGuild) >= 0) {
         showGuild(wasInGuild);
         if (!wasInChannel.isEmpty())
@@ -4592,12 +4595,10 @@ void MainWindow::watchGuildChannel(const QString &guildId, const QString &channe
     if (m_listGuild == guildId && m_listChannel == channelId)
         return;
 
-    // Drop the previous channel's rows only when the server itself changes.
-    // Clearing on every channel, then asking a channel Discord will not list,
-    // is how the panel got stuck on "0 online".
-    if (m_listGuild != guildId)
-        m_store->clearMemberList(guildId);
-    m_store->noteMemberListRequest(guildId);
+    // Every list Discord sends is kept, by its id, as its client keeps them;
+    // the channel picks which one the panel draws. A channel opened lately is
+    // still subscribed and its list still up to date.
+    m_store->setMemberListChannel(guildId, channelId);
     m_listGuild = guildId;
     m_listChannel = channelId;
     m_gateway->subscribeToGuild(guildId, channelId);

@@ -441,7 +441,7 @@ QList<UserInfo> MessageStore::findUsers(const QString &text, const QString &guil
         const QHash<QString, MemberLook> looks = m_memberLooks.value(guildId);
         for (auto it = looks.constBegin(); it != looks.constEnd(); ++it)
             candidates.insert(it.key());
-        for (const MemberRow &row : m_memberLists.value(guildId).rows) {
+        for (const MemberRow &row : memberList(guildId).rows) {
             if (!row.heading && !row.userId.isEmpty())
                 candidates.insert(row.userId);
         }
@@ -785,18 +785,64 @@ void MessageStore::replaceGuildVoiceStates(const QString &guildId, const QJsonAr
     emit voiceStatesChanged();
 }
 
-void MessageStore::noteMemberListRequest(const QString &guildId)
+void MessageStore::setMemberListChannel(const QString &guildId, const QString &channelId)
 {
-    if (!guildId.isEmpty())
-        m_memberListFresh.insert(guildId);
+    if (guildId.isEmpty() || m_memberListChannel.value(guildId) == channelId)
+        return;
+    m_memberListChannel.insert(guildId, channelId);
+    emit memberListChanged(guildId);
 }
 
-void MessageStore::clearMemberList(const QString &guildId)
+QString MessageStore::memberListIdFor(const QString &channelId) const
 {
-    if (!m_memberLists.contains(guildId))
-        return;
-    m_memberLists.remove(guildId);
-    emit memberListChanged(guildId);
+    const QString everyone = QStringLiteral("everyone");
+    const ChannelInfo channel = m_channels.value(channelId);
+    if (channel.id.isEmpty())
+        return everyone;
+    if (!channel.memberListId.isEmpty())
+        return channel.memberListId;
+
+    // Discord's canEveryone(VIEW_CHANNEL, channel): @everyone has it in the
+    // server, and no overwrite in the channel takes it away from anybody.
+    bool open = true;
+    ChannelInfo judged = channel;
+    if (channel.type == 12) {
+        open = false;
+    } else if (channel.type == 10 || channel.type == 11) {
+        judged = m_channels.value(channel.parentId);
+        open = !judged.id.isEmpty();
+    }
+    if (open) {
+        const GuildInfo guild = m_guilds.value(channel.guildId);
+        open = !guild.id.isEmpty()
+            && DiscordPermissions::has(guild.roles.value(guild.id).permissions, DiscordPermissions::ViewChannel);
+        for (const DiscordPermissions::Overwrite &overwrite : judged.overwrites) {
+            if (DiscordPermissions::has(overwrite.deny, DiscordPermissions::ViewChannel))
+                open = false;
+        }
+    }
+    if (open)
+        return everyone;
+
+    // Otherwise the channel's own View Channel overwrites, hashed.
+    QStringList parts;
+    for (const DiscordPermissions::Overwrite &overwrite : channel.overwrites) {
+        if (DiscordPermissions::has(overwrite.allow, DiscordPermissions::ViewChannel))
+            parts.append(QStringLiteral("allow:") + overwrite.id);
+        else if (DiscordPermissions::has(overwrite.deny, DiscordPermissions::ViewChannel))
+            parts.append(QStringLiteral("deny:") + overwrite.id);
+    }
+    parts.sort();   // UTF-16 order, as JavaScript's sort()
+    return QString::number(murmur3_32(parts.join(QLatin1Char(',')).toUtf8()));
+}
+
+void MessageStore::clearMemberLists()
+{
+    const QStringList guilds = m_memberLists.keys();
+    m_memberLists.clear();
+    m_lastSyncedList.clear();
+    for (const QString &guildId : guilds)
+        emit memberListChanged(guildId);
 }
 
 void MessageStore::noteActivity(const QString &userId)
@@ -1045,24 +1091,17 @@ void MessageStore::ingestMemberListUpdate(const QJsonObject &payload)
     if (guildId.isEmpty())
         return;
 
-    const QString listId = payload.value(QStringLiteral("id")).toString();
-    MemberList &list = m_memberLists[guildId];
-
-    // Two subscriptions answer with two list ids. Writing both into one
-    // list is how the same person was drawn twice. A channel we just opened
-    // may legitimately be a new list; anything else for a different id is
-    // the spare copy and is dropped.
-    const bool fresh = m_memberListFresh.remove(guildId);
-    if (!fresh && !list.listId.isEmpty() && !listId.isEmpty() && listId != list.listId)
-        return;
-    // A channel just opened with a list of its own: its rows start afresh,
-    // or the old list's people would sit in the new list's places.
-    if (fresh && !listId.isEmpty() && listId != list.listId) {
-        list.rows.clear();
-        list.listId = listId;
-    }
+    // Each list id is a list of its own, as in Discord's client: two lists
+    // written into one drew people twice, and one's INVALIDATE emptied the
+    // other.
+    QString listId = payload.value(QStringLiteral("id")).toString();
+    if (listId.isEmpty())
+        listId = QStringLiteral("everyone");
+    MemberList &list = m_memberLists[guildId][listId];
+    list.listId = listId;
 
     int learned = 0;
+    QStringList said;   // the SYNCs and INVALIDATEs, for the log
 
     // These two are the server's own totals and are not the number of rows:
     // only the first hundred rows are ever asked for, so a large server sends
@@ -1168,13 +1207,14 @@ void MessageStore::ingestMemberListUpdate(const QJsonObject &payload)
             const QJsonArray items = op.value(QStringLiteral("items")).toArray();
             for (int i = 0; i < items.size(); ++i)
                 place(start + i, readItem(items.at(i)));
-            if (!listId.isEmpty())
-                list.listId = listId;
+            m_lastSyncedList.insert(guildId, listId);
+            said << QStringLiteral("SYNC %1-%2").arg(start).arg(range.at(1).toInt());
         } else if (kind == QLatin1String("INVALIDATE")) {
             const int start = qMax(0, range.at(0).toInt(0));
             const int end = qMin(int(list.rows.size()) - 1, range.at(1).toInt(-1));
             for (int i = start; i <= end; ++i)
                 list.rows[i] = MemberRow();
+            said << QStringLiteral("INVALIDATE %1-%2").arg(range.at(0).toInt()).arg(range.at(1).toInt());
         } else if (kind == QLatin1String("INSERT")) {
             const MemberRow row = readItem(op.value(QStringLiteral("item")));
             if (index >= 0 && index <= list.rows.size())
@@ -1228,9 +1268,25 @@ void MessageStore::ingestMemberListUpdate(const QJsonObject &payload)
         }
     }
 
+    if (!said.isEmpty()) {
+        wlog(QStringLiteral("store"), QStringLiteral("member list %1 in guild %2: %3")
+                                          .arg(listId, guildId, said.join(QStringLiteral(", "))));
+        // Worth knowing if the id worked out for the channel on screen is not
+        // the one Discord answers with: the list drawn is then the last one
+        // synced, which is that channel's only until another arrives.
+        const QString channelId = m_memberListChannel.value(guildId);
+        const QString wanted = channelId.isEmpty() ? QString() : memberListIdFor(channelId);
+        if (!wanted.isEmpty() && wanted != listId && !m_memberLists.value(guildId).contains(wanted)
+            && !m_listIdMismatchSaid.contains(channelId)) {
+            m_listIdMismatchSaid.insert(channelId);
+            wlog(QStringLiteral("store"), QStringLiteral("member list id for channel %1 worked out as %2; Discord sent %3")
+                                              .arg(channelId, wanted, listId));
+        }
+    }
     if (learned > 0) {
         wlog(QStringLiteral("store"),
-             QStringLiteral("member list: %1 rows, %2 of %3 online, learned %4 statuses in guild %5")
+             QStringLiteral("member list %1: %2 rows, %3 of %4 online, learned %5 statuses in guild %6")
+                 .arg(listId)
                  .arg(list.rows.size())
                  .arg(list.onlineCount)
                  .arg(list.memberCount)
@@ -1243,7 +1299,67 @@ void MessageStore::ingestMemberListUpdate(const QJsonObject &payload)
 
 MemberList MessageStore::memberList(const QString &guildId) const
 {
-    return m_memberLists.value(guildId);
+    const auto lists = m_memberLists.constFind(guildId);
+    if (lists == m_memberLists.constEnd())
+        return {};
+    const QString channelId = m_memberListChannel.value(guildId);
+    if (!channelId.isEmpty()) {
+        const auto list = lists->constFind(memberListIdFor(channelId));
+        if (list != lists->constEnd())
+            return list.value();
+    }
+    // Not sent under the id worked out for it (yet): the list Discord synced
+    // last, which is the channel just opened's.
+    return lists->value(m_lastSyncedList.value(guildId));
+}
+
+quint32 murmur3_32(const QByteArray &data, quint32 seed)
+{
+    constexpr quint32 c1 = 0xcc9e2d51;
+    constexpr quint32 c2 = 0x1b873593;
+    const auto *bytes = reinterpret_cast<const uchar *>(data.constData());
+    const int length = int(data.size());
+    const int blocks = length / 4;
+
+    quint32 h = seed;
+    for (int i = 0; i < blocks; ++i) {
+        quint32 k = quint32(bytes[4 * i]) | (quint32(bytes[4 * i + 1]) << 8) | (quint32(bytes[4 * i + 2]) << 16)
+            | (quint32(bytes[4 * i + 3]) << 24);
+        k *= c1;
+        k = (k << 15) | (k >> 17);
+        k *= c2;
+        h ^= k;
+        h = (h << 13) | (h >> 19);
+        h = h * 5 + 0xe6546b64;
+    }
+
+    const uchar *tail = bytes + 4 * blocks;
+    quint32 k = 0;
+    switch (length & 3) {
+    case 3:
+        k ^= quint32(tail[2]) << 16;
+        [[fallthrough]];
+    case 2:
+        k ^= quint32(tail[1]) << 8;
+        [[fallthrough]];
+    case 1:
+        k ^= quint32(tail[0]);
+        k *= c1;
+        k = (k << 15) | (k >> 17);
+        k *= c2;
+        h ^= k;
+        break;
+    default:
+        break;
+    }
+
+    h ^= quint32(length);
+    h ^= h >> 16;
+    h *= 0x85ebca6b;
+    h ^= h >> 13;
+    h *= 0xc2b2ae35;
+    h ^= h >> 16;
+    return h;
 }
 
 QList<QPair<int, int>> memberListPages(int firstVisible, int lastVisible)
@@ -1468,6 +1584,10 @@ void MessageStore::ingestChannel(const QJsonObject &rawChannel, const QString &g
     } else {
         channel.overwrites = before.overwrites;
     }
+
+    channel.memberListId = rawChannel.value(QStringLiteral("member_list_id")).toString();
+    if (channel.memberListId.isEmpty())
+        channel.memberListId = before.memberListId;
 
     if (rawChannel.contains(QStringLiteral("flags")))
         channel.flags = rawChannel.value(QStringLiteral("flags")).toInt();

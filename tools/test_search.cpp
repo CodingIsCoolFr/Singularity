@@ -571,6 +571,88 @@ void memberListTests()
     expect(list.rows.value(154).heading, "its heading stays, from the groups");
 }
 
+// --- one list per list id, as Discord keeps them ------------------------------
+
+QJsonObject rosterGuild(const QString &id, const QString &permissions);
+
+QJsonObject channelWith(const QString &id, int type, const QString &parent, const QJsonArray &overwrites)
+{
+    return QJsonObject{{QStringLiteral("id"), id},
+                       {QStringLiteral("name"), QStringLiteral("c%1").arg(id.right(2))},
+                       {QStringLiteral("type"), type},
+                       {QStringLiteral("parent_id"), parent},
+                       {QStringLiteral("permission_overwrites"), overwrites}};
+}
+
+QJsonObject viewOverwrite(const QString &id, bool allow)
+{
+    return QJsonObject{{QStringLiteral("id"), id},
+                       {QStringLiteral("type"), 0},
+                       {QStringLiteral("allow"), allow ? QStringLiteral("1024") : QStringLiteral("0")},
+                       {QStringLiteral("deny"), allow ? QStringLiteral("0") : QStringLiteral("1024")}};
+}
+
+void memberListIdTests()
+{
+    // Discord's own murmurhash v3, run on these strings from its bundle.
+    expect(murmur3_32("") == 0u && murmur3_32("hello") == 613153351u && murmur3_32("everyone") == 2205475881u
+               && murmur3_32("allow:123") == 3352883465u
+               && murmur3_32("allow:1386684126165336075,deny:1390000000000000000") == 282685213u
+               && murmur3_32("deny:111111111111111111") == 3533268001u,
+           "MurmurHash3 gives what Discord's client gives");
+
+    const QString open = QStringLiteral("900000000000000021");
+    const QString closed = QStringLiteral("900000000000000022");
+    const QString privateThread = QStringLiteral("900000000000000023");
+    const QString publicThread = QStringLiteral("900000000000000024");
+    MessageStore store;
+    QJsonObject guild = rosterGuild(Guild, QStringLiteral("1024"));   // @everyone may View Channel
+    guild.insert(QStringLiteral("channels"),
+                 QJsonArray{channelWith(open, 0, QString(), QJsonArray{viewOverwrite(Sam, true)}),
+                            channelWith(closed, 0, QString(),
+                                        QJsonArray{viewOverwrite(QStringLiteral("1390000000000000000"), false),
+                                                   viewOverwrite(QStringLiteral("1386684126165336075"), true)}),
+                            channelWith(privateThread, 12, open, QJsonArray{}),
+                            channelWith(publicThread, 11, open, QJsonArray{})});
+    store.applyGuild(guild);
+    expect(store.memberListIdFor(open) == QLatin1String("everyone"),
+           "a channel nobody is kept out of shares the everyone list");
+    expect(store.memberListIdFor(closed) == QLatin1String("282685213"),
+           "one that keeps somebody out has its own list: its View Channel overwrites, sorted and hashed");
+    expect(store.memberListIdFor(publicThread) == QLatin1String("everyone"), "a public thread goes by its channel");
+    expect(store.memberListIdFor(privateThread) == QLatin1String("0"), "a private thread never shares the everyone list");
+
+    // Two lists at once, as Discord sends them for two subscribed channels.
+    const auto sync = [](const QString &listId, int firstPerson) {
+        QJsonArray items;
+        items.append(listGroup(QStringLiteral("online"), 3));
+        for (int n = firstPerson; n < firstPerson + 3; ++n)
+            items.append(listMember(n));
+        QJsonObject update = listUpdate(QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("online")},
+                                                               {QStringLiteral("count"), 3}}},
+                                        QJsonArray{syncOp(0, items)});
+        update.insert(QStringLiteral("id"), listId);
+        return update;
+    };
+    store.ingestMemberListUpdate(sync(QStringLiteral("everyone"), 1));
+    store.ingestMemberListUpdate(sync(QStringLiteral("282685213"), 10));
+    store.setMemberListChannel(Guild, open);
+    expect(store.memberList(Guild).rows.value(1).userId == listMemberId(1), "the open channel draws the everyone list");
+    store.setMemberListChannel(Guild, closed);
+    expect(store.memberList(Guild).rows.value(1).userId == listMemberId(10), "the other channel draws its own");
+
+    // The list on screen is not emptied by another list's INVALIDATE.
+    store.setMemberListChannel(Guild, open);
+    QJsonObject invalidate = listUpdate(
+        QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("online")}, {QStringLiteral("count"), 3}}},
+        QJsonArray{QJsonObject{{QStringLiteral("op"), QStringLiteral("INVALIDATE")},
+                               {QStringLiteral("range"), QJsonArray{0, 99}}}});
+    invalidate.insert(QStringLiteral("id"), QStringLiteral("282685213"));
+    store.ingestMemberListUpdate(invalidate);
+    expect(store.memberList(Guild).rows.value(1).userId == listMemberId(1),
+           "another list's INVALIDATE leaves the one on screen alone (0.9.7 emptied it)");
+}
+
 // --- everyone in a server: Discord's Members page ---------------------------
 
 // A server whose @everyone role carries `permissions`.
@@ -668,6 +750,21 @@ void rosterTests()
         asked.clear();
         roster.checkPresences(Guild, {Alex, Robin});
         expect(asked == QStringList({Robin}), "a status is asked for once per person");
+    }
+
+    // A page one short of 250 is not the end while Discord's total says more.
+    {
+        StandInRest rest;
+        MessageStore store;
+        store.applyGuild(rosterGuild(Guild, QStringLiteral("8")));
+        MemberRoster roster(&rest, &store);
+        const QString path = QStringLiteral("/guilds/%1/members-search").arg(Guild);
+        rest.reply(path, 200, searchPage(0, 249, 300));
+        rest.reply(path, 200, searchPage(249, 51, 300));
+        roster.want(Guild);
+        expect(waitFor([&roster]() { return roster.complete(Guild); }, 4000) && rest.posted.size() == 2
+                   && store.knownMemberCount(Guild) == 300,
+               "a short page with more to come is followed by the next (749 of 1,223 stopped in 0.9.7)");
     }
 
     // Refused after all: not asked again this run.
@@ -1149,6 +1246,7 @@ int main(int argc, char **argv)
     queryTests();
     storeTests();
     memberListTests();
+    memberListIdTests();
     rosterTests();
     restTests();
     panelTests(shot);

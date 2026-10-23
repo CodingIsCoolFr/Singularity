@@ -131,10 +131,12 @@ void MemberRoster::nextPage(const QString &guildId)
 
             const int total = reply.value(QStringLiteral("total_result_count")).toInt(-1);
             const QJsonObject after = members.isEmpty() ? QJsonObject() : cursorAfter(last);
-            // A short page is the last one; so is a page with no cursor to go on
-            // from, or the next ask would start over.
-            state.complete =
-                members.size() < PageSize || after.isEmpty() || (total >= 0 && state.loaded >= total);
+            // Done when Discord's own total is reached. A short page is not the
+            // end: Discord answered 249 of 250 with hundreds still to come.
+            // Without a total, a short page is all there is to go on; with no
+            // cursor the next ask would start over.
+            state.complete = members.isEmpty() || after.isEmpty()
+                || (total >= 0 ? state.loaded >= total : members.size() < PageSize);
             state.after = after;
 
             wlog(QStringLiteral("members"),

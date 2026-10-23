@@ -257,8 +257,15 @@ private:
     // server twice does not send the same request again. Discord counts every
     // command against a limit and hangs up when it is passed.
     QHash<QString, QString> m_subscribedChannels;
-    // The member list pages last asked for in each guild.
-    QHash<QString, QList<QPair<int, int>>> m_memberRanges;
+
+    // Each server's member list channels, most recently opened last, with
+    // the pages asked for in each. Discord's client keeps five and sends them
+    // all every time; see subscribeToGuild.
+    using ChannelRanges = QList<QPair<QString, QList<QPair<int, int>>>>;
+    QHash<QString, ChannelRanges> m_channelRanges;
+    // Servers told about at all this session.
+    QSet<QString> m_guildsSent;
+    bool sendChannelRanges(const QString &guildId, const ChannelRanges &channels);
 
     // A rolling count of commands sent, purely so the log shows it before a
     // close rather than leaving us guessing.

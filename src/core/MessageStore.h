@@ -150,6 +150,7 @@ struct ChannelInfo
     int userLimit = 0;          // voice channels only, 0 means no limit
     QString lastMessageId;
     QList<DiscordPermissions::Overwrite> overwrites;
+    QString memberListId;   // Discord's member_list_id, sent on some threads
     int flags = 0;
     bool nsfw = false;
 
@@ -218,6 +219,10 @@ constexpr int MaxMemberRows = 200000;
 // first page, then every page the stretch touches. Rows 140 to 160 ask for
 // [0, 99] and [100, 199].
 QList<QPair<int, int>> memberListPages(int firstVisible, int lastVisible);
+
+// MurmurHash3 (x86, 32 bit) of these bytes, as Discord's client hashes a
+// member list id (its murmurhash v3, over UTF-8, seed 0).
+quint32 murmur3_32(const QByteArray &data, quint32 seed = 0);
 
 struct EmojiInfo
 {
@@ -585,11 +590,25 @@ public:
     // without it everyone in a server looks offline.
     void ingestMemberListUpdate(const QJsonObject &payload);
 
-    // The next member-list answer may belong to a channel we just opened.
-    // Until it arrives, an update for a different list is ignored.
-    void noteMemberListRequest(const QString &guildId);
+    // Which channel's member list is on screen in this server.
+    //
+    // Discord keeps one list per list id, and channels that let the same
+    // people in share one (ChannelMemberStore). Its client keeps every list
+    // it is sent; so does this, and the channel picks which is drawn. One
+    // list per server meant another channel's INVALIDATE emptied the rows
+    // on screen, and the list sat there as placeholders (0.9.7).
+    void setMemberListChannel(const QString &guildId, const QString &channelId);
 
-    // The member list itself, in Discord's own order.
+    // Discord's id for a channel's member list, as its client works it out:
+    // the channel's own member_list_id if it has one; "everyone" when
+    // @everyone may view the server and no overwrite in the channel denies
+    // View Channel (a public thread is judged by its parent, a private one
+    // never is); otherwise MurmurHash3 of the channel's View Channel
+    // overwrites, "allow:<id>" and "deny:<id>" sorted and joined by commas.
+    QString memberListIdFor(const QString &channelId) const;
+
+    // The member list itself, in Discord's own order, for the channel set
+    // with setMemberListChannel.
     //
     // Kept as one flat list with the headings in it rather than as a map of
     // role to people, because the order is Discord's answer and not something
@@ -788,7 +807,10 @@ public:
     // in channels they left.
     void replaceGuildVoiceStates(const QString &guildId, const QJsonArray &states);
 
-    void clearMemberList(const QString &guildId);
+    // Every member list, as Discord's client drops them on a new connection:
+    // a new session has no subscriptions, and rows from the last one would
+    // never be told they went stale.
+    void clearMemberLists();
 
     // Who is sitting in one voice channel right now.
     QStringList voiceMembers(const QString &channelId) const;
@@ -838,8 +860,10 @@ private:
     // Most recent conversation first, which is the order Discord shows.
     void bumpDirectChannel(const QString &channelId);
 
-    QHash<QString, MemberList> m_memberLists;
-    QSet<QString> m_memberListFresh;
+    QHash<QString, QHash<QString, MemberList>> m_memberLists;   // guild -> list id -> list
+    QHash<QString, QString> m_memberListChannel;                 // guild -> channel on screen
+    QHash<QString, QString> m_lastSyncedList;                    // guild -> list id last SYNCed
+    mutable QSet<QString> m_listIdMismatchSaid;
     QHash<QString, GuildInfo> m_guilds;
     QHash<QString, QStringList> m_selfRoles;   // guild id -> your role ids
     QString m_selfUserId;
