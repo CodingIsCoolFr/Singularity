@@ -1,4 +1,5 @@
 #include "ui/CallView.h"
+#include "ui/LookPainter.h"
 
 #include "core/MessageStore.h"
 #include "ui/MediaCache.h"
@@ -556,7 +557,7 @@ void CallView::paintStripControls(QPainter &painter) const
     QFont chipFont = font();
     chipFont.setPixelSize(12);
     chipFont.setWeight(QFont::DemiBold);
-    painter.setFont(chipFont);
+    painter.setFont(LookPainter::kept(chipFont));
     const int w = painter.fontMetrics().horizontalAdvance(text) + 22;
     chip = QRect(Pad + 12, Pad + 12, w, 24);
 
@@ -630,7 +631,7 @@ void CallView::paintTile(QPainter &painter, const Tile &tile) const
         if (((tile.streaming || tile.video) && tile.featured) || streamOff) {
             QFont note = font();
             note.setPixelSize(tile.featured ? 13 : 11);
-            painter.setFont(note);
+            painter.setFont(LookPainter::kept(note));
             painter.setPen(QColor(Theme::TextMuted));
             painter.drawText(QRect(tile.box.left() + 20, avatarBox.bottom() + 6, tile.box.width() - 40, 20),
                              Qt::AlignHCenter | Qt::AlignVCenter,
@@ -652,7 +653,7 @@ void CallView::paintTile(QPainter &painter, const Tile &tile) const
     QFont nameFont = font();
     nameFont.setPixelSize(tile.featured ? 16 : 12);
     nameFont.setWeight(QFont::DemiBold);
-    painter.setFont(nameFont);
+    painter.setFont(LookPainter::kept(nameFont));
     painter.setPen(QColor(tile.speaking ? Theme::TextPrimary : Theme::LightGray));
     const int nameH = tile.featured ? 22 : 16;
     const QRect nameBox(tile.box.left() + 14, tile.box.bottom() - nameH - 12,
@@ -692,7 +693,7 @@ void CallView::paintMarks(QPainter &painter, const Tile &tile) const
         QFont badgeFont = font();
         badgeFont.setPixelSize(tile.featured ? 10 : 8);
         badgeFont.setWeight(QFont::Bold);
-        painter.setFont(badgeFont);
+        painter.setFont(LookPainter::kept(badgeFont));
 
         const QString word = tile.surface == Surface::Share ? QStringLiteral("LIVE")
                                                             : QStringLiteral("CAM");

@@ -16,6 +16,7 @@
 
 class AnimatedImage;
 class QPainter;
+class QPainterPath;
 
 // Draws what Discord dresses people in, the way Discord's own client draws
 // it (web build 643186: its components and stylesheets, read for this):
@@ -96,6 +97,24 @@ public:
     // Whether something drawn with these needs another frame soon: an
     // animation that is playing.
     static bool moving(const Name &name);
+
+    // The same font, as one copy kept for the rest of the run, its font
+    // engine looked up already. Every font a list draws with goes through
+    // here.
+    //
+    // Qt lets go, about once a second, of any font engine no QFont holds
+    // once its cache is over 4 MB, and the next paint builds it again
+    // through DirectWrite. A font made fresh in each paint is held by
+    // nobody. Names in many scripts pull in a fallback font each, which
+    // put the cache over; from then the member list rebuilt its fonts on
+    // every paint, half a second to a second each time on a busy machine,
+    // and that was the lag (0.9.8).
+    static QFont kept(const QFont &font);
+
+    // The outline of `text` in `font` with its baseline at 0, kept: making
+    // it reads every glyph's outline, which a name drawn as a path did on
+    // every paint.
+    static QPainterPath textPath(const QFont &font, const QString &text);
 
     // The frame clock's time (ui/FrameClock.h), held still through a paint,
     // so every row and every piece of a split paint shows the same moment.

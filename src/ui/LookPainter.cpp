@@ -434,15 +434,51 @@ void LookPainter::installFont(int fontId, const QByteArray &woff2)
     emit changed();
 }
 
+QFont LookPainter::kept(const QFont &font)
+{
+    // Keyed by everything that picks an engine. A few dozen in practice:
+    // the sizes and weights the window uses, and the sixteen name fonts.
+    static QHash<QString, QFont> fonts;
+    const QString key = font.toString() + QLatin1Char('|') + font.families().join(QLatin1Char(','));
+    const auto found = fonts.constFind(key);
+    if (found != fonts.constEnd())
+        return found.value();
+
+    QFont held = font;
+    // Metrics share the font's private part, so asking one now looks the
+    // engine up into the copy kept here, and it stays in use from then on.
+    QFontMetricsF(held).height();
+    if (fonts.size() < 512)
+        fonts.insert(key, held);
+    return held;
+}
+
+QPainterPath LookPainter::textPath(const QFont &font, const QString &text)
+{
+    static QHash<QString, QPainterPath> paths;
+    const QString key = font.toString() + QLatin1Char('|') + font.families().join(QLatin1Char(',')) + QChar(0x1f)
+        + text;
+    const auto found = paths.constFind(key);
+    if (found != paths.constEnd())
+        return found.value();
+    // Bounded: a long scroll meets thousands of names.
+    if (paths.size() > 1000)
+        paths.clear();
+    QPainterPath path;
+    path.addText(QPointF(0, 0), kept(font), text);
+    paths.insert(key, path);
+    return path;
+}
+
 QFont LookPainter::fontFor(const QFont &base, int fontId) const
 {
     const Font *info = fontInfo(fontId);
     if (!info)
-        return base;
+        return kept(base);
     loadFont(fontId);
     const QString family = m_families.value(fontId);
     if (family.isEmpty())
-        return base;
+        return kept(base);
     QFont font = base;
     font.setFamilies({family});
     // The one weight each is made in. Asking for another makes a fake bold,
@@ -453,7 +489,7 @@ QFont LookPainter::fontFor(const QFont &base, int fontId) const
     const qreal px = base.pixelSize() > 0 ? base.pixelSize() : base.pointSizeF() * 96.0 / 72.0;
     if (info->letterSpacing > 0)
         font.setLetterSpacing(QFont::AbsoluteSpacing, info->letterSpacing * px);
-    return font;
+    return kept(font);
 }
 
 // --- pictures -------------------------------------------------------------
@@ -585,11 +621,14 @@ void LookPainter::paintDecoration(QPainter *painter, const QRect &avatar, const 
 
 namespace {
 
-QFont tagFont()
+const QFont &tagFont()
 {
-    QFont font;
-    font.setPixelSize(12);
-    font.setWeight(QFont::DemiBold);
+    static const QFont font = [] {
+        QFont made;
+        made.setPixelSize(12);
+        made.setWeight(QFont::DemiBold);
+        return LookPainter::kept(made);
+    }();
     return font;
 }
 
@@ -691,13 +730,13 @@ bool LookPainter::moving(const Name &name)
 
 int LookPainter::nameWidth(const Name &name) const
 {
-    const QFont font = name.style.fontId ? fontFor(name.font, name.style.fontId) : name.font;
+    const QFont font = name.style.fontId ? fontFor(name.font, name.style.fontId) : kept(name.font);
     return qCeil(QFontMetricsF(font).horizontalAdvance(name.text));
 }
 
 int LookPainter::paintName(QPainter *painter, const QRect &box, const Name &name)
 {
-    const QFont font = name.style.fontId ? fontFor(name.font, name.style.fontId) : name.font;
+    const QFont font = name.style.fontId ? fontFor(name.font, name.style.fontId) : kept(name.font);
     const QFontMetricsF metrics(font);
     const QString text = metrics.elidedText(name.text, Qt::ElideRight, box.width());
     const qreal width = metrics.horizontalAdvance(text);
@@ -715,8 +754,7 @@ int LookPainter::paintName(QPainter *painter, const QRect &box, const Name &name
     } else if (name.mode == EffectMode::FontOnly && name.roleGradient) {
         // A gradient role: its colours across the name, repeating every 100
         // pixels, sliding along while hovered, with a soft glow under it.
-        QPainterPath path;
-        path.addText(baseline, font, text);
+        const QPainterPath path = textPath(font, text).translated(baseline);
         const qreal shift = name.animateRole ? (now() % 1500) / 1500.0 * 100.0 : 0.0;
         QLinearGradient gradient(QPointF(box.left() + shift, 0), QPointF(box.left() + shift + 100, 0));
         gradient.setSpread(QGradient::RepeatSpread);
@@ -777,8 +815,7 @@ void LookPainter::paintEffect(QPainter *painter, const QPointF &baseline, const 
     const qreal ratio = painter->device() ? painter->device()->devicePixelRatioF() : 1.0;
     const qreal t = animated ? now() : 0;
 
-    QPainterPath path;
-    path.addText(baseline, font, text);
+    const QPainterPath path = textPath(font, text).translated(baseline);
 
     switch (effect) {
     case Cosmetics::Gradient:
@@ -930,7 +967,7 @@ void LookPainter::paintEffect(QPainter *painter, const QPointF &baseline, const 
 
 QImage LookPainter::renderName(const Name &name, qreal ratio, int pad)
 {
-    const QFont font = name.style.fontId ? fontFor(name.font, name.style.fontId) : name.font;
+    const QFont font = name.style.fontId ? fontFor(name.font, name.style.fontId) : kept(name.font);
     const QFontMetricsF metrics(font);
     const int width = qCeil(metrics.horizontalAdvance(name.text)) + 2 * pad;
     const int height = qCeil(metrics.height()) + 2 * pad;

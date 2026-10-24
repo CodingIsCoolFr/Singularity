@@ -433,15 +433,25 @@ bool AnimatedDelegate::paintAvatarIcon(QPainter *painter, int row, const QRect &
     const QSizeF size = QSizeF(icon.image.size()) / icon.image.devicePixelRatio();
     const QRectF area(avatar.right() + 2 - size.width(), avatar.bottom() + 2 - size.height(), size.width(),
                       size.height());
-    QImage outline(icon.image.size(), QImage::Format_ARGB32_Premultiplied);
-    outline.fill(Qt::transparent);
-    {
-        QPainter tint(&outline);
-        tint.drawImage(0, 0, icon.image);
-        tint.setCompositionMode(QPainter::CompositionMode_SourceIn);
-        tint.fillRect(outline.rect(), backdrop);
+    // The outline is the icon's shape in the backdrop's colour, the same for
+    // every row with that icon: made once rather than on every paint.
+    const QString outlineKey =
+        QString::number(icon.image.cacheKey()) + QLatin1Char(':') + QString::number(backdrop.rgba());
+    QImage outline = m_outlines.value(outlineKey);
+    if (outline.isNull()) {
+        outline = QImage(icon.image.size(), QImage::Format_ARGB32_Premultiplied);
+        outline.fill(Qt::transparent);
+        {
+            QPainter tint(&outline);
+            tint.drawImage(0, 0, icon.image);
+            tint.setCompositionMode(QPainter::CompositionMode_SourceIn);
+            tint.fillRect(outline.rect(), backdrop);
+        }
+        outline.setDevicePixelRatio(icon.image.devicePixelRatio());
+        if (m_outlines.size() > 256)
+            m_outlines.clear();
+        m_outlines.insert(outlineKey, outline);
     }
-    outline.setDevicePixelRatio(icon.image.devicePixelRatio());
     painter->save();
     painter->setRenderHint(QPainter::SmoothPixmapTransform, true);
     const qreal reach = 2.0;
@@ -680,7 +690,7 @@ void GuildRailDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
             QFont badgeFont = option.font;
             badgeFont.setPixelSize(9);
             badgeFont.setWeight(QFont::Bold);
-            painter->setFont(badgeFont);
+            painter->setFont(LookPainter::kept(badgeFont));
             const int width = qMax(16, painter->fontMetrics().horizontalAdvance(count) + 8);
             const QRect badge(iconRect.right() - width + 4, iconRect.bottom() - 12, width, 16);
             painter->setBrush(QColor(Theme::Red));
@@ -790,7 +800,7 @@ void MemberDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
         font.setPixelSize(11);
         font.setWeight(QFont::Bold);
         font.setLetterSpacing(QFont::AbsoluteSpacing, 0.6);
-        painter->setFont(font);
+        painter->setFont(LookPainter::kept(font));
         painter->setPen(QColor(Theme::TextFaint));
         painter->drawText(QRect(cell.left() + 14, cell.bottom() - 18, cell.width() - 24, 16),
                           Qt::AlignLeft | Qt::AlignVCenter,
@@ -802,7 +812,7 @@ void MemberDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     if (index.data(SingularityRoles::Note).toBool()) {
         QFont small = option.font;
         small.setPixelSize(11);
-        painter->setFont(small);
+        painter->setFont(LookPainter::kept(small));
         painter->setPen(QColor(Theme::TextFaint));
         painter->drawText(cell.adjusted(14, 2, -12, -2), Qt::AlignLeft | Qt::AlignVCenter | Qt::TextWordWrap,
                           index.data(Qt::DisplayRole).toString());
@@ -902,7 +912,7 @@ void MemberDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     if (!subtitle.isEmpty()) {
         QFont small = option.font;
         small.setPixelSize(11);
-        painter->setFont(small);
+        painter->setFont(LookPainter::kept(small));
         painter->setPen(QColor(Theme::TextFaint));
         painter->drawText(QRect(textLeft, cell.top() + 21, textWidth, 15),
                           Qt::AlignLeft | Qt::AlignVCenter,
@@ -1028,7 +1038,7 @@ void FriendDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     if (!subtitle.isEmpty()) {
         QFont subFont = option.font;
         subFont.setPixelSize(11);
-        painter->setFont(subFont);
+        painter->setFont(LookPainter::kept(subFont));
         painter->setPen(QColor(Theme::TextFaint));
         painter->drawText(QRect(textLeft, cell.center().y() + 2, textWidth, 16),
                           Qt::AlignLeft | Qt::AlignVCenter,
@@ -1194,7 +1204,7 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
         font.setPixelSize(10);
         font.setWeight(QFont::Bold);
         font.setLetterSpacing(QFont::AbsoluteSpacing, 0.8);
-        painter->setFont(font);
+        painter->setFont(LookPainter::kept(font));
         painter->setPen(QColor(Theme::TextFaint));
         painter->drawText(cell.adjusted(14, 8, -10, 0), Qt::AlignLeft | Qt::AlignVCenter, text);
         painter->restore();
@@ -1222,7 +1232,7 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
 
         QFont font = option.font;
         font.setPixelSize(12);
-        painter->setFont(font);
+        painter->setFont(LookPainter::kept(font));
         painter->setPen(QColor(talking ? Theme::TextPrimary : Theme::TextMuted));
 
         // Badges sit hard against the right edge, so the name shortens rather
@@ -1235,7 +1245,7 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
             QFont badgeFont = option.font;
             badgeFont.setPixelSize(8);
             badgeFont.setWeight(QFont::Bold);
-            painter->setFont(badgeFont);
+            painter->setFont(LookPainter::kept(badgeFont));
 
             const int badgeWidth = painter->fontMetrics().horizontalAdvance(QStringLiteral("LIVE")) + 8;
             const QRect badge(rightEdge - badgeWidth, cell.center().y() - 6, badgeWidth, 12);
@@ -1331,7 +1341,7 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
             strikeThrough(box, colour);
         }
 
-        painter->setFont(font);
+        painter->setFont(LookPainter::kept(font));
         painter->setPen(QColor(talking ? Theme::TextPrimary : Theme::TextMuted));
 
         // Their server tag after the name, as Discord's voice row has it; a
@@ -1426,7 +1436,7 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
         if (!subtitle.isEmpty()) {
             QFont subFont = option.font;
             subFont.setPixelSize(11);
-            painter->setFont(subFont);
+            painter->setFont(LookPainter::kept(subFont));
             painter->setPen(QColor(Theme::TextFaint));
 
             const QRect subRect(textLeft, cell.center().y(), textWidth, cell.height() / 2 - 4);
@@ -1520,7 +1530,7 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
         QFont badgeFont = option.font;
         badgeFont.setPixelSize(10);
         badgeFont.setWeight(QFont::Bold);
-        painter->setFont(badgeFont);
+        painter->setFont(LookPainter::kept(badgeFont));
         const int width = qMax(16, painter->fontMetrics().horizontalAdvance(count) + 8);
         const QRect badge(rightEdge - width, cell.center().y() - 8, width, 16);
         painter->setPen(Qt::NoPen);
@@ -1546,7 +1556,7 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
                         .arg(voiceLimit, 2, 10, QChar('0'));
         QFont countFont = option.font;
         countFont.setPixelSize(11);
-        painter->setFont(countFont);
+        painter->setFont(LookPainter::kept(countFont));
         const int countWidth = painter->fontMetrics().horizontalAdvance(occupancy);
         const QRect countRect(rightEdge - countWidth, cell.top(), countWidth, cell.height());
         painter->setPen(QColor(voiceFull ? Theme::TextFaint : Theme::TextMuted));
@@ -1572,7 +1582,7 @@ void ChannelDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
 
     QFont font = option.font;
     font.setWeight((selectAmount > 0.5 || unread) ? QFont::DemiBold : QFont::Normal);
-    painter->setFont(font);
+    painter->setFont(LookPainter::kept(font));
     painter->setPen(colour);
 
     // The name gets whatever is left, and shortens with "..." rather than run

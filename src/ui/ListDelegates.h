@@ -144,6 +144,9 @@ private:
     // Where each row's plugin pictures were drawn, and what they say.
     mutable QHash<int, QList<QPair<QRect, QString>>> m_nameTips;
     mutable QHash<int, QPair<QRect, QString>> m_avatarTips;
+    // The backdrop-coloured outline under each avatar icon, by icon and
+    // colour (paintAvatarIcon).
+    mutable QHash<QString, QImage> m_outlines;
 };
 
 // The server rail on the far left.
