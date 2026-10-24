@@ -526,18 +526,12 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     connect(&NameIcons::instance(), &NameIcons::changed, this, [this](const QString &userId) {
         if (m_currentChannelId.isEmpty() || !m_store->hasHistory(m_currentChannelId))
             return;
-        if (!userId.isEmpty()) {
-            bool onPage = false;
-            for (const MessageInfo &message : m_store->messages(m_currentChannelId)) {
-                if (message.authorId == userId) {
-                    onPage = true;
-                    break;
-                }
-            }
-            if (!onPage)
-                return;
-        }
-        m_mentionRefresh.start();
+        if (userId.isEmpty())
+            m_wholeChatChanged = true;
+        else
+            m_peopleChanged.insert(userId);
+        if (!m_mentionRefresh.isActive())
+            m_mentionRefresh.start();
     });
 
     buildUi();
@@ -631,9 +625,19 @@ MainWindow::MainWindow(RestClient *rest, GatewayClient *gateway, MessageStore *s
     m_mentionRefresh.setSingleShot(true);
     m_mentionRefresh.setInterval(400);
     connect(&m_mentionRefresh, &QTimer::timeout, this, [this]() {
+        const bool whole = m_wholeChatChanged;
+        const QSet<QString> people = m_peopleChanged;
+        m_wholeChatChanged = false;
+        m_peopleChanged.clear();
         if (m_currentChannelId.isEmpty() || !m_store->hasHistory(m_currentChannelId))
             return;
-        renderChannel();
+        // The whole chat was laid out again for every member update in any
+        // server, about once a second in a busy one, 30 to 50 ms each time:
+        // the stutter (0.9.9). Now only the messages of whoever changed.
+        if (whole)
+            renderChannel();
+        else
+            redrawMessagesBy(people);
     });
 
     m_mentionSearchTimer.setSingleShot(true);
@@ -2966,7 +2970,8 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
     // Anyone's roles, nickname or server look changing.
     if (eventType == QLatin1String("GUILD_MEMBER_UPDATE") || eventType == QLatin1String("GUILD_MEMBER_ADD")) {
         m_store->rememberMember(data.value(QStringLiteral("guild_id")).toString(), data);
-        scheduleLookRefresh();
+        scheduleLookRefresh(data.value(QStringLiteral("guild_id")).toString(),
+                            {data.value(QStringLiteral("user")).toObject().value(QStringLiteral("id")).toString()});
     }
 
     // Left, kicked or banned - from here or any other device. "unavailable"
@@ -3029,7 +3034,7 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
         if (data.value(QStringLiteral("id")).toString() == m_selfUserId && data.contains(QStringLiteral("avatar")))
             m_selfAvatarHash = data.value(QStringLiteral("avatar")).toString();
         updateUserPanel();
-        scheduleLookRefresh();
+        scheduleLookRefresh(QString(), {data.value(QStringLiteral("id")).toString()});
         return;
     }
 
@@ -3522,7 +3527,13 @@ void MainWindow::onGatewayDispatch(const QString &eventType, const QJsonObject &
                                                          : QString()));
         if (!m_voiceRefreshTimer.isActive())
             m_voiceRefreshTimer.start(400);
-        scheduleLookRefresh();
+        {
+            QStringList learned;
+            learned.reserve(members.size());
+            for (const QJsonValue &value : members)
+                learned << value.toObject().value(QStringLiteral("user")).toObject().value(QStringLiteral("id")).toString();
+            scheduleLookRefresh(chunkGuild, learned);
+        }
         if (forMention && m_mentionPopup && m_mentionPopup->isVisible())
             updateMentionPopup();
         return;
@@ -5653,8 +5664,19 @@ bool MainWindow::replaceMessageInView(const QString &messageId)
     // m_renderedCount of them, not all the ones held. If that does not hold -
     // a system line, an empty channel, a redraw that has not happened yet -
     // there is no way to know which frame is which, so do not guess.
-    if (rows.size() != m_renderedCount)
+    if (rows.size() != m_renderedCount) {
+        // Said now and then, so a chat that can only ever be drawn whole is
+        // not a mystery: it costs a full layout on every edit and preview.
+        static QElapsedTimer said;
+        if (!said.isValid() || said.elapsed() > 60000) {
+            said.start();
+            wlog(QStringLiteral("ui"), QStringLiteral("a message could not be redrawn on its own (%1 frames for %2 "
+                                                      "messages); drawing the whole chat")
+                                           .arg(rows.size())
+                                           .arg(m_renderedCount));
+        }
         return false;
+    }
 
     // A message outside the drawn window is not on screen, so there is
     // nothing to redraw and nothing to rebuild either.
@@ -12932,15 +12954,46 @@ void MainWindow::requestMemberLook(const QString &userId, const QString &guildId
         m_memberLookupTimer.start();
 }
 
-void MainWindow::scheduleLookRefresh()
+void MainWindow::scheduleLookRefresh(const QString &guildId, const QStringList &userIds)
 {
-    // The chat once the burst is over; the lists draw from the store as
-    // they paint.
-    m_mentionRefresh.start();
+    // Another server's member updates change nothing on screen. They come
+    // from every server subscribed to, several a minute in big ones.
+    if (!guildId.isEmpty() && guildId != m_currentGuildId)
+        return;
+
+    // The lists draw from the store as they paint.
     if (m_channelList)
         m_channelList->viewport()->update();
     if (m_members)
         m_members->refresh();
+
+    // The chat once the burst is over, and only the messages of these people.
+    if (userIds.isEmpty())
+        m_wholeChatChanged = true;
+    for (const QString &userId : userIds) {
+        if (!userId.isEmpty())
+            m_peopleChanged.insert(userId);
+    }
+    if (!m_mentionRefresh.isActive())
+        m_mentionRefresh.start();
+}
+
+void MainWindow::redrawMessagesBy(const QSet<QString> &people)
+{
+    if (people.isEmpty() || m_renderedChannelId != m_currentChannelId)
+        return;
+    const QSet<QString> drawn(m_renderedIds.cbegin(), m_renderedIds.cend());
+    QStringList theirs;
+    for (const MessageInfo &message : m_store->messages(m_currentChannelId)) {
+        if (people.contains(message.authorId) && drawn.contains(message.id))
+            theirs << message.id;
+    }
+    for (const QString &messageId : std::as_const(theirs)) {
+        if (!replaceMessageInView(messageId)) {
+            renderChannel();
+            return;
+        }
+    }
 }
 
 void MainWindow::requestUnknownName(const QString &userId, const QString &guildId)
@@ -12965,7 +13018,9 @@ void MainWindow::requestUnknownName(const QString &userId, const QString &guildI
             if (!m_voiceRefreshTimer.isActive())
                 m_voiceRefreshTimer.start(400);
             // Restart, so a channel full of unknown names draws once after
-            // the last one arrives instead of once per person.
+            // the last one arrives instead of once per person. A name can be
+            // in any message, as a mention, so the whole chat.
+            m_wholeChatChanged = true;
             m_mentionRefresh.start();
         },
         [this, userId](const RestClient::Error &error) {

@@ -149,7 +149,13 @@ void tidy(const QString &exePath, const QStringList &folders, bool wait);
 void InstallTidy::run()
 {
 #ifdef _WIN32
-    tidy(QCoreApplication::applicationFilePath(), shortcutFolders(), false);
+    // All of it off the window's thread, shortcuts included. Walking the
+    // Start menu and opening each shortcut through the shell held the window
+    // still for 1.8 seconds after an update (0.9.9); the shell objects are
+    // made on that thread, with COM set up and put away there.
+    const QString exe = QCoreApplication::applicationFilePath();
+    const QStringList folders = shortcutFolders();
+    QThreadPool::globalInstance()->start([exe, folders]() { tidy(exe, folders, false); });
 #endif
 }
 

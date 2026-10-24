@@ -550,8 +550,15 @@ private:
     // names, once each per server.
     void requestMemberLook(const QString &userId, const QString &guildId);
     QSet<QString> m_looksRequested;   // "guild:user"
-    // Lists and chat drawn again once people's looks have changed.
-    void scheduleLookRefresh();
+    // Lists and chat drawn again once people's looks have changed: these
+    // people, in this server (empty: everywhere). Only the messages on screen
+    // by them are drawn again, and only if the server is the one on screen.
+    void scheduleLookRefresh(const QString &guildId, const QStringList &userIds);
+    // What the next m_mentionRefresh draws: every message, or those by these
+    // people.
+    bool m_wholeChatChanged = false;
+    QSet<QString> m_peopleChanged;
+    void redrawMessagesBy(const QSet<QString> &people);
     QHash<QString, QSet<QString>> m_pendingMemberLookups;   // guild -> users
     QTimer m_memberLookupTimer;
 
